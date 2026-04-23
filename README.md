@@ -254,4 +254,4 @@ docker logs realopen-ngrok 2>&1 | grep "https://"
 
 ## License
 
-MIT
+MIT License - See [LICENSE](/LICENSE) file for details.
