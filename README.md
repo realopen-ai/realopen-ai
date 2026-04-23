@@ -6,7 +6,46 @@ RealOpen-AI is a self-hosted, privacy-first AI chatbot that runs entirely on you
 
 ## Architecture
 
-[![](https://mermaid.ink/img/pako:eNqVVF1v2jAU_SuW99JutCQkQBJNlUghrFIDDCbWbdmDm7hgNdiR41BY2_--axKqlgZpy0Ns555zP869ziOORUKxhxeSZEv0zY84gicvbssPX0SufkX4hygkCkm8ZJxG-HcJegPsi_ieSoCWG3QpVpnI34LfEHpZBmh4pywmign-DqqfYACgQAquKE8-38rmxZSSWKFPaM4UhSVfkiTmzYLtjF7b7FoooWvURJ5joEyKpNavr_36BFKt3AYkV73JFXicCKrktnTnGIZRy58MgT8BcRaSzr5eAy1brGmshKzysK1WLXHaB-KUJiwvgR2r69YCZzcAnFEiN6PhPhnnfTKQf8SPSDyB6nWasBSxlhiNebqtjTbS0UYLxjf7WLt1pqA1MVQ3pWsqc6pdbrb_lUQoOLiGNwNxGF-gk3GmcyHpaW0m8xDgc6alZASF0AsWV1o5dsup5QwD4AwluSOclFDrWONGuvEjmHk02GRCKlo1zDWNI-IeKXJ8fd0Le-BsnKZkRdDJCKRa09PSnWnalr3bhhArRVf8jkrKYwjLF4eXyJ-Ov88GUz2RUjzkVIIVnZ1dPEVYj3I51M3dMOupjvAT3IuS_iqpYFBxMt0j1CQZa37UWL_Cjm7-FZCXbb9jKc1fR_P3Idi-HG0tlThA5DC58VKbZzcHpvKe5DBVCVFEQybDA0gMv5qd72n_wLIqB0Lb5mFpm4faBkOwVyJX25RWaekiUu_DoD9wg0EjV1LcU--D47cvg051PHtgiVp6rWzzml41peIHZtAO3Be-a_cs36nh4wb8SVmCPSUL2oBs5YroI37UviOslnQFhXmwTYi8j3DEn4GTEf5TiNWeJkWxWGLvjqQ5nIoMdKJ9RuBCrV6-gvwJlZei4Ap7LaPr7rxg7xFvsGca5x3T6HacTgvWltnAW_jYtc6trmHYHbNtWEbb6j438J9dWPPcsNqGYzp2p-W6batlP_8Fg4K8pw?type=png)](https://mermaid.live/edit#pako:eNqVVF1v2jAU_SuW99JutCQkQBJNlUghrFIDDCbWbdmDm7hgNdiR41BY2_--axKqlgZpy0Ns555zP869ziOORUKxhxeSZEv0zY84gicvbssPX0SufkX4hygkCkm8ZJxG-HcJegPsi_ieSoCWG3QpVpnI34LfEHpZBmh4pywmign-DqqfYACgQAquKE8-38rmxZSSWKFPaM4UhSVfkiTmzYLtjF7b7FoooWvURJ5joEyKpNavr_36BFKt3AYkV73JFXicCKrktnTnGIZRy58MgT8BcRaSzr5eAy1brGmshKzysK1WLXHaB-KUJiwvgR2r69YCZzcAnFEiN6PhPhnnfTKQf8SPSDyB6nWasBSxlhiNebqtjTbS0UYLxjf7WLt1pqA1MVQ3pWsqc6pdbrb_lUQoOLiGNwNxGF-gk3GmcyHpaW0m8xDgc6alZASF0AsWV1o5dsup5QwD4AwluSOclFDrWONGuvEjmHk02GRCKlo1zDWNI-IeKXJ8fd0Le-BsnKZkRdDJCKRa09PSnWnalr3bhhArRVf8jkrKYwjLF4eXyJ-Ov88GUz2RUjzkVIIVnZ1dPEVYj3I51M3dMOupjvAT3IuS_iqpYFBxMt0j1CQZa37UWL_Cjm7-FZCXbb9jKc1fR_P3Idi-HG0tlThA5DC58VKbZzcHpvKe5DBVCVFEQybDA0gMv5qd72n_wLIqB0Lb5mFpm4faBkOwVyJX25RWaekiUu_DoD9wg0EjV1LcU--D47cvg051PHtgiVp6rWzzml41peIHZtAO3Be-a_cs36nh4wb8SVmCPSUL2oBs5YroI37UviOslnQFhXmwTYi8j3DEn4GTEf5TiNWeJkWxWGLvjqQ5nIoMdKJ9RuBCrV6-gvwJlZei4Ap7LaPr7rxg7xFvsGca5x3T6HacTgvWltnAW_jYtc6trmHYHbNtWEbb6j438J9dWPPcsNqGYzp2p-W6batlP_8Fg4K8pw)
+```mermaid
+graph TB
+    subgraph Host["Your Machine"]
+        subgraph Docker["Docker Compose"]
+            subgraph App["Application"]
+                FE["Frontend<br/>React + Vite + shadcn/ui<br/>:5173 dev / :80 prod"]
+                BE["Backend<br/>FastAPI + Poetry<br/>:8000"]
+                PG["PostgreSQL + pgvector<br/>:5432"]
+                RD["Redis<br/>:6379"]
+                SX["SearxNG<br/>:8080"]
+            end
+
+            subgraph Prod["Production Only"]
+                NX["Nginx<br/>:80<br/>Static + Reverse Proxy"]
+            end
+
+            subgraph Mon["Monitoring (Optional)"]
+                VM["Victoria Metrics<br/>:8428"]
+                GF["Grafana<br/>:3000"]
+                NE["Node Exporter<br/>:9100"]
+            end
+        end
+
+        OLLAMA["Ollama (Native)<br/>:11434<br/>Model Inference Engine"]
+        BROWSER["Browser"] -->|"dev :5173 / prod :80"| FE
+    end
+
+    FE -->|"proxy /api/*"| BE
+    NX -->|"proxy /api/*"| BE
+    NX -->|"static files"| FE
+    BE -->|"inference"| OLLAMA
+    BE -->|"search"| SX
+    BE -->|"vectors + data"| PG
+    BE -->|"cache"| RD
+    BE -->|"metrics"| VM
+    VM --> GF
+
+    style OLLAMA fill:#EDE9FE,stroke:#8B5CF6,stroke-width:2px
+    style BROWSER fill:#F1F5F9,stroke:#94A3B8,stroke-width:2px
+```
 
 ### Key Design Decisions
 
