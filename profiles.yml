@@ -1,0 +1,112 @@
+# =============================================================================
+# This is the SINGLE SOURCE OF TRUTH for model selection.
+# Edit this file to add/remove/change models per hardware profile.
+# No need to touch setup.sh, backend code, or frontend code.
+#
+# Model fields:
+#   id:          Ollama model tag (used in `ollama pull <id>`)
+#   type:        Model category — chat, vision, code, embedding
+#   role:        How the model is used — default, default_vision, default_code, etc.
+#                The backend resolves roles to model IDs automatically.
+#                If the frontend sends model="default", backend looks up the
+#                model with role="default" in the current hardware profile.
+#   description: Human-readable label shown in the UI
+#   size:        Approximate disk/RAM usage (informational)
+# =============================================================================
+
+profiles:
+  8gb:
+    description: "8-10 GB RAM — lightweight models for basic hardware"
+    models:
+      - id: qwen3:4b
+        type: chat
+        role: default
+        description: "Qwen3 4B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        size: "2.5 GB"
+
+      - id: moondream:1.8b
+        type: vision
+        role: default_vision
+        description: "Moondream 1.8B — a small vision language model designed to run efficiently on edge devices."
+        size: "1.7 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        size: "274 MB"
+
+  16gb:
+    description: "10-20 GB RAM — balanced models for mid-range hardware"
+    models:
+      - id: qwen3:8b
+        type: chat
+        role: default
+        description: "Qwen3 8B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        size: "5.2 GB"
+
+      - id: moondream:1.8b
+        type: vision
+        role: default_vision
+        description: "Moondream 1.8B — a small vision language model designed to run efficiently on edge devices."
+        size: "1.7 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        size: "274 MB"
+
+  32gb:
+    description: "20-40 GB RAM — powerful models for high-end hardware"
+    models:
+      - id: qwen3:32b
+        type: chat
+        role: default
+        description: "Qwen3 32B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        size: "20 GB"
+
+      - id: llava:13b
+        type: vision
+        role: default_vision
+        description: "LLaVA 13B — a novel end-to-end trained large multimodal model that combines a vision encoder and Vicuna for general-purpose visual and language understanding."
+        size: "8 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        size: "274 MB"
+
+      - id: qwen2.5-coder:32b
+        type: code
+        role: default_code
+        description: "Qwen2.5 Coder 32B — a Code-Specific Qwen model, with significant improvements in code generation, code reasoning, and code fixing."
+        size: "20 GB"
+
+  64gb:
+    description: "40+ GB RAM — largest models for enthusiast hardware"
+    models:
+      - id: qwen3.5:35b
+        type: chat
+        role: default
+        description: "Qwen3.5 35B — a multimodal model that delivers exceptional utility and performance."
+        size: "24 GB"
+
+      - id: llava:34b
+        type: vision
+        role: default_vision
+        description: "LLaVA 34B — a novel end-to-end trained large multimodal model that combines a vision encoder and Vicuna for general-purpose visual and language understanding."
+        size: "20 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        size: "274 MB"
+
+      - id: qwen3-coder:30b
+        type: code
+        role: default_code
+        description: "Qwen3 Coder 30B — a performant long context model for agentic and coding tasks."
+        size: "19 GB"
