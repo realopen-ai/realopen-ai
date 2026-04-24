@@ -79,6 +79,8 @@ Before you begin, install these on your machine:
 
 > **Note:** Ollama is installed automatically by the setup script. You don't need to install it manually.
 
+> **Note:** Windows is supported via WSL2. Use Docker Desktop's WSL integration and run all commands from the WSL terminal.
+
 ## Quick Start
 
 ```bash
