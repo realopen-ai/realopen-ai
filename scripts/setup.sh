@@ -84,12 +84,12 @@ get_recommended_profile() {
 # Uses Python3 to parse YAML
 get_default_model() {
     local profile=$1
-    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" default-model 2>/dev/null || echo "qwen3:7b"
+    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" default-model 2>/dev/null || echo "qwen3:4b"
 }
 
 get_all_models() {
     local profile=$1
-    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" all-models 2>/dev/null || echo "qwen3:7b"
+    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" all-models 2>/dev/null || echo "qwen3:4b"
 }
 
 # ── Prerequisite Checks ──
