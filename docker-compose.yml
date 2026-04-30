@@ -1,0 +1,149 @@
+# =============================================================================
+# Ollama runs natively on the host (not in this file)
+# =============================================================================
+
+services:
+  # PostgreSQL + pgvector
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: realopen-postgres
+    environment:
+      POSTGRES_DB: realopen
+      POSTGRES_USER: realopen
+      POSTGRES_PASSWORD: realopen
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realopen"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Redis
+  redis:
+    image: docker.io/valkey/valkey:8-alpine
+    container_name: realopen-redis
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.25
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # SearxNG
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: realopen-searxng
+    volumes:
+      - ./monitoring/searxng-settings.yml:/etc/searxng/settings.yml:ro
+      - ./monitoring/searxng-limiter.toml:/etc/searxng/limiter.toml:ro
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: realopen-backend
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://realopen:realopen@postgres:5432/realopen
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - upload-data:/app/uploads
+      - ./profiles.yml:/app/profiles.yml:ro
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nginx (Production: serves frontend + proxies to backend)
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: realopen-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - nginx-cache:/var/cache/nginx
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Ngrok (Optional Remote Access)
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: realopen-ngrok
+    profiles:
+      - tunnel
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    command: http nginx:80
+    depends_on:
+      - nginx
+    restart: unless-stopped
+    networks:
+      - realopen-net
+
+volumes:
+  postgres-data:
+  upload-data:
+  nginx-cache:
+
+networks:
+  realopen-net:
+    driver: bridge
