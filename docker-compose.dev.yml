@@ -1,0 +1,69 @@
+# =============================================================================
+# Hot reload for backend (uvicorn --reload) and frontend (Vite HMR)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+services:
+  # PostgreSQL (expose port for GUI tools)
+  postgres:
+    ports:
+      - "5432:5432"
+
+  # Redis (expose port for debugging)
+  redis:
+    ports:
+      - "6379:6379"
+
+  # SearxNG (expose port)
+  searxng:
+    ports:
+      - "8080:8080"
+
+  # Backend: dev build with hot reload
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=["http://localhost:5173","http://localhost:3000","http://localhost"]
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      - ./profiles.yml:/app/profiles.yml:ro
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 1g
+
+  # Frontend: Vite dev server with HMR
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: realopen-frontend
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tailwind.config.ts:/app/tailwind.config.ts
+      - ./frontend/postcss.config.js:/app/postcss.config.js
+    ports:
+      - "5173:5173"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - realopen-net
+
+  # Disable Nginx in dev (Vite proxies API requests)
+  nginx:
+    build: ./nginx
+    profiles:
+      - dont-start-in-dev
