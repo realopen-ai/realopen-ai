@@ -43,6 +43,15 @@ up:
 down:
 	@$(COMPOSE_DEV) down 2>/dev/null || $(COMPOSE) down
 
+# ── Stop monitoring stack only ──
+.PHONY: down-mon
+down-mon:
+	@$(COMPOSE_MON) down 2>/dev/null || true
+
+# ── Restart all services ──
+.PHONY: re
+re: down all
+
 # ── Stop and remove volumes (full reset) ──
 .PHONY: clean
 clean:
