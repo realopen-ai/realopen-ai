@@ -1,0 +1,72 @@
+# =============================================================================
+# Victoria Metrics (Prometheus-compatible), Grafana, Node Exporter
+# Usage: docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+# =============================================================================
+
+services:
+  # Victoria Metrics (Prometheus-compatible)
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: realopen-victoriametrics
+    volumes:
+      - ./monitoring/victoria-metrics/prometheus.yml:/etc/vm/prometheus.yml:ro
+      - vm-data:/victoria-metrics-data
+    command:
+      - "--promscrape.config=/etc/vm/prometheus.yml"
+      - "--promscrape.config.strictParse=false"
+      - "--storageDataPath=/victoria-metrics-data"
+      - "--retentionPeriod=30d"
+      - "--httpListenAddr=:8428"
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    ports:
+      - "8428:8428"
+    networks:
+      - realopen-net
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: realopen-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - victoria-metrics
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
+    ports:
+      - "3000:3000"
+    networks:
+      - realopen-net
+
+  # Node Exporter (host metrics)
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: realopen-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--no-collector.wifi"
+      - "--no-collector.hwmon"
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.25
+    ports:
+      - "9100:9100"
+    networks:
+      - realopen-net
+
+volumes:
+  vm-data:
+  grafana-data:
