@@ -1,0 +1,31 @@
+use_default_settings:
+  engines:
+    remove:
+      - wikidata
+      - yacy images
+
+general:
+  instance_name: "RealOpen-AI Search"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "realopen-searxng-secret-change-me"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+
+ui:
+  static_use_hash: true
+
+outgoing:
+  request_timeout: 10
+  max_request_timeout: 15
+
+valkey:
+  url: valkey://redis:6379/0
