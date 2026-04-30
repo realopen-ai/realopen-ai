@@ -158,7 +158,6 @@ body,
 /* Markdown in messages */
 .prose {
   color: var(--color-foreground);
-  font-size: var(--app-font-size);
 }
 .prose p {
   margin: 0.5em 0;

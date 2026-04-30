@@ -423,7 +423,10 @@ export function MessageBubble({
       <div className="flex justify-end animate-fade-in group">
         <div className="relative max-w-[85%] md:max-w-[75%]">
           <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
-            <p className="text-[14px] whitespace-pre-wrap leading-relaxed">
+            <p
+              className="whitespace-pre-wrap leading-relaxed"
+              style={{ fontSize: "var(--app-font-size)" }}
+            >
               {message.content}
             </p>
           </div>
@@ -459,9 +462,10 @@ export function MessageBubble({
       {/* Content — full width, no background */}
       <div
         className={cn(
-          "prose prose-sm dark:prose-invert max-w-none text-[14px] leading-relaxed",
+          "prose prose-sm dark:prose-invert max-w-none leading-relaxed",
           message.isStreaming && "streaming-cursor",
         )}
+        style={{ fontSize: "var(--app-font-size)" }}
       >
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
           {message.content || (message.isStreaming ? "" : "...")}
