@@ -8,6 +8,7 @@ import { FileExplorer } from "@/components/file-explorer/FileExplorer";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
+import { useT } from "@/store/settingsStore";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -30,6 +31,7 @@ export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
+  const t = useT();
 
   useEffect(() => {
     fetchFileTree();
@@ -63,7 +65,7 @@ export function AppLayout() {
           </PanelGroup>
 
           {!rightPanelOpen && (
-            <div className="flex-shrink-0 border-l border-border/50 flex items-start pt-2.5 px-1">
+            <div className="shrink-0 border-l border-border/50 flex items-start pt-2.5 px-1">
               <RightPanelToggle />
             </div>
           )}
@@ -77,7 +79,7 @@ export function AppLayout() {
               <div className="flex items-center px-3 py-2.5 border-b border-border/50">
                 <MobileMenuButton />
                 <h2 className="text-[14px] font-medium text-foreground ml-2">
-                  File Explorer
+                  {t("panel.fileExplorer")}
                 </h2>
               </div>
               <div className="flex-1 overflow-hidden">
@@ -90,7 +92,7 @@ export function AppLayout() {
               <div className="flex items-center px-3 py-2.5 border-b border-border/50">
                 <MobileMenuButton />
                 <h2 className="text-[14px] font-medium text-foreground ml-2">
-                  Terminal
+                  {t("panel.terminal")}
                 </h2>
               </div>
               <div className="flex-1 overflow-hidden">

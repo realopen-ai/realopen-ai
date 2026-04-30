@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
+import { useT } from "@/store/settingsStore";
 import { FileExplorer } from "@/components/file-explorer/FileExplorer";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +37,7 @@ export function RightPanel() {
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const isLoadingTree = useSandboxStore((s) => s.isLoadingTree);
+  const t = useT();
 
   return (
     <div className="flex flex-col h-full bg-card">
@@ -51,14 +53,14 @@ export function RightPanel() {
               className="h-6 text-[11px] gap-1 px-2.5 rounded-md data-[state=active]:bg-accent data-[state=active]:shadow-none"
             >
               <FolderTree className="w-3 h-3" />
-              Files
+              {t("panel.files")}
             </TabsTrigger>
             <TabsTrigger
               value="terminal"
               className="h-6 text-[11px] gap-1 px-2.5 rounded-md data-[state=active]:bg-accent data-[state=active]:shadow-none"
             >
               <TerminalIcon className="w-3 h-3" />
-              Terminal
+              {t("panel.terminal")}
             </TabsTrigger>
           </TabsList>
         </Tabs>

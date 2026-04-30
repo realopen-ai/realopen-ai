@@ -1,51 +1,6 @@
-import {
-  Bot,
-  Sparkles,
-  Code2,
-  Globe,
-  Brain,
-  Lightbulb,
-  Terminal,
-  Search,
-} from "lucide-react";
+import { Bot, Lightbulb, Code2, Search, Terminal } from "lucide-react";
 import { useChatStore } from "@/store/chatStore";
-
-const suggestions = [
-  {
-    icon: Lightbulb,
-    title: "Explain a concept",
-    subtitle: "in simple terms",
-    prompt: "Explain how transformers work in simple terms",
-    color: "text-amber-400",
-    bg: "bg-amber-500/10",
-  },
-  {
-    icon: Code2,
-    title: "Write code",
-    subtitle: "to solve a problem",
-    prompt:
-      "Write Python code to analyze a CSV dataset with pandas and generate a summary report",
-    color: "text-emerald-400",
-    bg: "bg-emerald-500/10",
-  },
-  {
-    icon: Search,
-    title: "Search the web",
-    subtitle: "for latest information",
-    prompt: "Search the web for the latest breakthroughs in AI research 2025",
-    color: "text-blue-400",
-    bg: "bg-blue-500/10",
-  },
-  {
-    icon: Terminal,
-    title: "Run code",
-    subtitle: "in a sandbox",
-    prompt:
-      "Write and run Python code to calculate fibonacci numbers efficiently",
-    color: "text-purple-400",
-    bg: "bg-purple-500/10",
-  },
-];
+import { useT } from "@/store/settingsStore";
 
 export function WelcomeScreen({
   onSend,
@@ -53,8 +8,45 @@ export function WelcomeScreen({
   onSend: (message: string) => void;
 }) {
   const { profileName, models } = useChatStore();
+  const t = useT();
 
-  // Group models by type for display
+  const suggestions = [
+    {
+      icon: Lightbulb,
+      title: t("welcome.explain"),
+      subtitle: t("welcome.explainSub"),
+      prompt: "Explain how transformers work in simple terms",
+      color: "text-amber-400",
+      bg: "bg-amber-500/10",
+    },
+    {
+      icon: Code2,
+      title: t("welcome.writeCode"),
+      subtitle: t("welcome.writeCodeSub"),
+      prompt:
+        "Write Python code to analyze a CSV dataset with pandas and generate a summary report",
+      color: "text-emerald-400",
+      bg: "bg-emerald-500/10",
+    },
+    {
+      icon: Search,
+      title: t("welcome.searchWeb"),
+      subtitle: t("welcome.searchWebSub"),
+      prompt: "Search the web for the latest breakthroughs in AI research 2025",
+      color: "text-blue-400",
+      bg: "bg-blue-500/10",
+    },
+    {
+      icon: Terminal,
+      title: t("welcome.runCode"),
+      subtitle: t("welcome.runCodeSub"),
+      prompt:
+        "Write and run Python code to calculate fibonacci numbers efficiently",
+      color: "text-purple-400",
+      bg: "bg-purple-500/10",
+    },
+  ];
+
   const modelTags = models.slice(0, 6).map((m) => ({
     name: m.description || m.id,
     type: m.type,
@@ -63,29 +55,25 @@ export function WelcomeScreen({
   return (
     <div className="flex-1 flex items-center justify-center p-6">
       <div className="text-center space-y-6 max-w-md w-full">
-        {/* Logo */}
         <div className="space-y-3">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/20">
+          <div className="w-14 h-14 rounded-2xl bg-linear-to-br from-indigo-500 to-blue-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/20">
             <Bot className="w-7 h-7 text-white" />
           </div>
           <h2 className="text-[28px] font-semibold text-foreground tracking-tight">
-            RealOpen-AI
+            {t("welcome.title")}
           </h2>
           <p className="text-[14px] text-muted-foreground leading-relaxed max-w-sm mx-auto">
-            Your fully offline, private AI assistant. Powered by local models
-            running on your hardware.
+            {t("welcome.subtitle")}
           </p>
         </div>
 
-        {/* Profile Badge */}
         {profileName && (
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-[13px] text-emerald-400 font-medium">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            {profileName} Profile
+            {profileName} {t("welcome.profile")}
           </div>
         )}
 
-        {/* Suggestion Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
           {suggestions.map((s) => (
             <button
@@ -94,7 +82,7 @@ export function WelcomeScreen({
               className="group flex items-start gap-3 rounded-xl border border-border bg-card p-3.5 text-left hover:bg-accent transition-colors"
             >
               <div
-                className={`flex-shrink-0 w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center`}
+                className={`shrink-0 w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center`}
               >
                 <s.icon className={`w-4 h-4 ${s.color}`} />
               </div>
@@ -110,11 +98,10 @@ export function WelcomeScreen({
           ))}
         </div>
 
-        {/* Available Models */}
         {modelTags.length > 0 && (
           <div className="pt-2">
             <p className="text-[11px] text-muted-foreground/60 uppercase tracking-wider mb-2">
-              Available Models
+              {t("welcome.availableModels")}
             </p>
             <div className="flex flex-wrap justify-center gap-1.5">
               {modelTags.map((m, i) => (

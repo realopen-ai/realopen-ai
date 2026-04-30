@@ -129,7 +129,7 @@ function MessageSandbox({
           <ChevronDown className="w-3.5 h-3.5" />
         </button>
       </div>
-      <div className="p-3.5 space-y-3 max-h-[350px] overflow-y-auto">
+      <div className="p-3.5 space-y-3 max-h-87.5 overflow-y-auto">
         {message.toolCalls.map((tc) => (
           <ToolCallDetail key={tc.id} toolCall={tc} />
         ))}
@@ -168,7 +168,7 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
               className="rounded-lg border border-border bg-card p-2.5 hover:bg-accent transition-colors cursor-pointer"
             >
               <div className="flex items-start gap-2.5">
-                <div className="w-5 h-5 rounded bg-blue-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div className="w-5 h-5 rounded bg-blue-500/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-[9px] font-bold text-blue-400">
                     {i + 1}
                   </span>
@@ -333,7 +333,7 @@ export function MessageBubble({
       )}
     >
       {isAssistant && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center mt-0.5 shadow-sm shadow-indigo-500/20">
+        <div className="shrink-0 w-7 h-7 rounded-full bg-linear-to-br from-indigo-500 to-blue-600 flex items-center justify-center mt-0.5 shadow-sm shadow-indigo-500/20">
           <Bot className="w-3.5 h-3.5 text-white" />
         </div>
       )}
@@ -357,7 +357,9 @@ export function MessageBubble({
         <div
           className={cn(
             "rounded-2xl px-4 py-3",
-            isAssistant ? "bg-card text-foreground" : "bg-[#6366f1] text-white",
+            isAssistant
+              ? "bg-card text-foreground"
+              : "bg-primary text-primary-foreground",
           )}
         >
           {isAssistant ? (
@@ -385,7 +387,7 @@ export function MessageBubble({
       </div>
 
       {!isAssistant && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-secondary flex items-center justify-center mt-0.5">
+        <div className="shrink-0 w-7 h-7 rounded-full bg-secondary flex items-center justify-center mt-0.5">
           <User className="w-3.5 h-3.5 text-muted-foreground" />
         </div>
       )}

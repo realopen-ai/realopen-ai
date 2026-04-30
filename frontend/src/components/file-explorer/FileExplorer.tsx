@@ -2,7 +2,6 @@ import { useState, useCallback } from "react";
 import {
   ChevronRight,
   ChevronDown,
-  File,
   Folder,
   FolderOpen,
   FileCode2,
@@ -94,7 +93,7 @@ function FileTreeItem({
       <div
         onClick={handleClick}
         className={cn(
-          "flex items-center gap-1.5 py-[5px] px-2 rounded-lg cursor-pointer select-none transition-colors",
+          "flex items-center gap-1.5 py-1.25 px-2 rounded-lg cursor-pointer select-none transition-colors",
           isActive
             ? "bg-primary/10 text-primary"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -103,17 +102,17 @@ function FileTreeItem({
       >
         {isDir ? (
           expanded ? (
-            <ChevronDown className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+            <ChevronDown className="w-3 h-3 text-muted-foreground/40 shrink-0" />
           ) : (
-            <ChevronRight className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+            <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
           )
         ) : (
-          <span className="w-3 flex-shrink-0" />
+          <span className="w-3 shrink-0" />
         )}
-        <Icon className={cn("w-3.5 h-3.5 flex-shrink-0", iconColor)} />
+        <Icon className={cn("w-3.5 h-3.5 shrink-0", iconColor)} />
         <span className="text-[12px] truncate flex-1">{node.name}</span>
         {!isDir && node.size && (
-          <span className="text-[10px] text-muted-foreground/40 flex-shrink-0">
+          <span className="text-[10px] text-muted-foreground/40 shrink-0">
             {formatSize(node.size)}
           </span>
         )}
@@ -191,7 +190,7 @@ export function FileExplorer() {
               {(() => {
                 const I = getFileIcon(activeFile.split("/").pop() ?? "");
                 return (
-                  <I className="w-3 h-3 flex-shrink-0 text-muted-foreground/60" />
+                  <I className="w-3 h-3 shrink-0 text-muted-foreground/60" />
                 );
               })()}
               <span className="text-[10px] text-muted-foreground truncate">

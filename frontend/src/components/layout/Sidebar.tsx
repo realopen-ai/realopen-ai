@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Plus,
   MessageSquare,
@@ -5,12 +6,14 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
-  Cpu,
+  Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { SettingsModal } from "@/components/settings/SettingsModal";
 import { useChatStore } from "@/store/chatStore";
+import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +29,9 @@ export function Sidebar() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const sidebarMobileOpen = useUIStore((s) => s.sidebarMobileOpen);
   const setSidebarMobileOpen = useUIStore((s) => s.setSidebarMobileOpen);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const t = useT();
 
   const handleNewChat = () => {
     createConversation();
@@ -49,7 +55,7 @@ export function Sidebar() {
         {!sidebarCollapsed ? (
           <div className="flex items-center justify-between">
             <span className="text-[15px] font-semibold text-foreground">
-              Chats
+              {t("sidebar.chats")}
             </span>
             <Button
               onClick={handleNewChat}
@@ -74,7 +80,7 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* New Chat Button (prominent) */}
+      {/* New Chat Button */}
       {!sidebarCollapsed && (
         <div className="px-2 pb-2">
           <button
@@ -82,7 +88,7 @@ export function Sidebar() {
             className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] text-foreground bg-sidebar-accent hover:bg-accent transition-colors"
           >
             <Plus className="w-4 h-4" />
-            New chat
+            {t("sidebar.newChat")}
           </button>
         </div>
       )}
@@ -94,10 +100,10 @@ export function Sidebar() {
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <MessageSquare className="w-6 h-6 text-muted-foreground/40 mb-2" />
               <p className="text-[12px] text-muted-foreground/60">
-                No conversations yet
+                {t("sidebar.noConversations")}
               </p>
               <p className="text-[11px] text-muted-foreground/40">
-                Start a new chat to begin
+                {t("sidebar.startNew")}
               </p>
             </div>
           )}
@@ -113,7 +119,7 @@ export function Sidebar() {
                 sidebarCollapsed && "justify-center px-0",
               )}
             >
-              <MessageSquare className="w-4 h-4 flex-shrink-0 opacity-50" />
+              <MessageSquare className="w-4 h-4 shrink-0 opacity-50" />
               {!sidebarCollapsed && (
                 <>
                   <span className="text-[13px] truncate flex-1">
@@ -132,52 +138,69 @@ export function Sidebar() {
         </div>
       </ScrollArea>
 
-      {/* Footer - Hardware Profile */}
-      {!sidebarCollapsed && (
-        <div className="px-3 py-3 border-t border-sidebar-border">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span className="text-[13px] text-foreground font-medium">
-              {profileName || "—"}
-            </span>
-          </div>
-          <p className="text-[11px] text-muted-foreground mt-0.5 ml-4">
-            Hardware Profile
-          </p>
-          <p className="text-[10px] text-muted-foreground/50 mt-1.5 ml-4">
-            100% Offline · Fully Private
-          </p>
+      {/* Footer - Hardware Profile + Settings */}
+      <div className="border-t border-sidebar-border">
+        {/* Settings Button */}
+        <div className="px-2 py-1.5">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className={cn(
+              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors",
+              sidebarCollapsed && "justify-center px-0",
+            )}
+          >
+            <Settings className="w-4 h-4 shrink-0" />
+            {!sidebarCollapsed && <span>{t("sidebar.settings")}</span>}
+          </button>
         </div>
-      )}
-      {sidebarCollapsed && (
-        <div className="flex justify-center py-3 border-t border-sidebar-border">
-          <div
-            className="w-2 h-2 rounded-full bg-emerald-500"
-            title={profileName}
-          />
-        </div>
-      )}
 
-      {/* Collapse Toggle */}
-      <div className="hidden md:block px-2 py-1.5 border-t border-sidebar-border">
-        <Button
-          onClick={toggleSidebar}
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "w-full text-muted-foreground hover:text-foreground hover:bg-transparent",
-            !sidebarCollapsed ? "justify-start gap-2" : "justify-center",
-          )}
-        >
-          {sidebarCollapsed ? (
-            <PanelLeftOpen className="w-4 h-4" />
-          ) : (
-            <>
-              <PanelLeftClose className="w-4 h-4" />
-              <span className="text-[12px]">Collapse</span>
-            </>
-          )}
-        </Button>
+        {/* Hardware Profile */}
+        {!sidebarCollapsed && (
+          <div className="px-3 py-2.5 border-t border-sidebar-border">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-[13px] text-foreground font-medium">
+                {profileName || "—"}
+              </span>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5 ml-4">
+              {t("sidebar.hardwareProfile")}
+            </p>
+            <p className="text-[10px] text-muted-foreground/50 mt-1 ml-4">
+              {t("sidebar.offlinePrivate")}
+            </p>
+          </div>
+        )}
+        {sidebarCollapsed && (
+          <div className="flex justify-center py-2.5 border-t border-sidebar-border">
+            <div
+              className="w-2 h-2 rounded-full bg-emerald-500"
+              title={profileName}
+            />
+          </div>
+        )}
+
+        {/* Collapse Toggle (desktop only) */}
+        <div className="hidden md:block px-2 py-1.5 border-t border-sidebar-border">
+          <Button
+            onClick={toggleSidebar}
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "w-full text-muted-foreground hover:text-foreground hover:bg-transparent",
+              !sidebarCollapsed ? "justify-start gap-2" : "justify-center",
+            )}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="w-4 h-4" />
+            ) : (
+              <>
+                <PanelLeftClose className="w-4 h-4" />
+                <span className="text-[12px]">{t("sidebar.collapse")}</span>
+              </>
+            )}
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -188,7 +211,7 @@ export function Sidebar() {
       <aside
         className={cn(
           "hidden md:flex flex-col border-r border-sidebar-border transition-all duration-200",
-          sidebarCollapsed ? "w-[52px]" : "w-[240px]",
+          sidebarCollapsed ? "w-13" : "w-60",
         )}
       >
         {sidebarContent}
@@ -198,12 +221,18 @@ export function Sidebar() {
       <Sheet open={sidebarMobileOpen} onOpenChange={setSidebarMobileOpen}>
         <SheetContent
           side="left"
-          className="w-[280px] p-0 border-sidebar-border bg-sidebar-bg"
+          className="w-70 p-0 border-sidebar-border bg-sidebar-bg"
         >
           <SheetTitle className="sr-only">Navigation</SheetTitle>
           {sidebarContent}
         </SheetContent>
       </Sheet>
+
+      {/* Settings Modal */}
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </>
   );
 }

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, Paperclip, Globe, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useChatStore } from "@/store/chatStore";
+import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 
 export function InputArea({
@@ -18,6 +19,7 @@ export function InputArea({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const t = useT();
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -63,9 +65,9 @@ export function InputArea({
   };
 
   const modelGroups = models.reduce<Record<string, typeof models>>((acc, m) => {
-    const t = m.type || "other";
-    if (!acc[t]) acc[t] = [];
-    acc[t].push(m);
+    const type = m.type || "other";
+    if (!acc[type]) acc[type] = [];
+    acc[type].push(m);
     return acc;
   }, {});
 
@@ -89,8 +91,8 @@ export function InputArea({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Message RealOpen-AI..."
-              className="flex-1 resize-none bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-[24px] max-h-[180px] py-1 leading-relaxed"
+              placeholder={t("input.placeholder")}
+              className="flex-1 resize-none bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-6 max-h-45 py-1 leading-relaxed"
               rows={1}
               disabled={isStreaming}
             />
@@ -101,7 +103,7 @@ export function InputArea({
               className="h-8 w-8 text-muted-foreground/50 hover:text-muted-foreground shrink-0"
               disabled={isStreaming}
             >
-              <Globe className="w-[18px] h-[18px]" />
+              <Globe className="w-4.5 h-4.5" />
             </Button>
 
             <Button
@@ -111,14 +113,14 @@ export function InputArea({
               className={cn(
                 "h-8 w-8 rounded-xl shrink-0 transition-all",
                 input.trim() && !isStreaming
-                  ? "bg-[#6366f1] hover:bg-[#5558e6] text-white"
+                  ? "bg-primary hover:bg-primary/90 text-primary-foreground"
                   : "bg-secondary text-muted-foreground/40",
               )}
             >
               {isStreaming ? (
-                <Loader2 className="w-[18px] h-[18px] animate-spin" />
+                <Loader2 className="w-4.5 h-4.5 animate-spin" />
               ) : (
-                <Send className="w-[18px] h-[18px]" />
+                <Send className="w-4.5 h-4.5" />
               )}
             </Button>
           </div>
@@ -139,7 +141,7 @@ export function InputArea({
               <ChevronDown className="w-3 h-3" />
             </button>
             {showModelMenu && (
-              <div className="absolute bottom-full mb-2 left-0 w-56 rounded-xl border border-border bg-popover shadow-2xl z-50 max-h-[280px] overflow-y-auto">
+              <div className="absolute bottom-full mb-2 left-0 w-56 rounded-xl border border-border bg-popover shadow-2xl z-50 max-h-70 overflow-y-auto">
                 {Object.entries(modelGroups).map(([type, groupModels]) => (
                   <div key={type}>
                     <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">
@@ -171,7 +173,7 @@ export function InputArea({
             )}
           </div>
           <span className="text-[10px] text-muted-foreground/40">
-            Running locally via Ollama
+            {t("input.runningLocally")}
           </span>
         </div>
       </div>
