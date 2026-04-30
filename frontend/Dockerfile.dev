@@ -1,0 +1,15 @@
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+# Source code is mounted via volume in docker-compose.dev.yml
+# But we copy defaults for when volume is not used
+COPY . .
+
+EXPOSE 5173
+
+# Vite dev server with HMR
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
