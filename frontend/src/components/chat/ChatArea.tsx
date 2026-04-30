@@ -1,0 +1,151 @@
+import { useRef, useEffect, useCallback } from "react";
+import { MobileMenuButton } from "@/components/layout/Sidebar";
+import { MessageBubble } from "@/components/chat/MessageBubble";
+import { InputArea } from "@/components/chat/InputArea";
+import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
+import { RightPanelToggle } from "@/components/layout/RightPanel";
+import { useChatStore } from "@/store/chatStore";
+import { useUIStore } from "@/store/uiStore";
+import { useSandboxStore } from "@/store/sandboxStore";
+import { streamChat, streamChatDemo } from "@/api/stream";
+import { ScrollArea } from "@/components/ui/scroll-area";
+
+export function ChatArea() {
+  const store = useChatStore();
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const conv = store.getActiveConversation();
+  const messages = conv?.messages ?? [];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, messages.length, messages[messages.length - 1]?.content]);
+
+  const handleSend = useCallback(
+    async (content: string) => {
+      let convId = activeConversationId;
+      if (!convId) convId = store.createConversation();
+
+      store.addMessage(convId, { role: "user", content });
+      const assistantMsgId = store.addMessage(convId, {
+        role: "assistant",
+        content: "",
+        model: store.selectedModel,
+      });
+      store.setStreaming(convId, assistantMsgId, true);
+
+      if (conv && conv.messages.length === 0) {
+        const title =
+          content.length > 40 ? content.slice(0, 40) + "..." : content;
+        useChatStore.setState((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.id === convId ? { ...c, title } : c,
+          ),
+        }));
+      }
+
+      const allMessages = [
+        ...(conv?.messages ?? []).map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        { role: "user" as const, content },
+      ];
+
+      const callbacks = {
+        onToken: (token: string) =>
+          store.appendToMessage(convId!, assistantMsgId, token),
+        onToolCallStart: (
+          toolCall: Parameters<typeof store.addToolCall>[2],
+        ) => {
+          const tcId = store.addToolCall(convId!, assistantMsgId, toolCall);
+          store.openSandbox(convId!, assistantMsgId);
+          if (toolCall.type === "code_exec") {
+            addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
+            if (toolCall.code)
+              addTerminalLine(
+                toolCall.code
+                  .split("\n")
+                  .map((l) => `  ${l}`)
+                  .join("\n"),
+              );
+          }
+          return tcId;
+        },
+        onToolCallUpdate: (
+          toolCallId: string,
+          updates: Parameters<typeof store.updateToolCall>[3],
+        ) => {
+          store.updateToolCall(convId!, assistantMsgId, toolCallId, updates);
+          if (updates.output) addTerminalLine(updates.output);
+        },
+        onDone: () => store.setStreaming(convId!, assistantMsgId, false),
+        onError: (error: string) => {
+          store.updateMessage(convId!, assistantMsgId, {
+            content: `Sorry, I encountered an error: ${error}\n\nPlease make sure Ollama is running.`,
+          });
+          store.setStreaming(convId!, assistantMsgId, false);
+        },
+      };
+
+      try {
+        const res = await fetch("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: allMessages,
+            model: store.selectedModel,
+            stream: true,
+          }),
+        });
+        if (res.ok)
+          await streamChat(allMessages, store.selectedModel, callbacks);
+        else await streamChatDemo(content, callbacks);
+      } catch {
+        await streamChatDemo(content, callbacks);
+      }
+    },
+    [activeConversationId, conv, store, addTerminalLine],
+  );
+
+  return (
+    <div className="flex flex-col h-full bg-background">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+        <div className="flex items-center gap-2">
+          <MobileMenuButton />
+          <h2 className="text-[14px] font-medium text-foreground truncate">
+            {conv?.title ?? "New Chat"}
+          </h2>
+        </div>
+        <div className="flex items-center gap-1">
+          {!rightPanelOpen && <RightPanelToggle />}
+        </div>
+      </div>
+
+      {/* Messages or Welcome */}
+      {messages.length === 0 ? (
+        <WelcomeScreen onSend={handleSend} />
+      ) : (
+        <ScrollArea className="flex-1">
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+            {messages.map((msg) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                conversationId={conv!.id}
+              />
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+        </ScrollArea>
+      )}
+
+      <InputArea onSend={handleSend} isStreaming={isStreaming} />
+    </div>
+  );
+}
