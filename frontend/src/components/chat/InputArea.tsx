@@ -92,7 +92,7 @@ export function InputArea({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t("input.placeholder")}
-              className="flex-1 resize-none bg-transparent text-[15px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-6 max-h-45 py-1 leading-relaxed"
+              className="flex-1 resize-none bg-transparent text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-6 max-h-45 py-1 leading-relaxed"
               rows={1}
               disabled={isStreaming}
             />
