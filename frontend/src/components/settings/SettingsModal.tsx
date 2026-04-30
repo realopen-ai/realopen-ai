@@ -10,14 +10,17 @@ import {
   BellOff,
   Eye,
   Check,
+  Type,
 } from "lucide-react";
 import {
   useSettingsStore,
   accentColorMap,
+  fontSizeOptions,
   type Appearance,
   type Contrast,
   type AccentColor,
   type Language,
+  type FontSize,
 } from "@/store/settingsStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
@@ -95,6 +98,38 @@ function AccentSwatch({
   );
 }
 
+// ─── Font Size Option ────────────────────────────────────────────
+
+function FontSizeOption({
+  size,
+  current,
+  onChange,
+  label,
+}: {
+  size: FontSize;
+  current: FontSize;
+  onChange: (v: FontSize) => void;
+  label: string;
+}) {
+  const isActive = size === current;
+  return (
+    <button
+      onClick={() => onChange(size)}
+      className={cn(
+        "flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[13px] transition-all flex-1",
+        isActive
+          ? "bg-primary/10 text-primary font-medium ring-1 ring-primary/20"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground border border-border/50",
+      )}
+    >
+      <span className="leading-none" style={{ fontSize: size }}>
+        Aa
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
 // ─── Settings Modal ──────────────────────────────────────────────
 
 export function SettingsModal({
@@ -111,12 +146,14 @@ export function SettingsModal({
   const contrast = useSettingsStore((s) => s.contrast);
   const accentColor = useSettingsStore((s) => s.accentColor);
   const language = useSettingsStore((s) => s.language);
+  const fontSize = useSettingsStore((s) => s.fontSize);
   const notifyDeepSearch = useSettingsStore((s) => s.notifyDeepSearch);
 
   const setAppearance = useSettingsStore((s) => s.setAppearance);
   const setContrast = useSettingsStore((s) => s.setContrast);
   const setAccentColor = useSettingsStore((s) => s.setAccentColor);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
+  const setFontSize = useSettingsStore((s) => s.setFontSize);
   const setNotifyDeepSearch = useSettingsStore((s) => s.setNotifyDeepSearch);
 
   if (!open) return null;
@@ -256,6 +293,27 @@ export function SettingsModal({
                       />
                     ),
                   )}
+                </div>
+              </div>
+
+              {/* Font Size */}
+              <div className="space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <Type className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-[13px] font-medium text-foreground">
+                    {t("settings.fontSize")}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  {fontSizeOptions.map((size) => (
+                    <FontSizeOption
+                      key={size}
+                      size={size}
+                      current={fontSize}
+                      onChange={setFontSize}
+                      label={t(`settings.fontSize.${size}`)}
+                    />
+                  ))}
                 </div>
               </div>
 

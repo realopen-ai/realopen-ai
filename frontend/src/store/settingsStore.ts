@@ -13,6 +13,7 @@ export type AccentColor =
   | "purple"
   | "black";
 export type Language = "en" | "fr";
+export type FontSize = "14px" | "16px" | "18px";
 
 interface SettingsState {
   // General
@@ -20,6 +21,7 @@ interface SettingsState {
   contrast: Contrast;
   accentColor: AccentColor;
   language: Language;
+  fontSize: FontSize;
 
   // Notifications
   notifyDeepSearch: boolean;
@@ -29,6 +31,7 @@ interface SettingsState {
   setContrast: (v: Contrast) => void;
   setAccentColor: (v: AccentColor) => void;
   setLanguage: (v: Language) => void;
+  setFontSize: (v: FontSize) => void;
   setNotifyDeepSearch: (v: boolean) => void;
 }
 
@@ -102,6 +105,10 @@ export const accentColorMap: Record<
   },
 };
 
+// ─── Font size options ──────────────────────────────────────────
+
+export const fontSizeOptions: FontSize[] = ["14px", "16px", "18px"];
+
 // ─── i18n strings ───────────────────────────────────────────────
 
 export const translations: Record<Language, Record<string, string>> = {
@@ -143,6 +150,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "settings.language": "Language",
     "settings.language.en": "English",
     "settings.language.fr": "French",
+    "settings.fontSize": "Font size",
+    "settings.fontSize.14px": "Small (14px)",
+    "settings.fontSize.16px": "Medium (16px)",
+    "settings.fontSize.18px": "Large (18px)",
     "settings.notifyDeepSearch": "Get notified about DeepSearch tasks",
     "badge.searched": "Searched the web",
     "badge.deepSearch": "Deep research",
@@ -197,6 +208,10 @@ export const translations: Record<Language, Record<string, string>> = {
     "settings.language": "Langue",
     "settings.language.en": "Anglais",
     "settings.language.fr": "Français",
+    "settings.fontSize": "Taille de police",
+    "settings.fontSize.14px": "Petite (14px)",
+    "settings.fontSize.16px": "Moyenne (16px)",
+    "settings.fontSize.18px": "Grande (18px)",
     "settings.notifyDeepSearch": "Être notifié des tâches DeepSearch",
     "badge.searched": "Recherche web",
     "badge.deepSearch": "Recherche approfondie",
@@ -224,12 +239,14 @@ export const useSettingsStore = create<SettingsState>()(
       contrast: "medium",
       accentColor: "gray",
       language: "en",
+      fontSize: "14px" as FontSize,
       notifyDeepSearch: true,
 
       setAppearance: (v) => set({ appearance: v }),
       setContrast: (v) => set({ contrast: v }),
       setAccentColor: (v) => set({ accentColor: v }),
       setLanguage: (v) => set({ language: v }),
+      setFontSize: (v) => set({ fontSize: v }),
       setNotifyDeepSearch: (v) => set({ notifyDeepSearch: v }),
     }),
     {

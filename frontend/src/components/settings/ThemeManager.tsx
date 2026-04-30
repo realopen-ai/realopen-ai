@@ -9,6 +9,7 @@ export function ThemeManager() {
   const appearance = useSettingsStore((s) => s.appearance);
   const contrast = useSettingsStore((s) => s.contrast);
   const accentColor = useSettingsStore((s) => s.accentColor);
+  const fontSize = useSettingsStore((s) => s.fontSize);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -18,6 +19,9 @@ export function ThemeManager() {
     root.style.setProperty("--color-primary", css.primary);
     root.style.setProperty("--color-primary-foreground", css.primaryForeground);
     root.style.setProperty("--color-ring", css.ring);
+
+    // ── Font size ──
+    root.style.setProperty("--app-font-size", fontSize);
 
     // ── Appearance ──
     const isDark = (() => {
@@ -88,7 +92,7 @@ export function ThemeManager() {
         root.style.setProperty("--color-border", "#d4d4d4");
       }
     }
-  }, [appearance, contrast, accentColor]);
+  }, [appearance, contrast, accentColor, fontSize]);
 
   // Listen for system theme changes when in "system" mode
   useEffect(() => {
