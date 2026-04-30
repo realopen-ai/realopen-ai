@@ -2,6 +2,18 @@ import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { useSandboxStore } from "@/store/sandboxStore";
+import { useSettingsStore, accentColorMap } from "@/store/settingsStore";
+
+/**
+ * Convert a hex color like #6366f1 to an xterm ANSI 24-bit escape sequence prefix.
+ * Returns something like "\x1b[38;2;99;102;241m"
+ */
+function hexToAnsi(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
 
 export function TerminalPane() {
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -10,16 +22,21 @@ export function TerminalPane() {
   const lastHistoryLenRef = useRef(0);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
 
+  // Create the terminal once
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
+
+    const accentColor = useSettingsStore.getState().accentColor;
+    const css = accentColorMap[accentColor];
+    const accent = hexToAnsi(css.primary);
 
     const xterm = new XTerm({
       theme: {
         background: "#0a0a0a",
         foreground: "#d4d4d4",
-        cursor: "#6366f1",
+        cursor: css.primary,
         cursorAccent: "#0a0a0a",
-        selectionBackground: "#6366f133",
+        selectionBackground: css.primary + "33",
         black: "#1a1a1a",
         red: "#ef4444",
         green: "#4ade80",
@@ -55,20 +72,25 @@ export function TerminalPane() {
     fitAddonRef.current = fitAddon;
 
     // Welcome
-    xterm.writeln("\x1b[38;2;99;102;241m  RealOpen-AI Sandbox Terminal\x1b[0m");
+    xterm.writeln(`${accent}  RealOpen-AI Sandbox Terminal\x1b[0m`);
     xterm.writeln("\x1b[2;37m  Awaiting commands from AI agent...\x1b[0m");
     xterm.writeln("");
-    xterm.write("\x1b[38;2;99;102;241m❯\x1b[0m ");
+    xterm.write(`${accent}❯\x1b[0m `);
 
     let currentLine = "";
     xterm.onData((data) => {
+      // Re-read accent color at time of input
+      const currentAccent = hexToAnsi(
+        accentColorMap[useSettingsStore.getState().accentColor].primary,
+      );
+
       if (data === "\r") {
         xterm.writeln("");
         if (currentLine.trim()) {
           addTerminalLine(`$ ${currentLine}`);
           xterm.writeln("\x1b[2;37m  [Command sent to sandbox]\x1b[0m");
         }
-        xterm.write("\x1b[38;2;99;102;241m❯\x1b[0m ");
+        xterm.write(`${currentAccent}❯\x1b[0m `);
         currentLine = "";
       } else if (data === "\u007F") {
         if (currentLine.length > 0) {
@@ -77,7 +99,7 @@ export function TerminalPane() {
         }
       } else if (data === "\u0003") {
         xterm.writeln("^C");
-        xterm.write("\x1b[38;2;99;102;241m❯\x1b[0m ");
+        xterm.write(`${currentAccent}❯\x1b[0m `);
         currentLine = "";
       } else if (data >= " ") {
         currentLine += data;
@@ -102,24 +124,49 @@ export function TerminalPane() {
     };
   }, [addTerminalLine]);
 
+  // Write new terminal history entries
   useEffect(() => {
     const xterm = xtermRef.current;
     if (!xterm) return;
-    const newEntries = useSandboxStore
-      .getState()
-      .terminalHistory.slice(lastHistoryLenRef.current);
+    const history = useSandboxStore.getState().terminalHistory;
+    const newEntries = history.slice(lastHistoryLenRef.current);
+    const accent = hexToAnsi(
+      accentColorMap[useSettingsStore.getState().accentColor].primary,
+    );
+
     for (const entry of newEntries) {
-      if (entry.startsWith("$")) {
-        xterm.writeln(`\x1b[38;2;99;102;241m${entry}\x1b[0m`);
-      } else if (entry.startsWith("Error") || entry.startsWith("error")) {
-        xterm.writeln(`\x1b[31m${entry}\x1b[0m`);
-      } else {
-        xterm.writeln(`\x1b[2;37m${entry}\x1b[0m`);
+      // Each entry is a single line (we split them before addTerminalLine)
+      // But we still split on \n as a safety net
+      const lines = entry.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("$")) {
+          // Command lines - accent color
+          xterm.writeln(`${accent}${line}\x1b[0m`);
+        } else if (line.startsWith("  ")) {
+          // Indented code lines - slightly dimmer accent
+          xterm.writeln(`${accent}${line}\x1b[0m`);
+        } else if (line.startsWith("Error") || line.startsWith("error")) {
+          xterm.writeln(`\x1b[31m${line}\x1b[0m`);
+        } else {
+          // Output lines - dim gray
+          xterm.writeln(`\x1b[2;37m${line}\x1b[0m`);
+        }
       }
     }
-    lastHistoryLenRef.current =
-      useSandboxStore.getState().terminalHistory.length;
+    lastHistoryLenRef.current = history.length;
   }, [useSandboxStore((s) => s.terminalHistory.length)]);
+
+  // Update xterm theme when accent color changes
+  useEffect(() => {
+    const xterm = xtermRef.current;
+    if (!xterm) return;
+    const css = accentColorMap[useSettingsStore.getState().accentColor];
+    xterm.options.theme = {
+      ...xterm.options.theme,
+      cursor: css.primary,
+      selectionBackground: css.primary + "33",
+    };
+  }, [useSettingsStore((s) => s.accentColor)]);
 
   return (
     <div className="h-full w-full bg-terminal-bg">

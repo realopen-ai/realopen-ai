@@ -69,13 +69,11 @@ export function ChatArea() {
           store.openSandbox(convId!, assistantMsgId);
           if (toolCall.type === "code_exec") {
             addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
-            if (toolCall.code)
-              addTerminalLine(
-                toolCall.code
-                  .split("\n")
-                  .map((l) => `  ${l}`)
-                  .join("\n"),
-              );
+            if (toolCall.code) {
+              toolCall.code
+                .split("\n")
+                .forEach((l) => addTerminalLine(`  ${l}`));
+            }
           }
           return tcId;
         },
@@ -84,7 +82,9 @@ export function ChatArea() {
           updates: Parameters<typeof store.updateToolCall>[3],
         ) => {
           store.updateToolCall(convId!, assistantMsgId, toolCallId, updates);
-          if (updates.output) addTerminalLine(updates.output);
+          if (updates.output) {
+            updates.output.split("\n").forEach((l) => addTerminalLine(l));
+          }
         },
         onDone: () => store.setStreaming(convId!, assistantMsgId, false),
         onError: (error: string) => {
