@@ -1,6 +1,5 @@
+import { useState, useRef, useCallback } from "react";
 import {
-  Bot,
-  User,
   Search,
   Code2,
   Zap,
@@ -8,6 +7,10 @@ import {
   Globe,
   FileCode,
   Brain,
+  Copy,
+  Volume2,
+  RefreshCw,
+  Check,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -309,6 +312,17 @@ function StatusDot({ status }: { status: string }) {
   return null;
 }
 
+// ─── Response Time ────────────────────────────────────────────────
+
+function formatResponseTime(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
+
 // ─── Message Bubble ──────────────────────────────────────────────
 
 export function MessageBubble({
@@ -319,76 +333,182 @@ export function MessageBubble({
   conversationId: string;
 }) {
   const openSandbox = useChatStore((s) => s.openSandbox);
+  const [copied, setCopied] = useState(false);
+  const [isReading, setIsReading] = useState(false);
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const isAssistant = message.role === "assistant";
 
   const handleBadgeClick = () => {
     openSandbox(conversationId, message.id);
   };
 
-  return (
-    <div
-      className={cn(
-        "animate-fade-in",
-        isAssistant ? "flex gap-3.5" : "flex gap-3.5 justify-end",
-      )}
-    >
-      {isAssistant && (
-        <div className="shrink-0 w-7 h-7 rounded-full bg-linear-to-br from-indigo-500 to-blue-600 flex items-center justify-center mt-0.5 shadow-sm shadow-indigo-500/20">
-          <Bot className="w-3.5 h-3.5 text-white" />
-        </div>
-      )}
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback
+      const textArea = document.createElement("textarea");
+      textArea.value = message.content;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [message.content]);
 
-      <div
-        className={cn(
-          "max-w-[85%] md:max-w-[75%] space-y-1.5",
-          !isAssistant && "flex flex-col items-end",
-        )}
-      >
-        {/* Tool Call Badges */}
-        {isAssistant && message.toolCalls.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {message.toolCalls.map((tc) => (
-              <ToolBadge key={tc.id} toolCall={tc} onClick={handleBadgeClick} />
-            ))}
-          </div>
-        )}
+  const handleReadAloud = useCallback(() => {
+    if (!("speechSynthesis" in window)) return;
 
-        {/* Content */}
-        <div
-          className={cn(
-            "rounded-2xl px-4 py-3",
-            isAssistant
-              ? "bg-card text-foreground"
-              : "bg-primary text-primary-foreground",
-          )}
-        >
-          {isAssistant ? (
-            <div
-              className={cn(
-                "prose prose-sm dark:prose-invert max-w-none text-[14px] leading-relaxed",
-                message.isStreaming && "streaming-cursor",
-              )}
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content || (message.isStreaming ? "" : "...")}
-              </ReactMarkdown>
-            </div>
-          ) : (
+    if (isReading) {
+      window.speechSynthesis.cancel();
+      setIsReading(false);
+      return;
+    }
+
+    // Cancel any ongoing speech
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(message.content);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setIsReading(false);
+    utterance.onerror = () => setIsReading(false);
+    speechRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+    setIsReading(true);
+  }, [message.content, isReading]);
+
+  const handleRegenerate = useCallback(() => {
+    // Find the user message that precedes this assistant message
+    const conv = useChatStore
+      .getState()
+      .conversations.find((c) => c.id === conversationId);
+    if (!conv) return;
+    const msgIndex = conv.messages.findIndex((m) => m.id === message.id);
+    if (msgIndex < 1) return;
+
+    const userMsg = conv.messages[msgIndex - 1];
+    if (userMsg.role !== "user") return;
+
+    // Remove this assistant message and re-trigger
+    useChatStore.setState((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? { ...c, messages: c.messages.filter((m) => m.id !== message.id) }
+          : c,
+      ),
+    }));
+
+    // Find and trigger the InputArea's send — we'll dispatch a custom event
+    window.dispatchEvent(
+      new CustomEvent("regenerate-message", {
+        detail: { content: userMsg.content, conversationId },
+      }),
+    );
+  }, [conversationId, message.id]);
+
+  // Calculate response time for assistant messages
+  const responseTime =
+    isAssistant && message.completedAt && message.createdAt
+      ? formatResponseTime(message.completedAt - message.createdAt)
+      : null;
+
+  // ─── User Message ─────────────────────────────────────────────
+  if (!isAssistant) {
+    return (
+      <div className="flex justify-end animate-fade-in group">
+        <div className="relative max-w-[85%] md:max-w-[75%]">
+          <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
             <p className="text-[14px] whitespace-pre-wrap leading-relaxed">
               {message.content}
             </p>
-          )}
+          </div>
+          {/* Copy icon — visible on hover */}
+          <button
+            onClick={handleCopy}
+            className="absolute -bottom-6 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 p-1 rounded hover:bg-secondary cursor-pointer"
+            title="Copy message"
+          >
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+            )}
+          </button>
         </div>
+      </div>
+    );
+  }
 
-        {/* Per-Message Sandbox */}
-        {isAssistant && (
-          <MessageSandbox message={message} conversationId={conversationId} />
+  // ─── Assistant Message ────────────────────────────────────────
+  return (
+    <div className="animate-fade-in">
+      {/* Tool Call Badges */}
+      {message.toolCalls.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {message.toolCalls.map((tc) => (
+            <ToolBadge key={tc.id} toolCall={tc} onClick={handleBadgeClick} />
+          ))}
+        </div>
+      )}
+
+      {/* Content — full width, no background */}
+      <div
+        className={cn(
+          "prose prose-sm dark:prose-invert max-w-none text-[14px] leading-relaxed",
+          message.isStreaming && "streaming-cursor",
         )}
+      >
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {message.content || (message.isStreaming ? "" : "...")}
+        </ReactMarkdown>
       </div>
 
-      {!isAssistant && (
-        <div className="shrink-0 w-7 h-7 rounded-full bg-secondary flex items-center justify-center mt-0.5">
-          <User className="w-3.5 h-3.5 text-muted-foreground" />
+      {/* Per-Message Sandbox */}
+      <MessageSandbox message={message} conversationId={conversationId} />
+
+      {/* Action icons + response time — only show when streaming is complete */}
+      {!message.isStreaming && message.content && (
+        <div className="flex items-center gap-1 mt-2.5">
+          <button
+            onClick={handleCopy}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Copy"
+          >
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+          </button>
+          <button
+            onClick={handleReadAloud}
+            className={cn(
+              "p-1.5 rounded-md transition-colors",
+              isReading
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-secondary",
+            )}
+            title={isReading ? "Stop reading" : "Read aloud"}
+          >
+            <Volume2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleRegenerate}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Regenerate"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+          {responseTime && (
+            <span className="text-[11px] text-muted-foreground/60 ml-1.5 select-none">
+              {responseTime}
+            </span>
+          )}
         </div>
       )}
     </div>

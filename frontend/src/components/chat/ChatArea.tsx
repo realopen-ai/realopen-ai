@@ -26,8 +26,8 @@ export function ChatArea() {
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
   const handleSend = useCallback(
-    async (content: string) => {
-      let convId = activeConversationId;
+    async (content: string, convIdOverride?: string) => {
+      let convId = convIdOverride ?? activeConversationId;
       if (!convId) convId = store.createConversation();
 
       store.addMessage(convId, { role: "user", content });
@@ -38,7 +38,10 @@ export function ChatArea() {
       });
       store.setStreaming(convId, assistantMsgId, true);
 
-      if (conv && conv.messages.length === 0) {
+      const currentConv = useChatStore
+        .getState()
+        .conversations.find((c) => c.id === convId);
+      if (currentConv && currentConv.messages.length <= 2) {
         const title =
           content.length > 40 ? content.slice(0, 40) + "..." : content;
         useChatStore.setState((s) => ({
@@ -49,7 +52,7 @@ export function ChatArea() {
       }
 
       const allMessages = [
-        ...(conv?.messages ?? []).map((m) => ({
+        ...(currentConv?.messages ?? []).map((m) => ({
           role: m.role,
           content: m.content,
         })),
@@ -112,6 +115,17 @@ export function ChatArea() {
     [activeConversationId, conv, store, addTerminalLine],
   );
 
+  // Listen for regenerate events from MessageBubble
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { content, conversationId: regenConvId } = (e as CustomEvent)
+        .detail;
+      handleSend(content, regenConvId);
+    };
+    window.addEventListener("regenerate-message", handler);
+    return () => window.removeEventListener("regenerate-message", handler);
+  }, [handleSend]);
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -132,7 +146,7 @@ export function ChatArea() {
         <WelcomeScreen onSend={handleSend} />
       ) : (
         <ScrollArea className="flex-1">
-          <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
             {messages.map((msg) => (
               <MessageBubble
                 key={msg.id}

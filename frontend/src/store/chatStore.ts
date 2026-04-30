@@ -33,6 +33,7 @@ export interface Message {
   sandboxOpen: boolean;
   isStreaming: boolean;
   createdAt: number;
+  completedAt?: number;
 }
 
 export interface Conversation {
@@ -281,7 +282,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? {
               ...c,
               messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, isStreaming: streaming } : m,
+                m.id === messageId
+                  ? {
+                      ...m,
+                      isStreaming: streaming,
+                      ...(streaming ? {} : { completedAt: Date.now() }),
+                    }
+                  : m,
               ),
             }
           : c,
