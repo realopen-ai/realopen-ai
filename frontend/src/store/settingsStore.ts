@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { translations, type Language, type TranslationKey } from "@/i18n";
+
 export type Appearance = "system" | "dark" | "light";
 export type Contrast = "medium" | "increased";
 export type AccentColor =
@@ -12,7 +14,6 @@ export type AccentColor =
   | "orange"
   | "purple"
   | "black";
-export type Language = "en" | "fr";
 export type FontSize = "14px" | "16px" | "18px";
 
 interface SettingsState {
@@ -109,127 +110,6 @@ export const accentColorMap: Record<
 
 export const fontSizeOptions: FontSize[] = ["14px", "16px", "18px"];
 
-// ─── i18n strings ───────────────────────────────────────────────
-
-export const translations: Record<Language, Record<string, string>> = {
-  en: {
-    "sidebar.chats": "Chats",
-    "sidebar.newChat": "New chat",
-    "sidebar.noConversations": "No conversations yet",
-    "sidebar.startNew": "Start a new chat to begin",
-    "sidebar.hardwareProfile": "Hardware Profile",
-    "sidebar.offlinePrivate": "100% Offline · Fully Private",
-    "sidebar.collapse": "Collapse",
-    "sidebar.settings": "Settings",
-    "welcome.title": "RealOpen-AI",
-    "welcome.subtitle":
-      "Your fully offline, private AI assistant. Powered by local models running on your hardware.",
-    "welcome.profile": "Profile",
-    "welcome.explain": "Explain a concept",
-    "welcome.explainSub": "in simple terms",
-    "welcome.writeCode": "Write code",
-    "welcome.writeCodeSub": "to solve a problem",
-    "welcome.searchWeb": "Search the web",
-    "welcome.searchWebSub": "for latest information",
-    "welcome.runCode": "Run code",
-    "welcome.runCodeSub": "in a sandbox",
-    "welcome.availableModels": "Available Models",
-    "input.placeholder": "Message RealOpen-AI...",
-    "input.runningLocally": "Running locally via Ollama",
-    "settings.title": "Settings",
-    "settings.general": "General",
-    "settings.notifications": "Notifications",
-    "settings.appearance": "Appearance",
-    "settings.appearance.system": "System",
-    "settings.appearance.dark": "Dark",
-    "settings.appearance.light": "Light",
-    "settings.contrast": "Contrast",
-    "settings.contrast.medium": "Medium",
-    "settings.contrast.increased": "Increased",
-    "settings.accentColor": "Accent color",
-    "settings.language": "Language",
-    "settings.language.en": "English",
-    "settings.language.fr": "French",
-    "settings.fontSize": "Font size",
-    "settings.fontSize.14px": "Small (14px)",
-    "settings.fontSize.16px": "Medium (16px)",
-    "settings.fontSize.18px": "Large (18px)",
-    "settings.notifyDeepSearch": "Get notified about DeepSearch tasks",
-    "badge.searched": "Searched the web",
-    "badge.deepSearch": "Deep research",
-    "badge.ranCode": "Ran code",
-    "badge.readFile": "Read file",
-    "badge.writeFile": "Wrote file",
-    "sandbox.title": "Sandbox",
-    "sandbox.toolCalls": "tool calls",
-    "sandbox.toolCall": "tool call",
-    "panel.files": "Files",
-    "panel.terminal": "Terminal",
-    "panel.fileExplorer": "File Explorer",
-    "mobile.chat": "Chat",
-    "mobile.files": "Files",
-    "mobile.terminal": "Terminal",
-  },
-  fr: {
-    "sidebar.chats": "Conversations",
-    "sidebar.newChat": "Nouvelle conversation",
-    "sidebar.noConversations": "Aucune conversation",
-    "sidebar.startNew": "Commencez une nouvelle conversation",
-    "sidebar.hardwareProfile": "Profil matériel",
-    "sidebar.offlinePrivate": "100% Hors ligne · Entièrement privé",
-    "sidebar.collapse": "Réduire",
-    "sidebar.settings": "Paramètres",
-    "welcome.title": "RealOpen-AI",
-    "welcome.subtitle":
-      "Votre assistant IA privé et hors ligne. Propulsé par des modèles locaux sur votre matériel.",
-    "welcome.profile": "Profil",
-    "welcome.explain": "Expliquer un concept",
-    "welcome.explainSub": "en termes simples",
-    "welcome.writeCode": "Écrire du code",
-    "welcome.writeCodeSub": "pour résoudre un problème",
-    "welcome.searchWeb": "Rechercher sur le web",
-    "welcome.searchWebSub": "pour les dernières infos",
-    "welcome.runCode": "Exécuter du code",
-    "welcome.runCodeSub": "dans un bac à sable",
-    "welcome.availableModels": "Modèles disponibles",
-    "input.placeholder": "Envoyer un message à RealOpen-AI...",
-    "input.runningLocally": "Fonctionne localement via Ollama",
-    "settings.title": "Paramètres",
-    "settings.general": "Général",
-    "settings.notifications": "Notifications",
-    "settings.appearance": "Apparence",
-    "settings.appearance.system": "Système",
-    "settings.appearance.dark": "Sombre",
-    "settings.appearance.light": "Clair",
-    "settings.contrast": "Contraste",
-    "settings.contrast.medium": "Moyen",
-    "settings.contrast.increased": "Augmenté",
-    "settings.accentColor": "Couleur d'accent",
-    "settings.language": "Langue",
-    "settings.language.en": "Anglais",
-    "settings.language.fr": "Français",
-    "settings.fontSize": "Taille de police",
-    "settings.fontSize.14px": "Petite (14px)",
-    "settings.fontSize.16px": "Moyenne (16px)",
-    "settings.fontSize.18px": "Grande (18px)",
-    "settings.notifyDeepSearch": "Être notifié des tâches DeepSearch",
-    "badge.searched": "Recherche web",
-    "badge.deepSearch": "Recherche approfondie",
-    "badge.ranCode": "Code exécuté",
-    "badge.readFile": "Fichier lu",
-    "badge.writeFile": "Fichier écrit",
-    "sandbox.title": "Bac à sable",
-    "sandbox.toolCalls": "appels d'outil",
-    "sandbox.toolCall": "appel d'outil",
-    "panel.files": "Fichiers",
-    "panel.terminal": "Terminal",
-    "panel.fileExplorer": "Explorateur de fichiers",
-    "mobile.chat": "Chat",
-    "mobile.files": "Fichiers",
-    "mobile.terminal": "Terminal",
-  },
-};
-
 // ─── Store with persistence ─────────────────────────────────────
 
 export const useSettingsStore = create<SettingsState>()(
@@ -257,13 +137,13 @@ export const useSettingsStore = create<SettingsState>()(
 
 // ─── Helper hooks ───────────────────────────────────────────────
 
-export function t(key: string): string {
-  const lang = useSettingsStore.getState().language;
+export function t(key: TranslationKey): string {
+  const lang = useSettingsStore.getState().language as Language;
   return translations[lang]?.[key] ?? translations.en[key] ?? key;
 }
 
 export function useT() {
-  const language = useSettingsStore((s) => s.language);
-  return (key: string) =>
+  const language = useSettingsStore((s) => s.language) as Language;
+  return (key: TranslationKey) =>
     translations[language]?.[key] ?? translations.en[key] ?? key;
 }
