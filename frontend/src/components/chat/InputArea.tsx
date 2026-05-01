@@ -66,6 +66,12 @@ function SlashCommandMenu({
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Slash className="w-3.5 h-3.5" />
             <span className="text-[12px] font-medium">{t("input.slash")}</span>
+            <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/50">
+              <kbd className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-secondary border border-border/50 text-[9px] font-mono leading-none">
+                ↹
+              </kbd>
+              <span>autocomplete</span>
+            </span>
           </div>
         </div>
         <div className="py-1 max-h-50 overflow-y-auto">
@@ -215,13 +221,8 @@ export function InputArea({
     const parts = trimmed.split(/\s+/);
     const afterCommand = parts.slice(1).join(" ");
 
-    if (cmd.shrug) {
-      // For /shrug, replace the entire slash part
-      setInput(afterCommand);
-    } else {
-      // For /think, /imagine — replace with the command indicator then keep text
-      setInput(afterCommand);
-    }
+    const newInput = `/${cmd.name} ${afterCommand.trim()}`;
+    setInput(newInput);
     setShowSlashMenu(false);
 
     // Focus back on textarea
