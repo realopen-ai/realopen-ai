@@ -1,5 +1,10 @@
-import { useEffect, lazy, Suspense } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from "react-resizable-panels";
 import { Sidebar, MobileMenuButton } from "@/components/layout/Sidebar";
 import { RightPanel, RightPanelToggle } from "@/components/layout/RightPanel";
 import { ChatArea } from "@/components/chat/ChatArea";
@@ -29,9 +34,24 @@ function TerminalLoader() {
 
 export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
+
+  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+  const initialSyncDone = useRef(false);
+
+  // Track whether the user is actively dragging the resize handle.
+  // When NOT dragging, apply CSS transition for smooth expand/collapse.
+  // When dragging, no transition so resize feels instant.
+  const [isResizing, setIsResizing] = useState(true);
+
+  useEffect(() => {
+    setIsResizing(true);
+    const timeout = setTimeout(() => setIsResizing(false), 100);
+    return () => clearTimeout(timeout);
+  }, []);
 
   useEffect(() => {
     fetchFileTree();
@@ -43,6 +63,34 @@ export function AppLayout() {
     });
   }, [fetchFileTree]);
 
+  // Sync right panel open/close with imperative handle
+  useEffect(() => {
+    const panel = rightPanelRef.current;
+    if (!panel) return;
+
+    if (!initialSyncDone.current) {
+      initialSyncDone.current = true;
+      // On initial mount, sync without animation
+      if (!rightPanelOpen && !panel.isCollapsed()) {
+        panel.collapse();
+      } else if (rightPanelOpen && panel.isCollapsed()) {
+        panel.expand();
+      }
+      return;
+    }
+
+    if (rightPanelOpen && panel.isCollapsed()) {
+      panel.expand();
+    } else if (!rightPanelOpen && !panel.isCollapsed()) {
+      panel.collapse();
+    }
+  }, [rightPanelOpen]);
+
+  // Transition class applied to panels only when NOT manually resizing
+  const panelTransitionClass = !isResizing
+    ? "transition-all duration-100 ease-in-out"
+    : "";
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-background">
       <Sidebar />
@@ -51,17 +99,34 @@ export function AppLayout() {
         {/* Desktop: resizable panes */}
         <div className="hidden md:flex flex-1 min-h-0">
           <PanelGroup direction="horizontal" autoSaveId="main-layout">
-            <Panel defaultSize={60} minSize={35}>
+            <Panel
+              defaultSize={60}
+              minSize={35}
+              className={panelTransitionClass}
+            >
               <ChatArea />
             </Panel>
 
-            <PanelResizeHandle className="w-px bg-border hover:bg-primary active:bg-primary transition-colors" />
+            <PanelResizeHandle
+              className="w-px bg-border hover:bg-primary active:bg-primary transition-colors"
+              onDragging={(dragging) => setIsResizing(dragging)}
+            />
 
-            {rightPanelOpen && (
-              <Panel defaultSize={40} minSize={25} maxSize={55}>
+            <Panel
+              ref={rightPanelRef}
+              defaultSize={40}
+              minSize={25}
+              maxSize={55}
+              collapsible
+              collapsedSize={0}
+              className={panelTransitionClass}
+              onCollapse={() => setRightPanelOpen(false)}
+              onExpand={() => setRightPanelOpen(true)}
+            >
+              <div className="h-full overflow-hidden">
                 <RightPanel />
-              </Panel>
-            )}
+              </div>
+            </Panel>
           </PanelGroup>
 
           {!rightPanelOpen && (

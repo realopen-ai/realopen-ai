@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface UIState {
   sidebarCollapsed: boolean;
@@ -17,18 +18,27 @@ interface UIState {
   setMobileTab: (tab: "chat" | "files" | "terminal") => void;
 }
 
-export const useUIStore = create<UIState>((set) => ({
-  sidebarCollapsed: false,
-  sidebarMobileOpen: false,
-  rightPanelOpen: true,
-  rightPanelTab: "files",
-  mobileTab: "chat",
+export const useUIStore = create<UIState>()(
+  persist(
+    (set) => ({
+      sidebarCollapsed: false,
+      sidebarMobileOpen: false,
+      rightPanelOpen: false,
+      rightPanelTab: "files",
+      mobileTab: "chat",
 
-  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
-  setSidebarMobileOpen: (open) => set({ sidebarMobileOpen: open }),
-  toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
-  setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
-  setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
-  setMobileTab: (tab) => set({ mobileTab: tab }),
-}));
+      toggleSidebar: () =>
+        set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+      setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+      setSidebarMobileOpen: (open) => set({ sidebarMobileOpen: open }),
+      toggleRightPanel: () =>
+        set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
+      setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
+      setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
+      setMobileTab: (tab) => set({ mobileTab: tab }),
+    }),
+    {
+      name: "realopen-ai-ui",
+    },
+  ),
+);

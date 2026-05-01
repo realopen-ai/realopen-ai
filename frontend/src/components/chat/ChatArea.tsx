@@ -3,7 +3,6 @@ import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { InputArea } from "@/components/chat/InputArea";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
-import { RightPanelToggle } from "@/components/layout/RightPanel";
 import { useChatStore } from "@/store/chatStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
@@ -14,7 +13,8 @@ export function ChatArea() {
   const store = useChatStore();
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const isStreaming = useChatStore((s) => s.isStreaming);
-  const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
+  const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -78,6 +78,10 @@ export function ChatArea() {
           const tcId = store.addToolCall(convId!, assistantMsgId, toolCall);
           store.openSandbox(convId!, assistantMsgId);
           if (toolCall.type === "code_exec") {
+            // Auto-expand right panel and switch to terminal tab
+            setRightPanelOpen(true);
+            setRightPanelTab("terminal");
+
             addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
             if (toolCall.code) {
               toolCall.code
@@ -121,7 +125,14 @@ export function ChatArea() {
         await streamChatDemo(content, callbacks);
       }
     },
-    [activeConversationId, conv, store, addTerminalLine],
+    [
+      activeConversationId,
+      conv,
+      store,
+      addTerminalLine,
+      setRightPanelOpen,
+      setRightPanelTab,
+    ],
   );
 
   // Listen for regenerate events from MessageBubble
@@ -137,15 +148,12 @@ export function ChatArea() {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/50">
+      <div className="flex items-center justify-between px-3 pt-3 pb-2.75 border-b border-border/50">
         <div className="flex items-center gap-2">
           <MobileMenuButton />
           <h2 className="text-[14px] font-medium text-foreground truncate">
             {conv?.title ?? "New Chat"}
           </h2>
-        </div>
-        <div className="flex items-center gap-1">
-          {!rightPanelOpen && <RightPanelToggle />}
         </div>
       </div>
 

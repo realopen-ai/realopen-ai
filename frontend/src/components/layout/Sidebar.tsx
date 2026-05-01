@@ -213,7 +213,7 @@ export function Sidebar() {
       {/* Desktop: Persistent */}
       <aside
         className={cn(
-          "hidden md:flex flex-col border-r border-sidebar-border transition-all duration-200",
+          "hidden md:flex flex-col border-r border-sidebar-border transition-[width] duration-100 ease-in-out",
           sidebarCollapsed ? "w-13" : "w-60",
         )}
       >

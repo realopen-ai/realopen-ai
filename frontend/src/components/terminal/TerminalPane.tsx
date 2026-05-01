@@ -15,6 +15,25 @@ function hexToAnsi(hex: string): string {
   return `\x1b[38;2;${r};${g};${b}m`;
 }
 
+/** Write a single terminal history entry to an xterm instance */
+function writeHistoryEntry(xterm: XTerm, entry: string, accent: string) {
+  const lines = entry.split("\n");
+  for (const line of lines) {
+    if (line.startsWith("$")) {
+      // Command lines - accent color
+      xterm.writeln(`${accent}${line}\x1b[0m`);
+    } else if (line.startsWith("  ")) {
+      // Indented code lines - slightly dimmer accent
+      xterm.writeln(`${accent}${line}\x1b[0m`);
+    } else if (line.startsWith("Error") || line.startsWith("error")) {
+      xterm.writeln(`\x1b[31m${line}\x1b[0m`);
+    } else {
+      // Output lines - dim gray
+      xterm.writeln(`\x1b[2;37m${line}\x1b[0m`);
+    }
+  }
+}
+
 export function TerminalPane() {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -22,7 +41,7 @@ export function TerminalPane() {
   const lastHistoryLenRef = useRef(0);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
 
-  // Create the terminal once
+  // Create the terminal once + immediately replay any pending history
   useEffect(() => {
     if (!terminalRef.current || xtermRef.current) return;
 
@@ -66,7 +85,14 @@ export function TerminalPane() {
     const fitAddon = new FitAddon();
     xterm.loadAddon(fitAddon);
     xterm.open(terminalRef.current);
-    fitAddon.fit();
+
+    // Try to fit; if container is 0-width (panel collapsed), that's OK;
+    // the ResizeObserver below will re-fit when the container becomes visible.
+    try {
+      fitAddon.fit();
+    } catch {
+      /* container might be 0-width */
+    }
 
     xtermRef.current = xterm;
     fitAddonRef.current = fitAddon;
@@ -75,6 +101,17 @@ export function TerminalPane() {
     xterm.writeln(`${accent}  RealOpen-AI Sandbox Terminal\x1b[0m`);
     xterm.writeln("\x1b[2;37m  Awaiting commands from AI agent...\x1b[0m");
     xterm.writeln("");
+
+    // ── Replay any pending history that was added while terminal was unmounted ──
+    const history = useSandboxStore.getState().terminalHistory;
+    if (history.length > 0) {
+      xterm.writeln(""); // visual separator
+      for (const entry of history) {
+        writeHistoryEntry(xterm, entry, accent);
+      }
+    }
+    lastHistoryLenRef.current = history.length;
+
     xterm.write(`${accent}❯\x1b[0m `);
 
     let currentLine = "";
@@ -111,7 +148,7 @@ export function TerminalPane() {
       try {
         fitAddon.fit();
       } catch {
-        /* ignore */
+        /* ignore — container might be 0-width */
       }
     });
     resizeObserver.observe(terminalRef.current);
@@ -124,34 +161,20 @@ export function TerminalPane() {
     };
   }, [addTerminalLine]);
 
-  // Write new terminal history entries
+  // Write new terminal history entries (after initial replay)
   useEffect(() => {
     const xterm = xtermRef.current;
     if (!xterm) return;
     const history = useSandboxStore.getState().terminalHistory;
     const newEntries = history.slice(lastHistoryLenRef.current);
+    if (newEntries.length === 0) return;
+
     const accent = hexToAnsi(
       accentColorMap[useSettingsStore.getState().accentColor].primary,
     );
 
     for (const entry of newEntries) {
-      // Each entry is a single line (we split them before addTerminalLine)
-      // But we still split on \n as a safety net
-      const lines = entry.split("\n");
-      for (const line of lines) {
-        if (line.startsWith("$")) {
-          // Command lines - accent color
-          xterm.writeln(`${accent}${line}\x1b[0m`);
-        } else if (line.startsWith("  ")) {
-          // Indented code lines - slightly dimmer accent
-          xterm.writeln(`${accent}${line}\x1b[0m`);
-        } else if (line.startsWith("Error") || line.startsWith("error")) {
-          xterm.writeln(`\x1b[31m${line}\x1b[0m`);
-        } else {
-          // Output lines - dim gray
-          xterm.writeln(`\x1b[2;37m${line}\x1b[0m`);
-        }
-      }
+      writeHistoryEntry(xterm, entry, accent);
     }
     lastHistoryLenRef.current = history.length;
   }, [useSandboxStore((s) => s.terminalHistory.length)]);
