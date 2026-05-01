@@ -143,7 +143,10 @@ export function Sidebar() {
         {/* Settings Button */}
         <div className="px-2 py-1.5">
           <button
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              setSettingsOpen(true);
+              setSidebarMobileOpen(false);
+            }}
             className={cn(
               "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors",
               sidebarCollapsed && "justify-center px-0",

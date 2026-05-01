@@ -34,6 +34,7 @@ export interface Message {
   isStreaming: boolean;
   createdAt: number;
   completedAt?: number;
+  shrugOverlay?: boolean;
 }
 
 export interface Conversation {
@@ -72,7 +73,7 @@ interface ChatState {
     message: Omit<
       Message,
       "id" | "createdAt" | "toolCalls" | "sandboxOpen" | "isStreaming"
-    >,
+    > & { shrugOverlay?: boolean },
   ) => string;
   updateMessage: (
     conversationId: string,
@@ -161,6 +162,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sandboxOpen: false,
       isStreaming: false,
       createdAt: Date.now(),
+      shrugOverlay: message.shrugOverlay,
     };
     set((s) => ({
       conversations: s.conversations.map((c) =>

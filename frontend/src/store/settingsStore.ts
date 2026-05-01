@@ -3,6 +3,9 @@ import { persist } from "zustand/middleware";
 
 import { translations, type Language, type TranslationKey } from "@/i18n";
 
+export type { Language } from "@/i18n";
+export type { TranslationKey } from "@/i18n";
+
 export type Appearance = "system" | "dark" | "light";
 export type Contrast = "medium" | "increased";
 export type AccentColor =

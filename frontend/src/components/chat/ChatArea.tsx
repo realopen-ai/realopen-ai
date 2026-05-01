@@ -26,15 +26,25 @@ export function ChatArea() {
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
   const handleSend = useCallback(
-    async (content: string, convIdOverride?: string) => {
-      let convId = convIdOverride ?? activeConversationId;
+    async (
+      content: string,
+      options?: { modelOverride?: string; shrug?: boolean },
+    ) => {
+      let convId = activeConversationId;
       if (!convId) convId = store.createConversation();
 
-      store.addMessage(convId, { role: "user", content });
+      // Use model override if provided, otherwise use selected model
+      const modelForMessage = options?.modelOverride ?? store.selectedModel;
+
+      store.addMessage(convId, {
+        role: "user",
+        content,
+        shrugOverlay: options?.shrug,
+      });
       const assistantMsgId = store.addMessage(convId, {
         role: "assistant",
         content: "",
-        model: store.selectedModel,
+        model: modelForMessage,
       });
       store.setStreaming(convId, assistantMsgId, true);
 
@@ -101,12 +111,11 @@ export function ChatArea() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages: allMessages,
-            model: store.selectedModel,
+            model: modelForMessage,
             stream: true,
           }),
         });
-        if (res.ok)
-          await streamChat(allMessages, store.selectedModel, callbacks);
+        if (res.ok) await streamChat(allMessages, modelForMessage, callbacks);
         else await streamChatDemo(content, callbacks);
       } catch {
         await streamChatDemo(content, callbacks);
@@ -118,9 +127,8 @@ export function ChatArea() {
   // Listen for regenerate events from MessageBubble
   useEffect(() => {
     const handler = (e: Event) => {
-      const { content, conversationId: regenConvId } = (e as CustomEvent)
-        .detail;
-      handleSend(content, regenConvId);
+      const { content } = (e as CustomEvent).detail;
+      handleSend(content, { modelOverride: undefined, shrug: false });
     };
     window.addEventListener("regenerate-message", handler);
     return () => window.removeEventListener("regenerate-message", handler);

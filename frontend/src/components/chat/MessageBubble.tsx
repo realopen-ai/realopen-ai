@@ -422,6 +422,17 @@ export function MessageBubble({
     return (
       <div className="flex justify-end animate-fade-in group">
         <div className="relative max-w-[85%] md:max-w-[75%]">
+          {/* Shrug overlay — above the bubble */}
+          {message.shrugOverlay && (
+            <div className="text-center mb-1.5">
+              <span
+                className="text-[28px] leading-none font-medium select-none"
+                style={{ color: "var(--color-primary)" }}
+              >
+                ¯\_(ツ)_/¯
+              </span>
+            </div>
+          )}
           <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
             <p
               className="whitespace-pre-wrap leading-relaxed"
