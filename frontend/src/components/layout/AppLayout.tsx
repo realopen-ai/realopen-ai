@@ -55,12 +55,15 @@ export function AppLayout() {
 
   useEffect(() => {
     fetchFileTree();
+    // Load models from backend
     import("@/api/client").then(({ fetchModels: fm }) => {
       fm().then(({ models, profile }) => {
         useChatStore.getState().setModels(models);
         useChatStore.getState().setProfileName(profile);
       });
     });
+    // Load conversations from backend
+    useChatStore.getState().loadConversations();
   }, [fetchFileTree]);
 
   // Sync right panel open/close with imperative handle

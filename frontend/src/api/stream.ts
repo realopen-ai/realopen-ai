@@ -13,132 +13,266 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
+/** Default timeout for streaming requests (5 minutes - LLM generation can be slow) */
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Parse an SSE stream from the backend agent.
+ *
+ * The backend sends events in this format:
+ *   data: {"event": "message", "message": {"role": "assistant", "content": "token"}}
+ *   data: {"event": "tool_call", "tool_call": {"type": "websearch", "status": "running", ...}}
+ *   data: {"event": "tool_call", "tool_call": {"status": "completed", ...}}
+ *   data: {"event": "done", {}}
+ *   data: {"event": "error", "error": "..."}
+ *   data: [DONE]
+ */
 export async function streamChat(
   messages: { role: string; content: string }[],
   model: string,
   callbacks: StreamCallbacks,
+  options?: {
+    conversationId?: string;
+    modelOverride?: string;
+    shrug?: boolean;
+  },
 ): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, model, stream: true }),
+      body: JSON.stringify({
+        messages,
+        model,
+        stream: true,
+        conversation_id: options?.conversationId,
+        model_override: options?.modelOverride,
+        shrug: options?.shrug,
+      }),
+      signal: controller.signal,
     });
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("No response body");
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") {
-          callbacks.onDone();
-          return;
-        }
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.message?.content) {
-            callbacks.onToken(parsed.message.content);
-          }
-          if (parsed.tool_call) {
-            const tc = parsed.tool_call;
-            if (tc.status === "running") {
-              const id = callbacks.onToolCallStart({
-                type: tc.type,
-                status: "running",
-                title: tc.title ?? tc.type,
-                query: tc.query,
-                language: tc.language,
-                code: tc.code,
-                steps: tc.steps,
-              });
-              // Auto-complete after a delay for demo
-              if (tc.type === "websearch") {
-                setTimeout(() => {
-                  callbacks.onToolCallUpdate(id, {
-                    status: "completed",
-                    completedAt: Date.now(),
-                    results: tc.results ?? [
-                      {
-                        title: "Search Result 1",
-                        url: "https://example.com/1",
-                        snippet: "Relevant information found...",
-                      },
-                      {
-                        title: "Search Result 2",
-                        url: "https://example.com/2",
-                        snippet: "Additional context and data...",
-                      },
-                      {
-                        title: "Search Result 3",
-                        url: "https://example.com/3",
-                        snippet: "More detailed findings...",
-                      },
-                    ],
-                  });
-                }, 1500);
-              } else if (tc.type === "code_exec") {
-                setTimeout(() => {
-                  callbacks.onToolCallUpdate(id, {
-                    status: "completed",
-                    completedAt: Date.now(),
-                    output:
-                      tc.output ??
-                      "Process completed successfully.\nOutput: 42",
-                    exitCode: 0,
-                  });
-                }, 2000);
-              } else if (tc.type === "deepsearch") {
-                setTimeout(() => {
-                  callbacks.onToolCallUpdate(id, {
-                    status: "completed",
-                    completedAt: Date.now(),
-                    steps: tc.steps ?? [
-                      { label: "Searching web", status: "done" },
-                      { label: "Analyzing results", status: "done" },
-                      { label: "Synthesizing answer", status: "done" },
-                    ],
-                  });
-                }, 3000);
-              }
-            }
-          }
-          if (parsed.error) {
-            callbacks.onError(parsed.error);
-          }
-        } catch {
-          /* skip malformed JSON */
-        }
-      }
-    }
-    callbacks.onDone();
+    await parseSSEStream(response, callbacks);
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : "Unknown error";
-    callbacks.onError(errorMsg);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      callbacks.onError(
+        "Request timed out. The AI may be loading - please try again.",
+      );
+    } else {
+      const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      callbacks.onError(errorMsg);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
-// Demo mode — generates mock streaming responses with tool calls
+/**
+ * Stream chat with file uploads (images and documents).
+ * Uses the multipart/form-data endpoint.
+ */
+export async function streamChatWithFiles(
+  messages: { role: string; content: string }[],
+  model: string,
+  callbacks: StreamCallbacks,
+  files: {
+    images?: File[];
+    documents?: File[];
+  },
+  options?: {
+    conversationId?: string;
+    modelOverride?: string;
+  },
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+
+  try {
+    const formData = new FormData();
+    formData.append("messages", JSON.stringify(messages));
+    if (model) formData.append("model", model);
+    if (options?.conversationId)
+      formData.append("conversation_id", options.conversationId);
+    if (options?.modelOverride)
+      formData.append("model_override", options.modelOverride);
+
+    // Attach image files
+    if (files.images) {
+      for (const img of files.images) {
+        formData.append("images", img);
+      }
+    }
+
+    // Attach document files
+    if (files.documents) {
+      for (const doc of files.documents) {
+        formData.append("documents", doc);
+      }
+    }
+
+    console.log("Sending chat stream request with files:", {
+      messages,
+      model,
+      conversationId: options?.conversationId,
+      modelOverride: options?.modelOverride,
+      images: files.images?.map((f) => f.name),
+      documents: files.documents?.map((f) => f.name),
+    });
+
+    const response = await fetch("/api/chat/stream/multipart", {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    await parseSSEStream(response, callbacks);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      callbacks.onError(
+        "Request timed out. The AI may be loading - please try again.",
+      );
+    } else {
+      const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      callbacks.onError(errorMsg);
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Generic SSE stream parser that handles the backend's event format.
+ */
+async function parseSSEStream(
+  response: Response,
+  callbacks: StreamCallbacks,
+): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  // Track tool calls by their backend-provided IDs so updates match
+  const toolCallIdMap = new Map<string, string>();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") {
+        callbacks.onDone();
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(data);
+        const eventType = parsed.event;
+
+        // ── Message token ──
+        if (eventType === "message" && parsed.message?.content) {
+          callbacks.onToken(parsed.message.content);
+        }
+
+        // ── Tool call event ──
+        if (eventType === "tool_call" && parsed.tool_call) {
+          const tc = parsed.tool_call;
+
+          if (tc.status === "running") {
+            // New tool call starting
+            const frontendId = callbacks.onToolCallStart({
+              type: tc.type,
+              status: "running",
+              title: tc.title ?? tc.type,
+              query: tc.query,
+              language: tc.language,
+              code: tc.code,
+              imageDescription: tc.image_description,
+              results: tc.results,
+              output: tc.output,
+              exitCode: tc.exitCode,
+            });
+            // Map backend ID → frontend ID for future updates
+            if (tc.id) {
+              toolCallIdMap.set(tc.id, frontendId);
+            }
+            // If the backend already sent results in the start event, mark as completed
+            if (tc.results && tc.results.length > 0) {
+              callbacks.onToolCallUpdate(frontendId, {
+                status: "completed",
+                completedAt: Date.now(),
+                results: tc.results,
+              });
+            }
+          } else if (tc.status === "completed" || tc.status === "error") {
+            // Tool call update — find the frontend ID
+            const frontendId = tc.id ? toolCallIdMap.get(tc.id) : undefined;
+
+            const updates: Partial<ToolCallResult> = {
+              status: tc.status,
+            };
+            if (tc.completedAt) updates.completedAt = tc.completedAt;
+            if (tc.results) updates.results = tc.results;
+            if (tc.output) updates.output = tc.output;
+            if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
+            if (tc.image_description)
+              updates.imageDescription = tc.image_description;
+            if (tc.error) updates.error = tc.error;
+
+            if (frontendId) {
+              callbacks.onToolCallUpdate(frontendId, updates);
+            }
+          }
+        }
+
+        // ── Done event ──
+        if (eventType === "done") {
+          callbacks.onDone();
+          return;
+        }
+
+        // ── Error event ──
+        if (eventType === "error" && parsed.error) {
+          callbacks.onError(
+            typeof parsed.error === "string"
+              ? parsed.error
+              : (parsed.error.message ?? "Unknown error"),
+          );
+        }
+      } catch {
+        /* skip malformed JSON */
+      }
+    }
+  }
+
+  // If we reach here, stream ended without [DONE]
+  callbacks.onDone();
+}
+
+// ─── Demo Mode ──────────────────────────────────────────────────
+// Fallback for when the backend is unreachable.
+// Generates mock streaming responses with tool calls.
+
 export async function streamChatDemo(
   userMessage: string,
   callbacks: StreamCallbacks,
 ): Promise<void> {
   const lowerMsg = userMessage.toLowerCase();
 
-  // Simulate tool calls based on keywords
   const hasSearch =
     lowerMsg.includes("search") ||
     lowerMsg.includes("find") ||
@@ -153,11 +287,6 @@ export async function streamChatDemo(
     lowerMsg.includes("calculate") ||
     lowerMsg.includes("run") ||
     lowerMsg.includes("write a");
-  const hasDeep =
-    lowerMsg.includes("deep research") ||
-    lowerMsg.includes("research") ||
-    lowerMsg.includes("analyze") ||
-    lowerMsg.includes("compare");
 
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -195,59 +324,14 @@ export async function streamChatDemo(
     });
   }
 
-  if (hasDeep) {
-    const tcId = callbacks.onToolCallStart({
-      type: "deepsearch",
-      status: "running",
-      title: "Deep research",
-      steps: [
-        { label: "Searching multiple sources", status: "running" },
-        { label: "Analyzing results", status: "pending" },
-        { label: "Cross-referencing data", status: "pending" },
-        { label: "Synthesizing answer", status: "pending" },
-      ],
-    });
-    await delay(1000);
-    callbacks.onToolCallUpdate(tcId, {
-      steps: [
-        { label: "Searching multiple sources", status: "done" },
-        { label: "Analyzing results", status: "running" },
-        { label: "Cross-referencing data", status: "pending" },
-        { label: "Synthesizing answer", status: "pending" },
-      ],
-    });
-    await delay(1000);
-    callbacks.onToolCallUpdate(tcId, {
-      steps: [
-        { label: "Searching multiple sources", status: "done" },
-        { label: "Analyzing results", status: "done" },
-        { label: "Cross-referencing data", status: "running" },
-        { label: "Synthesizing answer", status: "pending" },
-      ],
-    });
-    await delay(800);
-    callbacks.onToolCallUpdate(tcId, {
-      status: "completed",
-      completedAt: Date.now(),
-      steps: [
-        { label: "Searching multiple sources", status: "done" },
-        { label: "Analyzing results", status: "done" },
-        { label: "Cross-referencing data", status: "done" },
-        { label: "Synthesizing answer", status: "done" },
-      ],
-    });
-  }
-
   if (hasCode) {
-    const codeSnippet = lowerMsg.includes("python")
-      ? `import numpy as np\n\ndata = np.random.randn(1000)\nmean = np.mean(data)\nstd = np.std(data)\nprint(f"Mean: {mean:.4f}")\nprint(f"Std:  {std:.4f}")`
-      : `const result = Array.from({length: 1000}, () => Math.random());\nconst mean = result.reduce((a,b) => a+b, 0) / result.length;\nconsole.log(\`Mean: \${mean.toFixed(4)}\`);`;
+    const codeSnippet = `import numpy as np\n\ndata = np.random.randn(1000)\nmean = np.mean(data)\nstd = np.std(data)\nprint(f"Mean: {mean:.4f}")\nprint(f"Std:  {std:.4f}")`;
 
     const tcId = callbacks.onToolCallStart({
       type: "code_exec",
       status: "running",
       title: "Running code",
-      language: lowerMsg.includes("python") ? "python" : "javascript",
+      language: "python",
       code: codeSnippet,
     });
     await delay(1500);
@@ -259,19 +343,16 @@ export async function streamChatDemo(
     });
   }
 
-  // Stream the text response
   const responses: Record<string, string> = {
     default:
       "I'd be happy to help you with that! Let me think about your question and provide a comprehensive answer.\n\nBased on my analysis, here are the key points to consider:\n\n1. **Context matters** — The approach you take should depend on your specific requirements and constraints.\n\n2. **Best practices** — Following established patterns and conventions will help ensure maintainability and reliability.\n\n3. **Testing** — Always verify your assumptions with real-world testing and validation.\n\nWould you like me to elaborate on any of these points?",
     search:
       "I searched the web for you and found several relevant results. Here's a summary of what I found:\n\nThe most up-to-date information suggests that this topic has seen significant developments recently. Key findings include:\n\n- **Recent advances** have improved performance by approximately 30%\n- **New methodologies** are being adopted across the industry\n- **Community consensus** is forming around best practices\n\nCheck the search results in the sandbox panel for more details.",
     code: "I've written and executed the code for you. Here's what happened:\n\nThe code ran successfully and produced the expected output. You can see the full execution details in the sandbox panel.\n\n**Key observations:**\n- The calculation completed without errors\n- Results are statistically significant\n- The approach scales well with larger datasets\n\nWould you like me to modify the code or run additional analysis?",
-    deep: "After conducting deep research across multiple sources, here's a comprehensive analysis:\n\n## Summary\nThe topic has been extensively studied, with several key papers and developments in recent years.\n\n## Key Findings\n1. **Performance**: Modern approaches show 2-3x improvement over traditional methods\n2. **Efficiency**: Resource consumption has decreased by ~40% while maintaining quality\n3. **Accessibility**: New tools and frameworks have lowered the barrier to entry\n\n## Comparison\n| Method | Accuracy | Speed | Cost |\n|--------|----------|-------|------|\n| Traditional | 78% | Slow | High |\n| Modern | 94% | Fast | Medium |\n| Hybrid | 96% | Medium | Low |\n\nThe research steps are shown in the sandbox panel for transparency.",
   };
 
   let responseKey = "default";
-  if (hasDeep) responseKey = "deep";
-  else if (hasSearch && hasCode) responseKey = "deep";
+  if (hasSearch && hasCode) responseKey = "search";
   else if (hasSearch) responseKey = "search";
   else if (hasCode) responseKey = "code";
 

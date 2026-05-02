@@ -9,6 +9,9 @@ import {
   Sparkles,
   Brain,
   SmilePlus,
+  X,
+  Image as ImageIcon,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useChatStore } from "@/store/chatStore";
@@ -120,6 +123,58 @@ function SlashCommandMenu({
   );
 }
 
+// ─── File Attachment Preview ──────────────────────────────────────
+
+interface AttachedFile {
+  file: File;
+  type: "image" | "document";
+  previewUrl?: string;
+}
+
+function AttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: AttachedFile;
+  onRemove: () => void;
+}) {
+  const isImage = attachment.type === "image";
+
+  return (
+    <div className="relative group flex items-center gap-2 px-2 py-1.5 rounded-lg bg-secondary/50 border border-border/50 max-w-40">
+      {isImage && attachment.previewUrl ? (
+        <img
+          src={attachment.previewUrl}
+          alt={attachment.file.name}
+          className="w-8 h-8 rounded object-cover shrink-0"
+        />
+      ) : (
+        <div className="w-8 h-8 rounded bg-secondary flex items-center justify-center shrink-0">
+          {isImage ? (
+            <ImageIcon className="w-4 h-4 text-blue-400" />
+          ) : (
+            <FileText className="w-4 h-4 text-amber-400" />
+          )}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] text-foreground truncate">
+          {attachment.file.name}
+        </p>
+        <p className="text-[10px] text-muted-foreground/60">
+          {(attachment.file.size / 1024).toFixed(0)} KB
+        </p>
+      </div>
+      <button
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
 // ─── Parsed command result ────────────────────────────────────────
 
 export interface ParsedSlashCommand {
@@ -154,27 +209,33 @@ export function InputArea({
 }: {
   onSend: (
     message: string,
-    options?: { modelOverride?: string; shrug?: boolean },
+    options?: {
+      modelOverride?: string;
+      shrug?: boolean;
+      images?: File[];
+      documents?: File[];
+    },
   ) => void;
   isStreaming: boolean;
 }) {
   const [input, setInput] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [attachments, setAttachments] = useState<AttachedFile[]>([]);
   const models = useChatStore((s) => s.models);
   const selectedModel = useChatStore((s) => s.selectedModel);
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   // ── Slash menu filtering ──
   const slashFilter = useMemo(() => {
     const trimmed = input.trimStart();
     if (!trimmed.startsWith("/")) return "";
-    // Extract the command part (first word)
-    const firstWord = trimmed.split(/\s/)[0].slice(1); // remove /
-    // If there's a space after the command, don't filter (command already typed)
+    const firstWord = trimmed.split(/\s/)[0].slice(1);
     if (trimmed.includes(" ")) return "";
     return firstWord.toLowerCase();
   }, [input]);
@@ -216,7 +277,6 @@ export function InputArea({
   }, []);
 
   const handleSlashSelect = (cmd: SlashCommand) => {
-    // Replace the /command part with just the command prefix (keep any text after)
     const trimmed = input.trimStart();
     const parts = trimmed.split(/\s+/);
     const afterCommand = parts.slice(1).join(" ");
@@ -225,29 +285,82 @@ export function InputArea({
     setInput(newInput);
     setShowSlashMenu(false);
 
-    // Focus back on textarea
     setTimeout(() => textareaRef.current?.focus(), 0);
+  };
+
+  // ── File attachment handling ──
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const newAttachments: AttachedFile[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/")) {
+        const previewUrl = URL.createObjectURL(file);
+        newAttachments.push({ file, type: "image", previewUrl });
+      }
+    }
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    // Reset the input so the same file can be selected again
+    e.target.value = "";
+  };
+
+  const handleDocumentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const newAttachments: AttachedFile[] = [];
+    for (const file of Array.from(files)) {
+      newAttachments.push({ file, type: "document" });
+    }
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    e.target.value = "";
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => {
+      const removed = prev[index];
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   const handleSend = () => {
     const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+    if ((!trimmed && attachments.length === 0) || isStreaming) return;
 
     const { command, remainingContent } = parseSlashCommand(trimmed);
     const contentToSend = command
       ? remainingContent || trimmed.replace(/^\/\S+\s*/, "").trim() || trimmed
       : trimmed;
 
-    // If there's a slash command with no remaining content, send the raw input for /shrug
     const finalContent = command?.shrug
       ? remainingContent || "¯\\_(ツ)_/¯"
       : contentToSend;
 
+    // Separate attachments into images and documents
+    const images = attachments
+      .filter((a) => a.type === "image")
+      .map((a) => a.file);
+    const documents = attachments
+      .filter((a) => a.type === "document")
+      .map((a) => a.file);
+
     onSend(finalContent || trimmed, {
       modelOverride: command?.modelOverride,
       shrug: command?.shrug,
+      images: images.length > 0 ? images : undefined,
+      documents: documents.length > 0 ? documents : undefined,
     });
+
+    // Cleanup preview URLs
+    for (const a of attachments) {
+      if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    }
+
     setInput("");
+    setAttachments([]);
     setShowSlashMenu(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
@@ -308,6 +421,9 @@ export function InputArea({
     return acc;
   }, {});
 
+  const hasImages = attachments.some((a) => a.type === "image");
+  const hasDocuments = attachments.some((a) => a.type === "document");
+
   return (
     <div className="px-4 pb-4 pt-2">
       <div className="max-w-3xl mx-auto relative">
@@ -322,12 +438,50 @@ export function InputArea({
 
         {/* Input Container */}
         <div className="input-glow rounded-2xl border border-border bg-card transition-all">
+          {/* Attachment Previews */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3.5 pt-2.5">
+              {attachments.map((att, i) => (
+                <AttachmentPreview
+                  key={`${att.file.name}-${i}`}
+                  attachment={att}
+                  onRemove={() => removeAttachment(i)}
+                />
+              ))}
+            </div>
+          )}
+
           <div className="flex items-end gap-1.5 px-3.5 py-2.5">
+            {/* Hidden file inputs */}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={handleImageSelect}
+            />
+            <input
+              ref={docInputRef}
+              type="file"
+              accept=".pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx"
+              multiple
+              className="hidden"
+              onChange={handleDocumentSelect}
+            />
+
+            {/* Attach button (opens image picker on click, document on right-click) */}
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground/50 hover:text-muted-foreground shrink-0"
               disabled={isStreaming}
+              onClick={() => imageInputRef.current?.click()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                docInputRef.current?.click();
+              }}
+              title="Attach image (right-click for documents)"
             >
               <Paperclip className="w-4.5 h-4.5" />
             </Button>
@@ -337,28 +491,36 @@ export function InputArea({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t("input.placeholder")}
+              placeholder={
+                hasImages
+                  ? "Describe what you see in the image..."
+                  : t("input.placeholder")
+              }
               className="flex-1 resize-none bg-transparent text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-6 max-h-45 py-1 leading-relaxed"
               rows={1}
               disabled={isStreaming}
             />
 
+            {/* Web search toggle indicator */}
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground/50 hover:text-muted-foreground shrink-0"
               disabled={isStreaming}
+              title="Web search is available automatically when needed"
             >
               <Globe className="w-4.5 h-4.5" />
             </Button>
 
             <Button
               onClick={handleSend}
-              disabled={isStreaming || !input.trim()}
+              disabled={
+                isStreaming || (!input.trim() && attachments.length === 0)
+              }
               size="icon"
               className={cn(
                 "h-8 w-8 rounded-xl shrink-0 transition-all",
-                input.trim() && !isStreaming
+                (input.trim() || attachments.length > 0) && !isStreaming
                   ? "bg-primary hover:bg-primary/90 text-primary-foreground"
                   : "bg-secondary text-muted-foreground/40",
               )}
@@ -384,6 +546,11 @@ export function InputArea({
                 <span className="text-[7px] text-white font-bold">AI</span>
               </div>
               <span>{getSelectedModelLabel()}</span>
+              {hasImages && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
+                  + vision
+                </span>
+              )}
               <ChevronDown className="w-3 h-3" />
             </button>
             {showModelMenu && (
@@ -418,9 +585,27 @@ export function InputArea({
               </div>
             )}
           </div>
-          <span className="text-[10px] text-muted-foreground/40">
-            {t("input.runningLocally")}
-          </span>
+          <div className="flex items-center gap-2">
+            {hasImages && (
+              <span className="text-[10px] text-blue-400/60">
+                📷 {attachments.filter((a) => a.type === "image").length} image
+                {attachments.filter((a) => a.type === "image").length > 1
+                  ? "s"
+                  : ""}
+              </span>
+            )}
+            {hasDocuments && (
+              <span className="text-[10px] text-amber-400/60">
+                📄 {attachments.filter((a) => a.type === "document").length} doc
+                {attachments.filter((a) => a.type === "document").length > 1
+                  ? "s"
+                  : ""}
+              </span>
+            )}
+            <span className="text-[10px] text-muted-foreground/40">
+              {t("input.runningLocally")}
+            </span>
+          </div>
         </div>
       </div>
     </div>

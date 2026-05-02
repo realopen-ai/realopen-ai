@@ -1,10 +1,24 @@
 import { create } from "zustand";
+import {
+  fetchConversations,
+  createConversation as apiCreateConversation,
+  deleteConversation as apiDeleteConversation,
+  fetchConversationMessages,
+  type ConversationDTO,
+  type MessageDTO,
+} from "@/api/client";
 
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface ToolCallResult {
   id: string;
-  type: "websearch" | "deepsearch" | "code_exec" | "file_read" | "file_write";
+  type:
+    | "websearch"
+    | "vision"
+    | "code_exec"
+    | "file_read"
+    | "file_write"
+    | "deepsearch";
   status: "running" | "completed" | "error";
   title: string;
   startedAt: number;
@@ -17,11 +31,15 @@ export interface ToolCallResult {
   code?: string;
   output?: string;
   exitCode?: number;
+  // Vision
+  imageDescription?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
   // Files
   filePath?: string;
   fileContent?: string;
+  // Error
+  error?: string;
 }
 
 export interface Message {
@@ -35,6 +53,11 @@ export interface Message {
   createdAt: number;
   completedAt?: number;
   shrugOverlay?: boolean;
+  // Image / document info
+  hasImage?: boolean;
+  hasDocument?: boolean;
+  imageCount?: number;
+  documentCount?: number;
 }
 
 export interface Conversation {
@@ -63,11 +86,14 @@ interface ChatState {
   selectedModel: string;
   profileName: string;
   isStreaming: boolean;
+  isLoadingConversations: boolean;
 
   // Actions
-  createConversation: () => string;
-  deleteConversation: (id: string) => void;
+  loadConversations: () => Promise<void>;
+  createConversation: () => Promise<string>;
+  deleteConversation: (id: string) => Promise<void>;
   setActiveConversation: (id: string) => void;
+  loadMessages: (conversationId: string) => Promise<void>;
   addMessage: (
     conversationId: string,
     message: Omit<
@@ -116,6 +142,36 @@ let msgCounter = 0;
 const genId = () => `msg-${Date.now()}-${++msgCounter}`;
 const genToolId = () => `tool-${Date.now()}-${++msgCounter}`;
 
+/** Convert a backend ConversationDTO to the frontend Conversation shape */
+function dtoToConversation(dto: ConversationDTO): Conversation {
+  return {
+    id: dto.id,
+    title: dto.title ?? "New Chat",
+    messages: [], // Messages are loaded lazily when a conversation is selected
+    model: dto.model ?? "default",
+    createdAt: dto.createdAt,
+    updatedAt: dto.updatedAt,
+  };
+}
+
+/** Convert a backend MessageDTO to the frontend Message shape */
+function dtoToMessage(dto: MessageDTO): Message {
+  return {
+    id: dto.id,
+    role: dto.role,
+    content: dto.content,
+    model: dto.model ?? undefined,
+    toolCalls: [],
+    sandboxOpen: false,
+    isStreaming: false,
+    createdAt: dto.createdAt,
+    hasImage: dto.hasImage,
+    hasDocument: dto.hasDocument,
+    imageCount: dto.imageCount,
+    documentCount: dto.documentCount,
+  };
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   activeConversationId: null,
@@ -123,9 +179,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedModel: "default",
   profileName: "",
   isStreaming: false,
+  isLoadingConversations: false,
 
-  createConversation: () => {
-    const id = `conv-${Date.now()}`;
+  loadConversations: async () => {
+    set({ isLoadingConversations: true });
+    try {
+      const dtos = await fetchConversations();
+      const convs = dtos.map(dtoToConversation);
+      set({ conversations: convs, isLoadingConversations: false });
+    } catch {
+      set({ isLoadingConversations: false });
+    }
+  },
+
+  createConversation: async () => {
+    const state = get();
+    try {
+      const dto = await apiCreateConversation("New Chat", state.selectedModel);
+      if (dto) {
+        const conv = dtoToConversation(dto);
+        set((s) => ({
+          conversations: [conv, ...s.conversations],
+          activeConversationId: conv.id,
+        }));
+        return conv.id;
+      }
+    } catch {
+      /* fallback below */
+    }
+    // Fallback: create a local-only conversation
+    const id = `local-${Date.now()}`;
     const conv: Conversation = {
       id,
       title: "New Chat",
@@ -141,7 +224,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return id;
   },
 
-  deleteConversation: (id) => {
+  deleteConversation: async (id) => {
+    // Optimistically remove from local state
     set((s) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
       activeConversationId:
@@ -149,9 +233,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? (s.conversations.find((c) => c.id !== id)?.id ?? null)
           : s.activeConversationId,
     }));
+    // Delete from backend
+    await apiDeleteConversation(id);
   },
 
-  setActiveConversation: (id) => set({ activeConversationId: id }),
+  setActiveConversation: (id) => {
+    set({ activeConversationId: id });
+    // Load messages if not yet loaded
+    const conv = get().conversations.find((c) => c.id === id);
+    if (conv && conv.messages.length === 0) {
+      get().loadMessages(id);
+    }
+  },
+
+  loadMessages: async (conversationId) => {
+    try {
+      const dtos = await fetchConversationMessages(conversationId);
+      const messages = dtos.map(dtoToMessage);
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, messages } : c,
+        ),
+      }));
+    } catch {
+      /* ignore - messages will stay empty */
+    }
+  },
 
   addMessage: (conversationId, message) => {
     const msgId = genId();

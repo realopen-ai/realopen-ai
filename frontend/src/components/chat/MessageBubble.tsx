@@ -7,6 +7,7 @@ import {
   Globe,
   FileCode,
   Brain,
+  Eye,
   Copy,
   Volume2,
   RefreshCw,
@@ -36,6 +37,12 @@ function ToolBadge({
       label: "Searched the web",
       bg: "bg-blue-500/10",
       text: "text-blue-400",
+    },
+    vision: {
+      icon: Eye,
+      label: "Analyzed image",
+      bg: "bg-violet-500/10",
+      text: "text-violet-400",
     },
     deepsearch: {
       icon: Brain,
@@ -143,6 +150,7 @@ function MessageSandbox({
 
 function ToolCallDetail({ toolCall }: { toolCall: ToolCallResult }) {
   if (toolCall.type === "websearch") return <WebSearchDetail tc={toolCall} />;
+  if (toolCall.type === "vision") return <VisionDetail tc={toolCall} />;
   if (toolCall.type === "code_exec") return <CodeExecDetail tc={toolCall} />;
   if (toolCall.type === "deepsearch") return <DeepSearchDetail tc={toolCall} />;
   return <GenericToolDetail tc={toolCall} />;
@@ -158,7 +166,7 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
         </span>
         {tc.query && (
           <span className="text-[11px] text-muted-foreground">
-            "{tc.query}"
+            &quot;{tc.query}&quot;
           </span>
         )}
         <StatusDot status={tc.status} />
@@ -190,6 +198,46 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VisionDetail({ tc }: { tc: ToolCallResult }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Eye className="w-3.5 h-3.5 text-violet-400" />
+        <span className="text-[12px] font-medium text-violet-400">
+          Image Analysis
+        </span>
+        <StatusDot status={tc.status} />
+      </div>
+      {tc.status === "running" && (
+        <div className="flex items-center gap-2 px-2">
+          <div className="w-3 h-3 border-[1.5px] border-violet-400 border-t-transparent rounded-full animate-spin" />
+          <span className="text-[11px] text-muted-foreground">
+            Analyzing image with vision model...
+          </span>
+        </div>
+      )}
+      {tc.imageDescription && (
+        <div className="rounded-lg border border-border overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
+            <Eye className="w-3 h-3 text-violet-400" />
+            <span className="text-[10px] text-muted-foreground">
+              Vision Description
+            </span>
+          </div>
+          <div className="p-3 text-[12px] text-foreground/80 leading-relaxed bg-sandbox-bg">
+            {tc.imageDescription}
+          </div>
+        </div>
+      )}
+      {tc.error && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+          <p className="text-[11px] text-red-400">{tc.error}</p>
         </div>
       )}
     </div>
@@ -369,7 +417,6 @@ export function MessageBubble({
       return;
     }
 
-    // Cancel any ongoing speech
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(message.content);
@@ -422,7 +469,7 @@ export function MessageBubble({
     return (
       <div className="flex justify-end animate-fade-in group">
         <div className="relative max-w-[85%] md:max-w-[75%]">
-          {/* Shrug overlay — above the bubble */}
+          {/* Shrug overlay */}
           {message.shrugOverlay && (
             <div className="text-center mb-1.5">
               <span
@@ -433,6 +480,23 @@ export function MessageBubble({
               </span>
             </div>
           )}
+          {/* Image/document indicators */}
+          {(message.hasImage || message.hasDocument) && (
+            <div className="flex gap-1.5 mb-1.5 justify-end">
+              {message.hasImage && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-[10px] text-blue-400">
+                  📷 {message.imageCount} image
+                  {message.imageCount !== 1 ? "s" : ""}
+                </span>
+              )}
+              {message.hasDocument && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-[10px] text-amber-400">
+                  📄 {message.documentCount} doc
+                  {message.documentCount !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+          )}
           <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
             <p
               className="whitespace-pre-wrap leading-relaxed"
@@ -441,7 +505,7 @@ export function MessageBubble({
               {message.content}
             </p>
           </div>
-          {/* Copy icon — visible on hover */}
+          {/* Copy icon */}
           <button
             onClick={handleCopy}
             className="absolute -bottom-6 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 p-1 rounded hover:bg-secondary cursor-pointer"
@@ -470,7 +534,7 @@ export function MessageBubble({
         </div>
       )}
 
-      {/* Content — full width, no background */}
+      {/* Content */}
       <div
         className={cn(
           "prose prose-sm dark:prose-invert max-w-none leading-relaxed",
@@ -486,7 +550,7 @@ export function MessageBubble({
       {/* Per-Message Sandbox */}
       <MessageSandbox message={message} conversationId={conversationId} />
 
-      {/* Action icons + response time — only show when streaming is complete */}
+      {/* Action icons + response time */}
       {!message.isStreaming && message.content && (
         <div className="flex items-center gap-1 mt-2.5">
           <button
