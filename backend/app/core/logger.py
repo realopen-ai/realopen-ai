@@ -5,27 +5,52 @@ When the environment variable ``DEBUG=true`` (case-insensitive), every
 module that calls ``get_debug_logger()`` will emit verbose log messages
 at DEBUG level.  When DEBUG is false/missing, those loggers are silent.
 
-Usage in any module::
-
-    from app.core.logger import get_debug_logger
-    dbg = get_debug_logger(__name__)
-
-    async def my_function():
-        dbg("Entering my_function")
-        ...
-        dbg("Leaving my_function result=%s", result)
+IMPORTANT: Logging is configured at **import time** (not in the lifespan)
+so that it takes effect before uvicorn sets up its own loggers.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from typing import Any, Callable
 
-# ── Public helpers ──────────────────────────────────────────────────
+# ── Determine DEBUG mode at import time ─────────────────────────────
 
 _is_debug: bool = os.getenv("DEBUG", "false").strip().lower() in ("true", "1", "yes")
+
+# ── Configure logging ONCE at import time ───────────────────────────
+# This MUST happen before uvicorn sets up its loggers, otherwise our
+# debug messages get swallowed.  We use force=True to override any
+# pre-existing configuration.
+
+if _is_debug:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
+    # Ensure the app logger and all sub-loggers propagate to root
+    logging.getLogger("app").setLevel(logging.DEBUG)
+    # Quieten noisy third-party loggers
+    for noisy in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+else:
+    # Even in non-debug mode, ensure basic logging works
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stdout,
+        force=True,
+    )
+
+
+# ── Public helpers ──────────────────────────────────────────────────
 
 
 def is_debug() -> bool:
@@ -41,6 +66,8 @@ def get_debug_logger(name: str) -> Callable[..., None]:
     no-op so there is zero runtime overhead.
     """
     logger = logging.getLogger(name)
+    # Ensure this logger can emit DEBUG messages
+    logger.setLevel(logging.DEBUG)
 
     if _is_debug:
 

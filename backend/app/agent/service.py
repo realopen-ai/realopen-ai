@@ -19,16 +19,31 @@ import httpx
 
 from app.agent.base import ToolCall, get_tool_registry
 from app.config import settings
+from app.core.logger import is_debug
 
 logger = logging.getLogger(__name__)
 
+
+def _dbg(msg: str, *args) -> None:
+    """Debug print + log for the agent service."""
+    if is_debug():
+        try:
+            formatted = msg % args if args else msg
+        except (TypeError, ValueError):
+            formatted = f"{msg} {args}"
+        print(f"[agent] {formatted}", flush=True)
+        logger.debug(msg, *args)
+
+
 # System prompt that teaches the LLM how to use tools
+# NOTE: We use double braces {{ }} to escape literal braces that are not
+# format placeholders, because Python's .format() treats {foo} as a key.
 AGENT_SYSTEM_PROMPT = """You are RealOpen-AI, a helpful AI assistant running entirely offline on the user's hardware.
 
 You have access to the following tools. When you need to use a tool, respond with a JSON block in this exact format:
 
 ```tool
-{"tool": "tool_name", "args": {"arg1": "value1", ...}}
+{{"tool": "tool_name", "args": {{"arg1": "value1", ...}}}}
 ```
 
 Available tools:
@@ -93,6 +108,14 @@ async def run_agent_stream(
         on_tool_call_update: Callback(tool_call_id, updates_dict) when a tool updates
     """
     resolved_model = settings.resolve_model(model)
+    _dbg(
+        "🤖 run_agent_stream START  model=%s → resolved=%s  images=%s  messages=%d",
+        model,
+        resolved_model,
+        "yes" if images else "none",
+        len(messages),
+    )
+
     system_prompt = _build_system_prompt()
 
     # If images are provided, auto-invoke the vision tool first
@@ -153,6 +176,11 @@ async def run_agent_stream(
         # Stream from Ollama
         full_response = ""
         try:
+            _dbg(
+                "🤖 Connecting to Ollama at %s/api/chat  model=%s",
+                settings.OLLAMA_BASE_URL,
+                resolved_model,
+            )
             async with httpx.AsyncClient(timeout=600.0) as client:
                 async with client.stream(
                     "POST",
@@ -182,6 +210,7 @@ async def run_agent_stream(
                             continue
         except httpx.ConnectError:
             logger.error("Cannot connect to Ollama at %s", settings.OLLAMA_BASE_URL)
+            _dbg("🤖 ❌ Cannot connect to Ollama at %s", settings.OLLAMA_BASE_URL)
             yield _sse_event(
                 "error", {"error": "Cannot connect to Ollama. Is it running?"}
             )
@@ -192,6 +221,7 @@ async def run_agent_stream(
                 e.response.status_code,
                 e.response.text[:500],
             )
+            _dbg("🤖 ❌ Ollama HTTP error %s", e.response.status_code)
             yield _sse_event(
                 "error",
                 {
@@ -201,6 +231,7 @@ async def run_agent_stream(
             return
         except httpx.TimeoutException:
             logger.error("Ollama request timed out after 600s")
+            _dbg("🤖 ❌ Ollama timeout")
             yield _sse_event(
                 "error",
                 {
@@ -210,16 +241,19 @@ async def run_agent_stream(
             return
         except Exception as e:
             logger.exception("Unexpected error calling Ollama: %s", e)
+            _dbg("🤖 ❌ Unexpected Ollama error: %s", e)
             yield _sse_event("error", {"error": f"Unexpected error: {e}"})
             return
 
-        logger.info(
-            "LLM response received: %s",
+        _dbg(
+            "🤖 Ollama response received (%d chars): %s",
+            len(full_response),
             full_response[:200] + "..." if len(full_response) > 200 else full_response,
         )
 
         # Check for tool calls in the complete response
         tool_calls = _extract_tool_calls(full_response)
+        _dbg("🤖 Tool calls found: %d", len(tool_calls))
 
         if not tool_calls:
             # No tool calls - stream the final response token by token
@@ -246,6 +280,7 @@ async def run_agent_stream(
         for call in tool_calls:
             tool_name = call.get("tool", "")
             tool_args = call.get("args", {})
+            _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
 
             tool = get_tool_registry().get(tool_name)
             if not tool:
