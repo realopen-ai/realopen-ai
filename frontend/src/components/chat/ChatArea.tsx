@@ -8,6 +8,9 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { createDebugLogger } from "@/lib/debug";
+
+const log = createDebugLogger("ChatArea");
 
 const DEMO_MODE = false; // Set to true to enable demo mode with fake streaming responses (for testing without backend)
 
@@ -38,7 +41,19 @@ export function ChatArea() {
       },
     ) => {
       let convId = activeConversationId;
-      if (!convId) convId = await store.createConversation();
+      if (!convId) {
+        log("No active conversation — creating one...");
+        convId = await store.createConversation();
+        log("Created conversation: %s", convId);
+      }
+
+      log(
+        "handleSend  content=%s  modelOverride=%s  images=%d  docs=%d",
+        content.slice(0, 60),
+        options?.modelOverride,
+        options?.images?.length ?? 0,
+        options?.documents?.length ?? 0,
+      );
 
       // Use model override if provided, otherwise use selected model
       const modelForMessage = options?.modelOverride ?? store.selectedModel;
@@ -155,6 +170,7 @@ export function ChatArea() {
           (options?.images && options.images.length > 0) ||
           (options?.documents && options.documents.length > 0)
         ) {
+          log("Calling streamChatWithFiles...");
           await streamChatWithFiles(
             allMessages,
             modelForMessage,
@@ -167,6 +183,12 @@ export function ChatArea() {
           );
         } else {
           // Use the regular JSON streaming endpoint
+          log(
+            "Calling streamChat  model=%s  convId=%s  messages=%d",
+            modelForMessage,
+            convId,
+            allMessages.length,
+          );
           await streamChat(
             allMessages,
             modelForMessage,

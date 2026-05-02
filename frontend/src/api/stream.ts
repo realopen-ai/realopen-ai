@@ -1,4 +1,7 @@
 import type { ToolCallResult } from "@/store/chatStore";
+import { dbgError, isDebug, createDebugLogger } from "@/lib/debug";
+
+const log = createDebugLogger("stream");
 
 export interface StreamCallbacks {
   onToken: (token: string) => void;
@@ -17,15 +20,7 @@ export interface StreamCallbacks {
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
- * Parse an SSE stream from the backend agent.
- *
- * The backend sends events in this format:
- *   data: {"event": "message", "message": {"role": "assistant", "content": "token"}}
- *   data: {"event": "tool_call", "tool_call": {"type": "websearch", "status": "running", ...}}
- *   data: {"event": "tool_call", "tool_call": {"status": "completed", ...}}
- *   data: {"event": "done", {}}
- *   data: {"event": "error", "error": "..."}
- *   data: [DONE]
+ * Stream chat via the JSON endpoint.
  */
 export async function streamChat(
   messages: { role: string; content: string }[],
@@ -41,23 +36,50 @@ export async function streamChat(
   const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
 
   try {
+    log(
+      "➡️  streamChat START  model=%s  messages=%d  convId=%s",
+      model,
+      messages.length,
+      options?.conversationId,
+    );
+
+    const requestBody = {
+      messages,
+      model,
+      stream: true,
+      conversation_id: options?.conversationId,
+      model_override: options?.modelOverride,
+      shrug: options?.shrug,
+    };
+    log(
+      "   request body: messages=%d  model=%s  stream=true  convId=%s  modelOverride=%s",
+      messages.length,
+      model,
+      options?.conversationId ?? "none",
+      options?.modelOverride ?? "none",
+    );
+
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages,
-        model,
-        stream: true,
-        conversation_id: options?.conversationId,
-        model_override: options?.modelOverride,
-        shrug: options?.shrug,
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    log("   response received  status=%d  ok=%s", response.status, response.ok);
 
+    if (!response.ok) {
+      dbgError(
+        "❌ streamChat response NOT OK  status=%d  statusText=%s",
+        response.status,
+        response.statusText,
+      );
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    log("✅ streamChat response OK — starting SSE parse");
     await parseSSEStream(response, callbacks);
+    log("✅ streamChat complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -65,6 +87,7 @@ export async function streamChat(
       );
     } else {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      dbgError("❌ streamChat error: %s", errorMsg);
       callbacks.onError(errorMsg);
     }
   } finally {
@@ -93,6 +116,12 @@ export async function streamChatWithFiles(
   const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
 
   try {
+    log(
+      "📤 streamChatWithFiles  images=%d  docs=%d",
+      files.images?.length ?? 0,
+      files.documents?.length ?? 0,
+    );
+
     const formData = new FormData();
     formData.append("messages", JSON.stringify(messages));
     if (model) formData.append("model", model);
@@ -115,24 +144,25 @@ export async function streamChatWithFiles(
       }
     }
 
-    console.log("Sending chat stream request with files:", {
-      messages,
-      model,
-      conversationId: options?.conversationId,
-      modelOverride: options?.modelOverride,
-      images: files.images?.map((f) => f.name),
-      documents: files.documents?.map((f) => f.name),
-    });
-
     const response = await fetch("/api/chat/stream/multipart", {
       method: "POST",
       body: formData,
       signal: controller.signal,
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    log("   response received  status=%d  ok=%s", response.status, response.ok);
 
+    if (!response.ok) {
+      dbgError(
+        "❌ streamChatWithFiles response NOT OK  status=%d",
+        response.status,
+      );
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    log("✅ streamChatWithFiles response OK — starting SSE parse");
     await parseSSEStream(response, callbacks);
+    log("✅ streamChatWithFiles complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -140,6 +170,7 @@ export async function streamChatWithFiles(
       );
     } else {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
+      dbgError("❌ streamChatWithFiles error: %s", errorMsg);
       callbacks.onError(errorMsg);
     }
   } finally {
@@ -159,13 +190,17 @@ async function parseSSEStream(
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let eventCount = 0;
 
   // Track tool calls by their backend-provided IDs so updates match
   const toolCallIdMap = new Map<string, string>();
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      log("   SSE reader done signal (after %d events)", eventCount);
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
@@ -175,6 +210,7 @@ async function parseSSEStream(
       if (!line.startsWith("data: ")) continue;
       const data = line.slice(6).trim();
       if (data === "[DONE]") {
+        log("   SSE [DONE] received");
         callbacks.onDone();
         return;
       }
@@ -182,6 +218,11 @@ async function parseSSEStream(
       try {
         const parsed = JSON.parse(data);
         const eventType = parsed.event;
+        eventCount++;
+
+        if (isDebug() && eventCount <= 10) {
+          log("   SSE event #%d: type=%s", eventCount, eventType);
+        }
 
         // ── Message token ──
         if (eventType === "message" && parsed.message?.content) {
@@ -193,7 +234,7 @@ async function parseSSEStream(
           const tc = parsed.tool_call;
 
           if (tc.status === "running") {
-            // New tool call starting
+            log("   🔧 tool_call running: type=%s title=%s", tc.type, tc.title);
             const frontendId = callbacks.onToolCallStart({
               type: tc.type,
               status: "running",
@@ -219,7 +260,7 @@ async function parseSSEStream(
               });
             }
           } else if (tc.status === "completed" || tc.status === "error") {
-            // Tool call update — find the frontend ID
+            log("   🔧 tool_call %s: type=%s", tc.status, tc.type);
             const frontendId = tc.id ? toolCallIdMap.get(tc.id) : undefined;
 
             const updates: Partial<ToolCallResult> = {
@@ -241,12 +282,14 @@ async function parseSSEStream(
 
         // ── Done event ──
         if (eventType === "done") {
+          log("   SSE done event received");
           callbacks.onDone();
           return;
         }
 
         // ── Error event ──
         if (eventType === "error" && parsed.error) {
+          dbgError("   ❌ SSE error event: %s", parsed.error);
           callbacks.onError(
             typeof parsed.error === "string"
               ? parsed.error
@@ -260,6 +303,7 @@ async function parseSSEStream(
   }
 
   // If we reach here, stream ended without [DONE]
+  log("   SSE stream ended without [DONE] — calling onDone() manually");
   callbacks.onDone();
 }
 
@@ -271,6 +315,8 @@ export async function streamChatDemo(
   userMessage: string,
   callbacks: StreamCallbacks,
 ): Promise<void> {
+  log("🎭 streamChatDemo  message=%s", userMessage.slice(0, 80));
+
   const lowerMsg = userMessage.toLowerCase();
 
   const hasSearch =
@@ -364,5 +410,6 @@ export async function streamChatDemo(
     await delay(30 + Math.random() * 40);
   }
 
+  log("🎭 streamChatDemo complete");
   callbacks.onDone();
 }

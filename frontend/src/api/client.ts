@@ -1,4 +1,7 @@
 import type { ModelOption } from "@/store/chatStore";
+import { dbgError, createDebugLogger } from "@/lib/debug";
+
+const log = createDebugLogger("client");
 
 // ─── Models ──────────────────────────────────────────────────────
 
@@ -6,12 +9,16 @@ export async function fetchModels(): Promise<{
   models: ModelOption[];
   profile: string;
 }> {
+  log("➡️  fetchModels  url=/api/profile/models");
   try {
     const res = await fetch("/api/profile/models");
+    log("   response  status=%d  ok=%s", res.status, res.ok);
     if (res.ok) return await res.json();
-  } catch {
-    /* fallback below */
+    dbgError("   ❌ fetchModels NOT OK  status=%d", res.status);
+  } catch (err) {
+    dbgError("   ❌ fetchModels error: %o", err);
   }
+  log("   ⚠️  using fallback models");
   return {
     profile: "16gb",
     models: [
@@ -68,16 +75,18 @@ export async function fetchConversations(
   limit = 50,
   offset = 0,
 ): Promise<ConversationDTO[]> {
+  log("➡️  fetchConversations  limit=%d  offset=%d", limit, offset);
   try {
     const res = await fetch(
       `/api/conversations?limit=${limit}&offset=${offset}`,
     );
+    log("   response  status=%d  ok=%s", res.status, res.ok);
     if (res.ok) {
       const data = await res.json();
       return data.conversations ?? [];
     }
-  } catch {
-    /* ignore */
+  } catch (err) {
+    dbgError("   ❌ fetchConversations error: %o", err);
   }
   return [];
 }
@@ -86,15 +95,17 @@ export async function createConversation(
   title = "New Chat",
   model?: string,
 ): Promise<ConversationDTO | null> {
+  log("➡️  createConversation  title=%s  model=%s", title, model);
   try {
     const params = new URLSearchParams({ title });
     if (model) params.set("model", model);
     const res = await fetch(`/api/conversations?${params.toString()}`, {
       method: "POST",
     });
+    log("   response  status=%d  ok=%s", res.status, res.ok);
     if (res.ok) return await res.json();
-  } catch {
-    /* ignore */
+  } catch (err) {
+    dbgError("   ❌ createConversation error: %o", err);
   }
   return null;
 }
@@ -102,6 +113,7 @@ export async function createConversation(
 export async function fetchConversationMessages(
   conversationId: string,
 ): Promise<MessageDTO[]> {
+  log("➡️  fetchConversationMessages  convId=%s", conversationId);
   try {
     const res = await fetch(`/api/conversations/${conversationId}`);
     if (res.ok) {
