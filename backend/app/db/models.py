@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -36,6 +36,12 @@ class Message(Base):
     content = Column(Text, nullable=False)
     model = Column(String(100), nullable=True)
     tokens = Column(Integer, nullable=True)
+
+    has_image = Column(Boolean, default=False)
+    has_document = Column(Boolean, default=False)
+    image_count = Column(Integer, default=0)
+    document_count = Column(Integer, default=0)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -48,4 +54,5 @@ class Document(Base):
     filename = Column(String(512), nullable=False)
     content = Column(Text, nullable=False)
     embedding = Column(Vector(1536), nullable=True)  # pgvector column
+    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
