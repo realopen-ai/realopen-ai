@@ -44,15 +44,11 @@ export function ChatArea() {
       if (!convId) {
         log("No active conversation — creating one...");
         convId = await store.createConversation();
-        log("Created conversation: %s", convId);
+        log(`Created conversation: ${convId}`);
       }
 
       log(
-        "handleSend  content=%s  modelOverride=%s  images=%d  docs=%d",
-        content.slice(0, 60),
-        options?.modelOverride,
-        options?.images?.length ?? 0,
-        options?.documents?.length ?? 0,
+        `handleSend  content=${content.slice(0, 60)}  modelOverride=${options?.modelOverride}  images=${options?.images?.length ?? 0}  docs=${options?.documents?.length ?? 0}`,
       );
 
       // Use model override if provided, otherwise use selected model
@@ -184,10 +180,7 @@ export function ChatArea() {
         } else {
           // Use the regular JSON streaming endpoint
           log(
-            "Calling streamChat  model=%s  convId=%s  messages=%d",
-            modelForMessage,
-            convId,
-            allMessages.length,
+            `Calling streamChat  model=${modelForMessage}  convId=${convId}  messages=${allMessages.length}`,
           );
           await streamChat(
             allMessages,

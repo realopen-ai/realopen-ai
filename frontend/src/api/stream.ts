@@ -66,13 +66,11 @@ export async function streamChat(
       signal: controller.signal,
     });
 
-    log("   response received  status=%d  ok=%s", response.status, response.ok);
+    log(`   response received  status=${response.status}  ok=${response.ok}`);
 
     if (!response.ok) {
       dbgError(
-        "❌ streamChat response NOT OK  status=%d  statusText=%s",
-        response.status,
-        response.statusText,
+        `❌ streamChat response NOT OK  status=${response.status}  statusText=${response.statusText}`,
       );
       throw new Error(`HTTP ${response.status}`);
     }
@@ -87,7 +85,7 @@ export async function streamChat(
       );
     } else {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      dbgError("❌ streamChat error: %s", errorMsg);
+      dbgError(`❌ streamChat error: ${errorMsg}`);
       callbacks.onError(errorMsg);
     }
   } finally {
@@ -154,8 +152,7 @@ export async function streamChatWithFiles(
 
     if (!response.ok) {
       dbgError(
-        "❌ streamChatWithFiles response NOT OK  status=%d",
-        response.status,
+        `❌ streamChatWithFiles response NOT OK  status=${response.status}`,
       );
       throw new Error(`HTTP ${response.status}`);
     }
@@ -170,7 +167,7 @@ export async function streamChatWithFiles(
       );
     } else {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      dbgError("❌ streamChatWithFiles error: %s", errorMsg);
+      dbgError(`❌ streamChatWithFiles error: ${errorMsg}`);
       callbacks.onError(errorMsg);
     }
   } finally {
@@ -198,7 +195,7 @@ async function parseSSEStream(
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
-      log("   SSE reader done signal (after %d events)", eventCount);
+      log(`   SSE reader done signal (after ${eventCount} events)`);
       break;
     }
 
@@ -221,7 +218,7 @@ async function parseSSEStream(
         eventCount++;
 
         if (isDebug() && eventCount <= 10) {
-          log("   SSE event #%d: type=%s", eventCount, eventType);
+          log(`   SSE event #${eventCount}: type=${eventType}`);
         }
 
         // ── Message token ──
@@ -234,7 +231,7 @@ async function parseSSEStream(
           const tc = parsed.tool_call;
 
           if (tc.status === "running") {
-            log("   🔧 tool_call running: type=%s title=%s", tc.type, tc.title);
+            log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
             const frontendId = callbacks.onToolCallStart({
               type: tc.type,
               status: "running",
@@ -260,7 +257,7 @@ async function parseSSEStream(
               });
             }
           } else if (tc.status === "completed" || tc.status === "error") {
-            log("   🔧 tool_call %s: type=%s", tc.status, tc.type);
+            log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
             const frontendId = tc.id ? toolCallIdMap.get(tc.id) : undefined;
 
             const updates: Partial<ToolCallResult> = {
@@ -289,7 +286,7 @@ async function parseSSEStream(
 
         // ── Error event ──
         if (eventType === "error" && parsed.error) {
-          dbgError("   ❌ SSE error event: %s", parsed.error);
+          dbgError(`   ❌ SSE error event: ${parsed.error}`);
           callbacks.onError(
             typeof parsed.error === "string"
               ? parsed.error
