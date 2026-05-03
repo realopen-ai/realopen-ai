@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.service import run_agent_stream
 from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
-from app.db.session import get_db
+from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ async def chat(
         if conv_id:
             user_content = request.messages[-1].content if request.messages else ""
             await conv_service.add_message(db, conv_id, "user", user_content)
-            dbg("   saved user message to DB (conv_id=%s)", conv_id)
+            dbg("   ✅  saved user message to DB (conv_id=%s)", conv_id)
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             try:
@@ -192,12 +192,48 @@ async def chat(
                 )
 
 
+async def _persist_message(
+    conv_id: uuid.UUID, role: str, content: str, model: str | None = None, **kwargs
+) -> None:
+    """Persist a message using an independent DB session with explicit commit.
+
+    This is safe to call from inside a StreamingResponse generator because
+    it creates its own session — it does not depend on the request-scoped
+    get_db() session which is closed by the time generate() runs.
+    """
+    try:
+        async with async_session_factory() as session:
+            await conv_service.add_message(
+                session, conv_id, role, content, model=model, **kwargs
+            )
+            await session.commit()
+        _log(
+            "   ✅ %s message committed to DB (conv_id=%s, content_len=%d)",
+            role,
+            conv_id,
+            len(content),
+        )
+    except Exception as e:
+        _log("  ❌ Failed to persist %s message: %s", role, e)
+
+
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat_stream(request: ChatRequest):
     """Send a chat completion request with agent tools (streaming via SSE).
 
     The `model` field accepts roles, types, or direct IDs (see /chat).
     The agent loop will automatically invoke tools when needed.
+
+    IMPORTANT — Database sessions & StreamingResponse:
+    The get_db() dependency commits and closes the session AFTER the route
+    handler returns.  But with StreamingResponse, the route handler returns
+    immediately while the generate() function runs later (during response
+    streaming).  So by the time generate() tries to use the session, it is
+    already committed/closed.
+
+    Solution: use independent sessions (async_session_factory) with explicit
+    commits for both user and assistant messages in streaming endpoints.
+    We do NOT use Depends(get_db) on streaming endpoints.
     """
     _log(
         "🔵 POST /chat/stream  model=%s  model_override=%s  stream=%s  conv_id=%s  messages_count=%d",
@@ -224,77 +260,81 @@ async def chat_stream(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     if request.conversation_id:
         try:
             conv_id = _parse_uuid(request.conversation_id)
-            dbg("   parsed conversation_id=%s", conv_id)
+            _log("   parsed conversation_id=%s", conv_id)
         except ValueError:
-            dbg("   ⚠️  invalid conversation_id=%s", request.conversation_id)
+            _log("   ⚠️  invalid conversation_id=%s", request.conversation_id)
 
-    # Persist the user message at the start of the stream
+    # Persist the user message EAGERLY using an independent session.
+    # We must commit before returning the StreamingResponse because there
+    # is no request-scoped DB session to rely on.
     if conv_id and messages:
-        try:
-            await conv_service.add_message(
-                db,
-                conv_id,
-                "user",
-                messages[-1]["content"],
-                has_image=False,
-                has_document=False,
-            )
-        except Exception as e:
-            logger.warning("Failed to persist user message: %s", e)
+        await _persist_message(
+            conv_id,
+            "user",
+            messages[-1]["content"],
+            has_image=False,
+            has_document=False,
+        )
+
+    # Capture for closure — these are used inside generate() which runs
+    # after this function has already returned
+    _conv_id = conv_id
+    _resolved_model = resolved_model
 
     async def generate():
-        dbg("   🔄 generate() started — entering agent loop")
+        _log("   🔄 generate() started — entering agent loop")
         chunk_count = 0
-        full_assistant_content = (
-            ""  # To accumulate assistant response for DB persistence
-        )
+        full_assistant_content = ""
         try:
             async for chunk in run_agent_stream(
                 messages=messages,
-                model=resolved_model,
+                model=_resolved_model,
                 images=None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
-                    dbg(
+                    _log(
                         "   📦 yielding chunk #%d: %s",
                         chunk_count,
                         chunk[:200] if chunk else "(empty)",
                     )
+                # Accumulate assistant content from SSE chunks
                 data_str = chunk.strip()
                 if data_str.startswith("data: "):
-                    parsed = json.loads(data_str[6:])
-                    if parsed.get("event") == "message" and parsed.get(
-                        "message", {}
-                    ).get("content"):
-                        full_assistant_content += parsed["message"]["content"]
+                    try:
+                        parsed = json.loads(data_str[6:])
+                        if parsed.get("event") == "message" and parsed.get(
+                            "message", {}
+                        ).get("content"):
+                            full_assistant_content += parsed["message"]["content"]
+                    except json.JSONDecodeError:
+                        pass
                 yield chunk
         except Exception as e:
             import traceback
 
             _log("   ❌ generate() exception: %s\n%s", e, traceback.format_exc())
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
-        _log("   ✅ generate() finished — total chunks=%d", chunk_count)
-        yield "data: [DONE]\n\n"
 
-        # Persist the assistant message after streaming completes
-        if conv_id and full_assistant_content:
-            try:
-                _log(
-                    "   💾 Saving assistant message to DB (conv_id=%s, content_length=%d)",
-                    conv_id,
-                    len(full_assistant_content),
-                )
-                await conv_service.add_message(
-                    db,
-                    conv_id,
-                    "assistant",
-                    full_assistant_content,
-                    model=resolved_model,
-                )
-                _log("   ✅ Assistant message saved to DB (conv_id=%s)", conv_id)
-            except Exception as e:
-                dbg("   ❌ Failed to persist assistant message: %s", e)
+        _log(
+            "   ✅ generate() finished — total chunks=%d  content_len=%d",
+            chunk_count,
+            len(full_assistant_content),
+        )
+
+        # Persist the assistant message BEFORE yielding [DONE].
+        # If we yield [DONE] first, the client may disconnect and the
+        # ASGI server may garbage-collect the generator before the DB
+        # write completes.
+        if _conv_id and full_assistant_content:
+            await _persist_message(
+                _conv_id,
+                "assistant",
+                full_assistant_content,
+                model=_resolved_model,
+            )
+
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),
@@ -315,7 +355,6 @@ async def chat_stream_multipart(
     conversation_id: Optional[str] = Form(None),
     images: List[UploadFile] = File(default=[]),
     documents: List[UploadFile] = File(default=[]),
-    db: AsyncSession = Depends(get_db),
 ):
     """Stream chat with optional image and document uploads.
 
@@ -326,8 +365,11 @@ async def chat_stream_multipart(
     - conversation_id: Optional conversation ID for persistence
     - images: Image files (auto-invokes vision model)
     - documents: Document files (stored for future RAG, no processing yet)
+
+    Same independent-session pattern as /chat/stream for DB persistence.
+    No Depends(get_db) - we use async_session_factory explicitly.
     """
-    dbg(
+    _log(
         "🔵 POST /chat/stream/multipart  model=%s  model_override=%s  conv_id=%s  images=%d  docs=%d",
         model,
         model_override,
@@ -339,24 +381,24 @@ async def chat_stream_multipart(
     # Parse messages
     try:
         parsed_messages = json.loads(messages)
-        dbg("   parsed_messages count=%d", len(parsed_messages))
+        _log("   parsed_messages count=%d", len(parsed_messages))
     except json.JSONDecodeError:
-        dbg("   ⚠️  JSONDecodeError parsing messages, using raw string")
+        _log("   ⚠️  JSONDecodeError parsing messages, using raw string")
         parsed_messages = [{"role": "user", "content": messages}]
 
     raw_model = model_override or model or "default"
-    dbg("   raw_model=%s", raw_model)
+    _log("   raw_model=%s", raw_model)
     resolved_model = settings.resolve_model(raw_model)
-    dbg("   resolved_model=%s", resolved_model)
+    _log("   resolved_model=%s", resolved_model)
 
     # Resolve conversation ID for persistence
     conv_id = None
     if conversation_id:
         try:
             conv_id = _parse_uuid(conversation_id)
-            dbg("   parsed conversation_id=%s", conv_id)
+            _log("   parsed conversation_id=%s", conv_id)
         except ValueError:
-            dbg("   ⚠️  invalid conversation_id=%s", conversation_id)
+            _log("   ⚠️  invalid conversation_id=%s", conversation_id)
 
     # Encode images to base64
     image_b64_list = []
@@ -364,8 +406,8 @@ async def chat_stream_multipart(
         content = await img_file.read()
         b64 = base64.b64encode(content).decode("utf-8")
         image_b64_list.append(b64)
-        dbg(
-            "   encoded image: %s (%d bytes → %d b64 chars)",
+        _log(
+            "   encoded image: %s (%d bytes, %d b64 chars)",
             img_file.filename,
             len(content),
             len(b64),
@@ -376,63 +418,67 @@ async def chat_stream_multipart(
     doc_count = len(documents)
     if doc_count > 0:
         logger.info("Received %d documents (RAG not yet implemented)", doc_count)
-        dbg("   documents received: %s", [d.filename for d in documents])
+        _log("   documents received: %s", [d.filename for d in documents])
 
-    # Persist the user message
+    # Persist the user message EAGERLY using an independent session
     if conv_id and parsed_messages:
-        try:
-            await conv_service.add_message(
-                db,
-                conv_id,
-                "user",
-                parsed_messages[-1]["content"],
-                has_image=len(images) > 0,
-                has_document=len(documents) > 0,
-                image_count=len(images),
-                document_count=len(documents),
-            )
-        except Exception as e:
-            dbg("   ❌ Failed to save user message with media info: %s", e)
+        await _persist_message(
+            conv_id,
+            "user",
+            parsed_messages[-1]["content"],
+            has_image=len(images) > 0,
+            has_document=len(documents) > 0,
+            image_count=len(images),
+            document_count=len(documents),
+        )
+
+    # Capture for closure
+    _conv_id = conv_id
+    _resolved_model = resolved_model
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — entering agent loop")
         chunk_count = 0
-        full_assistant_content = (
-            ""  # To accumulate assistant response for DB persistence
-        )
+        full_assistant_content = ""
         try:
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
-                model=resolved_model,
+                model=_resolved_model,
                 images=image_b64_list if image_b64_list else None,
             ):
                 chunk_count += 1
+                # Accumulate assistant content from SSE chunks
                 data_str = chunk.strip()
                 if data_str.startswith("data: "):
-                    parsed = json.loads(data_str[6:])
-                    if parsed.get("event") == "message" and parsed.get(
-                        "message", {}
-                    ).get("content"):
-                        full_assistant_content += parsed["message"]["content"]
+                    try:
+                        parsed = json.loads(data_str[6:])
+                        if parsed.get("event") == "message" and parsed.get(
+                            "message", {}
+                        ).get("content"):
+                            full_assistant_content += parsed["message"]["content"]
+                    except json.JSONDecodeError:
+                        pass
                 yield chunk
         except Exception as e:
             dbg("   ❌ generate() exception: %s", e)
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
-        dbg("   ✅ generate() finished (multipart) — total chunks=%d", chunk_count)
-        yield "data: [DONE]\n\n"
 
-        # Persist the assistant message after streaming completes
-        if conv_id and full_assistant_content:
-            try:
-                await conv_service.add_message(
-                    db,
-                    conv_id,
-                    "assistant",
-                    full_assistant_content,
-                    model=resolved_model,
-                )
-            except Exception as e:
-                logger.warning("Failed to persist assistant message: %s", e)
+        _log(
+            "   ✅ generate() finished (multipart) — total chunks=%d  content_len=%d",
+            chunk_count,
+            len(full_assistant_content),
+        )
+
+        # Persist the assistant message BEFORE yielding [DONE].
+        if _conv_id and full_assistant_content:
+            await _persist_message(
+                _conv_id,
+                "assistant",
+                full_assistant_content,
+                model=_resolved_model,
+            )
+
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),

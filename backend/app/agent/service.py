@@ -4,9 +4,17 @@ AI Agent service - orchestrates LLM calls and tool execution.
 The agent loop:
 1. Build the prompt with system message + tool schemas
 2. Send messages to Ollama
-3. If the LLM requests a tool call, execute it and feed results back
-4. Repeat until the LLM produces a final answer (no more tool calls)
-5. Stream the final response back to the API layer
+3. Stream tokens from Ollama in real-time to the client
+4. If the LLM requests a tool call (detected after full response), execute it
+5. Feed tool results back and repeat until no more tool calls
+6. Stream the final response back to the API layer
+
+IMPORTANT — Streaming strategy:
+We stream tokens from Ollama to the client AS they arrive for immediate
+feedback. When we detect a potential tool-call block (```tool), we buffer
+tokens until we know whether it's a real tool call or a false alarm.
+This gives the user real-time streaming for normal text while still
+supporting the tool-call agent loop.
 """
 
 import json
@@ -64,6 +72,9 @@ IMPORTANT RULES:
 
 TOOL_JSON_PATTERN = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
 
+# Marker that indicates the start of a potential tool-call block
+_TOOL_BLOCK_START = "```tool"
+
 
 def _build_system_prompt() -> str:
     """Build the system prompt with current tool schemas."""
@@ -90,6 +101,178 @@ def _strip_tool_blocks(text: str) -> str:
     return TOOL_JSON_PATTERN.sub("", text).strip()
 
 
+class _TokenStreamer:
+    """Smart buffer that streams tokens immediately but buffers around
+    potential tool-call blocks.
+
+    Strategy:
+    - Stream tokens to the client as they arrive (immediate feedback)
+    - When we detect the start of a ```tool block, stop streaming and buffer
+    - Because tokens may split ``` and tool, we first detect ``` and enter
+      a "maybe tool block" state, then confirm if it's actually ```tool
+    - When the block closes with ```, the buffered content is a tool call —
+      we DON'T stream it (it will be handled via tool_call SSE events)
+    - Any text after the closing ``` is streamed normally
+
+    In practice, tool-call blocks are rare, so the common case is pure
+    pass-through streaming.
+
+    Implementation detail: we track `streamed_len` - the number of chars
+    from `full_response` that have already been emitted as SSE message
+    events.
+    """
+
+    def __init__(self) -> None:
+        self.full_response = ""  # Complete accumulated response
+        self.streamed_len = 0  # How many chars we've already emitted
+
+        self.in_tool_block = False  # Are we inside a confirmed ```tool block?
+        self.tool_block_buf = ""  # Buffer for confirmed tool block
+
+        self.maybe_tool_block = False  # Saw ``` but not yet sure it's ```tool
+        self.maybe_buf = ""  # Buffer for potential tool block
+
+    def feed(self, token: str) -> Optional[str]:
+        """Feed a token from Ollama. Returns an SSE string to yield, or None."""
+        self.full_response += token
+
+        # ------------------------------------------------------------
+        # CASE 1 — Currently inside a confirmed ```tool block
+        # ------------------------------------------------------------
+        if self.in_tool_block:
+            self.tool_block_buf += token
+
+            # Check if the tool block has closed (look for ``` after opening)
+            close_idx = self.tool_block_buf.find("```", len(_TOOL_BLOCK_START))
+            if close_idx != -1:
+                # Everything until closing ``` is tool block (do not stream)
+                after_close = self.tool_block_buf[close_idx + 3 :]
+
+                self.in_tool_block = False
+                self.tool_block_buf = ""
+
+                # Mark tool block as consumed
+                self.streamed_len = len(self.full_response)
+
+                # Stream any trailing text after closing ```
+                if after_close:
+                    return _sse_event(
+                        "message",
+                        {"message": {"role": "assistant", "content": after_close}},
+                    )
+            return None
+
+        # ------------------------------------------------------------
+        # CASE 2 — We saw ``` and are checking if it's ```tool
+        # ------------------------------------------------------------
+        if self.maybe_tool_block:
+            self.maybe_buf += token
+
+            # Wait until we have enough characters to confirm ```tool
+            if len(self.maybe_buf) >= len(_TOOL_BLOCK_START):
+                if self.maybe_buf.startswith(_TOOL_BLOCK_START):
+                    # Confirmed tool block
+                    self.in_tool_block = True
+                    self.tool_block_buf = self.maybe_buf
+
+                    self.maybe_tool_block = False
+                    self.maybe_buf = ""
+                    return None
+                else:
+                    # False alarm — this was just a normal ``` block
+                    out = self.maybe_buf
+
+                    self.maybe_tool_block = False
+                    self.maybe_buf = ""
+
+                    self.streamed_len = len(self.full_response)
+                    return _sse_event(
+                        "message",
+                        {"message": {"role": "assistant", "content": out}},
+                    )
+            return None
+
+        # ------------------------------------------------------------
+        # CASE 3 — Normal streaming, look for ``` start
+        # ------------------------------------------------------------
+        search_region = self.full_response[self.streamed_len :]
+        idx = search_region.find("```")
+
+        if idx != -1:
+            # Found ``` — potential start of tool block
+            idx += self.streamed_len
+
+            # Stream everything BEFORE ```
+            before = self.full_response[self.streamed_len : idx]
+            self.streamed_len = idx
+
+            # Enter maybe-tool-block state
+            self.maybe_tool_block = True
+            self.maybe_buf = self.full_response[idx:]
+
+            if before:
+                return _sse_event(
+                    "message",
+                    {"message": {"role": "assistant", "content": before}},
+                )
+            return None
+
+        # ------------------------------------------------------------
+        # CASE 4 — Normal token, stream immediately
+        # ------------------------------------------------------------
+        self.streamed_len = len(self.full_response)
+        return _sse_event(
+            "message",
+            {"message": {"role": "assistant", "content": token}},
+        )
+
+    def flush_remaining(self) -> Optional[str]:
+        """Flush any un-streamed text after Ollama completes.
+
+        If a tool block never closed, treat it as normal text.
+        """
+
+        if self.in_tool_block:
+            # Tool block never closed — stream as normal text
+            self.in_tool_block = False
+            unstreamed = self.tool_block_buf
+            self.tool_block_buf = ""
+            self.streamed_len = len(self.full_response)
+            if unstreamed:
+                return _sse_event(
+                    "message",
+                    {"message": {"role": "assistant", "content": unstreamed}},
+                )
+            return None
+
+        if self.maybe_tool_block:
+            # We saw ``` but never confirmed ```tool — treat as normal text
+            self.maybe_tool_block = False
+            unstreamed = self.maybe_buf
+            self.maybe_buf = ""
+            self.streamed_len = len(self.full_response)
+            if unstreamed:
+                return _sse_event(
+                    "message",
+                    {"message": {"role": "assistant", "content": unstreamed}},
+                )
+            return None
+
+        if self.streamed_len < len(self.full_response):
+            remaining = self.full_response[self.streamed_len :]
+            self.streamed_len = len(self.full_response)
+            if remaining:
+                return _sse_event(
+                    "message",
+                    {"message": {"role": "assistant", "content": remaining}},
+                )
+        return None
+
+    def get_clean_text(self) -> str:
+        """Get the response text with tool blocks stripped."""
+        return _strip_tool_blocks(self.full_response)
+
+
 async def run_agent_stream(
     messages: List[Dict[str, Any]],
     model: str = "default",
@@ -100,6 +283,11 @@ async def run_agent_stream(
     """
     Run the agent loop and yield SSE-formatted data chunks.
 
+    Tokens from Ollama are streamed to the client in real-time for
+    immediate feedback. When the full response is received, we check
+    for tool-call blocks. If found, we execute the tools and continue
+    the loop; if not, we yield a "done" event.
+
     Args:
         messages: Conversation messages [{role, content}, ...]
         model: Model role/type/id to resolve
@@ -109,7 +297,7 @@ async def run_agent_stream(
     """
     resolved_model = settings.resolve_model(model)
     _dbg(
-        "🤖 run_agent_stream START  model=%s → resolved=%s  images=%s  messages=%d",
+        "🤖 run_agent_stream START  model=%s -> resolved=%s  images=%s  messages=%d",
         model,
         resolved_model,
         "yes" if images else "none",
@@ -167,19 +355,20 @@ async def run_agent_stream(
 
     # Agent loop: up to 5 tool-call rounds
     max_rounds = 5
-    for _ in range(max_rounds):
+    for round_num in range(max_rounds):
         # Build Ollama request messages
         ollama_messages = [{"role": "system", "content": system_prompt}]
         for m in messages:
             ollama_messages.append({"role": m["role"], "content": m["content"]})
 
-        # Stream from Ollama
-        full_response = ""
+        # Stream from Ollama - tokens are streamed to the client immediately
+        streamer = _TokenStreamer()
         try:
             _dbg(
-                "🤖 Connecting to Ollama at %s/api/chat  model=%s",
+                "🤖 Connecting to Ollama at %s/api/chat  model=%s  round=%d",
                 settings.OLLAMA_BASE_URL,
                 resolved_model,
+                round_num + 1,
             )
             async with httpx.AsyncClient(timeout=600.0) as client:
                 async with client.stream(
@@ -199,11 +388,9 @@ async def run_agent_stream(
                             chunk = json.loads(line)
                             token = chunk.get("message", {}).get("content", "")
                             if token:
-                                full_response += token
-                                # Check if this looks like a tool call being formed
-                                # If so, we buffer until the block is complete
-                                # For now, just yield everything and process after
-                                pass
+                                sse = streamer.feed(token)
+                                if sse:
+                                    yield sse
                             if chunk.get("done"):
                                 break
                         except json.JSONDecodeError:
@@ -245,6 +432,12 @@ async def run_agent_stream(
             yield _sse_event("error", {"error": f"Unexpected error: {e}"})
             return
 
+        # Flush any remaining buffered text
+        flush = streamer.flush_remaining()
+        if flush:
+            yield flush
+
+        full_response = streamer.full_response
         _dbg(
             "🤖 Ollama response received (%d chars): %s",
             len(full_response),
@@ -256,27 +449,11 @@ async def run_agent_stream(
         _dbg("🤖 Tool calls found: %d", len(tool_calls))
 
         if not tool_calls:
-            # No tool calls - stream the final response token by token
-            clean_text = _strip_tool_blocks(full_response)
-            if clean_text:
-                # Re-stream the clean text word by word
-                words = clean_text.split(" ")
-                for i, word in enumerate(words):
-                    token = word if i == 0 else f" {word}"
-                    yield _sse_event(
-                        "message", {"message": {"role": "assistant", "content": token}}
-                    )
+            # No tool calls - we've already streamed all the text, just signal done
             yield _sse_event("done", {})
             return
 
         # Execute tool calls
-        text_before_tools = _strip_tool_blocks(full_response)
-        if text_before_tools:
-            yield _sse_event(
-                "message",
-                {"message": {"role": "assistant", "content": text_before_tools}},
-            )
-
         for call in tool_calls:
             tool_name = call.get("tool", "")
             tool_args = call.get("args", {})
