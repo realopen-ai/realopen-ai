@@ -524,7 +524,7 @@ export function MessageBubble({
 
   // ─── Assistant Message ────────────────────────────────────────
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in wrap-break-word">
       {/* Tool Call Badges */}
       {message.toolCalls.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
