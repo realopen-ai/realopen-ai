@@ -531,6 +531,7 @@ async def run_agent_stream(
 
             # Notify frontend that tool completed
             if result.tool_call:
+                result.tool_call.id = tc_id  # Ensure the tool call ID is consistent
                 update_dict = _tool_call_to_update_dict(result.tool_call)
                 update_dict["id"] = (
                     result.tool_call.id
