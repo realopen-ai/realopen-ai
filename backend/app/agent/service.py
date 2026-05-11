@@ -309,8 +309,8 @@ async def run_agent_stream(
     # If images are provided, auto-invoke the vision tool first
     if images:
         vision_tool = get_tool_registry().get("use_vision")
-        logger.info(
-            "Received %d images, invoking vision tool: %s",
+        _dbg(
+            "   received %d images, invoking vision tool: %s",
             len(images),
             "found" if vision_tool else "not found",
         )
@@ -328,6 +328,11 @@ async def run_agent_stream(
                 if on_tool_call_start:
                     on_tool_call_start(_tool_call_to_dict(tool_call))
 
+                yield _sse_event(
+                    "tool_call",
+                    {"tool_call": _tool_call_to_dict(tool_call)},
+                )
+
                 result = await vision_tool.execute(
                     image_base64=img_b64,
                     prompt="Describe this image in detail. What do you see?",
@@ -335,17 +340,27 @@ async def run_agent_stream(
                 )
 
                 if result.tool_call:
+                    result.tool_call.id = (
+                        tool_call.id
+                    )  # Ensure consistent ID for frontend mapping
+
                     if on_tool_call_update:
                         on_tool_call_update(
                             result.tool_call.id,
                             _tool_call_to_update_dict(result.tool_call),
                         )
                     # Inject vision result into conversation
-                    logger.info(
-                        "Vision tool completed with success=%s, description=%s",
+                    _dbg(
+                        "   ✅ vision tool completed with success=%s, description=%s",
                         result.success,
                         result.tool_call.image_description,
                     )
+
+                    yield _sse_event(
+                        "tool_call",
+                        {"tool_call": _tool_call_to_dict(result.tool_call)},
+                    )
+
                     messages.append(
                         {
                             "role": "assistant",
@@ -439,7 +454,8 @@ async def run_agent_stream(
 
         full_response = streamer.full_response
         _dbg(
-            "🤖 Ollama response received (%d chars): %s",
+            "🤖 Ollama [%s] response received (%d chars): %s",
+            resolved_model,
             len(full_response),
             full_response[:200] + "..." if len(full_response) > 200 else full_response,
         )

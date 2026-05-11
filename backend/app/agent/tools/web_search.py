@@ -76,7 +76,19 @@ class WebSearchTool(BaseTool):
         }
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(url, params=params)
+            response = await client.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/128.0.0.0 Safari/537.36"
+                    ),
+                    "X-Forwarded-For": "127.0.0.1",
+                    "X-Real-IP": "127.0.0.1",
+                },
+            )
             response.raise_for_status()
             data = response.json()
 

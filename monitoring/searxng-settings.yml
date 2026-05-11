@@ -26,6 +26,11 @@ ui:
 outgoing:
   request_timeout: 10
   max_request_timeout: 15
+  engines:
+    - name: google
+      engine: google
+      shortcut: go
+      use_mobile_ui: true
 
 valkey:
   url: valkey://redis:6379/0
