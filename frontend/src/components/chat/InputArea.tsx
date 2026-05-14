@@ -63,7 +63,7 @@ function SlashCommandMenu({
   onSelect: (cmd: SlashCommand) => void;
 }) {
   return (
-    <div className="absolute bottom-full left-0 right-0 mb-2 max-w-3xl mx-auto z-50">
+    <div className="absolute bottom-full left-0 right-0 mb-2 max-w-3xl mx-auto z-40">
       <div className="bg-popover border border-border rounded-xl shadow-2xl overflow-hidden">
         <div className="px-3 py-2 border-b border-border/50">
           <div className="flex items-center gap-1.5 text-muted-foreground">
