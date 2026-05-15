@@ -4,6 +4,7 @@ import {
   createConversation as apiCreateConversation,
   deleteConversation as apiDeleteConversation,
   fetchConversationMessages,
+  fetchConversationDetail,
   type ConversationDTO,
   type MessageDTO,
 } from "@/api/client";
@@ -92,8 +93,9 @@ interface ChatState {
   loadConversations: () => Promise<void>;
   createConversation: () => Promise<string>;
   deleteConversation: (id: string) => Promise<void>;
-  setActiveConversation: (id: string) => void;
+  setActiveConversation: (id: string | null) => void;
   loadMessages: (conversationId: string) => Promise<void>;
+  loadConversationById: (id: string) => Promise<boolean>;
   addMessage: (
     conversationId: string,
     message: Omit<
@@ -185,8 +187,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoadingConversations: true });
     try {
       const dtos = await fetchConversations();
-      const convs = dtos.map(dtoToConversation);
-      set({ conversations: convs, isLoadingConversations: false });
+      const newConvs = dtos.map(dtoToConversation);
+      set((s) => ({
+        conversations: newConvs.map((newConv) => {
+          // Preserve messages from existing conversations in store
+          const existing = s.conversations.find((c) => c.id === newConv.id);
+          if (existing && existing.messages.length > 0) {
+            return { ...newConv, messages: existing.messages };
+          }
+          return newConv;
+        }),
+        isLoadingConversations: false,
+      }));
     } catch {
       set({ isLoadingConversations: false });
     }
@@ -228,10 +240,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Optimistically remove from local state
     set((s) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
+      // Always clear active when deleting the active conversation.
+      // The Sidebar's handleDelete will navigate to "/" to match.
       activeConversationId:
-        s.activeConversationId === id
-          ? (s.conversations.find((c) => c.id !== id)?.id ?? null)
-          : s.activeConversationId,
+        s.activeConversationId === id ? null : s.activeConversationId,
     }));
     // Delete from backend
     await apiDeleteConversation(id);
@@ -240,9 +252,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveConversation: (id) => {
     set({ activeConversationId: id });
     // Load messages if not yet loaded
-    const conv = get().conversations.find((c) => c.id === id);
-    if (conv && conv.messages.length === 0) {
-      get().loadMessages(id);
+    if (id) {
+      const conv = get().conversations.find((c) => c.id === id);
+      if (conv && conv.messages.length === 0) {
+        get().loadMessages(id);
+      }
     }
   },
 
@@ -257,6 +271,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
     } catch {
       /* ignore - messages will stay empty */
+    }
+  },
+
+  /**
+   * Load a conversation by ID from the backend (for direct URL access).
+   * Returns true if the conversation was found, false if not (404).
+   */
+  loadConversationById: async (id: string) => {
+    try {
+      const detail = await fetchConversationDetail(id);
+      if (!detail) return false;
+
+      const conv: Conversation = {
+        ...dtoToConversation(detail.conversation),
+        messages: detail.messages.map(dtoToMessage),
+      };
+
+      set((s) => {
+        const exists = s.conversations.find((c) => c.id === conv.id);
+        if (exists) {
+          // Update messages on existing conversation (preserve if already loaded)
+          return {
+            conversations: s.conversations.map((c) =>
+              c.id === conv.id
+                ? c.messages.length > 0
+                  ? c // Keep existing messages if already loaded
+                  : { ...c, messages: conv.messages }
+                : c,
+            ),
+            activeConversationId: conv.id,
+          };
+        }
+        // Add new conversation to the list
+        return {
+          conversations: [conv, ...s.conversations],
+          activeConversationId: conv.id,
+        };
+      });
+      return true;
+    } catch {
+      return false;
     }
   },
 

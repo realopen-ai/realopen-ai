@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   Plus,
   MessageSquare,
@@ -19,11 +20,11 @@ import { cn } from "@/lib/utils";
 
 export function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
-  const activeConversationId = useChatStore((s) => s.activeConversationId);
-  const createConversation = useChatStore((s) => s.createConversation);
   const deleteConversation = useChatStore((s) => s.deleteConversation);
-  const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const profileName = useChatStore((s) => s.profileName);
+
+  const navigate = useNavigate();
+  const { conversationId: urlConvId } = useParams<{ conversationId: string }>();
 
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -34,18 +35,25 @@ export function Sidebar() {
   const t = useT();
 
   const handleNewChat = () => {
-    createConversation();
+    // Navigate to home page — the user will start a new conversation
+    // by sending a message from the welcome screen
+    navigate("/");
     setSidebarMobileOpen(false);
   };
 
   const handleSelect = (id: string) => {
-    setActiveConversation(id);
+    // Navigate to the conversation URL
+    navigate(`/${id}`);
     setSidebarMobileOpen(false);
   };
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     deleteConversation(id);
+    // If we're currently viewing this conversation, go home
+    if (id === urlConvId) {
+      navigate("/");
+    }
   };
 
   const sidebarContent = (
@@ -113,7 +121,7 @@ export function Sidebar() {
               onClick={() => handleSelect(conv.id)}
               className={cn(
                 "group flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition-colors",
-                conv.id === activeConversationId
+                conv.id === urlConvId
                   ? "bg-sidebar-accent text-foreground"
                   : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
                 sidebarCollapsed && "justify-center px-0",

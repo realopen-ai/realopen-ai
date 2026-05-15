@@ -1,9 +1,10 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { InputArea } from "@/components/chat/InputArea";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
-import { useChatStore } from "@/store/chatStore";
+import { useChatStore, type ToolCallResult } from "@/store/chatStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
@@ -15,21 +16,93 @@ const log = createDebugLogger("ChatArea");
 const DEMO_MODE = false; // Set to true to enable demo mode with fake streaming responses (for testing without backend)
 
 export function ChatArea() {
-  const store = useChatStore();
-  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const { conversationId: urlConvId } = useParams<{ conversationId: string }>();
+  const navigate = useNavigate();
   const isStreaming = useChatStore((s) => s.isStreaming);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const conv = store.getActiveConversation();
+  // When a new conversation is created from the home page, we keep the
+  // conversation ID here so we can display messages before the URL changes.
+  // After the stream finishes, we navigate to /{convId} seamlessly.
+  const [pendingConvId, setPendingConvId] = useState<string | null>(null);
+
+  // Loading state for when fetching a conversation from the backend by URL
+  const [isLoadingConv, setIsLoadingConv] = useState(false);
+
+  // Stream generation counter — prevents stale onDone/onError callbacks
+  // from redirecting the user after they've navigated away.
+  const streamGenerationRef = useRef(0);
+
+  // The effective conversation ID: URL param takes priority, then pending
+  const effectiveConvId = urlConvId ?? pendingConvId ?? null;
+
+  const conv = useChatStore((s) =>
+    effectiveConvId
+      ? s.conversations.find((c) => c.id === effectiveConvId)
+      : undefined,
+  );
   const messages = conv?.messages ?? [];
 
+  // ── Sync URL conversation ID with store on mount / URL change ──
+  useEffect(() => {
+    if (!urlConvId) {
+      // On home page — clear active conversation (unless there's a pending one)
+      if (!pendingConvId) {
+        useChatStore.getState().setActiveConversation(null);
+      }
+      return;
+    }
+
+    // Check if conversation exists in the store
+    const existsInStore = useChatStore
+      .getState()
+      .conversations.find((c) => c.id === urlConvId);
+
+    if (existsInStore) {
+      // Already in store — just set as active and load messages if needed
+      useChatStore.getState().setActiveConversation(urlConvId);
+      return;
+    }
+
+    // Not in store — try to load from backend
+    setIsLoadingConv(true);
+    useChatStore
+      .getState()
+      .loadConversationById(urlConvId)
+      .then((found) => {
+        setIsLoadingConv(false);
+        if (!found) {
+          log("Conversation %s not found, redirecting to home", urlConvId);
+          navigate("/", { replace: true });
+        }
+      });
+  }, [urlConvId, pendingConvId, navigate]);
+
+  // ── Clear pending state when URL catches up ──
+  useEffect(() => {
+    if (urlConvId && pendingConvId && urlConvId === pendingConvId) {
+      // URL now matches the pending conversation — clean up
+      setPendingConvId(null);
+      useChatStore.getState().setActiveConversation(urlConvId);
+    }
+  }, [urlConvId, pendingConvId]);
+
+  // ── Increment stream generation when navigating away ──
+  useEffect(() => {
+    // When the URL changes, increment the stream generation so that
+    // any stale onDone/onError callbacks don't redirect the user
+    streamGenerationRef.current += 1;
+  }, [urlConvId]);
+
+  // ── Scroll to bottom on new messages ──
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
+  // ── Handle sending a message ──
   const handleSend = useCallback(
     async (
       content: string,
@@ -40,11 +113,22 @@ export function ChatArea() {
         documents?: File[];
       },
     ) => {
-      let convId = activeConversationId;
+      const store = useChatStore.getState();
+
+      // Determine which conversation to use
+      let convId = effectiveConvId;
+      const isFromHomePage = !urlConvId && !pendingConvId;
+
       if (!convId) {
         log("No active conversation — creating one...");
         convId = await store.createConversation();
         log(`Created conversation: ${convId}`);
+
+        // Track this as a pending conversation (created from home page)
+        // We'll redirect after streaming completes
+        if (isFromHomePage) {
+          setPendingConvId(convId);
+        }
       }
 
       log(
@@ -97,20 +181,26 @@ export function ChatArea() {
         }));
       }
 
+      // Capture values for the closure — these won't change after this point
+      const capturedConvId = convId;
+      const capturedIsFromHomePage = isFromHomePage;
+      const capturedGeneration = ++streamGenerationRef.current;
+
       const callbacks = {
         onToken: (token: string) =>
-          store.appendToMessage(convId!, assistantMsgId, token),
+          useChatStore
+            .getState()
+            .appendToMessage(capturedConvId, assistantMsgId, token),
         onToolCallStart: (
-          toolCall: Parameters<typeof store.addToolCall>[2],
+          toolCall: Omit<ToolCallResult, "id" | "startedAt">,
         ) => {
-          const tcId = store.addToolCall(convId!, assistantMsgId, toolCall);
-          store.openSandbox(convId!, assistantMsgId);
+          const s = useChatStore.getState();
+          const tcId = s.addToolCall(capturedConvId, assistantMsgId, toolCall);
+          s.openSandbox(capturedConvId, assistantMsgId);
 
           if (toolCall.type === "code_exec") {
-            // Auto-expand right panel and switch to terminal tab
             setRightPanelOpen(true);
             setRightPanelTab("terminal");
-
             addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
             if (toolCall.code) {
               toolCall.code
@@ -118,7 +208,6 @@ export function ChatArea() {
                 .forEach((l) => addTerminalLine(`  ${l}`));
             }
           } else if (toolCall.type === "vision") {
-            // Auto-expand right panel for vision analysis too
             setRightPanelOpen(true);
             setRightPanelTab("terminal");
             addTerminalLine(`$ Analyzing image...`);
@@ -130,9 +219,16 @@ export function ChatArea() {
         },
         onToolCallUpdate: (
           toolCallId: string,
-          updates: Parameters<typeof store.updateToolCall>[3],
+          updates: Partial<ToolCallResult>,
         ) => {
-          store.updateToolCall(convId!, assistantMsgId, toolCallId, updates);
+          useChatStore
+            .getState()
+            .updateToolCall(
+              capturedConvId,
+              assistantMsgId,
+              toolCallId,
+              updates,
+            );
           if (updates.output) {
             updates.output.split("\n").forEach((l) => addTerminalLine(l));
           }
@@ -145,17 +241,42 @@ export function ChatArea() {
             );
           }
         },
-        onDone: () => store.setStreaming(convId!, assistantMsgId, false),
+        onDone: () => {
+          useChatStore
+            .getState()
+            .setStreaming(capturedConvId, assistantMsgId, false);
+          // Only redirect if the stream generation matches (user hasn't navigated away)
+          // and this conversation was created from the home page.
+          if (
+            capturedIsFromHomePage &&
+            streamGenerationRef.current === capturedGeneration
+          ) {
+            log("Stream done — navigating to /%s (replace)", capturedConvId);
+            navigate(`/${capturedConvId}`, { replace: true });
+          }
+        },
         onError: (error: string) => {
-          store.updateMessage(convId!, assistantMsgId, {
-            content: `Sorry, I encountered an error: ${error}\n\nPlease make sure Ollama is running.`,
-          });
-          store.setStreaming(convId!, assistantMsgId, false);
+          useChatStore
+            .getState()
+            .updateMessage(capturedConvId, assistantMsgId, {
+              content: `Sorry, I encountered an error: ${error}\n\nPlease make sure Ollama is running.`,
+            });
+          useChatStore
+            .getState()
+            .setStreaming(capturedConvId, assistantMsgId, false);
+          // Still redirect even on error so the URL reflects the conversation
+          // (only if the user hasn't navigated away)
+          if (
+            capturedIsFromHomePage &&
+            streamGenerationRef.current === capturedGeneration
+          ) {
+            navigate(`/${capturedConvId}`, { replace: true });
+          }
         },
       };
 
       const streamOptions = {
-        conversationId: convId,
+        conversationId: capturedConvId,
         modelOverride: options?.modelOverride,
         shrug: options?.shrug,
       };
@@ -180,7 +301,7 @@ export function ChatArea() {
         } else {
           // Use the regular JSON streaming endpoint
           log(
-            `Calling streamChat  model=${modelForMessage}  convId=${convId}  messages=${allMessages.length}`,
+            `Calling streamChat  model=${modelForMessage}  convId=${capturedConvId}  messages=${allMessages.length}`,
           );
           await streamChat(
             allMessages,
@@ -195,12 +316,10 @@ export function ChatArea() {
           await streamChatDemo(content, callbacks);
         } else {
           // streamChat / streamChatWithFiles already handle errors via onError callback.
-          // Only fall back to demo mode if the streaming functions themselves threw
-          // (which shouldn't normally happen since they catch internally).
           // Only use demo as last resort if the assistant message is still empty.
           const currentMsg = useChatStore
             .getState()
-            .conversations.find((c) => c.id === convId)
+            .conversations.find((c) => c.id === capturedConvId)
             ?.messages.find((m) => m.id === assistantMsgId);
           if (!currentMsg?.content) {
             await streamChatDemo(content, callbacks);
@@ -209,9 +328,10 @@ export function ChatArea() {
       }
     },
     [
-      activeConversationId,
-      conv,
-      store,
+      effectiveConvId,
+      urlConvId,
+      pendingConvId,
+      navigate,
       addTerminalLine,
       setRightPanelOpen,
       setRightPanelTab,
@@ -241,8 +361,19 @@ export function ChatArea() {
       </div>
 
       {/* Messages or Welcome */}
-      {messages.length === 0 ? (
+      {isLoadingConv ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex items-center gap-2 text-muted-foreground/50">
+            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            <span className="text-[12px]">Loading conversation...</span>
+          </div>
+        </div>
+      ) : messages.length === 0 && !effectiveConvId ? (
         <WelcomeScreen onSend={handleSend} />
+      ) : messages.length === 0 ? (
+        <ScrollArea className="flex-1">
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6" />
+        </ScrollArea>
       ) : (
         <ScrollArea className="flex-1">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
@@ -250,7 +381,7 @@ export function ChatArea() {
               <MessageBubble
                 key={msg.id}
                 message={msg}
-                conversationId={conv!.id}
+                conversationId={effectiveConvId!}
               />
             ))}
             <div ref={messagesEndRef} />

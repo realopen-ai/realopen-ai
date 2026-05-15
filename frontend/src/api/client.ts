@@ -153,3 +153,31 @@ export async function updateConversationTitle(
     return false;
   }
 }
+
+/**
+ * Fetch a conversation's full detail (metadata + messages) by ID.
+ * Returns null if the conversation doesn't exist (404) or on error.
+ */
+export async function fetchConversationDetail(
+  conversationId: string,
+): Promise<{ conversation: ConversationDTO; messages: MessageDTO[] } | null> {
+  log(`➡️  fetchConversationDetail  convId=${conversationId}`);
+  try {
+    const res = await fetch(`/api/conversations/${conversationId}`);
+    log(`   response  status=${res.status}  ok=${res.ok}`);
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        conversation: data.conversation,
+        messages: data.messages ?? [],
+      };
+    }
+    if (res.status === 404) {
+      log("   conversation not found (404)");
+      return null;
+    }
+  } catch (err) {
+    dbgError(`   ❌ fetchConversationDetail error: ${err}`);
+  }
+  return null;
+}
