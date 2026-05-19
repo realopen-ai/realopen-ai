@@ -1,10 +1,17 @@
 import type { ToolCallResult } from "@/store/chatStore";
-import { dbgError, isDebug, createDebugLogger } from "@/lib/debug";
+import { dbgError, createDebugLogger } from "@/lib/debug";
 
 const log = createDebugLogger("stream");
 
 export interface StreamCallbacks {
   onToken: (token: string) => void;
+  onThinkingStart: () => void;
+  onThinkingToken: (token: string) => void;
+  onThinkingDone: (durationSeconds: number) => void;
+  onGenerationDone: (data: {
+    thinkingDuration?: number;
+    generationDuration: number;
+  }) => void;
   onToolCallStart: (
     toolCall: Omit<ToolCallResult, "id" | "startedAt">,
   ) => string;
@@ -37,10 +44,7 @@ export async function streamChat(
 
   try {
     log(
-      "➡️  streamChat START  model=%s  messages=%d  convId=%s",
-      model,
-      messages.length,
-      options?.conversationId,
+      `➡️  streamChat START  model=${model}  messages=${messages.length}  convId=${options?.conversationId}`,
     );
 
     const requestBody = {
@@ -52,11 +56,7 @@ export async function streamChat(
       shrug: options?.shrug,
     };
     log(
-      "   request body: messages=%d  model=%s  stream=true  convId=%s  modelOverride=%s",
-      messages.length,
-      model,
-      options?.conversationId ?? "none",
-      options?.modelOverride ?? "none",
+      `   request body: messages=${messages.length}  model=${model}  stream=true  convId=${options?.conversationId ?? "none"}  modelOverride=${options?.modelOverride ?? "none"}`,
     );
 
     const response = await fetch("/api/chat/stream", {
@@ -115,9 +115,7 @@ export async function streamChatWithFiles(
 
   try {
     log(
-      "📤 streamChatWithFiles  images=%d  docs=%d",
-      files.images?.length ?? 0,
-      files.documents?.length ?? 0,
+      `📤 streamChatWithFiles  images=${files.images?.length ?? 0}  docs=${files.documents?.length ?? 0}`,
     );
 
     const formData = new FormData();
@@ -148,7 +146,7 @@ export async function streamChatWithFiles(
       signal: controller.signal,
     });
 
-    log("   response received  status=%d  ok=%s", response.status, response.ok);
+    log(`   response received  status=${response.status}  ok=${response.ok}`);
 
     if (!response.ok) {
       dbgError(
@@ -217,13 +215,40 @@ async function parseSSEStream(
         const eventType = parsed.event;
         eventCount++;
 
-        if (isDebug() && eventCount <= 10) {
-          log(`   SSE event #${eventCount}: type=${eventType}`);
-        }
-
         // ── Message token ──
         if (eventType === "message" && parsed.message?.content) {
           callbacks.onToken(parsed.message.content);
+        }
+
+        // ── Thinking start ──
+        if (eventType === "thinking_start") {
+          log("   🧠 thinking_start event received");
+          callbacks.onThinkingStart();
+        }
+
+        // ── Thinking token ──
+        if (eventType === "thinking" && parsed.thinking) {
+          callbacks.onThinkingToken(parsed.thinking);
+        }
+
+        // ── Thinking done ──
+        if (eventType === "thinking_done") {
+          const dur = parsed.thinkingDuration;
+          log(`   🧠 thinking_done event received  duration=${dur}s`);
+          if (dur != null) {
+            callbacks.onThinkingDone(dur);
+          }
+        }
+
+        // ── Generation done (metadata for DB persistence) ──
+        if (eventType === "generation_done") {
+          log(
+            `   ⏱️ generation_done event  thinkingDuration=${parsed.thinkingDuration}  generationDuration=${parsed.generationDuration}`,
+          );
+          callbacks.onGenerationDone({
+            thinkingDuration: parsed.thinkingDuration ?? undefined,
+            generationDuration: parsed.generationDuration ?? 0,
+          });
         }
 
         // ── Tool call event ──
@@ -312,7 +337,7 @@ export async function streamChatDemo(
   userMessage: string,
   callbacks: StreamCallbacks,
 ): Promise<void> {
-  log("🎭 streamChatDemo  message=%s", userMessage.slice(0, 80));
+  log(`🎭 streamChatDemo  message=${userMessage.slice(0, 80)}`);
 
   const lowerMsg = userMessage.toLowerCase();
 
@@ -332,6 +357,15 @@ export async function streamChatDemo(
     lowerMsg.includes("write a");
 
   const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // Demo: simulate thinking
+  callbacks.onThinkingStart();
+  const thinkWords = "Let me analyze this question carefully...".split(" ");
+  for (let i = 0; i < thinkWords.length; i++) {
+    callbacks.onThinkingToken(i === 0 ? thinkWords[i] : " " + thinkWords[i]);
+    await delay(40);
+  }
+  callbacks.onThinkingDone(2);
 
   if (hasSearch) {
     const tcId = callbacks.onToolCallStart({
@@ -408,5 +442,6 @@ export async function streamChatDemo(
   }
 
   log("🎭 streamChatDemo complete");
+  callbacks.onGenerationDone({ thinkingDuration: 2, generationDuration: 5 });
   callbacks.onDone();
 }

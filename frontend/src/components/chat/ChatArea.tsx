@@ -191,6 +191,43 @@ export function ChatArea() {
           useChatStore
             .getState()
             .appendToMessage(capturedConvId, assistantMsgId, token),
+        onThinkingStart: () => {
+          useChatStore
+            .getState()
+            .setThinkingState(capturedConvId, assistantMsgId, true);
+        },
+        onThinkingToken: (token: string) => {
+          useChatStore
+            .getState()
+            .appendToThinking(capturedConvId, assistantMsgId, token);
+        },
+        onThinkingDone: (durationSeconds: number) => {
+          useChatStore
+            .getState()
+            .setThinkingDuration(
+              capturedConvId,
+              assistantMsgId,
+              durationSeconds,
+            );
+        },
+        onGenerationDone: (data: {
+          thinkingDuration?: number;
+          generationDuration: number;
+        }) => {
+          const s = useChatStore.getState();
+          s.setGenerationDuration(
+            capturedConvId,
+            assistantMsgId,
+            data.generationDuration,
+          );
+          if (data.thinkingDuration != null) {
+            s.setThinkingDuration(
+              capturedConvId,
+              assistantMsgId,
+              data.thinkingDuration,
+            );
+          }
+        },
         onToolCallStart: (
           toolCall: Omit<ToolCallResult, "id" | "startedAt">,
         ) => {

@@ -4,6 +4,7 @@ import {
   Code2,
   Zap,
   ChevronDown,
+  ChevronRight,
   Globe,
   FileCode,
   Brain,
@@ -12,6 +13,7 @@ import {
   Volume2,
   RefreshCw,
   Check,
+  Loader2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -81,6 +83,7 @@ function ToolBadge({
     text: "text-muted-foreground",
   };
   const resultCount = toolCall.results?.length;
+  console.log("ToolCallResult:", toolCall); // Debug log
   const duration =
     toolCall.completedAt && toolCall.startedAt
       ? ((toolCall.completedAt - toolCall.startedAt) / 1000).toFixed(1)
@@ -360,6 +363,93 @@ function StatusDot({ status }: { status: string }) {
   return null;
 }
 
+// ─── Thinking Section ──────────────────────────────────────────────
+
+function ThinkingSection({ message }: { message: Message }) {
+  const [expanded, setExpanded] = useState<boolean>(false);
+
+  // Currently thinking (streaming)
+  if (message.isThinking) {
+    return (
+      <div className="mb-2">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium mb-2 w-full text-left hover:bg-violet-500/15 transition-colors"
+        >
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <span>Thinking...</span>
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5 ml-auto" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 ml-auto" />
+          )}
+        </button>
+        {expanded && (
+          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
+            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+              {message.thinking || "The assistant is formulating a response."}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Thinking is done
+  if (message.thinking && message.thinkingDuration != null) {
+    return (
+      <div className="mb-2">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium w-full text-left hover:bg-violet-500/15 transition-colors"
+        >
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          )}
+          <span>Thought for {message.thinkingDuration}s</span>
+        </button>
+        {expanded && (
+          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
+            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+              {message.thinking}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Has thinking content but no duration (e.g. loaded from DB before duration was added)
+  if (message.thinking) {
+    return (
+      <div className="mb-2">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium w-full text-left hover:bg-violet-500/15 transition-colors"
+        >
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          )}
+          <span>Thinking</span>
+        </button>
+        {expanded && (
+          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
+            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+              {message.thinking}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Response Time ────────────────────────────────────────────────
 
 function formatResponseTime(ms: number): string {
@@ -459,10 +549,14 @@ export function MessageBubble({
   }, [conversationId, message.id]);
 
   // Calculate response time for assistant messages
-  const responseTime =
-    isAssistant && message.completedAt && message.createdAt
-      ? formatResponseTime(message.completedAt - message.createdAt)
-      : null;
+  // Prefer DB-persisted generationDuration, fallback to frontend-computed time
+  const responseTime = isAssistant
+    ? message.generationDuration
+      ? formatResponseTime(message.generationDuration * 1000)
+      : message.completedAt && message.createdAt
+        ? formatResponseTime(message.completedAt - message.createdAt)
+        : null
+    : null;
 
   // ─── User Message ─────────────────────────────────────────────
   if (!isAssistant) {
@@ -525,6 +619,9 @@ export function MessageBubble({
   // ─── Assistant Message ────────────────────────────────────────
   return (
     <div className="animate-fade-in wrap-break-word">
+      {/* Thinking Section */}
+      <ThinkingSection message={message} />
+
       {/* Tool Call Badges */}
       {message.toolCalls.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">

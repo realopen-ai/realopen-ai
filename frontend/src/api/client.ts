@@ -49,6 +49,23 @@ export async function fetchModels(): Promise<{
 
 // ─── Conversations ───────────────────────────────────────────────
 
+/** Shape of a tool call as stored in the backend DB (JSON-serialized) */
+export interface BackendToolCall {
+  id?: string;
+  type?: string;
+  status?: string;
+  title?: string;
+  query?: string;
+  language?: string;
+  code?: string;
+  output?: string;
+  exitCode?: number;
+  results?: { title: string; url: string; snippet: string }[];
+  image_description?: string;
+  error?: string;
+  completedAt?: number;
+}
+
 export interface ConversationDTO {
   id: string;
   title: string;
@@ -69,6 +86,10 @@ export interface MessageDTO {
   imageCount: number;
   documentCount: number;
   createdAt: number;
+  thinking?: string;
+  thinkingDuration?: number;
+  generationDuration?: number;
+  toolCalls?: BackendToolCall[];
 }
 
 export async function fetchConversations(

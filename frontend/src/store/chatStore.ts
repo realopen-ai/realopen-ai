@@ -59,6 +59,11 @@ export interface Message {
   hasDocument?: boolean;
   imageCount?: number;
   documentCount?: number;
+  // Thinking / reasoning
+  thinking?: string;
+  thinkingDuration?: number; // seconds
+  generationDuration?: number; // seconds
+  isThinking?: boolean;
 }
 
 export interface Conversation {
@@ -113,6 +118,26 @@ interface ChatState {
     messageId: string,
     content: string,
   ) => void;
+  appendToThinking: (
+    conversationId: string,
+    messageId: string,
+    thinking: string,
+  ) => void;
+  setThinkingState: (
+    conversationId: string,
+    messageId: string,
+    isThinking: boolean,
+  ) => void;
+  setThinkingDuration: (
+    conversationId: string,
+    messageId: string,
+    duration: number,
+  ) => void;
+  setGenerationDuration: (
+    conversationId: string,
+    messageId: string,
+    duration: number,
+  ) => void;
   addToolCall: (
     conversationId: string,
     messageId: string,
@@ -158,19 +183,41 @@ function dtoToConversation(dto: ConversationDTO): Conversation {
 
 /** Convert a backend MessageDTO to the frontend Message shape */
 function dtoToMessage(dto: MessageDTO): Message {
+  // Convert backend tool calls to frontend ToolCallResult format
+  const toolCalls: ToolCallResult[] = (dto.toolCalls ?? []).map((tc, i) => ({
+    id: tc.id ?? `restored-tc-${i}`,
+    type: (tc.type as ToolCallResult["type"]) ?? "websearch",
+    status: (tc.status as ToolCallResult["status"]) ?? "completed",
+    title: tc.title ?? tc.type ?? "Tool",
+    startedAt: dto.createdAt,
+    completedAt: tc.completedAt,
+    query: tc.query,
+    results: tc.results,
+    language: tc.language,
+    code: tc.code,
+    output: tc.output,
+    exitCode: tc.exitCode,
+    imageDescription: tc.image_description,
+    error: tc.error,
+  }));
+
   return {
     id: dto.id,
     role: dto.role,
     content: dto.content,
     model: dto.model ?? undefined,
-    toolCalls: [],
-    sandboxOpen: false,
+    toolCalls,
+    sandboxOpen: true,
     isStreaming: false,
     createdAt: dto.createdAt,
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
+    thinking: dto.thinking || undefined,
+    thinkingDuration: dto.thinkingDuration,
+    generationDuration: dto.generationDuration,
+    isThinking: false,
   };
 }
 
@@ -359,6 +406,74 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ...c,
               messages: c.messages.map((m) =>
                 m.id === messageId ? { ...m, content: m.content + content } : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  appendToThinking: (conversationId, messageId, thinking) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, thinking: (m.thinking ?? "") + thinking }
+                  : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  setThinkingState: (conversationId, messageId, isThinking) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId ? { ...m, isThinking } : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  setThinkingDuration: (conversationId, messageId, duration) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? {
+                      ...m,
+                      thinkingDuration: (m.thinkingDuration ?? 0) + duration,
+                      isThinking: false,
+                    }
+                  : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  setGenerationDuration: (conversationId, messageId, duration) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId ? { ...m, generationDuration: duration } : m,
               ),
             }
           : c,
