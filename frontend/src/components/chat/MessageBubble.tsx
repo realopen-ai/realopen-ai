@@ -83,7 +83,6 @@ function ToolBadge({
     text: "text-muted-foreground",
   };
   const resultCount = toolCall.results?.length;
-  console.log("ToolCallResult:", toolCall); // Debug log
   const duration =
     toolCall.completedAt && toolCall.startedAt
       ? ((toolCall.completedAt - toolCall.startedAt) / 1000).toFixed(1)
