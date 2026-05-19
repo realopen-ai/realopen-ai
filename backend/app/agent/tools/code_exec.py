@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 class CodeExecTool(BaseTool):
     name = "use_code_exec"
     description = (
-        "Execute Python code and return the output. "
+        "Execute Python3.12 code and return the output. "
         "Use this for calculations, data processing, or any task that requires "
         "running code. Provide the code as a string. "
         "The code runs in a sandboxed environment with a 30-second timeout."
+        "Make SURE to print the final result in the code, as only printed output will be captured and returned."
     )
     tool_type = ToolType.CODE_EXEC
 

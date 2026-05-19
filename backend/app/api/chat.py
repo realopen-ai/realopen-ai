@@ -285,6 +285,10 @@ async def chat_stream(request: ChatRequest):
         _log("   🔄 generate() started — entering agent loop")
         chunk_count = 0
         full_assistant_content = ""
+        full_thinking_content = ""
+        thinking_duration_sec = 0
+        generation_duration_sec = 0
+        accumulated_tool_calls = []  # Collect tool call data for DB persistence
         try:
             async for chunk in run_agent_stream(
                 messages=messages,
@@ -303,10 +307,48 @@ async def chat_stream(request: ChatRequest):
                 if data_str.startswith("data: "):
                     try:
                         parsed = json.loads(data_str[6:])
-                        if parsed.get("event") == "message" and parsed.get(
-                            "message", {}
-                        ).get("content"):
+                        event_type = parsed.get("event")
+
+                        if event_type == "message" and parsed.get("message", {}).get(
+                            "content"
+                        ):
                             full_assistant_content += parsed["message"]["content"]
+
+                        if event_type == "thinking" and parsed.get("thinking"):
+                            full_thinking_content += parsed["thinking"]
+
+                        if (
+                            event_type == "thinking_done"
+                            and parsed.get("thinkingDuration") is not None
+                        ):
+                            thinking_duration_sec += parsed["thinkingDuration"]
+
+                        if event_type == "generation_done":
+                            if parsed.get("generationDuration") is not None:
+                                generation_duration_sec = parsed["generationDuration"]
+                            if (
+                                parsed.get("thinkingDuration") is not None
+                                and thinking_duration_sec == 0
+                            ):
+                                thinking_duration_sec = parsed["thinkingDuration"]
+
+                        if event_type == "tool_call" and parsed.get("tool_call"):
+                            tc = parsed["tool_call"]
+                            tc_id = tc.get("id")
+
+                            existing = next(
+                                (
+                                    t
+                                    for t in accumulated_tool_calls
+                                    if t.get("id") == tc_id
+                                ),
+                                None,
+                            )
+                            if existing:
+                                existing.update(tc)
+                            else:
+                                accumulated_tool_calls.append(dict(tc))
+
                     except json.JSONDecodeError:
                         pass
                 yield chunk
@@ -317,9 +359,10 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
         _log(
-            "   ✅ generate() finished — total chunks=%d  content_len=%d",
+            "   ✅ generate() finished — total chunks=%d  content_len=%d  thinking_len=%d",
             chunk_count,
             len(full_assistant_content),
+            len(full_thinking_content),
         )
 
         # Persist the assistant message BEFORE yielding [DONE].
@@ -327,11 +370,18 @@ async def chat_stream(request: ChatRequest):
         # ASGI server may garbage-collect the generator before the DB
         # write completes.
         if _conv_id and full_assistant_content:
+            tool_calls_json_str = (
+                json.dumps(accumulated_tool_calls) if accumulated_tool_calls else None
+            )
             await _persist_message(
                 _conv_id,
                 "assistant",
                 full_assistant_content,
                 model=_resolved_model,
+                thinking=full_thinking_content or None,
+                thinking_duration=thinking_duration_sec,
+                generation_duration=generation_duration_sec,
+                tool_calls_json=tool_calls_json_str,
             )
 
         yield "data: [DONE]\n\n"
@@ -440,6 +490,10 @@ async def chat_stream_multipart(
         dbg("   🔄 generate() started (multipart) — entering agent loop")
         chunk_count = 0
         full_assistant_content = ""
+        full_thinking_content = ""
+        thinking_duration_sec = 0
+        generation_duration_sec = 0
+        accumulated_tool_calls = []
         try:
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
@@ -447,15 +501,59 @@ async def chat_stream_multipart(
                 images=image_b64_list if image_b64_list else None,
             ):
                 chunk_count += 1
+                if is_debug() and chunk_count <= 5:
+                    _log(
+                        "   📦 yielding chunk #%d: %s",
+                        chunk_count,
+                        chunk[:200] if chunk else "(empty)",
+                    )
                 # Accumulate assistant content from SSE chunks
                 data_str = chunk.strip()
                 if data_str.startswith("data: "):
                     try:
                         parsed = json.loads(data_str[6:])
-                        if parsed.get("event") == "message" and parsed.get(
-                            "message", {}
-                        ).get("content"):
+                        event_type = parsed.get("event")
+
+                        if event_type == "message" and parsed.get("message", {}).get(
+                            "content"
+                        ):
                             full_assistant_content += parsed["message"]["content"]
+
+                        if event_type == "thinking" and parsed.get("thinking"):
+                            full_thinking_content += parsed["thinking"]
+
+                        if (
+                            event_type == "thinking_done"
+                            and parsed.get("thinkingDuration") is not None
+                        ):
+                            thinking_duration_sec += parsed["thinkingDuration"]
+
+                        if event_type == "generation_done":
+                            if parsed.get("generationDuration") is not None:
+                                generation_duration_sec = parsed["generationDuration"]
+                            if (
+                                parsed.get("thinkingDuration") is not None
+                                and thinking_duration_sec == 0
+                            ):
+                                thinking_duration_sec = parsed["thinkingDuration"]
+
+                        if event_type == "tool_call" and parsed.get("tool_call"):
+                            tc = parsed["tool_call"]
+                            tc_id = tc.get("id")
+
+                            existing = next(
+                                (
+                                    t
+                                    for t in accumulated_tool_calls
+                                    if t.get("id") == tc_id
+                                ),
+                                None,
+                            )
+                            if existing:
+                                existing.update(tc)
+                            else:
+                                accumulated_tool_calls.append(dict(tc))
+
                     except json.JSONDecodeError:
                         pass
                 yield chunk
@@ -464,18 +562,29 @@ async def chat_stream_multipart(
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
         _log(
-            "   ✅ generate() finished (multipart) — total chunks=%d  content_len=%d",
+            "   ✅ generate() finished (multipart) — total chunks=%d  content_len=%d  thinking_len=%d",
             chunk_count,
             len(full_assistant_content),
+            len(full_thinking_content),
         )
 
         # Persist the assistant message BEFORE yielding [DONE].
+        # If we yield [DONE] first, the client may disconnect and the
+        # ASGI server may garbage-collect the generator before the DB
+        # write completes.
         if _conv_id and full_assistant_content:
+            tool_calls_json_str = (
+                json.dumps(accumulated_tool_calls) if accumulated_tool_calls else None
+            )
             await _persist_message(
                 _conv_id,
                 "assistant",
                 full_assistant_content,
                 model=_resolved_model,
+                thinking=full_thinking_content or None,
+                thinking_duration=thinking_duration_sec,
+                generation_duration=generation_duration_sec,
+                tool_calls_json=tool_calls_json_str,
             )
 
         yield "data: [DONE]\n\n"

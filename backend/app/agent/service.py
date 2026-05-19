@@ -378,6 +378,9 @@ async def run_agent_stream(
 
         # Stream from Ollama - tokens are streamed to the client immediately
         streamer = _TokenStreamer()
+        thinking_content = ""  # Accumulate thinking/reasoning tokens
+        thinking_start_time = None  # Track when thinking started
+        generation_start_time = time.time()  # Track total generation time
         try:
             _dbg(
                 "🤖 Connecting to Ollama at %s/api/chat  model=%s  round=%d",
@@ -401,8 +404,38 @@ async def run_agent_stream(
                             continue
                         try:
                             chunk = json.loads(line)
+
+                            # Handle thinking tokens
+                            thinking_token = chunk.get("message", {}).get(
+                                "thinking", ""
+                            )
+                            if thinking_token:
+                                if not thinking_start_time:
+                                    thinking_start_time = time.time()
+                                    # Emit thinking_start event so frontend shows "Thinking..."
+                                    yield _sse_event("thinking_start", {})
+                                thinking_content += thinking_token
+                                # Stream thinking tokens to frontend
+                                yield _sse_event(
+                                    "thinking",
+                                    {"thinking": thinking_token},
+                                )
+
+                            # Handle content tokens
                             token = chunk.get("message", {}).get("content", "")
                             if token:
+                                # If we were thinking and now getting content, thinking is done
+                                if thinking_start_time is not None:
+                                    thinking_elapsed = round(
+                                        time.time() - thinking_start_time
+                                    )
+                                    yield _sse_event(
+                                        "thinking_done",
+                                        {"thinkingDuration": thinking_elapsed},
+                                    )
+                                    thinking_start_time = (
+                                        None  # Reset so we don't emit again
+                                    )
                                 sse = streamer.feed(token)
                                 if sse:
                                     yield sse
@@ -458,6 +491,29 @@ async def run_agent_stream(
             resolved_model,
             len(full_response),
             full_response[:200] + "..." if len(full_response) > 200 else full_response,
+        )
+
+        # Calculate total generation duration
+        generation_elapsed = round(time.time() - generation_start_time)
+        # Calculate thinking duration if we were thinking but content came without
+        # a thinking_done event (edge case: model only thinks, no content tokens)
+        thinking_elapsed = None
+        if thinking_start_time is not None:
+            thinking_elapsed = round(time.time() - thinking_start_time)
+            yield _sse_event(
+                "thinking_done",
+                {"thinkingDuration": thinking_elapsed},
+            )
+
+        # Emit generation_done event with metadata for DB persistence
+        yield _sse_event(
+            "generation_done",
+            {
+                "thinkingDuration": (
+                    thinking_elapsed if thinking_elapsed is not None else None
+                ),
+                "generationDuration": generation_elapsed,
+            },
         )
 
         # Check for tool calls in the complete response

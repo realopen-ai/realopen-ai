@@ -6,6 +6,7 @@ SQLAlchemy async sessions.
 """
 
 import uuid
+import json as _json
 from datetime import datetime
 from typing import List, Optional
 
@@ -86,6 +87,10 @@ async def add_message(
     has_document: bool = False,
     image_count: int = 0,
     document_count: int = 0,
+    thinking: Optional[str] = None,
+    thinking_duration: Optional[int] = None,
+    generation_duration: Optional[int] = None,
+    tool_calls_json: Optional[str] = None,
 ) -> Message:
     """Add a message to a conversation."""
     msg = Message(
@@ -99,6 +104,10 @@ async def add_message(
         has_document=has_document,
         image_count=image_count,
         document_count=document_count,
+        thinking=thinking,
+        thinking_duration=thinking_duration,
+        generation_duration=generation_duration,
+        tool_calls_json=tool_calls_json,
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -157,7 +166,7 @@ async def conversation_to_dict(conv: Conversation) -> dict:
 
 async def message_to_dict(msg: Message) -> dict:
     """Convert a Message ORM object to a dict for API responses."""
-    return {
+    result = {
         "id": str(msg.id),
         "conversationId": str(msg.conversation_id),
         "role": msg.role,
@@ -170,3 +179,21 @@ async def message_to_dict(msg: Message) -> dict:
         "documentCount": msg.document_count,
         "createdAt": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
     }
+
+    if msg.thinking is not None:
+        result["thinking"] = msg.thinking
+    if msg.thinking_duration is not None:
+        result["thinkingDuration"] = msg.thinking_duration
+    if msg.generation_duration is not None:
+        result["generationDuration"] = msg.generation_duration
+
+    # Parse tool_calls_json back into a list for the frontend
+    if msg.tool_calls_json:
+        try:
+            result["toolCalls"] = _json.loads(msg.tool_calls_json)
+        except _json.JSONDecodeError:
+            result["toolCalls"] = []
+    else:
+        result["toolCalls"] = []
+
+    return result

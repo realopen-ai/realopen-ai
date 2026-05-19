@@ -42,6 +42,11 @@ class Message(Base):
     image_count = Column(Integer, default=0)
     document_count = Column(Integer, default=0)
 
+    thinking = Column(Text, nullable=True)
+    thinking_duration = Column(Integer, nullable=True)
+    generation_duration = Column(Integer, nullable=True)
+    tool_calls_json = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
