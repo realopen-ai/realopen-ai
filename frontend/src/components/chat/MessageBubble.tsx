@@ -373,19 +373,20 @@ function ThinkingSection({ message }: { message: Message }) {
       <div className="mb-2">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium mb-2 w-full text-left hover:bg-violet-500/15 transition-colors"
+          className="flex items-center gap-2 py-2 text-foreground/60 font-medium mb-2 w-full text-left cursor-pointer"
+          style={{ fontSize: "var(--app-font-size)" }}
         >
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <Loader2 className="w-5 h-5 animate-spin" />
           <span>Thinking...</span>
           {expanded ? (
-            <ChevronDown className="w-3.5 h-3.5 ml-auto" />
+            <ChevronDown className="w-3.5 h-3.5 shrink-0" />
           ) : (
-            <ChevronRight className="w-3.5 h-3.5 ml-auto" />
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
           )}
         </button>
         {expanded && (
-          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
-            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+          <div className="ml-2.5 mt-1.5 border-l border-foreground/20 overflow-hidden animate-fade-in">
+            <div className="px-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
               {message.thinking || "The assistant is formulating a response."}
             </div>
           </div>
@@ -400,18 +401,20 @@ function ThinkingSection({ message }: { message: Message }) {
       <div className="mb-2">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium w-full text-left hover:bg-violet-500/15 transition-colors"
+          className="flex items-center gap-2 py-2 text-foreground/60 font-medium w-full text-left cursor-pointer"
+          style={{ fontSize: "var(--app-font-size)" }}
         >
+          <Brain className="w-5 h-5" />
+          <span>Thought for {message.thinkingDuration}s</span>
           {expanded ? (
             <ChevronDown className="w-3.5 h-3.5 shrink-0" />
           ) : (
             <ChevronRight className="w-3.5 h-3.5 shrink-0" />
           )}
-          <span>Thought for {message.thinkingDuration}s</span>
         </button>
         {expanded && (
-          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
-            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+          <div className="ml-2.5 mt-1.5 border-l border-foreground/20 overflow-hidden animate-fade-in">
+            <div className="px-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
               {message.thinking}
             </div>
           </div>
@@ -426,18 +429,20 @@ function ThinkingSection({ message }: { message: Message }) {
       <div className="mb-2">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-violet-500/10 text-violet-400 text-[13px] font-medium w-full text-left hover:bg-violet-500/15 transition-colors"
+          className="flex items-center gap-2 py-2 text-foreground/60 font-medium w-full text-left cursor-pointer"
+          style={{ fontSize: "var(--app-font-size)" }}
         >
+          <Brain className="w-5 h-5" />
+          <span>Thinking</span>
           {expanded ? (
             <ChevronDown className="w-3.5 h-3.5 shrink-0" />
           ) : (
             <ChevronRight className="w-3.5 h-3.5 shrink-0" />
           )}
-          <span>Thinking</span>
         </button>
         {expanded && (
-          <div className="mt-1.5 rounded-xl border border-violet-500/20 bg-violet-500/5 overflow-hidden animate-fade-in">
-            <div className="p-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
+          <div className="ml-2.5 mt-1.5 border-l border-foreground/20 overflow-hidden animate-fade-in">
+            <div className="px-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
               {message.thinking}
             </div>
           </div>
