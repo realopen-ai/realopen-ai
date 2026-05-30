@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 class ToolType(str, Enum):
     WEB_SEARCH = "websearch"
+    WEB_FETCH = "webfetch"
     VISION = "vision"
     CODE_EXEC = "code_exec"
     FILE_READ = "file_read"

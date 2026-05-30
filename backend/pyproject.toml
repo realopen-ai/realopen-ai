@@ -21,6 +21,7 @@ python-multipart = "^0.0.18"
 prometheus-fastapi-instrumentator = "^7.0.0"
 pgvector = "^0.3.0"
 pyyaml = "^6.0.0"
+beautifulsoup4 = "^4.14.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
