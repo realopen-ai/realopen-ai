@@ -124,7 +124,7 @@ async def chat(
             await conv_service.add_message(db, conv_id, "user", user_content)
             dbg("   ✅  saved user message to DB (conv_id=%s)", conv_id)
 
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=1200.0) as client:
             try:
                 dbg(
                     "   ➡️  sending to Ollama %s/api/chat  model=%s",
@@ -175,7 +175,10 @@ async def chat(
                     model=resolved_model,
                     message=ChatMessage(
                         role="assistant",
-                        content="Error: Cannot connect to AI engine. Please ensure Ollama is running.",
+                        content=(
+                            "Error: Cannot connect to AI engine. Please ensure Ollama "
+                            "is running."
+                        ),
                     ),
                     done=True,
                 )
@@ -236,7 +239,8 @@ async def chat_stream(request: ChatRequest):
     We do NOT use Depends(get_db) on streaming endpoints.
     """
     _log(
-        "🔵 POST /chat/stream  model=%s  model_override=%s  stream=%s  conv_id=%s  messages_count=%d",
+        "🔵 POST /chat/stream  model=%s  model_override=%s  stream=%s  "
+        "conv_id=%s  messages_count=%d",
         request.model,
         request.model_override,
         request.stream,
@@ -325,7 +329,7 @@ async def chat_stream(request: ChatRequest):
 
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
-                                generation_duration_sec = parsed["generationDuration"]
+                                generation_duration_sec += parsed["generationDuration"]
                             if (
                                 parsed.get("thinkingDuration") is not None
                                 and thinking_duration_sec == 0
@@ -420,7 +424,8 @@ async def chat_stream_multipart(
     No Depends(get_db) - we use async_session_factory explicitly.
     """
     _log(
-        "🔵 POST /chat/stream/multipart  model=%s  model_override=%s  conv_id=%s  images=%d  docs=%d",
+        "🔵 POST /chat/stream/multipart  model=%s  model_override=%s  "
+        "conv_id=%s  images=%d  docs=%d",
         model,
         model_override,
         conversation_id,
@@ -530,7 +535,7 @@ async def chat_stream_multipart(
 
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
-                                generation_duration_sec = parsed["generationDuration"]
+                                generation_duration_sec += parsed["generationDuration"]
                             if (
                                 parsed.get("thinkingDuration") is not None
                                 and thinking_duration_sec == 0
@@ -562,7 +567,8 @@ async def chat_stream_multipart(
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
         _log(
-            "   ✅ generate() finished (multipart) — total chunks=%d  content_len=%d  thinking_len=%d",
+            "   ✅ generate() finished (multipart) — total chunks=%d  "
+            "content_len=%d  thinking_len=%d",
             chunk_count,
             len(full_assistant_content),
             len(full_thinking_content),
@@ -706,6 +712,4 @@ async def list_models():
 
 def _parse_uuid(s: str) -> "uuid.UUID":
     """Parse a UUID string, raising ValueError if invalid."""
-    import uuid as _uuid
-
-    return _uuid.UUID(s)
+    return uuid.UUID(s)
