@@ -23,8 +23,26 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
 }
 
-/** Default timeout for streaming requests (5 minutes - LLM generation can be slow) */
-const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * Idle timeout for SSE streams.
+ *
+ * If no data is received from the server for this duration, the request is
+ * considered dead and aborted. This handles cases where the connection is
+ * silently dropped or the backend crashes without sending an error event.
+ *
+ * Set to 2 minutes — generous enough for tool execution gaps (web search,
+ * code execution can take 30-60s) but short enough to detect dead connections.
+ */
+const STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * Absolute maximum duration for a streaming request (safety net).
+ *
+ * No matter what, the request will be aborted after this duration.
+ * Set to 30 minutes — more than enough for even the most complex
+ * multi-round agent conversations with long thinking phases.
+ */
+const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Stream chat via the JSON endpoint.
@@ -40,7 +58,25 @@ export async function streamChat(
   },
 ): Promise<void> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+  // Safety net: absolute maximum time for the entire request
+  const maxTimeoutId = setTimeout(
+    () => controller.abort(),
+    STREAM_MAX_TIMEOUT_MS,
+  );
+  // Idle timeout: abort if no data received for this long
+  let idleTimeoutId = setTimeout(
+    () => controller.abort(),
+    STREAM_IDLE_TIMEOUT_MS,
+  );
+
+  /** Reset the idle timeout — call every time we receive data from the server */
+  const resetIdleTimeout = () => {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = setTimeout(
+      () => controller.abort(),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
+  };
 
   try {
     log(
@@ -64,7 +100,11 @@ export async function streamChat(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
       signal: controller.signal,
+      keepalive: true, // allow request to outlive page navigation (for better chance of receiving response in case of accidental nav)
     });
+
+    // We got a response — reset idle timeout
+    resetIdleTimeout();
 
     log(`   response received  status=${response.status}  ok=${response.ok}`);
 
@@ -76,7 +116,7 @@ export async function streamChat(
     }
 
     log("✅ streamChat response OK — starting SSE parse");
-    await parseSSEStream(response, callbacks);
+    await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChat complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -89,7 +129,8 @@ export async function streamChat(
       callbacks.onError(errorMsg);
     }
   } finally {
-    clearTimeout(timeoutId);
+    clearTimeout(maxTimeoutId);
+    clearTimeout(idleTimeoutId);
   }
 }
 
@@ -111,7 +152,22 @@ export async function streamChatWithFiles(
   },
 ): Promise<void> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
+  const maxTimeoutId = setTimeout(
+    () => controller.abort(),
+    STREAM_MAX_TIMEOUT_MS,
+  );
+  let idleTimeoutId = setTimeout(
+    () => controller.abort(),
+    STREAM_IDLE_TIMEOUT_MS,
+  );
+
+  const resetIdleTimeout = () => {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = setTimeout(
+      () => controller.abort(),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
+  };
 
   try {
     log(
@@ -144,7 +200,10 @@ export async function streamChatWithFiles(
       method: "POST",
       body: formData,
       signal: controller.signal,
+      keepalive: true, // allow request to outlive page navigation (for better chance of receiving response in case of accidental nav)
     });
+
+    resetIdleTimeout();
 
     log(`   response received  status=${response.status}  ok=${response.ok}`);
 
@@ -156,7 +215,7 @@ export async function streamChatWithFiles(
     }
 
     log("✅ streamChatWithFiles response OK — starting SSE parse");
-    await parseSSEStream(response, callbacks);
+    await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChatWithFiles complete");
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
@@ -169,16 +228,22 @@ export async function streamChatWithFiles(
       callbacks.onError(errorMsg);
     }
   } finally {
-    clearTimeout(timeoutId);
+    clearTimeout(maxTimeoutId);
+    clearTimeout(idleTimeoutId);
   }
 }
 
 /**
  * Generic SSE stream parser that handles the backend's event format.
+ *
+ * @param resetIdleTimeout - Called every time data is received from the server,
+ *   to reset the idle timeout and keep the connection alive as long as the
+ *   server is still sending data.
  */
 async function parseSSEStream(
   response: Response,
   callbacks: StreamCallbacks,
+  resetIdleTimeout: () => void,
 ): Promise<void> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("No response body");
@@ -196,6 +261,9 @@ async function parseSSEStream(
       log(`   SSE reader done signal (after ${eventCount} events)`);
       break;
     }
+
+    // We received data from the server — reset the idle timeout
+    resetIdleTimeout();
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");

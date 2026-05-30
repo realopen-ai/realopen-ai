@@ -24,6 +24,10 @@ export default defineConfig({
       "/api": {
         target: "http://backend:8000",
         changeOrigin: true,
+        // SSE streams can be long-running (thinking + generating + tool calls).
+        // Set a generous timeout so the Vite proxy doesn't kill the connection.
+        // The frontend's idle-timeout logic handles actual dead connections.
+        timeout: 30 * 60 * 1000, // 30 minutes
       },
       "/metrics": {
         target: "http://backend:8000",
