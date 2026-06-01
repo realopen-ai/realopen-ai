@@ -3,6 +3,17 @@
 # Edit this file to add/remove/change models per hardware profile.
 # No need to touch setup.sh, backend code, or frontend code.
 #
+# Profile naming convention:
+#   cpu_small / cpu_medium                    — CPU-only (Windows/Linux, no GPU)
+#   nvidia_small / nvidia_medium / nvidia_large / nvidia_xlarge — NVIDIA GPU (CUDA)
+#   apple_small / apple_medium / apple_large / apple_xlarge    — Apple Silicon (Metal/MLX)
+#
+# Profile fields:
+#   description: Internal description (used in logs / admin endpoints)
+#   label:        Human-readable label shown in the UI (sidebar, welcome screen)
+#   engine:       Inference engine — always "ollama" (Ollama supports both
+#                 GGUF+Metal and MLX-format models on macOS)
+#
 # Model fields:
 #   id:          Ollama model tag (used in `ollama pull <id>`)
 #   type:        Model category — chat, vision, code, embedding
@@ -15,98 +26,268 @@
 # =============================================================================
 
 profiles:
-  8gb:
-    description: "8-10 GB RAM — lightweight models for basic hardware"
+  # ── CPU-only profiles (Windows/Linux, no GPU) ──────────────────────────────
+
+  cpu_small:
+    description: "≤8 GB RAM — CPU-only, lightweight models for basic hardware"
+    label: "CPU · Small"
+    engine: ollama
     models:
       - id: qwen3:4b
         type: chat
         role: default
-        description: "Qwen3 4B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        description: "Qwen3 4B — compact yet capable dense model for general chat"
         size: "2.5 GB"
 
       - id: moondream:1.8b
         type: vision
         role: default_vision
-        description: "Moondream 1.8B — a small vision language model designed to run efficiently on edge devices."
+        description: "Moondream 1.8B — tiny vision model for edge devices"
         size: "1.7 GB"
 
       - id: nomic-embed-text:v1.5
         type: embedding
         role: default_embedding
-        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        description: "Nomic Embed Text — high-performing open embedding model"
         size: "274 MB"
 
-  16gb:
-    description: "10-20 GB RAM — balanced models for mid-range hardware"
+  cpu_medium:
+    description: "16+ GB RAM — CPU-only, balanced models for mid-range hardware"
+    label: "CPU · Medium"
+    engine: ollama
     models:
       - id: qwen3:8b
         type: chat
         role: default
-        description: "Qwen3 8B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        description: "Qwen3 8B — balanced dense model for general-purpose chat"
         size: "5.2 GB"
 
       - id: moondream:1.8b
         type: vision
         role: default_vision
-        description: "Moondream 1.8B — a small vision language model designed to run efficiently on edge devices."
+        description: "Moondream 1.8B — tiny vision model for edge devices"
         size: "1.7 GB"
 
       - id: nomic-embed-text:v1.5
         type: embedding
         role: default_embedding
-        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
+        description: "Nomic Embed Text — high-performing open embedding model"
         size: "274 MB"
 
-  32gb:
-    description: "20-40 GB RAM — powerful models for high-end hardware"
+  # ── NVIDIA GPU profiles (Windows/Linux, CUDA) ──────────────────────────────
+
+  nvidia_small:
+    description: "4-6 GB VRAM — entry-level NVIDIA GPU"
+    label: "NVIDIA · Small"
+    engine: ollama
+    models:
+      - id: qwen3:8b
+        type: chat
+        role: default
+        description: "Qwen3 8B — balanced dense model accelerated by CUDA"
+        size: "5.2 GB"
+
+      - id: moondream:1.8b
+        type: vision
+        role: default_vision
+        description: "Moondream 1.8B — lightweight vision model on GPU"
+        size: "1.7 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  nvidia_medium:
+    description: "8-12 GB VRAM — mid-range NVIDIA GPU"
+    label: "NVIDIA · Medium"
+    engine: ollama
+    models:
+      - id: qwen3:14b
+        type: chat
+        role: default
+        description: "Qwen3 14B — strong dense model, fits comfortably in 12 GB VRAM"
+        size: "9.0 GB"
+
+      - id: llava:7b
+        type: vision
+        role: default_vision
+        description: "LLaVA 7B — multimodal model combining vision encoder with Vicuna"
+        size: "4.7 GB"
+
+      - id: qwen2.5-coder:14b
+        type: code
+        role: default_code
+        description: "Qwen2.5 Coder 14B — code generation, reasoning, and debugging"
+        size: "9.0 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  nvidia_large:
+    description: "16-24 GB VRAM — high-end NVIDIA GPU"
+    label: "NVIDIA · Large"
+    engine: ollama
     models:
       - id: qwen3:32b
         type: chat
         role: default
-        description: "Qwen3 32B — a large language model offering a comprehensive suite of dense and mixture-of-experts (MoE) models."
+        description: "Qwen3 32B — powerful dense model for high-end GPUs"
         size: "20 GB"
 
       - id: llava:13b
         type: vision
         role: default_vision
-        description: "LLaVA 13B — a novel end-to-end trained large multimodal model that combines a vision encoder and Vicuna for general-purpose visual and language understanding."
+        description: "LLaVA 13B — multimodal model with stronger visual understanding"
         size: "8 GB"
-
-      - id: nomic-embed-text:v1.5
-        type: embedding
-        role: default_embedding
-        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
-        size: "274 MB"
 
       - id: qwen2.5-coder:32b
         type: code
         role: default_code
-        description: "Qwen2.5 Coder 32B — a Code-Specific Qwen model, with significant improvements in code generation, code reasoning, and code fixing."
+        description: "Qwen2.5 Coder 32B — advanced code generation and reasoning"
         size: "20 GB"
 
-  64gb:
-    description: "40+ GB RAM — largest models for enthusiast hardware"
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  nvidia_xlarge:
+    description: "32+ GB VRAM — enthusiast / enterprise NVIDIA GPU"
+    label: "NVIDIA · XL"
+    engine: ollama
     models:
-      - id: qwen3.5:35b
+      - id: qwen3:32b
         type: chat
         role: default
-        description: "Qwen3.5 35B — a multimodal model that delivers exceptional utility and performance."
+        description: "Qwen3 32B — top-tier dense model with full GPU acceleration"
+        size: "20 GB"
+
+      - id: llava:34b
+        type: vision
+        role: default_vision
+        description: "LLaVA 34B — large multimodal model for comprehensive visual understanding"
+        size: "20 GB"
+
+      - id: qwen3-coder:30b
+        type: code
+        role: default_code
+        description: "Qwen3 Coder 30B — performant long-context model for agentic coding"
+        size: "19 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  # ── Apple Silicon profiles (Metal / MLX via Ollama) ────────────────────────
+
+  apple_small:
+    description: "8 GB unified memory — Apple Silicon (M1/M2/M3/M4 base)"
+    label: "Apple Silicon · Small"
+    engine: ollama
+    models:
+      - id: qwen3.5:4b-mlx
+        type: chat
+        role: default
+        description: "Qwen3.5 4B MLX — optimized for Apple Silicon with MLX framework"
+        size: "2.5 GB"
+
+      - id: moondream:1.8b
+        type: vision
+        role: default_vision
+        description: "Moondream 1.8B — lightweight vision model for Apple Silicon"
+        size: "1.7 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  apple_medium:
+    description: "16 GB unified memory — Apple Silicon (M1/M2/M3/M4 Pro or base)"
+    label: "Apple Silicon · Medium"
+    engine: ollama
+    models:
+      - id: qwen3.5:4b-mlx
+        type: chat
+        role: default
+        description: "Qwen3.5 4B MLX — optimized for Apple Silicon with MLX framework"
+        size: "2.5 GB"
+
+      - id: moondream:1.8b
+        type: vision
+        role: default_vision
+        description: "Moondream 1.8B — lightweight vision model for Apple Silicon"
+        size: "1.7 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  apple_large:
+    description: "32 GB unified memory — Apple Silicon (M1/M2/M3/M4 Pro or Max)"
+    label: "Apple Silicon · Large"
+    engine: ollama
+    models:
+      - id: qwen3:32b
+        type: chat
+        role: default
+        description: "Qwen3 32B — powerful dense model leveraging Metal acceleration"
+        size: "20 GB"
+
+      - id: llava:13b
+        type: vision
+        role: default_vision
+        description: "LLaVA 13B — multimodal model with strong visual understanding"
+        size: "8 GB"
+
+      - id: qwen2.5-coder:32b
+        type: code
+        role: default_code
+        description: "Qwen2.5 Coder 32B — advanced code generation and reasoning"
+        size: "20 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"
+
+  apple_xlarge:
+    description: "48-64+ GB unified memory — Apple Silicon (M1/M2/M3/M4 Max or Ultra)"
+    label: "Apple Silicon · XL"
+    engine: ollama
+    models:
+      - id: qwen3.5:35b-mlx
+        type: chat
+        role: default
+        description: "Qwen3.5 35B MLX — top-tier model fully accelerated by Apple Silicon"
         size: "24 GB"
 
       - id: llava:34b
         type: vision
         role: default_vision
-        description: "LLaVA 34B — a novel end-to-end trained large multimodal model that combines a vision encoder and Vicuna for general-purpose visual and language understanding."
+        description: "LLaVA 34B — large multimodal model for comprehensive visual understanding"
         size: "20 GB"
-
-      - id: nomic-embed-text:v1.5
-        type: embedding
-        role: default_embedding
-        description: "Nomic Embed Text — a high-performing open embedding model with a large token context window."
-        size: "274 MB"
 
       - id: qwen3-coder:30b
         type: code
         role: default_code
-        description: "Qwen3 Coder 30B — a performant long context model for agentic and coding tasks."
+        description: "Qwen3 Coder 30B — performant long-context model for agentic coding"
         size: "19 GB"
+
+      - id: nomic-embed-text:v1.5
+        type: embedding
+        role: default_embedding
+        description: "Nomic Embed Text — high-performing open embedding model"
+        size: "274 MB"

@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 export function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
   const deleteConversation = useChatStore((s) => s.deleteConversation);
+  const profileLabel = useChatStore((s) => s.profileLabel);
   const profileName = useChatStore((s) => s.profileName);
 
   const navigate = useNavigate();
@@ -171,7 +172,7 @@ export function Sidebar() {
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-[13px] text-foreground font-medium">
-                {profileName || "—"}
+                {profileLabel || profileName || "—"}
               </span>
             </div>
             <p className="text-[11px] text-muted-foreground mt-0.5 ml-4">
@@ -186,7 +187,7 @@ export function Sidebar() {
           <div className="flex justify-center py-2.5 border-t border-sidebar-border">
             <div
               className="w-2 h-2 rounded-full bg-emerald-500"
-              title={profileName}
+              title={profileLabel || profileName}
             />
           </div>
         )}

@@ -15,6 +15,8 @@ async def get_profile_models():
     profile = settings.get_current_profile()
     return {
         "profile": settings.HARDWARE_PROFILE,
+        "label": profile.label,
+        "engine": profile.engine,
         "description": profile.description,
         "models": settings.get_available_models(),
     }
@@ -26,6 +28,8 @@ async def get_profile():
     profile = settings.get_current_profile()
     return {
         "profile": settings.HARDWARE_PROFILE,
+        "label": profile.label,
+        "engine": profile.engine,
         "description": profile.description,
         "default_model": profile.get_default_model(),
         "model_count": len(profile.models),
@@ -39,6 +43,8 @@ async def get_all_profiles():
     return {
         name: {
             "description": p.description,
+            "label": p.label,
+            "engine": p.engine,
             "models": [m.to_dict() for m in p.models],
         }
         for name, p in profiles.items()

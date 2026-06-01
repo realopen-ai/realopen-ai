@@ -7,7 +7,7 @@ export function WelcomeScreen({
 }: {
   onSend: (message: string) => void;
 }) {
-  const { profileName, models } = useChatStore();
+  const { profileLabel, models } = useChatStore();
   const t = useT();
 
   const suggestions = [
@@ -67,10 +67,10 @@ export function WelcomeScreen({
           </p>
         </div>
 
-        {profileName && (
+        {profileLabel && (
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-[13px] text-emerald-400 font-medium">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            {profileName} {t("welcome.profile")}
+            {profileLabel} {t("welcome.profile")}
           </div>
         )}
 

@@ -1,8 +1,25 @@
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
+
+# Valid profile names — profiles outside this set are rejected
+VALID_PROFILES = {
+    "cpu_small",
+    "cpu_medium",
+    "nvidia_small",
+    "nvidia_medium",
+    "nvidia_large",
+    "nvidia_xlarge",
+    "apple_small",
+    "apple_medium",
+    "apple_large",
+    "apple_xlarge",
+}
 
 
 class ModelConfig:
@@ -31,6 +48,8 @@ class ProfileConfig:
     def __init__(self, name: str, data: dict):
         self.name = name
         self.description: str = data.get("description", "")
+        self.label: str = data.get("label", name)
+        self.engine: str = data.get("engine", "ollama")
         self.models: List[ModelConfig] = [
             ModelConfig(m) for m in data.get("models", [])
         ]
@@ -70,17 +89,20 @@ def load_profiles(profiles_path: Optional[str] = None) -> Dict[str, ProfileConfi
 
     if profiles_path is None or not Path(profiles_path).exists():
         # Fallback: return a minimal default
+        logger.warning("profiles.yml not found — using fallback cpu_small profile")
         return {
-            "8gb": ProfileConfig(
-                "8gb",
+            "cpu_small": ProfileConfig(
+                "cpu_small",
                 {
-                    "description": "Fallback profile",
+                    "description": "Fallback profile — profiles.yml not found",
+                    "label": "CPU · Small (fallback)",
+                    "engine": "ollama",
                     "models": [
                         {
                             "id": "qwen3:4b",
                             "type": "chat",
                             "role": "default",
-                            "description": "Fallback model - profiles.yml not found",
+                            "description": "Fallback model — profiles.yml not found",
                         }
                     ],
                 },
@@ -125,7 +147,8 @@ class Settings(BaseSettings):
     ]
 
     # Hardware Profile (set by setup.sh from profiles.yml)
-    HARDWARE_PROFILE: str = "8gb"
+    # Must be one of the valid profile names — invalid values are rejected
+    HARDWARE_PROFILE: str = "cpu_small"
     DEFAULT_MODEL: str = (
         "qwen3:4b"  # Fallback only; resolved from profiles.yml at runtime
     )
@@ -150,9 +173,26 @@ class Settings(BaseSettings):
         return self._profiles
 
     def get_current_profile(self) -> ProfileConfig:
-        """Get the ProfileConfig for the current HARDWARE_PROFILE."""
+        """Get the ProfileConfig for the current HARDWARE_PROFILE.
+
+        If the profile name is invalid (not in VALID_PROFILES), this is a
+        configuration error — likely a stale .env from an older version.
+        Logs a warning and falls back to cpu_small.
+        """
         profiles = self.get_profiles()
-        return profiles.get(self.HARDWARE_PROFILE, profiles.get("8gb"))
+
+        # Reject invalid profile names (e.g. old "8gb", "16gb" names)
+        if self.HARDWARE_PROFILE not in VALID_PROFILES:
+            logger.warning(
+                "Invalid HARDWARE_PROFILE='%s' — must be one of: %s. "
+                "Falling back to 'cpu_small'. "
+                "Delete your .env file and rerun setup.sh to fix this.",
+                self.HARDWARE_PROFILE,
+                ", ".join(sorted(VALID_PROFILES)),
+            )
+            self.HARDWARE_PROFILE = "cpu_small"
+
+        return profiles.get(self.HARDWARE_PROFILE, profiles.get("cpu_small"))
 
     def resolve_model(self, model: str) -> str:
         """

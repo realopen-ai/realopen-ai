@@ -11,6 +11,8 @@ Commands:
     all-models       Print all model IDs for a profile (one per line)
     models-json      Print all models for a profile as JSON
     description      Print the profile description
+    label            Print the human-readable profile label
+    engine           Print the inference engine for the profile
     validate         Check that profiles.yml is valid
 """
 
@@ -21,6 +23,20 @@ from pathlib import Path
 # Minimal YAML parser — no external dependency needed
 # Supports: nested dicts, lists, basic scalars, multiline strings
 # This is intentionally simple; profiles.yml doesn't use advanced YAML features.
+
+# Valid profile names — used for validation
+VALID_PROFILES = {
+    "cpu_small",
+    "cpu_medium",
+    "nvidia_small",
+    "nvidia_medium",
+    "nvidia_large",
+    "nvidia_xlarge",
+    "apple_small",
+    "apple_medium",
+    "apple_large",
+    "apple_xlarge",
+}
 
 
 def parse_yaml_simple(text: str) -> dict:
@@ -217,10 +233,40 @@ def main() -> None:
         print(profile.get("description", ""))
         return
 
+    elif command == "label":
+        print(profile.get("label", profile_name))
+        return
+
+    elif command == "engine":
+        print(profile.get("engine", "ollama"))
+        return
+
     elif command == "validate":
         # Basic validation
         errors = []
         for pname, pdata in profiles.items():
+            # Check profile name is valid
+            if pname not in VALID_PROFILES:
+                errors.append(
+                    f"Profile '{pname}': invalid profile name. "
+                    f"Must be one of: {', '.join(sorted(VALID_PROFILES))}"
+                )
+
+            # Check required fields
+            if not pdata.get("description"):
+                errors.append(f"Profile '{pname}': missing 'description'")
+            if not pdata.get("label"):
+                errors.append(f"Profile '{pname}': missing 'label'")
+
+            # Check engine
+            engine = pdata.get("engine", "ollama")
+            if engine not in ("ollama",):
+                errors.append(
+                    f"Profile '{pname}': unsupported engine '{engine}'. "
+                    f"Supported: ollama"
+                )
+
+            # Check models
             models = pdata.get("models", [])
             has_default = False
             for m in models:
@@ -235,6 +281,14 @@ def main() -> None:
                         has_default = True
             if not has_default:
                 errors.append(f"Profile '{pname}': no model with role='default'")
+
+        # Check all required profiles exist
+        for required in VALID_PROFILES:
+            if required not in profiles:
+                errors.append(
+                    f"Required profile '{required}' is missing from profiles.yml"
+                )
+
         if errors:
             for e in errors:
                 print(f"ERROR: {e}", file=sys.stderr)
@@ -245,6 +299,11 @@ def main() -> None:
 
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
+        print(
+            "Available commands: default-model, all-models, models-json, "
+            "description, label, engine, validate",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 

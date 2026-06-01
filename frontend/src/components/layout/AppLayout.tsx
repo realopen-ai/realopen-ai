@@ -57,9 +57,10 @@ export function AppLayout() {
     fetchFileTree();
     // Load models from backend
     import("@/api/client").then(({ fetchModels: fm }) => {
-      fm().then(({ models, profile }) => {
+      fm().then(({ models, profile, label }) => {
         useChatStore.getState().setModels(models);
         useChatStore.getState().setProfileName(profile);
+        useChatStore.getState().setProfileLabel(label);
       });
     });
     // Load conversations from backend

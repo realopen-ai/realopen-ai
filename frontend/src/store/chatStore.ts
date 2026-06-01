@@ -91,6 +91,7 @@ interface ChatState {
   models: ModelOption[];
   selectedModel: string;
   profileName: string;
+  profileLabel: string;
   isStreaming: boolean;
   isLoadingConversations: boolean;
 
@@ -158,6 +159,7 @@ interface ChatState {
   ) => void;
   setModels: (models: ModelOption[]) => void;
   setProfileName: (name: string) => void;
+  setProfileLabel: (label: string) => void;
   setSelectedModel: (model: string) => void;
 
   // Computed
@@ -227,6 +229,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   models: [],
   selectedModel: "default",
   profileName: "",
+  profileLabel: "",
   isStreaming: false,
   isLoadingConversations: false,
 
@@ -577,6 +580,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setModels: (models) => set({ models }),
   setProfileName: (name) => set({ profileName: name }),
+  setProfileLabel: (label) => set({ profileLabel: label }),
   setSelectedModel: (model) => set({ selectedModel: model }),
 
   getActiveConversation: () => {

@@ -127,7 +127,7 @@ npm-install:
 .PHONY: pull-models
 pull-models:
 	@echo "Pulling all models for current profile..."
-	@bash -c 'PROFILE=$$(grep "^HARDWARE_PROFILE=" .env 2>/dev/null | cut -d= -f2 || echo 8gb); \
+	@bash -c 'PROFILE=$$(grep "^HARDWARE_PROFILE=" .env 2>/dev/null | cut -d= -f2 || echo cpu_small); \
 		python3 scripts/profile-helper.py $$PROFILE all-models | while read model; do \
 			echo "Pulling $$model..."; ollama pull $$model; \
 		done'
@@ -135,4 +135,4 @@ pull-models:
 # ── Validate profiles.yml ──
 .PHONY: validate-profiles
 validate-profiles:
-	@python3 scripts/profile-helper.py 8gb validate
+	@python3 scripts/profile-helper.py cpu_small validate

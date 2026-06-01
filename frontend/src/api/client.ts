@@ -8,6 +8,7 @@ const log = createDebugLogger("client");
 export async function fetchModels(): Promise<{
   models: ModelOption[];
   profile: string;
+  label: string;
 }> {
   log("➡️  fetchModels  url=/api/profile/models");
   try {
@@ -20,14 +21,15 @@ export async function fetchModels(): Promise<{
   }
   log("   ⚠️  using fallback models");
   return {
-    profile: "16gb",
+    profile: "cpu_small",
+    label: "CPU · Small (≤8 GB RAM)",
     models: [
       {
-        id: "qwen3:8b",
+        id: "qwen3:4b",
         type: "chat",
         role: "default",
-        description: "Qwen3 8B (Default)",
-        size: "5.2 GB",
+        description: "Qwen3 4B (Default)",
+        size: "2.5 GB",
       },
       {
         id: "moondream:1.8b",
