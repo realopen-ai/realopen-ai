@@ -63,6 +63,8 @@ export function AppLayout() {
         useChatStore.getState().setProfileLabel(label);
       });
     });
+    // Load module info from backend
+    useChatStore.getState().loadModules();
     // Load conversations from backend
     useChatStore.getState().loadConversations();
   }, [fetchFileTree]);

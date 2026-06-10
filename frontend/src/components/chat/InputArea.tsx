@@ -47,7 +47,7 @@ export const slashCommands: SlashCommand[] = [
     name: "imagine",
     description: t("input.slash.imagine"),
     icon: <Sparkles className="w-4 h-4" />,
-    modelOverride: "default_imagine",
+    modelOverride: "default_image_gen",
   },
 ];
 

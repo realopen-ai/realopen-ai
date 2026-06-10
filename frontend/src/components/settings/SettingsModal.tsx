@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   X,
   Sun,
@@ -11,6 +11,12 @@ import {
   Eye,
   Check,
   Type,
+  Bot,
+  Image,
+  Download,
+  Loader2,
+  AlertTriangle,
+  Puzzle,
 } from "lucide-react";
 import {
   useSettingsStore,
@@ -22,6 +28,9 @@ import {
   type Language,
   type FontSize,
 } from "@/store/settingsStore";
+import { useChatStore } from "@/store/chatStore";
+import { installModuleModels } from "@/api/client";
+import type { ModuleInfo } from "@/api/client";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 
@@ -130,6 +139,209 @@ function FontSizeOption({
   );
 }
 
+// ─── Module Icon Mapper ───────────────────────────────────────────
+
+function ModuleIcon({ icon, className }: { icon: string; className?: string }) {
+  switch (icon) {
+    case "bot":
+      return <Bot className={className} />;
+    case "image":
+      return <Image className={className} />;
+    default:
+      return <Puzzle className={className} />;
+  }
+}
+
+// ─── Module Card ──────────────────────────────────────────────────
+
+function ModuleCard({
+  module,
+  onToggle,
+  onInstall,
+  installing,
+  installProgress,
+}: {
+  module: ModuleInfo;
+  onToggle: (name: string, enabled: boolean) => void;
+  onInstall: (name: string) => void;
+  installing: boolean;
+  installProgress: Record<string, { percent: number; status: string }>;
+}) {
+  const t = useT();
+  const isRequired = module.required;
+  const isAvailable = module.available;
+  const requirementsMet = module.requirements_met;
+  const isDownloading = installing;
+  const progress = installProgress[module.name];
+
+  // Can't toggle if: required, not available for profile, or requirements not met
+  const canToggle = module.can_toggle && isAvailable && requirementsMet;
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-4 transition-all",
+        !isAvailable
+          ? "border-border/30 bg-card/50 opacity-50"
+          : module.enabled
+            ? "border-primary/20 bg-primary/5"
+            : "border-border bg-card",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        {/* Icon */}
+        <div
+          className={cn(
+            "shrink-0 w-10 h-10 rounded-lg flex items-center justify-center",
+            module.enabled
+              ? "bg-primary/10 text-primary"
+              : "bg-secondary text-muted-foreground",
+          )}
+        >
+          <ModuleIcon icon={module.icon} className="w-5 h-5" />
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[14px] font-medium text-foreground">
+                {module.label}
+              </span>
+              {isRequired && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                  {t("modules.required")}
+                </span>
+              )}
+            </div>
+
+            {/* Toggle */}
+            {canToggle && (
+              <button
+                onClick={() => onToggle(module.name, !module.enabled)}
+                disabled={isDownloading}
+                className={cn(
+                  "relative w-10 h-5.5 rounded-full transition-colors shrink-0",
+                  module.enabled ? "bg-primary" : "bg-secondary",
+                  isDownloading && "opacity-50 cursor-not-allowed",
+                )}
+              >
+                <div
+                  className={cn(
+                    "absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform shadow-sm",
+                    module.enabled ? "translate-x-5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            )}
+            {isRequired && (
+              <div className="flex items-center gap-1 text-emerald-500">
+                <Check className="w-4 h-4" />
+              </div>
+            )}
+          </div>
+
+          <p className="text-[12px] text-muted-foreground mt-1 leading-relaxed">
+            {module.description}
+          </p>
+
+          {/* Status indicators */}
+          <div className="flex items-center gap-3 mt-2.5">
+            {!isAvailable && (
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+                <AlertTriangle className="w-3 h-3" />
+                {t("modules.notAvailableForProfile")}
+              </div>
+            )}
+            {isAvailable && !requirementsMet && (
+              <div className="flex items-center gap-1.5 text-[11px] text-amber-500">
+                <AlertTriangle className="w-3 h-3" />
+                {t("modules.requirementsNotMet")}
+                {module.minimum_requirements && (
+                  <span>
+                    ({module.minimum_requirements.ram} GB RAM,{" "}
+                    {module.minimum_requirements.vram} GB VRAM)
+                  </span>
+                )}
+              </div>
+            )}
+            {module.estimated_size && isAvailable && (
+              <span className="text-[11px] text-muted-foreground/60">
+                {t("modules.estimatedSize")}: {module.estimated_size}
+              </span>
+            )}
+            {module.enabled && !module.models_downloaded && isAvailable && (
+              <span className="text-[11px] text-amber-500">
+                {t("modules.modelsNotDownloaded")}
+              </span>
+            )}
+            {module.enabled && module.models_downloaded && (
+              <span className="text-[11px] text-emerald-500">
+                {t("modules.ready")}
+              </span>
+            )}
+          </div>
+
+          {/* Install button + progress */}
+          {module.enabled && !module.models_downloaded && isAvailable && (
+            <div className="mt-3">
+              {isDownloading && progress ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    {progress.status}
+                  </div>
+                  <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${progress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => onInstall(module.name)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {t("modules.downloadModels")}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Models list for optional modules */}
+          {module.models && module.models.length > 0 && isAvailable && (
+            <div className="mt-2.5">
+              <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider mb-1">
+                {t("modules.models")}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {module.models.map((m, i) => (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
+                  >
+                    <span
+                      className={cn(
+                        "w-1.5 h-1.5 rounded-full",
+                        module.models_downloaded
+                          ? "bg-emerald-500"
+                          : "bg-amber-500",
+                      )}
+                    />
+                    {m.description || m.id}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Settings Modal ──────────────────────────────────────────────
 
 export function SettingsModal({
@@ -139,7 +351,9 @@ export function SettingsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"general" | "notifications">("general");
+  const [tab, setTab] = useState<"general" | "modules" | "notifications">(
+    "general",
+  );
   const t = useT();
 
   const appearance = useSettingsStore((s) => s.appearance);
@@ -156,7 +370,87 @@ export function SettingsModal({
   const setFontSize = useSettingsStore((s) => s.setFontSize);
   const setNotifyDeepSearch = useSettingsStore((s) => s.setNotifyDeepSearch);
 
+  const modules = useChatStore((s) => s.modules);
+  const toggleModule = useChatStore((s) => s.toggleModule);
+  const loadModules = useChatStore((s) => s.loadModules);
+
+  // Module install state
+  const [installingModule, setInstallingModule] = useState<string | null>(null);
+  const [installProgress, setInstallProgress] = useState<
+    Record<string, { percent: number; status: string }>
+  >({});
+
+  const handleToggleModule = useCallback(
+    async (name: string, enabled: boolean) => {
+      await toggleModule(name, enabled);
+    },
+    [toggleModule],
+  );
+
+  const handleInstallModule = useCallback(
+    async (moduleName: string) => {
+      setInstallingModule(moduleName);
+      setInstallProgress((prev) => ({
+        ...prev,
+        [moduleName]: { percent: 0, status: t("modules.startingDownload") },
+      }));
+
+      await installModuleModels(moduleName, (event) => {
+        const evt = event.event as string;
+
+        if (evt === "pull_start") {
+          setInstallProgress((prev) => ({
+            ...prev,
+            [moduleName]: {
+              percent: 0,
+              status: `${t("modules.pullingModel")}: ${event.model}`,
+            },
+          }));
+        } else if (evt === "pull_progress") {
+          setInstallProgress((prev) => ({
+            ...prev,
+            [moduleName]: {
+              percent: event.percent as number,
+              status: `${t("modules.pullingModel")}: ${event.model}`,
+            },
+          }));
+        } else if (evt === "pull_done") {
+          setInstallProgress((prev) => ({
+            ...prev,
+            [moduleName]: {
+              percent: 100,
+              status: `${event.model} ✓`,
+            },
+          }));
+        } else if (evt === "pull_error") {
+          setInstallProgress((prev) => ({
+            ...prev,
+            [moduleName]: {
+              percent: prev[moduleName]?.percent ?? 0,
+              status: `${t("modules.error")}: ${event.error}`,
+            },
+          }));
+        } else if (evt === "install_complete") {
+          setInstallingModule(null);
+          // Reload modules to update download status
+          loadModules();
+        }
+      });
+
+      setInstallingModule(null);
+      // Reload modules after install completes
+      await loadModules();
+    },
+    [t, loadModules],
+  );
+
   if (!open) return null;
+
+  const tabs = [
+    { key: "general" as const, label: t("settings.general") },
+    { key: "modules" as const, label: t("settings.modules") },
+    { key: "notifications" as const, label: t("settings.notifications") },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -183,34 +477,23 @@ export function SettingsModal({
 
         {/* Tab Bar */}
         <div className="flex border-b border-border/50">
-          <button
-            onClick={() => setTab("general")}
-            className={cn(
-              "flex-1 py-2.5 text-[13px] font-medium transition-colors relative",
-              tab === "general"
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t("settings.general")}
-            {tab === "general" && (
-              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-0.5 bg-primary rounded-full" />
-            )}
-          </button>
-          <button
-            onClick={() => setTab("notifications")}
-            className={cn(
-              "flex-1 py-2.5 text-[13px] font-medium transition-colors relative",
-              tab === "notifications"
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t("settings.notifications")}
-            {tab === "notifications" && (
-              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-0.5 bg-primary rounded-full" />
-            )}
-          </button>
+          {tabs.map((tabItem) => (
+            <button
+              key={tabItem.key}
+              onClick={() => setTab(tabItem.key)}
+              className={cn(
+                "flex-1 py-2.5 text-[13px] font-medium transition-colors relative",
+                tab === tabItem.key
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {tabItem.label}
+              {tab === tabItem.key && (
+                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-0.5 bg-primary rounded-full" />
+              )}
+            </button>
+          ))}
         </div>
 
         {/* Content */}
@@ -340,6 +623,32 @@ export function SettingsModal({
                   />
                 </div>
               </div>
+            </div>
+          )}
+
+          {tab === "modules" && (
+            <div className="space-y-3">
+              <p className="text-[12px] text-muted-foreground leading-relaxed">
+                {t("modules.description")}
+              </p>
+              {modules.map((module) => (
+                <ModuleCard
+                  key={module.name}
+                  module={module}
+                  onToggle={handleToggleModule}
+                  onInstall={handleInstallModule}
+                  installing={installingModule === module.name}
+                  installProgress={installProgress}
+                />
+              ))}
+              {modules.length === 0 && (
+                <div className="text-center py-8">
+                  <Puzzle className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+                  <p className="text-[13px] text-muted-foreground/60">
+                    {t("modules.noModules")}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

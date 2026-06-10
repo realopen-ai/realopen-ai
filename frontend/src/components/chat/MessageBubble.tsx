@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Check,
   Loader2,
+  Image,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -70,6 +71,12 @@ function ToolBadge({
       bg: "bg-amber-500/10",
       text: "text-amber-400",
     },
+    image_gen: {
+      icon: Image,
+      label: "Generated image",
+      bg: "bg-emerald-500/10",
+      text: "text-emerald-400",
+    },
   };
   const {
     icon: Icon,
@@ -82,7 +89,8 @@ function ToolBadge({
     bg: "bg-secondary",
     text: "text-muted-foreground",
   };
-  const resultCount = toolCall.results?.length;
+  const resultCount =
+    toolCall.webResults?.length || toolCall.genResults?.length;
   const duration =
     toolCall.completedAt && toolCall.startedAt
       ? ((toolCall.completedAt - toolCall.startedAt) / 1000).toFixed(1)
@@ -155,6 +163,7 @@ function ToolCallDetail({ toolCall }: { toolCall: ToolCallResult }) {
   if (toolCall.type === "vision") return <VisionDetail tc={toolCall} />;
   if (toolCall.type === "code_exec") return <CodeExecDetail tc={toolCall} />;
   if (toolCall.type === "deepsearch") return <DeepSearchDetail tc={toolCall} />;
+  if (toolCall.type === "image_gen") return <ImageGenDetail tc={toolCall} />;
   return <GenericToolDetail tc={toolCall} />;
 }
 
@@ -173,9 +182,9 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
         )}
         <StatusDot status={tc.status} />
       </div>
-      {tc.results && tc.results.length > 0 && (
+      {tc.webResults && tc.webResults.length > 0 && (
         <div className="space-y-1.5">
-          {tc.results.map((r, i) => (
+          {tc.webResults.map((r, i) => (
             <div
               key={i}
               className="rounded-lg border border-border bg-card p-2.5 hover:bg-accent transition-colors cursor-pointer"
@@ -336,6 +345,56 @@ function DeepSearchDetail({ tc }: { tc: ToolCallResult }) {
               </span>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Image className="w-3.5 h-3.5 text-emerald-400" />
+        <span className="text-[12px] font-medium text-emerald-400">
+          Image Generation
+        </span>
+        {tc.imageDescription && (
+          <span className="text-[10px] text-muted-foreground">
+            &quot;{tc.imageDescription}&quot;
+          </span>
+        )}
+        <StatusDot status={tc.status} />
+      </div>
+      {tc.genResults && tc.genResults.length > 0 && (
+        <div className="space-y-2">
+          {tc.genResults.map(
+            (r, i) =>
+              r.type === "image" && (
+                <div
+                  key={i}
+                  className="rounded-lg border border-border overflow-hidden"
+                >
+                  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
+                    <span className="text-[10px] text-muted-foreground">
+                      Result {i + 1}
+                    </span>
+                  </div>
+                  <div className="p-3 text-center bg-sandbox-bg">
+                    <img
+                      src={`data:image/png;base64,${r.data}`}
+                      alt={tc.imageDescription || "Generated image"}
+                      className="mx-auto rounded max-h-64"
+                    />
+                  </div>
+                </div>
+              ),
+          )}
+        </div>
+      )}
+      {tc.error && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+          <p className="text-[11px] text-red-400">{tc.error}</p>
         </div>
       )}
     </div>

@@ -5,8 +5,11 @@ import {
   deleteConversation as apiDeleteConversation,
   fetchConversationMessages,
   fetchConversationDetail,
+  fetchModules as apiFetchModules,
+  toggleModule as apiToggleModule,
   type ConversationDTO,
   type MessageDTO,
+  type ModuleInfo,
 } from "@/api/client";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -19,14 +22,15 @@ export interface ToolCallResult {
     | "code_exec"
     | "file_read"
     | "file_write"
-    | "deepsearch";
+    | "deepsearch"
+    | "image_gen";
   status: "running" | "completed" | "error";
   title: string;
   startedAt: number;
   completedAt?: number;
   // Web search
   query?: string;
-  results?: { title: string; url: string; snippet: string }[];
+  webResults?: { title: string; url: string; snippet: string }[];
   // Code exec
   language?: string;
   code?: string;
@@ -36,6 +40,8 @@ export interface ToolCallResult {
   imageDescription?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
+  // Media generation
+  genResults?: { type: string; data: string; filename?: string }[];
   // Files
   filePath?: string;
   fileContent?: string;
@@ -94,6 +100,10 @@ interface ChatState {
   profileLabel: string;
   isStreaming: boolean;
   isLoadingConversations: boolean;
+
+  // Module state
+  modules: ModuleInfo[];
+  isLoadingModules: boolean;
 
   // Actions
   loadConversations: () => Promise<void>;
@@ -162,6 +172,11 @@ interface ChatState {
   setProfileLabel: (label: string) => void;
   setSelectedModel: (model: string) => void;
 
+  // Module actions
+  loadModules: () => Promise<void>;
+  toggleModule: (moduleName: string, enabled: boolean) => Promise<boolean>;
+  setModules: (modules: ModuleInfo[]) => void;
+
   // Computed
   getActiveConversation: () => Conversation | undefined;
   getActiveMessages: () => Message[];
@@ -194,12 +209,13 @@ function dtoToMessage(dto: MessageDTO): Message {
     startedAt: dto.createdAt,
     completedAt: tc.completedAt,
     query: tc.query,
-    results: tc.results,
+    webResults: tc.webResults,
+    genResults: tc.genResults,
     language: tc.language,
     code: tc.code,
     output: tc.output,
     exitCode: tc.exitCode,
-    imageDescription: tc.image_description,
+    imageDescription: tc.imageDescription,
     error: tc.error,
   }));
 
@@ -232,6 +248,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   profileLabel: "",
   isStreaming: false,
   isLoadingConversations: false,
+  modules: [],
+  isLoadingModules: false,
 
   loadConversations: async () => {
     set({ isLoadingConversations: true });
@@ -582,6 +600,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProfileName: (name) => set({ profileName: name }),
   setProfileLabel: (label) => set({ profileLabel: label }),
   setSelectedModel: (model) => set({ selectedModel: model }),
+
+  // Module actions
+  loadModules: async () => {
+    set({ isLoadingModules: true });
+    try {
+      const modules = await apiFetchModules();
+      set({ modules, isLoadingModules: false });
+    } catch {
+      set({ isLoadingModules: false });
+    }
+  },
+  toggleModule: async (moduleName: string, enabled: boolean) => {
+    const result = await apiToggleModule(moduleName, enabled);
+    if (result) {
+      // Update the module in the local state
+      set((s) => ({
+        modules: s.modules.map((m) =>
+          m.name === moduleName
+            ? {
+                ...m,
+                enabled: result.enabled,
+                models_downloaded: result.models_downloaded,
+              }
+            : m,
+        ),
+      }));
+      // Also reload models to include/exclude module models
+      const { fetchModels: fm } = await import("@/api/client");
+      const { models } = await fm();
+      set({ models });
+      return true;
+    }
+    return false;
+  },
+  setModules: (modules) => set({ modules }),
 
   getActiveConversation: () => {
     const s = get();

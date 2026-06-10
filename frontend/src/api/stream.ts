@@ -332,8 +332,9 @@ async function parseSSEStream(
               query: tc.query,
               language: tc.language,
               code: tc.code,
-              imageDescription: tc.image_description,
-              results: tc.results,
+              imageDescription: tc.imageDescription,
+              webResults: tc.webResults,
+              genResults: tc.genResults,
               output: tc.output,
               exitCode: tc.exitCode,
             });
@@ -342,11 +343,19 @@ async function parseSSEStream(
               toolCallIdMap.set(tc.id, frontendId);
             }
             // If the backend already sent results in the start event, mark as completed
-            if (tc.results && tc.results.length > 0) {
+            if (tc.webResults && tc.webResults.length > 0) {
               callbacks.onToolCallUpdate(frontendId, {
                 status: "completed",
                 completedAt: Date.now(),
-                results: tc.results,
+                webResults: tc.webResults,
+              });
+            }
+            // Similarly for genResults
+            if (tc.genResults && tc.genResults.length > 0) {
+              callbacks.onToolCallUpdate(frontendId, {
+                status: "completed",
+                completedAt: Date.now(),
+                genResults: tc.genResults,
               });
             }
           } else if (tc.status === "completed" || tc.status === "error") {
@@ -357,11 +366,12 @@ async function parseSSEStream(
               status: tc.status,
             };
             if (tc.completedAt) updates.completedAt = tc.completedAt;
-            if (tc.results) updates.results = tc.results;
+            if (tc.webResults) updates.webResults = tc.webResults;
+            if (tc.genResults) updates.genResults = tc.genResults;
             if (tc.output) updates.output = tc.output;
             if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
-            if (tc.image_description)
-              updates.imageDescription = tc.image_description;
+            if (tc.imageDescription)
+              updates.imageDescription = tc.imageDescription;
             if (tc.error) updates.error = tc.error;
 
             if (frontendId) {
@@ -446,7 +456,7 @@ export async function streamChatDemo(
     callbacks.onToolCallUpdate(tcId, {
       status: "completed",
       completedAt: Date.now(),
-      results: [
+      webResults: [
         {
           title: "Wikipedia - Related Topic",
           url: "https://en.wikipedia.org/wiki/Example",

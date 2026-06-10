@@ -269,8 +269,13 @@ export function ChatArea() {
           if (updates.output) {
             updates.output.split("\n").forEach((l) => addTerminalLine(l));
           }
-          if (updates.results) {
-            addTerminalLine(`  → ${updates.results.length} result(s) found`);
+          if (updates.webResults) {
+            addTerminalLine(`  → ${updates.webResults.length} result(s) found`);
+          }
+          if (updates.genResults) {
+            addTerminalLine(
+              `  → ${updates.genResults.length} generated result(s)`,
+            );
           }
           if (updates.imageDescription) {
             addTerminalLine(

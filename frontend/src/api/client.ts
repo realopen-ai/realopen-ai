@@ -49,6 +49,113 @@ export async function fetchModels(): Promise<{
   };
 }
 
+// ─── Modules ─────────────────────────────────────────────────────
+
+export interface ModuleInfo {
+  name: string;
+  required: boolean;
+  enabled: boolean;
+  label: string;
+  description: string;
+  icon: string;
+  available: boolean;
+  models_downloaded: boolean;
+  can_toggle: boolean;
+  requirements_met: boolean;
+  minimum_requirements?: { ram: number; vram: number };
+  estimated_size?: string;
+  models?: ModelOption[];
+  model_roles?: string[];
+}
+
+export async function fetchModules(): Promise<ModuleInfo[]> {
+  log("➡️  fetchModules  url=/api/modules");
+  try {
+    const res = await fetch("/api/modules");
+    log(`   response  status=${res.status}  ok=${res.ok}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.modules ?? [];
+    }
+    dbgError(`   ❌ fetchModules NOT OK  status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ fetchModules error: ${err}`);
+  }
+  return [];
+}
+
+export async function toggleModule(
+  moduleName: string,
+  enabled: boolean,
+): Promise<{
+  module: string;
+  enabled: boolean;
+  models_downloaded: boolean;
+} | null> {
+  log(`➡️  toggleModule  module=${moduleName}  enabled=${enabled}`);
+  try {
+    const res = await fetch("/api/modules/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ module: moduleName, enabled }),
+    });
+    log(`   response  status=${res.status}  ok=${res.ok}`);
+    if (res.ok) return await res.json();
+    const err = await res.json().catch(() => ({}));
+    dbgError(`   ❌ toggleModule error: ${err.detail || res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ toggleModule error: ${err}`);
+  }
+  return null;
+}
+
+export async function installModuleModels(
+  moduleName: string,
+  onEvent: (event: Record<string, unknown>) => void,
+): Promise<boolean> {
+  log(`➡️  installModuleModels  module=${moduleName}`);
+  try {
+    const res = await fetch("/api/modules/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ module: moduleName }),
+    });
+
+    if (!res.ok || !res.body) {
+      dbgError(`   ❌ installModuleModels NOT OK  status=${res.status}`);
+      return false;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+          onEvent(event);
+        } catch {
+          // Skip malformed JSON
+        }
+      }
+    }
+
+    return true;
+  } catch (err) {
+    dbgError(`   ❌ installModuleModels error: ${err}`);
+    return false;
+  }
+}
+
 // ─── Conversations ───────────────────────────────────────────────
 
 /** Shape of a tool call as stored in the backend DB (JSON-serialized) */
@@ -62,8 +169,9 @@ export interface BackendToolCall {
   code?: string;
   output?: string;
   exitCode?: number;
-  results?: { title: string; url: string; snippet: string }[];
-  image_description?: string;
+  webResults?: { title: string; url: string; snippet: string }[];
+  genResults?: { type: string; data: string; filename?: string }[];
+  imageDescription?: string;
   error?: string;
   completedAt?: number;
 }
