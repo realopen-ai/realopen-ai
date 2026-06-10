@@ -75,12 +75,15 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - SEARXNG_BASE_URL=http://searxng:8080
       - REDIS_URL=redis://redis:6379/0
+      - ENABLED_MODULES=${ENABLED_MODULES:-assistant}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - upload-data:/app/uploads
       - ./profiles.yml:/app/profiles.yml:ro
+      - ./modules.yml:/app/modules.yml:ro
+      - module-state:/app/state
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
@@ -142,6 +145,7 @@ services:
 volumes:
   postgres-data:
   upload-data:
+  module-state:
   nginx-cache:
 
 networks:

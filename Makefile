@@ -136,3 +136,22 @@ pull-models:
 .PHONY: validate-profiles
 validate-profiles:
 	@python3 scripts/profile-helper.py cpu_small validate
+
+# ── Validate modules.yml ──
+.PHONY: validate-modules
+validate-modules:
+	@python3 scripts/profile-helper.py modules cpu_small validate-modules
+
+# ── List available modules ──
+.PHONY: list-modules
+list-modules:
+	@python3 scripts/profile-helper.py modules cpu_small list
+
+# ── Pull models for optional modules ──
+.PHONY: pull-module-models
+pull-module-models:
+	@echo "Pulling optional module models for current profile..."
+	@bash -c 'PROFILE=$$(grep "^HARDWARE_PROFILE=" .env 2>/dev/null | cut -d= -f2 || echo cpu_small); \
+		python3 scripts/profile-helper.py modules $$PROFILE all-module-models | while read model; do \
+			echo "Pulling $$model..."; ollama pull $$model; \
+		done'

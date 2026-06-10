@@ -33,6 +33,7 @@ services:
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
       - ./profiles.yml:/app/profiles.yml:ro
+      - ./modules.yml:/app/modules.yml:ro
     ports:
       - "8000:8000"
     extra_hosts:

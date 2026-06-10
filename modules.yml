@@ -1,0 +1,84 @@
+# =============================================================================
+# RealOpen-AI Module Definitions
+#
+# Modules define feature groups that can be enabled or disabled.
+# Required modules are always active; optional modules can be toggled
+# at runtime through the Settings UI or the /api/modules endpoints.
+#
+# Module fields:
+#   required:     Whether the module is mandatory (always enabled, cannot be toggled off)
+#   label:        Human-readable name shown in the UI
+#   description:  What the module provides
+#   icon:         Lucide icon name used in the UI (e.g. "bot", "image")
+#   tools:        List of tool names registered when this module is active.
+#                 When a module is disabled, its tools are unregistered.
+#   models:       For required modules: list of roles resolved from profiles.yml
+#                 For optional modules: dict of profile_name → model list
+#                 Profiles NOT listed = module unavailable on that hardware
+#   minimum_requirements: Minimum RAM/VRAM in GB (optional modules only)
+#   estimated_size: Approximate disk space for this module's models
+# =============================================================================
+
+modules:
+  assistant:
+    required: true
+    label: "AI Assistant"
+    description: "Core conversational AI with web search, code execution, and vision analysis"
+    icon: "bot"
+    tools:
+      - use_websearch
+      - use_webfetch
+      - use_code_exec
+      - use_vision
+    # Models reference roles from profiles.yml — they are resolved automatically
+    # based on the current hardware profile. This list is informational only.
+    models:
+      - role: default
+      - role: default_vision
+      - role: default_embedding
+      - role: default_code
+
+  image_generation:
+    required: false
+    label: "Image Generation"
+    description: "Generate images from text descriptions using local AI models"
+    icon: "image"
+    tools:
+      - use_image_gen
+    minimum_requirements:
+      ram: 8
+      vram: 6
+    estimated_size: "5-40 GB depending on model"
+    # Profile-specific models — profiles NOT listed mean the module is unavailable
+    # on that hardware (too slow or insufficient resources).
+    models:
+      nvidia_medium:
+        - id: sd3-medium:q4_k_m
+          role: default_image_gen
+          description: "StableDiffusion 3 Medium — optimized for 8-12 GB VRAM"
+          size: "5 GB"
+      nvidia_large:
+        - id: sdxl:q4_k_m
+          role: default_image_gen
+          description: "StableDiffusion XL — high quality for 16-24 GB VRAM"
+          size: "6.5 GB"
+      nvidia_xlarge:
+        - id: sdxl:f16
+          role: default_image_gen
+          description: "StableDiffusion XL — full precision for 32+ GB VRAM"
+          size: "13 GB"
+      apple_medium:
+        - id: x/flux2-klein:4b
+          role: default_image_gen
+          description: "Flux Klein 4B"
+          size: "5.7 GB"
+      apple_large:
+        - id: x/flux2-klein:9b
+          role: default_image_gen
+          description: "Flux Klein 9B"
+          size: "12 GB"
+      apple_xlarge:
+        - id: x/z-image-turbo:bf16
+          role: default_image_gen
+          description: "Z-Image Turbo — BF16 precision"
+          size: "33 GB"
