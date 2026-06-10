@@ -637,8 +637,10 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
     }
     if tc.query:
         d["query"] = tc.query
-    if tc.results:
-        d["results"] = tc.results
+    if tc.web_results:
+        d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.language:
         d["language"] = tc.language
     if tc.code:
@@ -648,7 +650,7 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
     if tc.exit_code is not None:
         d["exitCode"] = tc.exit_code
     if tc.image_description:
-        d["image_description"] = tc.image_description
+        d["imageDescription"] = tc.image_description
     if tc.error:
         d["error"] = tc.error
     return d
@@ -659,14 +661,16 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
     d = {"status": tc.status}
     if tc.completed_at:
         d["completedAt"] = int(tc.completed_at * 1000)
-    if tc.results:
-        d["results"] = tc.results
+    if tc.web_results:
+        d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.output:
         d["output"] = tc.output
     if tc.exit_code is not None:
         d["exitCode"] = tc.exit_code
     if tc.image_description:
-        d["image_description"] = tc.image_description
+        d["imageDescription"] = tc.image_description
     if tc.error:
         d["error"] = tc.error
     return d

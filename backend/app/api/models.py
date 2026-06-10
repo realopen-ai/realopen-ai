@@ -9,7 +9,8 @@ router = APIRouter()
 async def get_profile_models():
     """Get all available models for the current hardware profile.
 
-    Returns the list from profiles.yml for the active HARDWARE_PROFILE.
+    Returns the list from profiles.yml for the active HARDWARE_PROFILE,
+    plus any models from enabled optional modules.
     The frontend uses this to populate the model selector dropdown.
     """
     profile = settings.get_current_profile()

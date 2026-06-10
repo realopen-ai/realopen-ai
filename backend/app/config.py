@@ -1,8 +1,11 @@
+import json
 import logging
+import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import yaml
+from pydantic import PrivateAttr
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -22,8 +25,11 @@ VALID_PROFILES = {
 }
 
 
+# ─── Model Config ────────────────────────────────────────────────────
+
+
 class ModelConfig:
-    """A single model entry from profiles.yml."""
+    """A single model entry from profiles.yml or modules.yml."""
 
     def __init__(self, data: dict):
         self.id: str = data["id"]
@@ -40,6 +46,9 @@ class ModelConfig:
             "description": self.description,
             "size": self.size,
         }
+
+
+# ─── Profile Config ──────────────────────────────────────────────────
 
 
 class ProfileConfig:
@@ -119,6 +128,245 @@ def load_profiles(profiles_path: Optional[str] = None) -> Dict[str, ProfileConfi
     return profiles
 
 
+# ─── Module Config ───────────────────────────────────────────────────
+
+
+class ModuleConfig:
+    """A module definition from modules.yml.
+
+    Required modules (like 'assistant') are always enabled and their models
+    come from profiles.yml (referenced by role).
+
+    Optional modules (like 'image_generation') can be toggled at runtime.
+    Their models are defined per-profile in modules.yml itself — profiles
+    not listed mean the module is unavailable on that hardware.
+    """
+
+    def __init__(self, name: str, data: dict):
+        self.name = name
+        self.required: bool = data.get("required", False)
+        self.label: str = data.get("label", name)
+        self.description: str = data.get("description", "")
+        self.icon: str = data.get("icon", "puzzle")
+        self.tools: List[str] = data.get("tools", [])
+        self.minimum_requirements: Optional[dict] = (
+            data.get("minimum_requirements") or None
+        )
+        self.estimated_size: str = data.get("estimated_size", "")
+
+        # Store raw models data for deferred resolution
+        self._models_data = data.get("models", {})
+
+    def is_required(self) -> bool:
+        return self.required
+
+    def is_available_for_profile(self, profile_name: str) -> bool:
+        """Check if this module has models for the given hardware profile.
+
+        Required modules are always available (their models come from profiles.yml).
+        Optional modules are available only if the profile is listed in their
+        models dict with a non-null value.
+        """
+        if self.required:
+            return True
+
+        # Optional module: models dict has profile names as keys
+        if not self._models_data:
+            return False
+
+        # If models is a list, it's a required module's role list
+        if isinstance(self._models_data, list):
+            return True
+
+        # If models is a dict, check for the profile
+        if isinstance(self._models_data, dict):
+            return (
+                profile_name in self._models_data
+                and self._models_data[profile_name] is not None
+            )
+
+        return False
+
+    def get_models_for_profile(self, profile_name: str) -> List[ModelConfig]:
+        """Get models for this module for a specific profile.
+
+        For required modules: returns [] (models come from profiles.yml).
+        For optional modules: returns the model list for the profile, or [].
+        """
+        if self.required:
+            return []
+
+        if not self._models_data:
+            return []
+
+        # If it's a list, it's role references (required module style)
+        if isinstance(self._models_data, list):
+            return []
+
+        # If it's a dict, look up by profile name
+        if isinstance(self._models_data, dict):
+            profile_models = self._models_data.get(profile_name)
+            if profile_models is None:
+                return []
+            return [ModelConfig(m) for m in profile_models]
+
+        return []
+
+    def get_model_roles(self) -> List[str]:
+        """For required modules: return the list of model roles used."""
+        if isinstance(self._models_data, list):
+            return [m.get("role", "") for m in self._models_data if m.get("role")]
+        return []
+
+    def get_all_profile_models(self) -> Dict[str, List[ModelConfig]]:
+        """Get all models for all profiles (for optional modules).
+
+        Returns dict of profile_name → [ModelConfig].
+        """
+        if not isinstance(self._models_data, dict) or self.required:
+            return {}
+
+        result = {}
+        for profile_name, model_list in self._models_data.items():
+            if model_list is not None:
+                result[profile_name] = [ModelConfig(m) for m in model_list]
+        return result
+
+    def meets_requirements(self, ram_gb: int, vram_gb: int) -> bool:
+        """Check if the given hardware meets this module's minimum requirements."""
+        if not self.minimum_requirements:
+            return True
+
+        min_ram = self.minimum_requirements.get("ram", 0)
+        min_vram = self.minimum_requirements.get("vram", 0)
+
+        return ram_gb >= min_ram and vram_gb >= min_vram
+
+    @staticmethod
+    async def check_model_downloaded(model_id: str) -> bool:
+        """Check if a model is available in Ollama.
+
+        Shared utility to avoid duplication between modules API and tools.
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+                if response.status_code == 200:
+                    data = response.json()
+                    available = [m.get("name", "") for m in data.get("models", [])]
+                    model_base = model_id.split(":")[0]
+                    return model_id in available or any(
+                        m.split(":")[0] == model_base for m in available
+                    )
+        except Exception:
+            pass
+        return False
+
+    def to_dict(
+        self, profile_name: str, enabled: bool, models_downloaded: bool = False
+    ) -> dict:
+        """Serialize module info for API responses."""
+        result = {
+            "name": self.name,
+            "required": self.required,
+            "enabled": enabled,
+            "label": self.label,
+            "description": self.description,
+            "icon": self.icon,
+            "available": self.is_available_for_profile(profile_name),
+            "models_downloaded": models_downloaded,
+        }
+
+        if not self.required:
+            if self.minimum_requirements:
+                result["minimum_requirements"] = self.minimum_requirements
+            result["estimated_size"] = self.estimated_size
+            result["models"] = [
+                m.to_dict() for m in self.get_models_for_profile(profile_name)
+            ]
+        else:
+            # For required modules, list the model roles
+            result["model_roles"] = self.get_model_roles()
+
+        return result
+
+
+def load_modules(modules_path: Optional[str] = None) -> Dict[str, ModuleConfig]:
+    """Load all modules from modules.yml."""
+    if modules_path is None:
+        candidates = [
+            Path("/app/modules.yml"),  # Inside Docker container
+            Path(__file__).parent.parent.parent
+            / "modules.yml",  # Dev: backend/../modules.yml
+        ]
+        for p in candidates:
+            if p.exists():
+                modules_path = str(p)
+                break
+
+    if modules_path is None or not Path(modules_path).exists():
+        logger.warning("modules.yml not found — using fallback assistant-only module")
+        return {
+            "assistant": ModuleConfig(
+                "assistant",
+                {
+                    "required": True,
+                    "label": "AI Assistant",
+                    "description": "Core AI assistant (fallback — modules.yml not found)",
+                    "icon": "bot",
+                    "tools": [
+                        "use_websearch",
+                        "use_webfetch",
+                        "use_code_exec",
+                        "use_vision",
+                    ],
+                    "models": [{"role": "default"}],
+                },
+            )
+        }
+
+    try:
+        with open(modules_path, "r") as f:
+            data = yaml.safe_load(f)
+    except (yaml.YAMLError, OSError) as e:
+        logger.error("Failed to parse modules.yml: %s — using fallback", e)
+        return {
+            "assistant": ModuleConfig(
+                "assistant",
+                {
+                    "required": True,
+                    "label": "AI Assistant",
+                    "description": "Core AI assistant (fallback — modules.yml parse error)",
+                    "icon": "bot",
+                    "tools": [
+                        "use_websearch",
+                        "use_webfetch",
+                        "use_code_exec",
+                        "use_vision",
+                    ],
+                    "models": [{"role": "default"}],
+                },
+            )
+        }
+
+    modules = {}
+    for name, mdata in data.get("modules", {}).items():
+        try:
+            modules[name] = ModuleConfig(name, mdata)
+        except Exception as e:
+            logger.error("Failed to load module '%s': %s", name, e)
+
+    if not modules:
+        logger.warning("No modules loaded from modules.yml — using fallback")
+
+    return modules
+
+
+# ─── Settings ────────────────────────────────────────────────────────
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -153,6 +401,10 @@ class Settings(BaseSettings):
         "qwen3:4b"  # Fallback only; resolved from profiles.yml at runtime
     )
 
+    # Modules — comma-separated list of enabled optional module names.
+    # Required modules are always enabled regardless of this setting.
+    ENABLED_MODULES: str = "assistant"
+
     # Ngrok
     NGROK_ENABLED: bool = False
     NGROK_AUTHTOKEN: str = ""
@@ -163,8 +415,16 @@ class Settings(BaseSettings):
         "extra": "ignore",
     }
 
-    # Profiles (loaded lazily)
-    _profiles: Optional[Dict[str, ProfileConfig]] = None
+    # Private attributes — use PrivateAttr so Pydantic won't try to
+    # validate / deepcopy them (threading.Lock is not picklable).
+    _profiles: Optional[Dict[str, ProfileConfig]] = PrivateAttr(default=None)
+    _modules: Optional[Dict[str, ModuleConfig]] = PrivateAttr(default=None)
+    _enabled_modules_set: Optional[Set[str]] = PrivateAttr(default=None)
+    _toggle_lock: threading.Lock = PrivateAttr()
+
+    def model_post_init(self, __context) -> None:
+        """Initialize non-picklable private attributes after Pydantic init."""
+        self._toggle_lock = threading.Lock()
 
     def get_profiles(self) -> Dict[str, ProfileConfig]:
         """Load profiles.yml once and cache it."""
@@ -194,6 +454,241 @@ class Settings(BaseSettings):
 
         return profiles.get(self.HARDWARE_PROFILE, profiles.get("cpu_small"))
 
+    def get_modules(self) -> Dict[str, ModuleConfig]:
+        """Load modules.yml once and cache it."""
+        if self._modules is None:
+            self._modules = load_modules()
+        return self._modules
+
+    def get_enabled_module_names(self) -> Set[str]:
+        """Parse and cache the ENABLED_MODULES setting.
+
+        Resolution order:
+        1. Check for persisted state file (from a previous runtime toggle)
+        2. Fall back to ENABLED_MODULES env var
+        3. Always include required modules
+        4. Filter out unknown module names
+        """
+        if self._enabled_modules_set is None:
+            # First, try to load from persisted state file
+            persisted = self._load_persisted_module_state()
+            if persisted is not None:
+                logger.info("Loaded module state from persisted file: %s", persisted)
+                self._enabled_modules_set = persisted
+            else:
+                # Fall back to env var
+                raw = self.ENABLED_MODULES.strip()
+                # Strip quotes if present (handles both "val" and val)
+                if raw.startswith('"') and raw.endswith('"'):
+                    raw = raw[1:-1]
+                elif raw.startswith("'") and raw.endswith("'"):
+                    raw = raw[1:-1]
+
+                if raw:
+                    self._enabled_modules_set = {
+                        name.strip() for name in raw.split(",") if name.strip()
+                    }
+                else:
+                    self._enabled_modules_set = set()
+
+            # Always include required modules
+            for name, module in self.get_modules().items():
+                if module.required:
+                    self._enabled_modules_set.add(name)
+
+            # Filter out unknown module names
+            known_modules = set(self.get_modules().keys())
+            self._enabled_modules_set = self._enabled_modules_set & known_modules
+
+        return self._enabled_modules_set
+
+    def is_module_enabled(self, module_name: str) -> bool:
+        """Check if a module is currently enabled.
+
+        Required modules are always enabled.
+        """
+        module = self.get_modules().get(module_name)
+        if module and module.required:
+            return True
+        return module_name in self.get_enabled_module_names()
+
+    def toggle_module(self, module_name: str, enabled: bool) -> bool:
+        """Toggle a module on/off at runtime.
+
+        Returns True if the toggle was successful, False otherwise.
+        Updates in-memory state AND persists to a state file.
+        Required modules cannot be toggled.
+        Thread-safe via _toggle_lock.
+        """
+        module = self.get_modules().get(module_name)
+        if module is None:
+            logger.warning("Cannot toggle unknown module: %s", module_name)
+            return False
+
+        if module.required:
+            logger.warning("Cannot toggle required module: %s", module_name)
+            return False
+
+        with self._toggle_lock:
+            current = self.get_enabled_module_names()
+
+            # Skip no-op toggles
+            already_enabled = module_name in current
+            if enabled == already_enabled:
+                return True
+
+            if enabled:
+                current.add(module_name)
+            else:
+                current.discard(module_name)
+
+            # Update the string representation (sorted for consistency)
+            self.ENABLED_MODULES = ",".join(sorted(current))
+            self._enabled_modules_set = current
+
+            # Persist to state file (survives container restarts)
+            self._persist_module_state()
+
+        return True
+
+    def _get_state_dir(self) -> Path:
+        """Get the directory for persistent runtime state files.
+
+        In Docker: /app/state (mounted volume)
+        In dev: backend/../state
+        """
+        candidates = [
+            Path("/app/state"),
+            Path(__file__).parent.parent.parent / "state",
+        ]
+        for d in candidates:
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                # Test write access
+                test_file = d / ".write_test"
+                test_file.write_text("ok", encoding="utf-8")
+                test_file.unlink()
+                return d
+            except OSError:
+                continue
+
+        # Fallback: /tmp (won't persist across restarts but better than nothing)
+        fallback = Path("/tmp/realopen-state")
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    def _persist_module_state(self) -> None:
+        """Persist the enabled modules set to a JSON state file.
+
+        This survives container restarts because the state directory
+        is mounted as a Docker volume.
+        """
+        state_dir = self._get_state_dir()
+        state_path = state_dir / "enabled_modules.json"
+
+        try:
+            state_data = {
+                "enabled_modules": sorted(self.get_enabled_module_names()),
+            }
+            state_path.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+            logger.info("Persisted module state to %s", state_path)
+        except OSError as e:
+            logger.error("Failed to persist module state: %s", e)
+
+    def _load_persisted_module_state(self) -> Optional[Set[str]]:
+        """Load previously persisted module state from JSON file.
+
+        Returns None if no state file exists.
+        """
+        state_dir = self._get_state_dir()
+        state_path = state_dir / "enabled_modules.json"
+
+        if not state_path.exists():
+            return None
+
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            modules_list = data.get("enabled_modules", [])
+            return set(modules_list)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load persisted module state: %s", e)
+            return None
+
+    def _update_env_file(self, key: str, value: str) -> None:
+        """Update a single key in the .env file.
+
+        Creates the .env file if it doesn't exist.
+        Handles both Docker and dev environments.
+        """
+        # Try multiple candidate paths for .env
+        candidates = [
+            Path("/app/.env"),  # Inside Docker container
+            Path(__file__).parent.parent.parent / ".env",  # Dev: backend/../.env
+        ]
+
+        env_path = None
+        for p in candidates:
+            if p.exists():
+                env_path = p
+                break
+
+        # If no .env exists, try to create one from .env.example
+        if env_path is None:
+            for p in candidates:
+                example = p.parent / ".env.example"
+                if example.exists():
+                    try:
+                        import shutil
+
+                        shutil.copy2(str(example), str(p))
+                        env_path = p
+                        break
+                    except OSError:
+                        pass
+
+        if env_path is None:
+            dev_env = Path(__file__).parent.parent.parent / ".env"
+            try:
+                dev_env.touch()
+                env_path = dev_env
+            except OSError as e:
+                logger.error("Cannot create .env file: %s", e)
+                return
+
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            found = False
+            new_lines = []
+
+            import re
+
+            pattern = re.compile(rf"^{re.escape(key)}\s*=")
+
+            for line in lines:
+                if pattern.match(line.strip()):
+                    new_lines.append(f"{key}={value}")
+                    found = True
+                else:
+                    new_lines.append(line)
+
+            if not found:
+                new_lines.append(f"{key}={value}")
+
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+            logger.info("Updated %s in %s", key, env_path)
+
+        except OSError as e:
+            logger.error("Failed to update .env file: %s", e)
+
+    def get_module_models(self) -> List[ModelConfig]:
+        """Get models from all enabled optional modules for the current profile."""
+        models = []
+        for name, module in self.get_modules().items():
+            if not module.required and self.is_module_enabled(name):
+                module_models = module.get_models_for_profile(self.HARDWARE_PROFILE)
+                models.extend(module_models)
+        return models
+
     def resolve_model(self, model: str) -> str:
         """
         Resolve a model identifier to an actual Ollama model ID.
@@ -203,11 +698,12 @@ class Settings(BaseSettings):
            look it up in the current hardware profile.
         2. If model is a known type (e.g. "chat", "vision", "code"),
            return the model with role="default_<type>" in the current profile.
-        3. Otherwise, treat it as a direct Ollama model ID (e.g. "qwen3:4b").
+        3. Check enabled module models for matching role.
+        4. Otherwise, treat it as a direct Ollama model ID (e.g. "qwen3:4b").
         """
         profile = self.get_current_profile()
 
-        # Try as a role first
+        # Try as a role in the profile
         role_model = profile.get_model_by_role(model)
         if role_model:
             return role_model.id
@@ -217,13 +713,28 @@ class Settings(BaseSettings):
         if type_model:
             return type_model.id
 
+        # Check enabled module models for matching role
+        for name, module in self.get_modules().items():
+            if self.is_module_enabled(name) and not module.required:
+                for m in module.get_models_for_profile(self.HARDWARE_PROFILE):
+                    if m.role == model or m.role == f"default_{model}":
+                        return m.id
+
         # Direct model ID - pass through
         return model
 
     def get_available_models(self) -> List[dict]:
-        """Get all available models for the current hardware profile."""
+        """Get all available models for the current hardware profile and enabled modules."""
         profile = self.get_current_profile()
-        return [m.to_dict() for m in profile.models]
+        models = [m.to_dict() for m in profile.models]
+
+        # Add models from enabled optional modules
+        for name, module in self.get_modules().items():
+            if self.is_module_enabled(name) and not module.required:
+                module_models = module.get_models_for_profile(self.HARDWARE_PROFILE)
+                models.extend(m.to_dict() for m in module_models)
+
+        return models
 
 
 settings = Settings()

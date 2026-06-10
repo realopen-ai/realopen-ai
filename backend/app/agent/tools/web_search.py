@@ -45,7 +45,7 @@ class WebSearchTool(BaseTool):
             results = await self._search_searxng(query)
             tool_call.status = "completed"
             tool_call.completed_at = time.time()
-            tool_call.results = results
+            tool_call.web_results = results
 
             if not results:
                 output = f"No results found for: {query}"
