@@ -50,6 +50,16 @@ export interface SetupModule {
     description: string;
     size: string;
   }[];
+  profile_models: Record<
+    string,
+    {
+      id: string;
+      type: string;
+      role: string;
+      description: string;
+      size: string;
+    }[]
+  >;
 }
 
 export interface SetupStatus {
