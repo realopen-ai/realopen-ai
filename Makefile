@@ -2,24 +2,35 @@ COMPOSE			= docker compose
 COMPOSE_DEV		= $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 COMPOSE_MON		= $(COMPOSE) -f docker-compose.yml -f docker-compose.monitoring.yml
 
-# Default: dev environment with hot-reloading
+# Default: auto-setup if needed, then dev environment with hot-reloading
 .PHONY: all
-all: setup dev
+all: dev
 
 # ── First-time setup: detect hardware, install Ollama, pull model ──
+# Auto-detects whether setup is needed by checking data/.setup-complete
 .PHONY: setup
 setup:
 	@bash scripts/setup.sh
 
+# ── Run hardware detection only (writes data/hardware.json) ──
+.PHONY: detect-hardware
+detect-hardware:
+	@bash scripts/detect-hardware.sh
+
+# ── Startup script (runs on container start) ──
+.PHONY: startup
+startup:
+	@bash scripts/startup.sh
+
 # ── Development mode (hot reload, debug ports exposed) ──
 .PHONY: dev
-dev:
+dev: startup detect-hardware
 	@echo "Starting RealOpen-AI in development mode..."
 	@$(COMPOSE_DEV) up --build
 
 # ── Development mode (detached) ──
 .PHONY: dev-d
-dev-d:
+dev-d: startup detect-hardware
 	@echo "Starting RealOpen-AI in development mode (detached)..."
 	@$(COMPOSE_DEV) up --build -d
 	@echo ""
@@ -30,7 +41,7 @@ dev-d:
 
 # ── Production mode ──
 .PHONY: up
-up:
+up: startup detect-hardware
 	@echo "Starting RealOpen-AI in production mode..."
 	@$(COMPOSE) up --build -d
 	@echo ""
@@ -155,3 +166,9 @@ pull-module-models:
 		python3 scripts/profile-helper.py modules $$PROFILE all-module-models | while read model; do \
 			echo "Pulling $$model..."; ollama pull $$model; \
 		done'
+
+# ── Reset setup (delete marker to re-run setup wizard on next start) ──
+.PHONY: reset-setup
+reset-setup:
+	@rm -f data/.setup-complete
+	@echo "Setup marker removed. Run 'make setup' or restart the app to go through setup again."
