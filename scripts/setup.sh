@@ -21,6 +21,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILES_YML="$PROJECT_ROOT/profiles.yml"
+DATA_DIR="$PROJECT_ROOT/data"
+
+# Ensure data directory exists
+mkdir -p "$DATA_DIR"
 
 # Hardware Detection Functions
 
@@ -383,6 +387,9 @@ detect_and_configure() {
         if grep -q "^DEFAULT_MODEL=" "$env_file"; then
             sed -i.bak "s/^DEFAULT_MODEL=.*/DEFAULT_MODEL=${default_model}/" "$env_file"
         fi
+        if grep -q "^ENABLED_MODULES=" "$env_file"; then
+            sed -i.bak "s/^ENABLED_MODULES=.*/ENABLED_MODULES=assistant/" "$env_file"
+        fi
         if [[ "$platform" == "linux" || "$platform" == "wsl" ]]; then
             if grep -q "^OLLAMA_BASE_URL=" "$env_file"; then
                 sed -i.bak "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://172.17.0.1:11434|" "$env_file"
@@ -391,9 +398,13 @@ detect_and_configure() {
         rm -f "$env_file.bak"
         ok "Updated .env with hardware profile: $profile, default model: $default_model"
     fi
+
+    # Write hardware.json to data/ folder (used by web setup wizard)
+    bash "$PROJECT_ROOT/scripts/detect-hardware.sh" "$DATA_DIR"
+    ok "Wrote hardware info to data/hardware.json"
 }
 
-# Pull ALL Models for Profile
+# Pull ALL Models for Profile (including optional module models)
 pull_models() {
     echo ""
 
@@ -409,6 +420,7 @@ pull_models() {
         return 0
     fi
 
+    # Pull profile models (from profiles.yml — required module models)
     local all_models
     all_models=$(get_all_models "$profile")
 
@@ -425,6 +437,45 @@ pull_models() {
             fi
         fi
     done <<< "$all_models"
+
+    # Pull optional module models (from modules.yml)
+    local enabled_modules_str
+    enabled_modules_str=$(grep "^ENABLED_MODULES=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "assistant")
+
+    info "Checking optional module models for enabled modules: $enabled_modules_str"
+
+    local module_models
+    module_models=$(python3 "$PROJECT_ROOT/scripts/profile-helper.py" modules "$profile" all-module-models 2>/dev/null || echo "")
+
+    if [[ -n "$module_models" ]]; then
+        # Check which optional modules are enabled and pull their models
+        while IFS= read -r model; do
+            if [[ -z "$model" ]]; then
+                continue
+            fi
+            if ollama list 2>/dev/null | awk '{print $1}' | grep -Fxq "$model"; then
+                ok "Module model '$model' is already available"
+            else
+                info "Pulling module model '$model'..."
+                ollama pull "$model"
+                if ollama list 2>/dev/null | awk '{print $1}' | grep -Fxq "$model"; then
+                    ok "Module model '$model' pulled successfully"
+                else
+                    warn "Module model pull may have failed. You can try manually: ollama pull $model"
+                fi
+            fi
+        done <<< "$module_models"
+    fi
+}
+
+# ─── Check if setup is needed ────────────────────────────────────────
+
+is_setup_needed() {
+    # Setup is needed if data/.setup-complete does NOT exist
+    if [[ -f "$DATA_DIR/.setup-complete" ]]; then
+        return 1  # Setup already done
+    fi
+    return 0  # Setup needed
 }
 
 # Main
@@ -433,6 +484,15 @@ main() {
     echo "╔═══════════════════════════════════════════╗"
     echo "║       RealOpen-AI — Setup Wizard          ║"
     echo "╚═══════════════════════════════════════════╝"
+
+    # Check if setup is already complete
+    if ! is_setup_needed; then
+        local existing_profile
+        existing_profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "cpu_small")
+        ok "Setup already complete (profile: $existing_profile)"
+        ok "Skipping setup. Run 'make reset-setup' to re-run setup."
+        return 0
+    fi
 
     check_prerequisites
     install_ollama
@@ -450,6 +510,14 @@ main() {
     echo "║  Monitoring:   make monitor               ║"
     echo "╚═══════════════════════════════════════════╝"
     echo ""
+
+    # Create setup-complete marker in data/ folder
+    # Read profile from .env (written by detect_and_configure)
+    local profile
+    profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "cpu_small")
+    local marker="$DATA_DIR/.setup-complete"
+    echo "{\"profile\": \"${profile}\", \"enabled_modules\": [\"assistant\"], \"source\": \"cli\"}" > "$marker"
+    ok "Created data/.setup-complete marker"
 }
 
 main "$@"
