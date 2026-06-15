@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,10 +11,58 @@ from app.api.health import router as health_router
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
 from app.api.modules import router as modules_router
+from app.api.setup import router as setup_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+def _get_data_dir() -> Path:
+    """Get the data directory for persistent files.
+
+    In Docker: /app/data (mounted volume)
+    In dev: backend/../data
+    """
+    candidates = [
+        Path("/app/data"),
+        Path(__file__).parent.parent.parent / "data",
+    ]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError:
+            continue
+    # Fallback
+    fallback = Path("/app/data")
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def _detect_setup_mode() -> bool:
+    """Detect whether the app should enter setup mode.
+
+    Setup mode is triggered when:
+    - The data/.setup-complete marker file does NOT exist
+    - The SETUP_MODE env var is explicitly set to true
+
+    The marker file is created by the setup wizard when setup completes.
+    """
+    # Explicit env var override
+    if settings.SETUP_MODE:
+        return True
+
+    # Check for data/.setup-complete marker
+    data_dir = _get_data_dir()
+    marker = data_dir / ".setup-complete"
+
+    if marker.exists():
+        return False  # Setup already completed
+
+    # No marker found — need setup
+    logger.info("No data/.setup-complete marker found — entering setup mode")
+    return True
 
 
 def _apply_module_config() -> None:
@@ -64,6 +113,15 @@ async def lifespan(app: FastAPI):
     if is_debug():
         logger.debug("🔧 DEBUG mode is ON — verbose logging enabled")
 
+    # Detect setup mode
+    setup_mode = _detect_setup_mode()
+    if setup_mode:
+        logger.info("🚀 Running in SETUP MODE — web setup wizard will be shown")
+        # In setup mode, we still need the DB and basic tools,
+        # but we skip the full module configuration
+    else:
+        logger.info("✅ Setup complete — running normally")
+
     # Import tools to register them in the global registry
     import app.agent.tools  # noqa: F401 — registers all tools
 
@@ -76,7 +134,9 @@ async def lifespan(app: FastAPI):
         )
 
     # Apply module configuration — unregister tools from disabled modules
-    _apply_module_config()
+    # Skip in setup mode since modules haven't been configured yet
+    if not setup_mode:
+        _apply_module_config()
 
     if is_debug():
         from app.agent.base import get_tool_registry
@@ -146,3 +206,4 @@ app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(chat_router, prefix="/api", tags=["chat"])
 app.include_router(models_router, prefix="/api", tags=["models"])
 app.include_router(modules_router, prefix="/api", tags=["modules"])
+app.include_router(setup_router, prefix="/api", tags=["setup"])

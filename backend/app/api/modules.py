@@ -44,14 +44,13 @@ class InstallModuleRequest(BaseModel):
 async def _get_hardware_info() -> dict:
     """Get hardware info for requirement checking.
 
-    Tries to read from .hardware.json (written by setup detection script).
-    Falls back to basic defaults if unavailable.
+    Tries to read from data/hardware.json (written by setup detection script).
     """
     from pathlib import Path
 
     candidates = [
-        Path("/app/.hardware.json"),
-        Path(__file__).parent.parent.parent.parent / ".hardware.json",
+        Path("/app/data/hardware.json"),
+        Path(__file__).parent.parent.parent.parent / "data" / "hardware.json",
     ]
 
     for p in candidates:

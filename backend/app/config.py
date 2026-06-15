@@ -405,6 +405,10 @@ class Settings(BaseSettings):
     # Required modules are always enabled regardless of this setting.
     ENABLED_MODULES: str = "assistant"
 
+    # Setup mode — when true, the app shows the setup wizard on first run.
+    # This is auto-detected at startup if data/.setup-complete marker doesn't exist.
+    SETUP_MODE: bool = False
+
     # Ngrok
     NGROK_ENABLED: bool = False
     NGROK_AUTHTOKEN: str = ""
