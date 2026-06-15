@@ -47,5 +47,8 @@ backend/alembic/versions/__pycache__/
 # Uploads
 uploads/
 
+# Data directory
+data/
+
 # Poetry
 backend/poetry.lock
