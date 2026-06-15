@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import {
   Monitor,
   Cpu,
@@ -7,6 +7,7 @@ import {
   Check,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   Loader2,
   AlertTriangle,
   Download,
@@ -211,6 +212,7 @@ function HardwareStep() {
   const profiles = useSetupStore((s) => s.profiles);
   const selectedProfile = useSetupStore((s) => s.selectedProfile);
   const setSelectedProfile = useSetupStore((s) => s.setSelectedProfile);
+  const [showAllProfiles, setShowAllProfiles] = useState(false);
 
   if (!hardwareInfo) return null;
 
@@ -227,6 +229,17 @@ function HardwareStep() {
       : hardwareInfo.gpu_type === "apple"
         ? `Unified (${hardwareInfo.ram_gb} GB)`
         : "N/A";
+
+  const recommendedProfile = hardwareInfo.recommended_profile;
+
+  // Split profiles: recommended first, then others
+  const recommendedEntry = [
+    recommendedProfile,
+    profiles[recommendedProfile],
+  ] as const;
+  const otherEntries = Object.entries(profiles).filter(
+    ([name]) => name !== recommendedProfile,
+  );
 
   return (
     <div className="py-4">
@@ -277,66 +290,55 @@ function HardwareStep() {
       <h4 className="text-[14px] font-medium text-foreground mb-3">
         Recommended Profile
       </h4>
-      <div className="space-y-2 max-h-60 overflow-y-auto">
-        {Object.entries(profiles).map(([name, profile]) => {
-          const isRecommended = name === hardwareInfo.recommended_profile;
-          const isSelected = name === selectedProfile;
-          return (
+      <div className="space-y-2">
+        {/* Recommended profile — always shown with green border */}
+        {recommendedEntry[1] && (
+          <ProfileCard
+            name={recommendedEntry[0]}
+            profile={recommendedEntry[1]}
+            isSelected={selectedProfile === recommendedEntry[0]}
+            isRecommended={true}
+            onSelect={() => setSelectedProfile(recommendedEntry[0])}
+          />
+        )}
+
+        {/* Expandable "More profiles" toggle */}
+        {otherEntries.length > 0 && (
+          <>
             <button
-              key={name}
-              onClick={() => setSelectedProfile(name)}
-              className={cn(
-                "w-full text-left p-3 rounded-xl border transition-all",
-                isSelected
-                  ? "border-primary/30 bg-primary/5 ring-1 ring-primary/20"
-                  : "border-border bg-card hover:bg-accent",
-              )}
+              onClick={() => setShowAllProfiles(!showAllProfiles)}
+              className="flex items-center gap-1.5 w-full py-2 px-1 text-[12px] text-muted-foreground hover:text-foreground transition-colors"
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={cn(
-                      "w-4 h-4 rounded-full border-2 flex items-center justify-center",
-                      isSelected
-                        ? "border-primary"
-                        : "border-muted-foreground/30",
-                    )}
-                  >
-                    {isSelected && (
-                      <div className="w-1.5 h-1.5 rounded-full bg-primary" />
-                    )}
-                  </div>
-                  <span className="text-[13px] font-medium text-foreground">
-                    {profile.label}
-                  </span>
-                </div>
-                {isRecommended && (
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
-                    Recommended
-                  </span>
+              <ChevronDown
+                className={cn(
+                  "w-3.5 h-3.5 transition-transform",
+                  showAllProfiles && "rotate-180",
                 )}
-              </div>
-              <p className="text-[12px] text-muted-foreground mt-1 ml-6">
-                {profile.description}
-              </p>
-              <div className="flex flex-wrap gap-1 mt-2 ml-6">
-                {profile.models.slice(0, 3).map((m) => (
-                  <span
-                    key={m.id}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
-                  >
-                    {m.description || m.id}
-                  </span>
-                ))}
-                {profile.models.length > 3 && (
-                  <span className="text-[10px] text-muted-foreground/50">
-                    +{profile.models.length - 3} more
-                  </span>
-                )}
-              </div>
+              />
+              <span>
+                {showAllProfiles
+                  ? "Hide other profiles"
+                  : `${otherEntries.length} more profile${otherEntries.length > 1 ? "s" : ""} available`}
+              </span>
             </button>
-          );
-        })}
+
+            {/* Other profiles — only shown when expanded */}
+            {showAllProfiles && (
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {otherEntries.map(([name, profile]) => (
+                  <ProfileCard
+                    key={name}
+                    name={name}
+                    profile={profile}
+                    isSelected={selectedProfile === name}
+                    isRecommended={false}
+                    onSelect={() => setSelectedProfile(name)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div className="flex items-center justify-between mt-6">
@@ -356,6 +358,90 @@ function HardwareStep() {
         </button>
       </div>
     </div>
+  );
+}
+
+function ProfileCard({
+  name: _profileName,
+  profile,
+  isSelected,
+  isRecommended,
+  onSelect,
+}: {
+  name: string;
+  profile: {
+    label: string;
+    description: string;
+    models: { id: string; description: string; size: string }[];
+  };
+  isSelected: boolean;
+  isRecommended: boolean;
+  onSelect: () => void;
+}) {
+  // _profileName is used as key by the parent but not needed in render
+  void _profileName;
+  return (
+    <button
+      onClick={onSelect}
+      className={cn(
+        "w-full text-left p-3 rounded-xl border transition-all",
+        isRecommended && isSelected
+          ? "border-emerald-500/40 bg-emerald-500/5 ring-1 ring-emerald-500/20"
+          : isSelected
+            ? "border-primary/30 bg-primary/5 ring-1 ring-primary/20"
+            : "border-border bg-card hover:bg-accent",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              "w-4 h-4 rounded-full border-2 flex items-center justify-center",
+              isSelected
+                ? isRecommended
+                  ? "border-emerald-500"
+                  : "border-primary"
+                : "border-muted-foreground/30",
+            )}
+          >
+            {isSelected && (
+              <div
+                className={cn(
+                  "w-1.5 h-1.5 rounded-full",
+                  isRecommended ? "bg-emerald-500" : "bg-primary",
+                )}
+              />
+            )}
+          </div>
+          <span className="text-[13px] font-medium text-foreground">
+            {profile.label}
+          </span>
+        </div>
+        {isRecommended && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
+            Recommended
+          </span>
+        )}
+      </div>
+      <p className="text-[12px] text-muted-foreground mt-1 ml-6">
+        {profile.description}
+      </p>
+      <div className="flex flex-wrap gap-1 mt-2 ml-6">
+        {profile.models.slice(0, 3).map((m) => (
+          <span
+            key={m.id}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
+          >
+            {m.description || m.id}
+          </span>
+        ))}
+        {profile.models.length > 3 && (
+          <span className="text-[10px] text-muted-foreground/50">
+            +{profile.models.length - 3} more
+          </span>
+        )}
+      </div>
+    </button>
   );
 }
 
@@ -415,6 +501,7 @@ function ModulesStep() {
               available={isAvailable}
               canToggle={canToggle}
               onToggle={() => toggleModule(mod.name)}
+              selectedProfile={selectedProfile}
             />
           );
         })}
@@ -446,13 +533,24 @@ function ModuleSetupCard({
   available,
   canToggle,
   onToggle,
+  selectedProfile,
 }: {
   module: SetupModule;
   enabled: boolean;
   available: boolean;
   canToggle: boolean;
   onToggle: () => void;
+  selectedProfile: string;
 }) {
+  // Compute the exact model size for the selected profile
+  // For optional modules: use profile_models[selectedProfile] to get model sizes
+  // For required modules: models come from profiles.yml (shown in profile card)
+  const profileModels = module.profile_models?.[selectedProfile] ?? [];
+  const exactSize =
+    profileModels.length > 0
+      ? profileModels.map((m) => m.size).join(" + ")
+      : null;
+
   return (
     <div
       className={cn(
@@ -519,12 +617,32 @@ function ModuleSetupCard({
                 Not available for this profile
               </span>
             )}
-            {module.estimated_size && available && (
+            {available && exactSize && (
+              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+                <Download className="w-3 h-3" />
+                Size: {exactSize}
+              </span>
+            )}
+            {available && !exactSize && module.estimated_size && (
               <span className="text-[11px] text-muted-foreground/60">
                 Est. size: {module.estimated_size}
               </span>
             )}
           </div>
+          {/* Show model details for optional modules */}
+          {available && !module.required && profileModels.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {profileModels.map((m) => (
+                <span
+                  key={m.id}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
+                >
+                  {m.description || m.id}
+                  <span className="text-muted-foreground/50">{m.size}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -619,7 +737,7 @@ function ReviewStep() {
           ))}
           {enabledModuleObjs
             .filter((m) => !m.required)
-            .flatMap((mod) => mod.models)
+            .flatMap((mod) => mod.profile_models?.[selectedProfile] ?? [])
             .map((m) => (
               <div key={m.id} className="flex items-center gap-2">
                 <Download className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
