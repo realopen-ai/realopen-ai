@@ -313,20 +313,30 @@ async def get_setup_modules():
         }
 
         # Check availability for each profile
+        # Also build per-profile model data so the frontend can show
+        # exact sizes when the user switches profiles in step 3
+        profile_models: dict = {}
         for profile_name in VALID_PROFILES:
             available = module.is_available_for_profile(profile_name)
             mod_info["availability"][profile_name] = available
+            if available and not module.required:
+                profile_models[profile_name] = [
+                    m.to_dict() for m in module.get_models_for_profile(profile_name)
+                ]
 
         # Check if hardware requirements are met
         mod_info["requirements_met"] = module.meets_requirements(ram_gb, vram_gb)
 
-        # Get models for the recommended profile
+        # Get models for the recommended profile (default view)
         recommended = (
             hw_info.get("recommended_profile", "cpu_small") if hw_info else "cpu_small"
         )
         mod_info["models"] = [
             m.to_dict() for m in module.get_models_for_profile(recommended)
         ]
+
+        # Per-profile model data (for exact size display when user changes profile)
+        mod_info["profile_models"] = profile_models
 
         result.append(mod_info)
 
