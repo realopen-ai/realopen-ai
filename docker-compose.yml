@@ -84,6 +84,7 @@ services:
       - ./profiles.yml:/app/profiles.yml:ro
       - ./modules.yml:/app/modules.yml:ro
       - module-state:/app/state
+      - ./data:/app/data
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
