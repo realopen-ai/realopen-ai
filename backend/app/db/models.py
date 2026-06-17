@@ -61,3 +61,22 @@ class Document(Base):
     embedding = Column(Vector(1536), nullable=True)  # pgvector column
     message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Memory(Base):
+    __tablename__ = "memories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    text = Column(Text, nullable=False)
+    category = Column(
+        String(50), default="fact"
+    )  # identity, preference, fact, contact, project, goal
+    source = Column(String(20), default="auto")  # auto, user, ai_agent
+    pinned = Column(Boolean, default=False)
+    uses = Column(Integer, default=0)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
+    )
+    embedding = Column(Vector(1536), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
