@@ -12,6 +12,7 @@ from app.api.chat import router as chat_router
 from app.api.models import router as models_router
 from app.api.modules import router as modules_router
 from app.api.setup import router as setup_router
+from app.api.memory import router as memory_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
@@ -207,3 +208,4 @@ app.include_router(chat_router, prefix="/api", tags=["chat"])
 app.include_router(models_router, prefix="/api", tags=["models"])
 app.include_router(modules_router, prefix="/api", tags=["modules"])
 app.include_router(setup_router, prefix="/api", tags=["setup"])
+app.include_router(memory_router, prefix="/api", tags=["memory"])
