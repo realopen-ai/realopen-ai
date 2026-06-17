@@ -14,6 +14,7 @@ import json
 import logging
 from typing import Any, List, Optional
 import uuid
+import asyncio
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -27,6 +28,7 @@ from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
+from app.services.memory_extractor import extract_and_store
 
 logger = logging.getLogger(__name__)
 dbg = get_debug_logger(__name__)
@@ -388,6 +390,18 @@ async def chat_stream(request: ChatRequest):
                 tool_calls_json=tool_calls_json_str,
             )
 
+            # Trigger memory extraction in background
+            try:
+                recent_msgs = messages[-6:] if len(messages) > 6 else messages
+                asyncio.create_task(
+                    extract_and_store(
+                        messages=recent_msgs,
+                        conversation_id=str(_conv_id),
+                    )
+                )
+            except Exception as e:
+                _log("   ⚠️  memory extraction launch failed: %s", e)
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -592,6 +606,22 @@ async def chat_stream_multipart(
                 generation_duration=generation_duration_sec,
                 tool_calls_json=tool_calls_json_str,
             )
+
+            # Trigger memory extraction in background
+            try:
+                recent_msgs = (
+                    parsed_messages[-6:]
+                    if len(parsed_messages) > 6
+                    else parsed_messages
+                )
+                asyncio.create_task(
+                    extract_and_store(
+                        messages=recent_msgs,
+                        conversation_id=str(_conv_id),
+                    )
+                )
+            except Exception as e:
+                _log("   ⚠️  memory extraction launch failed (multipart): %s", e)
 
         yield "data: [DONE]\n\n"
 
