@@ -7,6 +7,9 @@ import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import { useChatStore, type ToolCallResult } from "@/store/chatStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
+import { useMemoryStore } from "@/store/memoryStore";
+import { useT } from "@/store/settingsStore";
+import { Brain } from "lucide-react";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
@@ -22,6 +25,8 @@ export function ChatArea() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
+  const isExtracting = useMemoryStore((s) => s.isExtracting);
+  const t = useT();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // When a new conversation is created from the home page, we keep the
@@ -429,6 +434,16 @@ export function ChatArea() {
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
+      )}
+
+      {/* Memory extraction indicator */}
+      {isExtracting && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-primary/5 border-t border-primary/10">
+          <Brain className="w-3 h-3 text-primary animate-pulse" />
+          <span className="text-[11px] text-primary/70">
+            {t("brain.memories.extracting")}
+          </span>
+        </div>
       )}
 
       <InputArea onSend={handleSend} isStreaming={isStreaming} />
