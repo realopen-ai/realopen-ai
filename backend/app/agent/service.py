@@ -29,6 +29,8 @@ from app.agent.base import ToolCall, get_tool_registry
 from app.config import settings
 from app.core.logger import is_debug
 from app.prompts import format_prompt
+from app.services.memory import get_relevant_memories
+from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +68,26 @@ def _extract_tool_calls(text: str) -> List[Dict]:
     """Extract tool call JSON blocks from LLM output."""
     calls = []
     for match in TOOL_JSON_PATTERN.finditer(text):
+        _dbg("Found matches .")
         try:
             call = json.loads(match.group(1).strip())
             calls.append(call)
         except json.JSONDecodeError:
             logger.warning("Failed to parse tool call: %s", match.group(1))
+            _dbg("Failed to parse tool call JSON: %s", match.group(1))
+            try:
+                call = json.loads(
+                    match.group(1).strip() + "}"
+                )  # Try to fix missing closing brace
+                calls.append(call)
+            except json.JSONDecodeError:
+                logger.error(
+                    "Failed to parse tool call JSON: %s", match.group(1).strip() + "}"
+                )
+                _dbg(
+                    "Failed to parse tool call JSON even after fix attempt: %s",
+                    match.group(1).strip() + "}",
+                )
     return calls
 
 
@@ -284,6 +301,49 @@ async def run_agent_stream(
 
     system_prompt = _build_system_prompt()
 
+    # Inject relevant memories into system prompt
+    try:
+        # Get the last user message for memory retrieval
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        if user_msgs:
+            last_user_msg = user_msgs[-1].get("content", "")
+            if last_user_msg.strip():
+                async with async_session_factory() as db:
+                    relevant = await get_relevant_memories(db, last_user_msg, top_k=8)
+                    _dbg(
+                        "   🧠 found %d relevant memories for last user message",
+                        len(relevant),
+                    )
+                    _dbg(
+                        "   🧠 relevant memories: %s",
+                        (
+                            "\n".join(
+                                f"     - {m.text} [{m.category}]" for m in relevant
+                            )
+                            if relevant
+                            else "none"
+                        ),
+                    )
+                    if relevant:
+                        memory_lines = []
+                        # Always include pinned memories first
+                        pinned = [m for m in relevant if m.pinned]
+                        others = [m for m in relevant if not m.pinned]
+                        for m in pinned + others:
+                            memory_lines.append(f"- {m.text} [{m.category}]")
+                        memory_section = (
+                            "\n\n=====================\nKNOWN FACTS ABOUT THE USER\n"
+                            "=====================\n\n"
+                            "The following are facts you have learned about the user from "
+                            "previous conversations. Use this context naturally when relevant. "
+                            "Do NOT explicitly mention that you know these things unless the user asks.\n\n"
+                            + "\n".join(memory_lines)
+                        )
+                        system_content = system_prompt + memory_section
+                        system_prompt = system_content
+    except Exception as e:
+        logger.debug("Memory injection failed: %s", e)
+
     # If images are provided, auto-invoke the vision tool first
     if images:
         vision_tool = get_tool_registry().get("use_vision")
@@ -476,6 +536,9 @@ async def run_agent_stream(
             len(full_response),
             full_response[:200] + "..." if len(full_response) > 200 else full_response,
         )
+        if is_debug():
+            with open("last_ollama_response.txt", "w+", encoding="utf-8") as f:
+                f.write(full_response)
 
         # Calculate total generation duration
         generation_elapsed = round(time.time() - generation_start_time)
