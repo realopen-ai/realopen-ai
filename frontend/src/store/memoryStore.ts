@@ -24,6 +24,7 @@ interface MemoryState {
   searchQuery: string;
   searchResults: MemoryItem[];
   isExtracting: boolean; // true when background extraction is happening
+  lastExtraction: { count: number; timestamp: number } | null;
 
   // Actions
   loadMemories: () => Promise<void>;
@@ -37,6 +38,8 @@ interface MemoryState {
   clearSearch: () => void;
   auditMemories: () => Promise<void>;
   setExtracting: (extracting: boolean) => void;
+  setLastExtraction: (count: number) => void;
+  clearLastExtraction: () => void;
 }
 
 export const useMemoryStore = create<MemoryState>((set, get) => ({
@@ -49,6 +52,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   searchQuery: "",
   searchResults: [],
   isExtracting: false,
+  lastExtraction: null,
 
   loadMemories: async () => {
     set({ isLoading: true });
@@ -183,5 +187,13 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
 
   setExtracting: (extracting) => {
     set({ isExtracting: extracting });
+  },
+
+  setLastExtraction: (count) => {
+    set({ lastExtraction: { count, timestamp: Date.now() } });
+  },
+
+  clearLastExtraction: () => {
+    set({ lastExtraction: null });
   },
 }));

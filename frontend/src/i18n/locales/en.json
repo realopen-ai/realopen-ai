@@ -126,5 +126,6 @@
   "brain.documents.comingSoon": "Documents coming soon",
   "brain.documents.description": "Uploaded documents and knowledge base will appear here",
   "brain.memories.extracting": "Extracting memories...",
-  "brain.memories.extracted": "New memory extracted!"
+  "brain.memories.extracted": "New memory extracted!",
+  "brain.memories.extractedN": "{count} new memories extracted!"
 }

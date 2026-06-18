@@ -126,5 +126,6 @@
   "brain.documents.comingSoon": "Documents bientôt disponibles",
   "brain.documents.description": "Les documents téléchargés et la base de connaissances apparaîtront ici",
   "brain.memories.extracting": "Extraction des souvenirs...",
-  "brain.memories.extracted": "Nouveau souvenir extrait !"
+  "brain.memories.extracted": "Nouveau souvenir extrait !",
+  "brain.memories.extractedN": "{count} nouveaux souvenirs extraits !"
 }

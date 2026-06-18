@@ -9,7 +9,7 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
-import { Brain } from "lucide-react";
+import { Brain, Check } from "lucide-react";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
@@ -26,6 +26,7 @@ export function ChatArea() {
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
   const isExtracting = useMemoryStore((s) => s.isExtracting);
+  const lastExtraction = useMemoryStore((s) => s.lastExtraction);
   const t = useT();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -232,6 +233,32 @@ export function ChatArea() {
               data.thinkingDuration,
             );
           }
+          // Re-enable the input as soon as generation completes — the
+          // memory extraction step (which runs after this event but before
+          // [DONE]) is non-blocking and shouldn't keep the input disabled.
+          s.setStreaming(capturedConvId, assistantMsgId, false);
+        },
+        onMemoryExtractionStart: () => {
+          useMemoryStore.getState().setExtracting(true);
+        },
+        onMemoryExtractionDone: ({
+          count,
+          ran,
+        }: {
+          count: number;
+          ran: boolean;
+        }) => {
+          const ms = useMemoryStore.getState();
+          ms.setExtracting(false);
+          if (ran && count > 0) {
+            ms.setLastExtraction(count);
+            // Refresh the Brain page memory list so newly-extracted
+            // memories appear if the user navigates there.
+            ms.loadMemories();
+            ms.loadCategories();
+          } else {
+            ms.clearLastExtraction();
+          }
         },
         onToolCallStart: (
           toolCall: Omit<ToolCallResult, "id" | "startedAt">,
@@ -436,17 +463,70 @@ export function ChatArea() {
         </ScrollArea>
       )}
 
-      {/* Memory extraction indicator */}
-      {isExtracting && (
-        <div className="flex items-center gap-2 px-4 py-1.5 bg-primary/5 border-t border-primary/10">
-          <Brain className="w-3 h-3 text-primary animate-pulse" />
-          <span className="text-[11px] text-primary/70">
-            {t("brain.memories.extracting")}
-          </span>
-        </div>
+      {/* Memory extraction indicator — appears below the latest assistant
+          message while extraction runs and for a few seconds after it
+          completes, then fades out. The input is re-enabled on
+          generation_done so the user can keep typing while extraction
+          runs in the background. */}
+      {(isExtracting || lastExtraction) && (
+        <MemoryExtractionIndicator
+          isExtracting={isExtracting}
+          lastExtraction={lastExtraction}
+          onDismiss={() => useMemoryStore.getState().clearLastExtraction()}
+          t={t}
+        />
       )}
 
       <InputArea onSend={handleSend} isStreaming={isStreaming} />
     </div>
   );
+}
+
+// ─── Memory extraction indicator ──────────────────────────────────────
+
+function MemoryExtractionIndicator({
+  isExtracting,
+  lastExtraction,
+  onDismiss,
+  t,
+}: {
+  isExtracting: boolean;
+  lastExtraction: { count: number; timestamp: number } | null;
+  onDismiss: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  // Auto-dismiss the "✓ done" state after 4 seconds
+  useEffect(() => {
+    if (!isExtracting && lastExtraction) {
+      const timer = setTimeout(onDismiss, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [isExtracting, lastExtraction, onDismiss]);
+
+  if (isExtracting) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-1.5 bg-primary/5 border-t border-primary/10 animate-in fade-in slide-in-from-bottom-1 duration-200">
+        <Brain className="w-3 h-3 text-primary animate-pulse" />
+        <span className="text-[11px] text-primary/70">
+          {t("brain.memories.extracting")}
+        </span>
+      </div>
+    );
+  }
+
+  if (lastExtraction) {
+    const count = lastExtraction.count;
+    return (
+      <div className="flex items-center gap-2 px-4 py-1.5 bg-emerald-500/5 border-t border-emerald-500/10 animate-in fade-in slide-in-from-bottom-1 duration-200">
+        <Check className="w-3 h-3 text-emerald-500" />
+        <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
+          {count === 1
+            ? t("brain.memories.extracted")
+            : t("brain.memories.extractedN", { count })}
+        </span>
+      </div>
+    );
+  }
+
+  return null;
 }
