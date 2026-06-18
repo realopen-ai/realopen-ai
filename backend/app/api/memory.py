@@ -177,7 +177,7 @@ async def pin_memory(memory_id: str, request: MemoryPinRequest):
 
 @router.post("/memory/search")
 async def search_memories(request: MemorySearchRequest):
-    """Search memories using Jaccard similarity."""
+    """Search memories using hybrid retrieval (pgvector cosine + tsvector BM25 + recency)."""
     async with async_session_factory() as db:
         manager = MemoryManager()
         memories = await manager.search_memories(

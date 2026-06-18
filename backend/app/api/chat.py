@@ -14,7 +14,6 @@ import json
 import logging
 from typing import Any, List, Optional
 import uuid
-import asyncio
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -28,7 +27,11 @@ from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
-from app.services.memory_extractor import extract_and_store
+from app.services.memory_extractor import (
+    extract_and_store,
+    get_messages_since_watermark,
+    update_watermark,
+)
 
 logger = logging.getLogger(__name__)
 dbg = get_debug_logger(__name__)
@@ -199,27 +202,120 @@ async def chat(
 
 async def _persist_message(
     conv_id: uuid.UUID, role: str, content: str, model: str | None = None, **kwargs
-) -> None:
+) -> uuid.UUID | None:
     """Persist a message using an independent DB session with explicit commit.
 
     This is safe to call from inside a StreamingResponse generator because
     it creates its own session — it does not depend on the request-scoped
     get_db() session which is closed by the time generate() runs.
+
+    Returns the new message's ID on success, or None on failure.
     """
     try:
         async with async_session_factory() as session:
-            await conv_service.add_message(
+            msg = await conv_service.add_message(
                 session, conv_id, role, content, model=model, **kwargs
             )
             await session.commit()
         _log(
-            "   ✅ %s message committed to DB (conv_id=%s, content_len=%d)",
+            "   ✅ %s message committed to DB (conv_id=%s, content_len=%d, msg_id=%s)",
             role,
             conv_id,
             len(content),
+            msg.id,
         )
+        return msg.id
     except Exception as e:
         _log("  ❌ Failed to persist %s message: %s", role, e)
+        return None
+
+
+# ─── Memory extraction helper ──────────────────────────────────────────
+
+
+async def _maybe_run_memory_extraction(
+    conv_id: uuid.UUID,
+    full_assistant_content: str,
+    request_messages: list,
+) -> tuple[int, bool]:
+    """Check the conversation watermark and run memory extraction if due.
+
+    Returns (added_count, did_run). When did_run is False, the caller should
+    not emit any extraction-related SSE events.
+
+    The extraction context is built from the last N request messages PLUS
+    the just-generated assistant response (which is not in request_messages
+    because the request payload was assembled BEFORE the response was
+    generated). This ensures the LLM sees the new user question AND the
+    answer it just gave, so it can extract facts the assistant elicited.
+
+    Watermark semantics:
+    - On each call, count messages in this conversation created AFTER the
+      watermark (or ALL messages if watermark is NULL).
+    - If count >= MEMORY_EXTRACTION_INTERVAL (default 4), run extraction
+      and advance the watermark to the latest message ID.
+    - Otherwise, return (0, False) without doing anything.
+    """
+    interval = settings.MEMORY_EXTRACTION_INTERVAL
+    if interval <= 0:
+        return 0, False
+
+    try:
+        async with async_session_factory() as db:
+            new_messages, _watermark = await get_messages_since_watermark(
+                db, str(conv_id)
+            )
+            if len(new_messages) < interval:
+                _log(
+                    "   🧠 memory extraction skipped: %d new messages < interval %d",
+                    len(new_messages),
+                    interval,
+                )
+                return 0, False
+
+            # Build extraction context: last N request messages + the
+            # just-generated assistant response.
+            ctx_window = settings.MEMORY_EXTRACTION_CONTEXT_WINDOW
+            recent_request = (
+                request_messages[-(ctx_window - 1) :]
+                if len(request_messages) > (ctx_window - 1)
+                else request_messages
+            )
+            extraction_messages = list(recent_request) + [
+                {"role": "assistant", "content": full_assistant_content}
+            ]
+
+            # Get the latest message ID to use as the new watermark.
+            # new_messages is ordered ascending by created_at — last is newest.
+            latest_message_id = new_messages[-1].id
+
+            _log(
+                "   🧠 memory extraction DUE: %d new messages >= interval %d — "
+                "running with %d context messages",
+                len(new_messages),
+                interval,
+                len(extraction_messages),
+            )
+
+        # Run extraction in its own session (extract_and_store creates its own).
+        added = await extract_and_store(
+            messages=extraction_messages,
+            conversation_id=str(conv_id),
+        )
+
+        # Advance the watermark so the same messages are never re-extracted.
+        try:
+            async with async_session_factory() as db:
+                await update_watermark(db, str(conv_id), latest_message_id)
+                await db.commit()
+        except Exception as e:
+            _log("   ⚠️  failed to advance memory watermark: %s", e)
+
+        return added, True
+
+    except Exception as e:
+        _log("   ⚠️  memory extraction helper failed: %s", e)
+        return 0, False
 
 
 @router.post("/chat/stream")
@@ -390,17 +486,37 @@ async def chat_stream(request: ChatRequest):
                 tool_calls_json=tool_calls_json_str,
             )
 
-            # Trigger memory extraction in background
+            # Memory extraction — watermark-gated, awaited (not fire-and-forget)
+            # so we can emit start/done SSE events for the frontend indicator.
+            # See _maybe_run_memory_extraction() for the watermark logic.
             try:
-                recent_msgs = messages[-6:] if len(messages) > 6 else messages
-                asyncio.create_task(
-                    extract_and_store(
-                        messages=recent_msgs,
-                        conversation_id=str(_conv_id),
-                    )
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_start",
+                    }
+                ) + "\n\n"
+                added, did_run = await _maybe_run_memory_extraction(
+                    _conv_id,
+                    full_assistant_content,
+                    messages,
                 )
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_done",
+                        "count": added,
+                        "ran": did_run,
+                    }
+                ) + "\n\n"
             except Exception as e:
-                _log("   ⚠️  memory extraction launch failed: %s", e)
+                _log("   ⚠️  memory extraction failed: %s", e)
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_done",
+                        "count": 0,
+                        "ran": False,
+                        "error": str(e),
+                    }
+                ) + "\n\n"
 
         yield "data: [DONE]\n\n"
 
@@ -607,21 +723,36 @@ async def chat_stream_multipart(
                 tool_calls_json=tool_calls_json_str,
             )
 
-            # Trigger memory extraction in background
+            # Memory extraction — watermark-gated, awaited (not fire-and-forget)
+            # so we can emit start/done SSE events for the frontend indicator.
             try:
-                recent_msgs = (
-                    parsed_messages[-6:]
-                    if len(parsed_messages) > 6
-                    else parsed_messages
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_start",
+                    }
+                ) + "\n\n"
+                added, did_run = await _maybe_run_memory_extraction(
+                    _conv_id,
+                    full_assistant_content,
+                    parsed_messages,
                 )
-                asyncio.create_task(
-                    extract_and_store(
-                        messages=recent_msgs,
-                        conversation_id=str(_conv_id),
-                    )
-                )
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_done",
+                        "count": added,
+                        "ran": did_run,
+                    }
+                ) + "\n\n"
             except Exception as e:
-                _log("   ⚠️  memory extraction launch failed (multipart): %s", e)
+                _log("   ⚠️  memory extraction failed (multipart): %s", e)
+                yield "data: " + json.dumps(
+                    {
+                        "event": "memory_extraction_done",
+                        "count": 0,
+                        "ran": False,
+                        "error": str(e),
+                    }
+                ) + "\n\n"
 
         yield "data: [DONE]\n\n"
 

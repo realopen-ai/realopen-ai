@@ -2,27 +2,59 @@
 memory_extractor.py
 
 Background auto-extraction of facts from chat conversations.
-After each LLM response, this module sends the last few messages to the
-local Ollama model asking it to extract memorable facts, then stores them
-in PostgreSQL via the memory service.
 
-Periodically audits all memories via LLM to consolidate duplicates,
-rewrite vague entries, and remove junk.
+Trigger logic:
+- Called from chat.py as a background asyncio task AFTER the assistant
+  message is persisted, but ONLY when the number of NEW messages since
+  the conversation's `memory_watermark_message_id` reaches the configured
+  threshold (default 4, see settings.MEMORY_EXTRACTION_INTERVAL).
+- The watermark is updated to the latest message ID after extraction
+  runs, so the same messages are never re-extracted across restarts or
+  parallel requests.
+- This replaces the previous behavior of running on every turn from the
+  2nd message onwards, which was wasteful and re-processed old messages.
+
+Deduplication (3-tier):
+  1. Vector similarity (pgvector cosine) >= 0.92 → drop
+  2. Exact case-insensitive text match → drop
+  3. Jaccard token similarity >= 0.6 → drop
+
+Audit / consolidation:
+- Triggered automatically when the DB-persisted counter
+  `memory.extractions_since_audit` reaches AUDIT_INTERVAL (default 5).
+- Uses an LLM with a conservative prompt: merge only true duplicates,
+  remove only worthless entries, refuse to cut >50% of memories.
+- Fingerprint short-circuit: if the memory set hasn't changed since the
+  last audit, the LLM call is skipped entirely.
+- The fingerprint is persisted in app_state, so it survives restarts.
+
+The extraction prompt is fixed (missing-period bug from previous version
+is corrected). The extraction model defaults to the chat model via the
+`default_utility` role, which can be overridden in profiles.yml to a
+smaller model for cheaper background work.
 """
 
-import hashlib
 import json
-import logging
 import re
-from typing import Optional
+import uuid
+from datetime import datetime
+from typing import List, Optional, Tuple
 
 import httpx
+from sqlalchemy import select
 
 from app.config import settings
+from app.db.models import Conversation, Message
 from app.db.session import async_session_factory
-from app.services.memory import MemoryManager
-
-logger = logging.getLogger(__name__)
+from app.services.memory import (
+    MemoryManager,
+    _fingerprint_memories,
+    _get_audit_fingerprint,
+    _increment_extractions_since_audit,
+    _reset_extractions_since_audit,
+    _set_audit_fingerprint,
+    get_text_similarity,
+)
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -40,7 +72,7 @@ EXTRACT_SYSTEM_PROMPT = (
     "- Each fact must be a single short sentence (under 15 words)\n"
     "- If a fact is similar to something likely already known, skip it\n"
     "- If nothing durable was revealed, return []\n\n"
-    "Make a best effort to follow the rules, but when in doubt, EXTRACT RATHER THAN SKIP."
+    "Make a best effort to follow the rules, but when in doubt, EXTRACT RATHER THAN SKIP.\n\n"
     "Return a JSON array of objects with 'text' and 'category' fields.\n"
     "Categories: 'identity', 'preference', 'fact', 'contact', 'project', 'goal'\n\n"
     "Return ONLY valid JSON, no markdown fences, no extra commentary."
@@ -67,36 +99,6 @@ AUDIT_SYSTEM_PROMPT = (
     "Return ONLY valid JSON, no markdown fences, no extra commentary."
 )
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-CONTEXT_WINDOW = 6
-AUDIT_INTERVAL = 5
-_extractions_since_audit = 0
-
-# ---------------------------------------------------------------------------
-# Fingerprinting for audit short-circuit
-# ---------------------------------------------------------------------------
-
-
-def _fingerprint_entries(entries) -> str:
-    """Stable hash of memories — order-independent, depends on id+text+category."""
-    items = sorted(
-        (str(e.get("id", "")), e.get("text", ""), e.get("category", ""))
-        for e in _memory_dicts(entries)
-    )
-    h = hashlib.sha256()
-    for triple in items:
-        h.update(("\x1f".join(triple) + "\x1e").encode("utf-8"))
-    return h.hexdigest()
-
-
-def _memory_dicts(entries):
-    for entry in entries or []:
-        if isinstance(entry, dict):
-            yield entry
-
 
 # ---------------------------------------------------------------------------
 # Message helpers
@@ -110,7 +112,7 @@ def _message_text(message) -> str:
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        parts = []
+        parts: List[str] = []
         for item in content:
             if isinstance(item, dict):
                 parts.append(str(item.get("text") or item.get("content") or ""))
@@ -145,19 +147,24 @@ def _clean_memory_value(value: str, max_len: int = 80) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Fallback regex extraction
+# Fallback regex extraction (Unicode-aware — supports Clémence, Søren, etc.)
 # ---------------------------------------------------------------------------
 
 
-def _fallback_memory_candidates(messages) -> list:
+# \w with re.UNICODE matches accented letters, so this catches names like
+# "Clémence", "Søren", "François" that the [A-Za-z]+ pattern misses.
+_NAME_PATTERN = r"[\w][\w .'\-]{1,50}"
+
+
+def _fallback_memory_candidates(messages) -> List[dict]:
     """Extract obvious durable facts without relying on the LLM.
 
-    This is deliberately narrow. The LLM remains the main extractor, but
-    simple identity/preference/goal statements should not silently vanish just
+    Deliberately narrow. The LLM remains the main extractor, but simple
+    identity/preference/goal statements should not silently vanish just
     because the background model judged them too conversational.
     """
-    candidates = []
-    seen = set()
+    candidates: List[dict] = []
+    seen: set[str] = set()
 
     def add(text: str, category: str):
         text = _clean_memory_value(text, 120)
@@ -176,19 +183,23 @@ def _fallback_memory_candidates(messages) -> list:
         if not text:
             continue
 
-        m = re.search(r"\bmy name is\s+([A-Za-z][A-Za-z0-9 .'\-]{1,50})\b", text, re.I)
+        m = re.search(rf"\bmy name is\s+({_NAME_PATTERN})\b", text, re.I | re.UNICODE)
         if m:
             name = _clean_memory_value(m.group(1), 50)
             if name:
                 add(f"User's name is {name}.", "identity")
 
-        m = re.search(r"\bcall me\s+([A-Za-z][A-Za-z0-9 .'\-]{1,50})\b", text, re.I)
+        m = re.search(rf"\bcall me\s+({_NAME_PATTERN})\b", text, re.I | re.UNICODE)
         if m:
             name = _clean_memory_value(m.group(1), 50)
             if name:
                 add(f"User wants to be called {name}.", "identity")
 
-        m = re.search(r"\bi (?:live in|am from|'m from)\s+([^.!?\n]{2,80})", text, re.I)
+        m = re.search(
+            r"\bi (?:live in|am from|'m from)\s+([^.!?\n]{2,80})",
+            text,
+            re.I | re.UNICODE,
+        )
         if m:
             place = _clean_memory_value(m.group(1), 80)
             if place:
@@ -197,18 +208,32 @@ def _fallback_memory_candidates(messages) -> list:
         m = re.search(
             r"\bi (?:prefer|like|love|hate|do not like|don't like)\s+([^.!?\n]{4,100})",
             text,
-            re.I,
+            re.I | re.UNICODE,
         )
         if m:
             preference = _clean_memory_value(m.group(1), 100)
             if preference:
                 add(f"User prefers {preference}.", "preference")
 
+        # "My girlfriend is X", "My brother is X" etc.
+        m = re.search(
+            rf"\bmy (girlfriend|boyfriend|wife|husband|partner|sister|brother|"
+            rf"mother|mom|father|dad|son|daughter|friend|colleague|boss)\s+"
+            rf"(?:is|'s)\s+({_NAME_PATTERN})(?:[^.!?\n]{{0,80}})?",
+            text,
+            re.I | re.UNICODE,
+        )
+        if m:
+            relation = m.group(1).lower()
+            name = _clean_memory_value(m.group(2), 50)
+            if name:
+                add(f"User's {relation} is {name}.", "fact")
+
         m = re.search(
             r"\bi (?:(?:want|would like|plan|hope) to|wanna) "
             r"(?:go|travel|move|visit) to\s+([^.!?\n]{2,80})",
             text,
-            re.I,
+            re.I | re.UNICODE,
         )
         if m:
             destination = _clean_memory_value(m.group(1), 80)
@@ -216,27 +241,6 @@ def _fallback_memory_candidates(messages) -> list:
                 add(f"User wants to visit {destination}.", "goal")
 
     return candidates[:2]
-
-
-# ---------------------------------------------------------------------------
-# Text-based dedup check
-# ---------------------------------------------------------------------------
-
-
-def _is_text_duplicate(new_text: str, existing: list, threshold: float = 0.6) -> bool:
-    """Check if new_text is too similar to any existing memory (Jaccard similarity)."""
-    new_tokens = set(new_text.lower().split())
-    if not new_tokens:
-        return False
-    for entry in _memory_dicts(existing):
-        old_tokens = set(entry.get("text", "").lower().split())
-        if not old_tokens:
-            continue
-        intersection = new_tokens & old_tokens
-        union = new_tokens | old_tokens
-        if len(intersection) / len(union) >= threshold:
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -254,28 +258,31 @@ async def extract_and_store(
     Errors are logged, never raised.
     Returns count of added memories.
     """
-    global _extractions_since_audit
-
-    model = settings.resolve_model("default")
+    # Resolve the utility model — falls back to the chat model if no
+    # default_utility role is defined in profiles.yml.
+    model = settings.resolve_model(settings.MEMORY_EXTRACTION_MODEL_ROLE)
     ollama_url = settings.OLLAMA_BASE_URL
 
     if not ollama_url or not model:
-        print("[memory-extract] No model or URL configured, skipping")
+        print("[memory-extract] no model or URL configured, skipping")
         return 0
 
     try:
-        recent = (
-            messages[-CONTEXT_WINDOW:] if len(messages) > CONTEXT_WINDOW else messages
+        # The caller (chat.py) already slices to the last N messages and
+        # includes the just-generated assistant response. We just need
+        # at least 2 (a user + assistant pair).
+        if len(messages) < 2:
+            return 0
+
+        print(
+            "[memory-extract] launching extraction task (%d messages, model=%s)",
+            len(messages),
+            model,
         )
 
-        if len(recent) < 2:
-            return 0  # Need at least a user message and assistant response
-
-        print("   🔄 launching memory extraction task (last 6 messages)")
-
         # Strip media from messages — only need text for extraction
-        stripped_recent = []
-        for msg in recent:
+        stripped_recent: List[dict] = []
+        for msg in messages:
             role = msg.get("role") if isinstance(msg, dict) else _message_role(msg)
             content = (
                 msg.get("content", "") if isinstance(msg, dict) else _message_text(msg)
@@ -289,7 +296,8 @@ async def extract_and_store(
                 if not text_only and content:
                     continue
                 content = text_only
-            stripped_recent.append({"role": role, "content": content})
+            if role == "user" and content:
+                stripped_recent.append({"role": role, "content": content})
 
         if not stripped_recent:
             return 0
@@ -300,11 +308,13 @@ async def extract_and_store(
             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
         ] + stripped_recent
 
-        facts = []
+        facts: list = []
         rounds = 0
         while rounds < 2:
             print(
-                f"[memory-extract] Sending {len(stripped_recent)} messages to LLM for extraction... | round #{rounds + 1}"
+                "[memory-extract] sending %d messages to LLM (round %d)",
+                len(stripped_recent),
+                rounds + 1,
             )
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
@@ -339,17 +349,23 @@ async def extract_and_store(
                     text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
                 try:
-                    facts = json.loads(text)
-                    break  # Success
+                    print(
+                        "[memory-extract] LLM returned (round %d): %s",
+                        rounds + 1,
+                        text[:200],
+                    )
+                    parsed = json.loads(text)
+                    if isinstance(parsed, list):
+                        facts = parsed
+                        break
                 except json.JSONDecodeError:
                     print(
-                        f"[memory-extract] JSON decode failed, response was: </><|><\\>\n{text}..."
+                        "[memory-extract] JSON decode failed (round %d): %s",
+                        rounds + 1,
+                        text[:200],
                     )
             except Exception as e:
-                logger.warning(
-                    f"LLM memory extraction failed; using fallback candidates if available: {e}"
-                )
-                print(f"[memory-extract] LLM call failed:\n{e}")
+                print("[memory-extract] LLM call failed (round %d): %s", rounds + 1, e)
             rounds += 1
 
         if not isinstance(facts, list):
@@ -359,8 +375,7 @@ async def extract_and_store(
             facts = list(facts) + fallback_facts
 
         if not facts:
-            logger.info("Auto memory extraction ran: 0 candidates")
-            print("[memory-extract] Auto memory extraction ran: 0 candidates")
+            print("[memory-extract] ran: 0 candidates")
             return 0
 
         # Store new memories via the memory service
@@ -368,12 +383,8 @@ async def extract_and_store(
         async with async_session_factory() as db:
             manager = MemoryManager()
 
-            # Get existing memories for dedup
+            # Get existing memories for the text-fallback dedup tiers
             existing_memories = await manager.get_all_memories(db, limit=10000)
-            existing_dicts = [
-                {"id": str(m.id), "text": m.text, "category": m.category}
-                for m in existing_memories
-            ]
 
             for fact in facts:
                 if isinstance(fact, str):
@@ -388,20 +399,46 @@ async def extract_and_store(
                 if not fact_text or len(fact_text) < 5:
                     continue
 
-                # Dedup: exact text match
-                exact_dup = any(
-                    m.text.lower() == fact_text.lower() for m in existing_memories
-                )
-                if exact_dup:
+                # Tier 1: vector similarity (preferred — catches paraphrases)
+                try:
+                    similar = await manager.find_similar_by_vector(
+                        db,
+                        fact_text,
+                        threshold=settings.MEMORY_DEDUP_VECTOR_THRESHOLD,
+                    )
+                    if similar is not None:
+                        print(
+                            "[memory-extract] vector dedup: '%s...' matches '%s...'",
+                            fact_text[:50],
+                            similar.text[:50],
+                        )
+                        continue
+                except Exception as e:
+                    print(
+                        "[memory-extract] vector dedup unavailable, using text tiers: %s",
+                        e,
+                    )
+
+                # Tier 2: exact match
+                if any(
+                    (m.text or "").lower() == fact_text.lower()
+                    for m in existing_memories
+                ):
                     continue
 
-                # Fuzzy text similarity check
-                if _is_text_duplicate(fact_text, existing_dicts):
-                    logger.debug(
-                        f"Memory dedup (fuzzy): '{fact_text[:50]}' too similar to existing"
-                    )
+                # Tier 3: Jaccard similarity
+                is_dup = False
+                for m in existing_memories:
+                    if (
+                        get_text_similarity(fact_text, m.text or "")
+                        >= settings.MEMORY_DEDUP_TEXT_THRESHOLD
+                    ):
+                        is_dup = True
+                        break
+                if is_dup:
                     print(
-                        f"[memory-extract] Memory dedup (fuzzy): '{fact_text[:50]}' too similar to existing"
+                        "[memory-extract] fuzzy dedup: '%s...' too similar to existing",
+                        fact_text[:50],
                     )
                     continue
 
@@ -414,51 +451,48 @@ async def extract_and_store(
                         conversation_id=conversation_id,
                     )
                     existing_memories.append(memory)
-                    existing_dicts.append(
-                        {
-                            "id": str(memory.id),
-                            "text": memory.text,
-                            "category": memory.category,
-                        }
-                    )
                     added += 1
                 except Exception as e:
-                    logger.warning(f"Failed to store memory: {e}")
-                    print(f"[memory-extract] Failed to store memory: {e}")
+                    print("[memory-extract] failed to store memory: %s", e)
 
             if added > 0:
                 await db.commit()
-                logger.info(f"Auto-extracted {added} memories from conversation")
                 print(
-                    f"[memory-extract] Auto-extracted {added} memories from conversation"
+                    "[memory-extract] auto-extracted %d memories from conversation %s",
+                    added,
+                    conversation_id,
                 )
 
-                _extractions_since_audit += added
-                if _extractions_since_audit >= AUDIT_INTERVAL:
-                    _extractions_since_audit = 0
-                    logger.info("Audit threshold reached, running memory audit")
+                # Increment the DB-persisted audit counter and trigger audit
+                # when the threshold is reached (default: every 5).
+                new_count = await _increment_extractions_since_audit(db, added)
+                if new_count >= settings.MEMORY_AUDIT_INTERVAL:
                     print(
-                        "[memory-extract] Audit threshold reached, running memory audit"
+                        "[memory-extract] audit threshold reached (%d >= %d), "
+                        "running memory audit",
+                        new_count,
+                        settings.MEMORY_AUDIT_INTERVAL,
                     )
+                    await _reset_extractions_since_audit(db)
+                    await db.commit()
+                    # Run audit in a fresh session to avoid transaction conflicts
                     await audit_memories()
+                else:
+                    await db.commit()
             else:
-                logger.info("Auto memory extraction ran: 0 added")
-                print("[memory-extract] Auto memory extraction ran: 0 added")
+                print("[memory-extract] ran: 0 added (all duplicates)")
+                await db.commit()
 
         return added
 
     except Exception as e:
-        logger.error(f"Memory extraction failed: {e}")
-        print(f"[memory-extract] Memory extraction failed: {e}")
+        print("[memory-extract] extraction failed: %s", e)
         return 0
 
 
 # ---------------------------------------------------------------------------
 # Audit / consolidation
 # ---------------------------------------------------------------------------
-
-# In-memory fingerprint to skip redundant audits
-_last_audit_fingerprint: Optional[str] = None
 
 
 async def audit_memories() -> dict:
@@ -471,13 +505,11 @@ async def audit_memories() -> dict:
     Safe to call manually or from the automatic trigger.
     Errors are logged, never raised.
     """
-    global _last_audit_fingerprint
-
-    model = settings.resolve_model("default")
+    model = settings.resolve_model(settings.MEMORY_AUDIT_MODEL_ROLE)
     ollama_url = settings.OLLAMA_BASE_URL
 
     if not ollama_url or not model:
-        logger.debug("[memory-audit] No model or URL configured, skipping")
+        print("[memory-audit] no model or URL configured, skipping")
         return {"error": "no_model"}
 
     try:
@@ -486,28 +518,24 @@ async def audit_memories() -> dict:
             existing = await manager.get_all_memories(db, limit=10000)
 
             if not existing:
-                print("[memory-audit] Memory audit: nothing to audit")
+                print("[memory-audit] nothing to audit")
                 return {"before": 0, "after": 0}
 
             before_count = len(existing)
 
-            # Skip the LLM call entirely when this exact set of memories was
-            # already audited
-            current_fp = _fingerprint_entries(
-                [
-                    {"id": str(m.id), "text": m.text, "category": m.category}
-                    for m in existing
-                ]
-            )
-            if _last_audit_fingerprint == current_fp:
-                print("Memory audit: state unchanged since last tidy — skipping LLM")
+            # Fingerprint short-circuit: skip the LLM call entirely if the
+            # memory set hasn't changed since the last audit.
+            current_fp = _fingerprint_memories(existing)
+            last_fp = await _get_audit_fingerprint(db)
+            if last_fp == current_fp:
+                print("[memory-audit] state unchanged since last audit — skipping LLM")
                 return {
                     "before": before_count,
                     "after": before_count,
                     "already_tidy": True,
                 }
 
-            # Build payload: list of {id, text, category} for the LLM
+            # Build payload: just {id, text, category} for the LLM
             memory_payload = [
                 {"id": str(m.id), "text": m.text, "category": m.category}
                 for m in existing
@@ -524,22 +552,7 @@ async def audit_memories() -> dict:
             raw = ""
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
-                    print(
-                        f"[memory-audit] Sending {len(existing)} memories to LLM for audit..."
-                    )
-                    print(
-                        f"[memory-audit] Audit system prompt: {AUDIT_SYSTEM_PROMPT[:200]}..."
-                    )
-                    print("[memory-audit] Audit payload:")
-                    print(
-                        {
-                            "model": model,
-                            "messages": audit_messages,
-                            "stream": False,
-                            "think": False,
-                            "format": "json",
-                        }
-                    )
+                    print("[memory-audit] sending %d memories to LLM", len(existing))
                     response = await client.post(
                         f"{ollama_url}/api/chat",
                         json={
@@ -552,11 +565,8 @@ async def audit_memories() -> dict:
                     )
                     response.raise_for_status()
                     raw = response.json().get("message", {}).get("content", "")
-                    print(
-                        f"[memory-audit] raw LLM response: ================================\n{raw}"
-                    )
             except Exception as e:
-                logger.error(f"Memory audit LLM call failed: {e}")
+                print("[memory-audit] LLM call failed: %s", e)
                 return {
                     "before": before_count,
                     "after": before_count,
@@ -569,7 +579,7 @@ async def audit_memories() -> dict:
                 r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", text, flags=re.I
             ).strip()
 
-            def _loads_list(s):
+            def _loads_list(s: str):
                 if not s:
                     return None
                 for cand in (s, re.sub(r",(\s*[}\]])", r"\1", s)):
@@ -591,7 +601,7 @@ async def audit_memories() -> dict:
                 if _a >= 0 and _b > _a:
                     cleaned = _loads_list(text[_a : _b + 1])
             if cleaned is None:
-                logger.error(f"Memory audit returned non-JSON: {text[:300]}")
+                print("[memory-audit] non-JSON response: %s", text[:300])
                 return {
                     "before": before_count,
                     "after": before_count,
@@ -601,32 +611,38 @@ async def audit_memories() -> dict:
             # Build lookup of original entries by ID so we can preserve metadata
             originals = {str(m.id): m for m in existing}
 
-            final_ids = set()
+            final_ids: set[str] = set()
             for item in cleaned:
                 if not isinstance(item, dict):
                     continue
                 mid = item.get("id", "")
-                new_text = item.get("text", "").strip()
+                new_text = (item.get("text") or "").strip()
                 if not new_text:
                     continue
 
                 if mid in originals:
                     memory = originals[mid]
-                    memory.text = new_text
+                    # Update text + regenerate embedding if text changed
+                    if new_text != (memory.text or ""):
+                        memory.text = new_text
+                        from app.services.embeddings import get_embedding
+
+                        memory.embedding = await get_embedding(new_text)
                     if item.get("category"):
                         memory.category = item["category"]
+                    memory.updated_at = datetime.utcnow()
                     final_ids.add(mid)
                 else:
-                    logger.debug(f"Audit returned unknown id {mid}, skipping")
-                    continue
+                    print("[memory-audit] unknown id %s, skipping", mid)
 
             after_count = len(final_ids)
 
             # Safety net against catastrophic over-deletion
             if before_count >= 8 and after_count < before_count * 0.5:
                 print(
-                    f"[memory-audit] Memory audit would cut {before_count} -> {after_count} "
-                    f"(>50% removed) — refusing as unsafe, keeping originals"
+                    "[memory-audit] would cut %d -> %d (>50%% removed) — refusing as unsafe",
+                    before_count,
+                    after_count,
                 )
                 return {
                     "before": before_count,
@@ -639,24 +655,78 @@ async def audit_memories() -> dict:
                 if mid_str not in final_ids:
                     await db.delete(memory)
 
+            # Persist the new fingerprint so we short-circuit next time
+            # if nothing has changed. Read the survivors back to compute it.
+            await db.flush()
+            survivors = await manager.get_all_memories(db, limit=10000)
+            new_fp = _fingerprint_memories(survivors)
+            await _set_audit_fingerprint(db, new_fp)
+
             await db.commit()
 
-            # Update fingerprint
-            remaining = await manager.get_all_memories(db, limit=10000)
-            _last_audit_fingerprint = _fingerprint_entries(
-                [
-                    {"id": str(m.id), "text": m.text, "category": m.category}
-                    for m in remaining
-                ]
-            )
-
             print(
-                f"[memory-audit] Memory audit complete: {before_count} -> {after_count} entries "
-                f"({before_count - after_count} removed/merged)"
+                "[memory-audit] complete: %d -> %d entries (%d removed/merged)",
+                before_count,
+                after_count,
+                before_count - after_count,
             )
 
             return {"before": before_count, "after": after_count}
 
     except Exception as e:
-        print(f"[memory-audit] Memory audit failed: {e}")
+        print("[memory-audit] failed: %s", e)
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Watermark helpers — used by chat.py to decide when to trigger extraction
+# ---------------------------------------------------------------------------
+
+
+async def get_messages_since_watermark(
+    db,
+    conversation_id: str,
+) -> Tuple[List[Message], Optional[uuid.UUID]]:
+    """Return (new_messages, current_watermark_id) for a conversation.
+
+    new_messages is the list of messages AFTER the watermark, ordered by
+    created_at. If the watermark is NULL, returns ALL messages.
+    """
+    try:
+        conv_uuid = uuid.UUID(str(conversation_id))
+    except (ValueError, AttributeError):
+        return [], None
+
+    conv = await db.get(Conversation, conv_uuid)
+    if not conv:
+        return [], None
+
+    stmt = select(Message).where(Message.conversation_id == conv_uuid)
+    if conv.memory_watermark_message_id is not None:
+        # Messages strictly after the watermark message, by created_at.
+        # Using created_at avoids depending on auto-increment IDs.
+        watermark_msg = await db.get(Message, conv.memory_watermark_message_id)
+        if watermark_msg is not None:
+            stmt = stmt.where(Message.created_at > watermark_msg.created_at)
+    stmt = stmt.order_by(Message.created_at.asc())
+
+    result = await db.execute(stmt)
+    new_messages = list(result.scalars().all())
+    return new_messages, conv.memory_watermark_message_id
+
+
+async def update_watermark(
+    db,
+    conversation_id: str,
+    message_id: uuid.UUID,
+) -> None:
+    """Set the conversation's watermark to the given message ID."""
+    try:
+        conv_uuid = uuid.UUID(str(conversation_id))
+    except (ValueError, AttributeError):
+        return
+    conv = await db.get(Conversation, conv_uuid)
+    if conv:
+        conv.memory_watermark_message_id = message_id
+        conv.updated_at = datetime.utcnow()
+        await db.flush()
