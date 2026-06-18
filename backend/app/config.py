@@ -432,8 +432,17 @@ class Settings(BaseSettings):
     # How many new memories to add before auto-triggering an audit.
     MEMORY_AUDIT_INTERVAL: int = 5
     # Cosine similarity threshold for vector dedup at extraction time.
-    # 0.92 = default. Higher = stricter (fewer dedups), lower = looser.
-    MEMORY_DEDUP_VECTOR_THRESHOLD: float = 0.92
+    MEMORY_DEDUP_VECTOR_THRESHOLD: float = 0.85
+    # Stricter threshold applied when BOTH texts are very short (<5 content
+    # tokens after stop-word removal). Short texts are noisier in embedding
+    # space — at 5 tokens, even paraphrases need to be near-identical.
+    MEMORY_DEDUP_SHORT_TEXT_THRESHOLD: float = 0.92
+    # Min Jaccard overlap on CONTENT tokens (after stop-word removal) for
+    # a vector match to be accepted as a true duplicate. This is the
+    # content-aware guard that prevents the Clémence-vs-Abdel false
+    # positive: even if embeddings say "similar", if the two texts share
+    # almost no content tokens, they aren't the same fact.
+    MEMORY_DEDUP_CONTENT_MIN_OVERLAP: float = 0.10
     # Jaccard threshold for the text-fallback dedup tier.
     MEMORY_DEDUP_TEXT_THRESHOLD: float = 0.6
     # Hybrid retrieval weights (vector + BM25 + recency)

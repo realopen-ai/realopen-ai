@@ -14,10 +14,18 @@ Trigger logic:
 - This replaces the previous behavior of running on every turn from the
   2nd message onwards, which was wasteful and re-processed old messages.
 
-Deduplication (3-tier):
-  1. Vector similarity (pgvector cosine) >= 0.92 → drop
+Deduplication (3-tier, with content-aware vector guard):
+  1. Vector similarity (pgvector cosine) >= 0.85 AND content_jaccard
+     >= 0.10 → drop. The content guard prevents false positives where
+     two unrelated short facts get high cosine similarity from shared
+     boilerplate words ("the user", "is", "named").
   2. Exact case-insensitive text match → drop
   3. Jaccard token similarity >= 0.6 → drop
+
+NOTE ON LLM OUTPUT CLEANING:
+- Small models often ignore the "return only JSON" instruction and wrap
+  the output in ```json ... ``` fences, prepend <think>...</think>
+  reasoning, or add commentary. We strip all of these before parsing.
 
 Audit / consolidation:
 - Triggered automatically when the DB-persisted counter
@@ -98,6 +106,72 @@ AUDIT_SYSTEM_PROMPT = (
     "Return a JSON array of objects with fields: id, text, category.\n"
     "Return ONLY valid JSON, no markdown fences, no extra commentary."
 )
+
+
+# ---------------------------------------------------------------------------
+# LLM output cleaning — handles markdown fences, <think> tags, trailing
+# commas, and surrounding commentary that small models (qwen3.5:4b-mlx)
+# add even when told not to.
+# ---------------------------------------------------------------------------
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> or <thinking>...</thinking> blocks."""
+    return re.sub(
+        r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", text, flags=re.I
+    ).strip()
+
+
+def _extract_json_list(raw: str) -> Optional[list]:
+    """Best-effort extraction of a JSON list from a noisy LLM response.
+
+    Tries (in order):
+      1. Strip <think> tags, then direct json.loads.
+      2. Strip ```json ... ``` or ``` ... ``` fences, then json.loads.
+      3. Find the first '[' and last ']' and json.loads the slice.
+      4. Repair trailing commas and retry.
+
+    Returns the parsed list, or None if nothing parseable was found.
+    """
+    if not raw:
+        return None
+
+    text = _strip_think_tags(raw)
+
+    def _loads_list(s: str) -> Optional[list]:
+        if not s:
+            return None
+        # Try as-is, then with trailing commas removed (small models often
+        # emit `{"text": "x",}` which is invalid JSON).
+        for cand in (s, re.sub(r",(\s*[}\]])", r"\1", s)):
+            try:
+                v = json.loads(cand)
+                if isinstance(v, list):
+                    return v
+            except Exception:
+                continue
+        return None
+
+    # 1. Direct parse
+    parsed = _loads_list(text)
+    if parsed is not None:
+        return parsed
+
+    # 2. Fenced code block (```json ... ``` or ``` ... ```)
+    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)```", text)
+    if m:
+        parsed = _loads_list(m.group(1).strip())
+        if parsed is not None:
+            return parsed
+
+    # 3. First '[' to last ']' slice
+    a, b = text.find("["), text.rfind("]")
+    if a >= 0 and b > a:
+        parsed = _loads_list(text[a : b + 1])
+        if parsed is not None:
+            return parsed
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -343,27 +417,24 @@ async def extract_and_store(
                     )
                     raw = response.json().get("message", {}).get("content", "")
 
-                # Parse JSON from response (handle markdown fences)
+                # Parse JSON from response (handles markdown fences, <think>
+                # tags, surrounding commentary, trailing commas — small
+                # models like qwen3.5:4b-mlx often produce all of these).
                 text = raw.strip()
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-                try:
-                    print(
-                        "[memory-extract] LLM returned (round %d): %s",
-                        rounds + 1,
-                        text[:200],
-                    )
-                    parsed = json.loads(text)
-                    if isinstance(parsed, list):
-                        facts = parsed
-                        break
-                except json.JSONDecodeError:
-                    print(
-                        "[memory-extract] JSON decode failed (round %d): %s",
-                        rounds + 1,
-                        text[:200],
-                    )
+                print(
+                    "[memory-extract] LLM returned (round %d): %s",
+                    rounds + 1,
+                    text[:200],
+                )
+                parsed = _extract_json_list(text)
+                if isinstance(parsed, list):
+                    facts = parsed
+                    break
+                print(
+                    "[memory-extract] JSON extraction failed (round %d): %s",
+                    rounds + 1,
+                    text[:200],
+                )
             except Exception as e:
                 print("[memory-extract] LLM call failed (round %d): %s", rounds + 1, e)
             rounds += 1
@@ -574,34 +645,12 @@ async def audit_memories() -> dict:
                 }
 
             # Parse the JSON list, tolerating reasoning-model noise
-            text = (raw or "").strip()
-            text = re.sub(
-                r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", text, flags=re.I
-            ).strip()
-
-            def _loads_list(s: str):
-                if not s:
-                    return None
-                for cand in (s, re.sub(r",(\s*[}\]])", r"\1", s)):
-                    try:
-                        v = json.loads(cand)
-                        if isinstance(v, list):
-                            return v
-                    except Exception:
-                        continue
-                return None
-
-            cleaned = _loads_list(text)
+            # (delegates to the shared _extract_json_list helper that
+            # handles <think> tags, ```json fences, trailing commas,
+            # and surrounding commentary).
+            cleaned = _extract_json_list(raw or "")
             if cleaned is None:
-                _m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)```", text)
-                if _m:
-                    cleaned = _loads_list(_m.group(1).strip())
-            if cleaned is None:
-                _a, _b = text.find("["), text.rfind("]")
-                if _a >= 0 and _b > _a:
-                    cleaned = _loads_list(text[_a : _b + 1])
-            if cleaned is None:
-                print("[memory-audit] non-JSON response: %s", text[:300])
+                print("[memory-audit] non-JSON response: %s", (raw or "")[:300])
                 return {
                     "before": before_count,
                     "after": before_count,
