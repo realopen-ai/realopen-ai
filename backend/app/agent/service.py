@@ -272,6 +272,7 @@ async def run_agent_stream(
     messages: List[Dict[str, Any]],
     model: str = "default",
     images: Optional[List[str]] = None,
+    conversation_id: Optional[str] = None,
     on_tool_call_start=None,
     on_tool_call_update=None,
 ) -> AsyncGenerator[str, None]:
@@ -287,6 +288,9 @@ async def run_agent_stream(
         messages: Conversation messages [{role, content}, ...]
         model: Model role/type/id to resolve
         images: Optional list of base64-encoded images
+        conversation_id: Optional conversation UUID string. Threaded into
+            rag_search tool calls so private documents tied to this
+            conversation are searchable alongside public docs.
         on_tool_call_start: Callback(tool_call_dict) when a tool starts
         on_tool_call_update: Callback(tool_call_id, updates_dict) when a tool updates
     """
@@ -597,6 +601,17 @@ async def run_agent_stream(
                 messages.append({"role": "assistant", "content": error_msg})
                 continue
 
+            # ── RAG-specific: inject conversation_id so the tool can scope
+            # private-doc searches to this conversation. We only do this
+            # for rag_search to avoid leaking the conv ID into other tools'
+            # argument schemas (which would confuse the LLM).
+            if tool_name == "rag_search" and conversation_id:
+                tool_args.setdefault("conversation_id", conversation_id)
+                _dbg(
+                    "   🔎 rag_search: injected conversation_id=%s",
+                    conversation_id,
+                )
+
             # Generate a tool call ID for tracking across start/update events
             tc_id = f"tc-{tool.tool_type.value}-{int(time.time() * 1000)}"
 
@@ -664,6 +679,24 @@ async def run_agent_stream(
                     on_tool_call_update(result.tool_call.id, update_dict)
 
                 yield _sse_event("tool_call", {"tool_call": update_dict})
+
+            # ── RAG-specific: emit a rag_sources event with the retrieved
+            # chunks so the frontend can render collapsible source cards
+            # under this assistant message. Only emitted when the rag_search
+            # tool actually returned sources (empty list = nothing to show).
+            if tool_name == "rag_search" and result.tool_call:
+                rag_sources = getattr(result.tool_call, "rag_sources", None)
+                if rag_sources:
+                    _dbg(
+                        "   🔎 rag_sources: emitting %d sources",
+                        len(rag_sources),
+                    )
+                    yield _sse_event(
+                        "rag_sources",
+                        {"sources": rag_sources, "tool_call_id": tc_id},
+                    )
+                else:
+                    _dbg("   🔎 rag_sources: no sources retrieved, skipping event")
 
             # Feed tool result back into conversation
             messages.append({"role": "assistant", "content": full_response})
