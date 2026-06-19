@@ -565,10 +565,7 @@ export function MemoriesTab() {
         {auditResult && auditResult.removed > 0 && (
           <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 text-emerald-500 text-[12px]">
             <Sparkles className="w-3.5 h-3.5" />
-            {t("brain.memories.auditDone").replace(
-              "{count}",
-              String(auditResult.removed),
-            )}
+            {t("brain.memories.auditDone", { count: auditResult.removed })}
           </div>
         )}
 
