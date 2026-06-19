@@ -20,8 +20,21 @@ class Conversation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Watermark for memory extraction: the ID of the last message that has
+    # been processed by the memory extractor. NULL means "never extracted" —
+    # all messages in this conversation are considered new.
+    # See migration a8f3c2e1b7d4.
+    memory_watermark_message_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     messages = relationship(
-        "Message", back_populates="conversation", order_by="Message.created_at"
+        "Message",
+        back_populates="conversation",
+        order_by="Message.created_at",
+        foreign_keys="Message.conversation_id",
     )
 
 
@@ -49,7 +62,11 @@ class Message(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    conversation = relationship("Conversation", back_populates="messages")
+    conversation = relationship(
+        "Conversation",
+        back_populates="messages",
+        foreign_keys=[conversation_id],
+    )
 
 
 class Document(Base):
@@ -61,3 +78,42 @@ class Document(Base):
     embedding = Column(Vector(1536), nullable=True)  # pgvector column
     message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Memory(Base):
+    __tablename__ = "memories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    text = Column(Text, nullable=False)
+    category = Column(
+        String(50), default="fact"
+    )  # identity, preference, fact, contact, project, goal
+    source = Column(String(20), default="auto")  # auto, user, ai_agent
+    pinned = Column(Boolean, default=False)
+    uses = Column(Integer, default=0)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
+    )
+    # 768-dim to match nomic-embed-text (see migration a8f3c2e1b7d4).
+    # Populated by app.services.embeddings.get_embedding() on insert/update.
+    embedding = Column(Vector(768), nullable=True)
+    # GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED — managed by
+    # PostgreSQL, used for BM25 keyword ranking in hybrid retrieval.
+    # Not mapped as a Python-side column to avoid ORM write attempts.
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AppState(Base):
+    """Generic key/value store for persistent application state.
+
+    Used for things that must survive backend restarts:
+      - 'memory.last_audit_at'     : ISO timestamp of last audit run
+      - 'memory.audit_fingerprint' : SHA-256 of memory set at last audit
+      - 'memory.extractions_since_audit' : int counter (alternative to timestamp)
+    """
+    __tablename__ = "app_state"
+
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

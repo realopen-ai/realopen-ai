@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { translations, type Language, type TranslationKey } from "@/i18n";
+import { translations, type Language } from "@/i18n";
 
 export type { Language } from "@/i18n";
 export type { TranslationKey } from "@/i18n";
@@ -140,13 +140,39 @@ export const useSettingsStore = create<SettingsState>()(
 
 // ─── Helper hooks ───────────────────────────────────────────────
 
-export function t(key: TranslationKey): string {
+/**
+ * Interpolate {placeholders} in a translation string with the given params.
+ * Example: interpolate("Hi {name}", { name: "Sam" }) -> "Hi Sam"
+ */
+function interpolate(
+  template: string,
+  params?: Record<string, string | number>,
+): string {
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (_, key: string) =>
+    key in params ? String(params[key]) : `{${key}}`,
+  );
+}
+
+export function t(
+  key: string,
+  params?: Record<string, string | number>,
+): string {
   const lang = useSettingsStore.getState().language as Language;
-  return translations[lang]?.[key] ?? translations.en[key] ?? key;
+  // Cast to access the translations table with a string key — unknown keys
+  // fall through to the key itself (same behavior as before).
+  const table = translations[lang] as Record<string, string> | undefined;
+  const template =
+    table?.[key] ?? (translations.en as Record<string, string>)[key] ?? key;
+  return interpolate(template, params);
 }
 
 export function useT() {
   const language = useSettingsStore((s) => s.language) as Language;
-  return (key: TranslationKey) =>
-    translations[language]?.[key] ?? translations.en[key] ?? key;
+  return (key: string, params?: Record<string, string | number>) => {
+    const table = translations[language] as Record<string, string> | undefined;
+    const template =
+      table?.[key] ?? (translations.en as Record<string, string>)[key] ?? key;
+    return interpolate(template, params);
+  };
 }

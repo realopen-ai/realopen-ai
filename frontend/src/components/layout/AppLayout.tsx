@@ -8,6 +8,7 @@ import {
 import { Sidebar, MobileMenuButton } from "@/components/layout/Sidebar";
 import { RightPanel, RightPanelToggle } from "@/components/layout/RightPanel";
 import { ChatArea } from "@/components/chat/ChatArea";
+import { BrainPage } from "@/components/brain/BrainPage";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { FileExplorer } from "@/components/file-explorer/FileExplorer";
 import { useUIStore } from "@/store/uiStore";
@@ -36,6 +37,7 @@ export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
+  const showBrainPage = useUIStore((s) => s.showBrainPage);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
@@ -110,7 +112,7 @@ export function AppLayout() {
               minSize={35}
               className={panelTransitionClass}
             >
-              <ChatArea />
+              {showBrainPage ? <BrainPage /> : <ChatArea />}
             </Panel>
 
             <PanelResizeHandle
@@ -144,36 +146,42 @@ export function AppLayout() {
 
         {/* Mobile: tabbed views */}
         <div className="flex md:hidden flex-1 flex-col min-h-0">
-          {mobileTab === "chat" && <ChatArea />}
-          {mobileTab === "files" && (
-            <div className="flex-1 flex flex-col bg-card">
-              <div className="flex items-center px-3 py-2.5 border-b border-border/50">
-                <MobileMenuButton />
-                <h2 className="text-[14px] font-medium text-foreground ml-2">
-                  {t("panel.fileExplorer")}
-                </h2>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <FileExplorer />
-              </div>
-            </div>
+          {showBrainPage ? (
+            <BrainPage />
+          ) : (
+            <>
+              {mobileTab === "chat" && <ChatArea />}
+              {mobileTab === "files" && (
+                <div className="flex-1 flex flex-col bg-card">
+                  <div className="flex items-center px-3 py-2.5 border-b border-border/50">
+                    <MobileMenuButton />
+                    <h2 className="text-[14px] font-medium text-foreground ml-2">
+                      {t("panel.fileExplorer")}
+                    </h2>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <FileExplorer />
+                  </div>
+                </div>
+              )}
+              {mobileTab === "terminal" && (
+                <div className="flex-1 flex flex-col bg-card">
+                  <div className="flex items-center px-3 py-2.5 border-b border-border/50">
+                    <MobileMenuButton />
+                    <h2 className="text-[14px] font-medium text-foreground ml-2">
+                      {t("panel.terminal")}
+                    </h2>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <Suspense fallback={<TerminalLoader />}>
+                      <TerminalPane />
+                    </Suspense>
+                  </div>
+                </div>
+              )}
+              <MobileTabBar />
+            </>
           )}
-          {mobileTab === "terminal" && (
-            <div className="flex-1 flex flex-col bg-card">
-              <div className="flex items-center px-3 py-2.5 border-b border-border/50">
-                <MobileMenuButton />
-                <h2 className="text-[14px] font-medium text-foreground ml-2">
-                  {t("panel.terminal")}
-                </h2>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <Suspense fallback={<TerminalLoader />}>
-                  <TerminalPane />
-                </Suspense>
-              </div>
-            </div>
-          )}
-          <MobileTabBar />
         </div>
       </div>
     </div>

@@ -19,6 +19,8 @@ export interface StreamCallbacks {
     toolCallId: string,
     updates: Partial<ToolCallResult>,
   ) => void;
+  onMemoryExtractionStart?: () => void;
+  onMemoryExtractionDone?: (data: { count: number; ran: boolean }) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -317,6 +319,22 @@ async function parseSSEStream(
             thinkingDuration: parsed.thinkingDuration ?? undefined,
             generationDuration: parsed.generationDuration ?? 0,
           });
+        }
+
+        // ── Memory extraction start ──
+        if (eventType === "memory_extraction_start") {
+          log("   🧠 memory_extraction_start event received");
+          callbacks.onMemoryExtractionStart?.();
+        }
+
+        // ── Memory extraction done ──
+        if (eventType === "memory_extraction_done") {
+          const count = parsed.count ?? 0;
+          const ran = parsed.ran ?? true;
+          log(
+            `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}`,
+          );
+          callbacks.onMemoryExtractionDone?.({ count, ran });
         }
 
         // ── Tool call event ──

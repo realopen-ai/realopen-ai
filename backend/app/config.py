@@ -413,6 +413,52 @@ class Settings(BaseSettings):
     NGROK_ENABLED: bool = False
     NGROK_AUTHTOKEN: str = ""
 
+    # ── Memory system ────────────────────────────────────────────────────
+    # These all have sensible defaults; override via env vars if needed.
+    # Embedding model role (resolved via profiles.yml -> default_embedding).
+    # nomic-embed-text:v1.5 produces 768-dim vectors — matches the
+    # `memories.embedding` column after migration a8f3c2e1b7d4.
+    MEMORY_EMBEDDING_MODEL_ROLE: str = "default_embedding"
+    # Extraction model role — defaults to the chat model. Users can swap to
+    # a smaller utility model by adding a `default_utility` role to
+    # profiles.yml; until then, resolve_model() falls through to the
+    # `default` chat model.
+    MEMORY_EXTRACTION_MODEL_ROLE: str = "default_utility"
+    # Audit model role — same as extraction by default.
+    MEMORY_AUDIT_MODEL_ROLE: str = "default_utility"
+    # Trigger extraction when there are >= this many NEW messages since the
+    # last extraction (watermark-based, conversation-scoped).
+    MEMORY_EXTRACTION_INTERVAL: int = 4
+    # How many new memories to add before auto-triggering an audit.
+    MEMORY_AUDIT_INTERVAL: int = 5
+    # Cosine similarity threshold for vector dedup at extraction time.
+    MEMORY_DEDUP_VECTOR_THRESHOLD: float = 0.85
+    # Stricter threshold applied when BOTH texts are very short (<5 content
+    # tokens after stop-word removal). Short texts are noisier in embedding
+    # space — at 5 tokens, even paraphrases need to be near-identical.
+    MEMORY_DEDUP_SHORT_TEXT_THRESHOLD: float = 0.92
+    # Min Jaccard overlap on CONTENT tokens (after stop-word removal) for
+    # a vector match to be accepted as a true duplicate. This is the
+    # content-aware guard that prevents the Clémence-vs-Abdel false
+    # positive: even if embeddings say "similar", if the two texts share
+    # almost no content tokens, they aren't the same fact.
+    MEMORY_DEDUP_CONTENT_MIN_OVERLAP: float = 0.10
+    # Jaccard threshold for the text-fallback dedup tier.
+    MEMORY_DEDUP_TEXT_THRESHOLD: float = 0.6
+    # Hybrid retrieval weights (vector + BM25 + recency)
+    MEMORY_RETRIEVAL_VECTOR_WEIGHT: float = 0.55
+    MEMORY_RETRIEVAL_BM25_WEIGHT: float = 0.40
+    MEMORY_RETRIEVAL_RECENCY_WEIGHT: float = 0.05
+    # Gate: drop a memory if BOTH vector_sim < this AND bm25_norm < this.
+    MEMORY_RETRIEVAL_GATE_VECTOR: float = 0.20
+    MEMORY_RETRIEVAL_GATE_BM25: float = 0.08
+    # Final cutoff: only keep memories with final score > this.
+    MEMORY_RETRIEVAL_CUTOFF: float = 0.12
+    # How many memories to inject into the system prompt (top-k after hybrid retrieval).
+    MEMORY_INJECTION_TOP_K: int = 5
+    # Context window (in messages) sent to the extraction LLM.
+    MEMORY_EXTRACTION_CONTEXT_WINDOW: int = 6
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

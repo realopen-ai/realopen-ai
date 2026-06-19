@@ -8,6 +8,7 @@ import {
   PanelLeftOpen,
   Menu,
   Settings,
+  Brain,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -31,6 +32,8 @@ export function Sidebar() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const sidebarMobileOpen = useUIStore((s) => s.sidebarMobileOpen);
   const setSidebarMobileOpen = useUIStore((s) => s.setSidebarMobileOpen);
+  const setShowBrainPage = useUIStore((s) => s.setShowBrainPage);
+  const showBrainPage = useUIStore((s) => s.showBrainPage);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const t = useT();
@@ -39,12 +42,14 @@ export function Sidebar() {
     // Navigate to home page — the user will start a new conversation
     // by sending a message from the welcome screen
     navigate("/");
+    setShowBrainPage(false);
     setSidebarMobileOpen(false);
   };
 
   const handleSelect = (id: string) => {
     // Navigate to the conversation URL
     navigate(`/${id}`);
+    setShowBrainPage(false);
     setSidebarMobileOpen(false);
   };
 
@@ -99,6 +104,46 @@ export function Sidebar() {
             <Plus className="w-4 h-4" />
             {t("sidebar.newChat")}
           </button>
+        </div>
+      )}
+
+      {/* Brain Button */}
+      {!sidebarCollapsed ? (
+        <div className="px-2 pb-2">
+          <button
+            onClick={() => {
+              setShowBrainPage(!showBrainPage);
+              setSidebarMobileOpen(false);
+            }}
+            className={cn(
+              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] transition-colors",
+              showBrainPage
+                ? "text-primary bg-primary/10 font-medium"
+                : "text-muted-foreground hover:text-foreground bg-sidebar-accent/60 hover:bg-accent",
+            )}
+          >
+            <Brain className="w-4 h-4" />
+            {t("brain.title")}
+          </button>
+        </div>
+      ) : (
+        <div className="flex justify-center pb-2">
+          <Button
+            onClick={() => {
+              setShowBrainPage(!showBrainPage);
+              setSidebarMobileOpen(false);
+            }}
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "h-7 w-7 rounded-lg",
+              showBrainPage
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent",
+            )}
+          >
+            <Brain className="w-4 h-4" />
+          </Button>
         </div>
       )}
 

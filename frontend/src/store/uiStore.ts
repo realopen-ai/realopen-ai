@@ -7,6 +7,7 @@ interface UIState {
   rightPanelOpen: boolean;
   rightPanelTab: "files" | "terminal";
   mobileTab: "chat" | "files" | "terminal";
+  showBrainPage: boolean;
 
   // Actions
   toggleSidebar: () => void;
@@ -16,6 +17,7 @@ interface UIState {
   setRightPanelOpen: (open: boolean) => void;
   setRightPanelTab: (tab: "files" | "terminal") => void;
   setMobileTab: (tab: "chat" | "files" | "terminal") => void;
+  setShowBrainPage: (show: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -26,6 +28,7 @@ export const useUIStore = create<UIState>()(
       rightPanelOpen: false,
       rightPanelTab: "files",
       mobileTab: "chat",
+      showBrainPage: false,
 
       toggleSidebar: () =>
         set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -36,6 +39,7 @@ export const useUIStore = create<UIState>()(
       setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
       setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
       setMobileTab: (tab) => set({ mobileTab: tab }),
+      setShowBrainPage: (show) => set({ showBrainPage: show }),
     }),
     {
       name: "realopen-ai-ui",

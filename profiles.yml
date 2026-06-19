@@ -39,6 +39,15 @@ profiles:
         description: "Qwen3 4B — compact yet capable dense model for general chat"
         size: "2.5 GB"
 
+      # Utility model used for background tasks (memory extraction, audit).
+      # Falls back to the chat model if commented out — uncomment and point
+      # to a smaller model (e.g. qwen3:1.7b) to reduce background load.
+      - id: qwen3:4b
+        type: chat
+        role: default_utility
+        description: "Qwen3 4B — reused for background memory extraction / audit"
+        size: "2.5 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -61,6 +70,12 @@ profiles:
         role: default
         description: "Qwen3 8B — balanced dense model for general-purpose chat"
         size: "5.2 GB"
+
+      - id: qwen3:4b
+        type: chat
+        role: default_utility
+        description: "Qwen3 4B — lighter model for background memory extraction / audit"
+        size: "2.5 GB"
 
       - id: moondream:1.8b
         type: vision
@@ -87,6 +102,12 @@ profiles:
         description: "Qwen3 8B — balanced dense model accelerated by CUDA"
         size: "5.2 GB"
 
+      - id: qwen3:4b
+        type: chat
+        role: default_utility
+        description: "Qwen3 4B — lighter model for background memory extraction / audit"
+        size: "2.5 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -109,6 +130,12 @@ profiles:
         role: default
         description: "Qwen3 14B — strong dense model, fits comfortably in 12 GB VRAM"
         size: "9.0 GB"
+
+      - id: qwen3:4b
+        type: chat
+        role: default_utility
+        description: "Qwen3 4B — lighter model for background memory extraction / audit"
+        size: "2.5 GB"
 
       - id: llava:7b
         type: vision
@@ -139,6 +166,12 @@ profiles:
         description: "Qwen3 32B — powerful dense model for high-end GPUs"
         size: "20 GB"
 
+      - id: qwen3:8b
+        type: chat
+        role: default_utility
+        description: "Qwen3 8B — lighter model for background memory extraction / audit"
+        size: "5.2 GB"
+
       - id: llava:13b
         type: vision
         role: default_vision
@@ -167,6 +200,12 @@ profiles:
         role: default
         description: "Qwen3 32B — top-tier dense model with full GPU acceleration"
         size: "20 GB"
+
+      - id: qwen3:8b
+        type: chat
+        role: default_utility
+        description: "Qwen3 8B — lighter model for background memory extraction / audit"
+        size: "5.2 GB"
 
       - id: llava:34b
         type: vision
@@ -199,6 +238,12 @@ profiles:
         description: "Qwen3.5 4B MLX — optimized for Apple Silicon with MLX framework"
         size: "2.5 GB"
 
+      - id: qwen3.5:4b-mlx
+        type: chat
+        role: default_utility
+        description: "Qwen3.5 4B MLX — reused for background memory extraction / audit"
+        size: "2.5 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -220,6 +265,12 @@ profiles:
         type: chat
         role: default
         description: "Qwen3.5 4B MLX — optimized for Apple Silicon with MLX framework"
+        size: "2.5 GB"
+
+      - id: qwen3.5:4b-mlx
+        type: chat
+        role: default_utility
+        description: "Qwen3.5 4B MLX — reused for background memory extraction / audit"
         size: "2.5 GB"
 
       - id: moondream:1.8b
@@ -244,6 +295,12 @@ profiles:
         role: default
         description: "Qwen3 32B — powerful dense model leveraging Metal acceleration"
         size: "20 GB"
+
+      - id: qwen3:8b
+        type: chat
+        role: default_utility
+        description: "Qwen3 8B — lighter model for background memory extraction / audit"
+        size: "5.2 GB"
 
       - id: llava:13b
         type: vision
@@ -273,6 +330,12 @@ profiles:
         role: default
         description: "Qwen3.5 35B MLX — top-tier model fully accelerated by Apple Silicon"
         size: "24 GB"
+
+      - id: qwen3:9b
+        type: chat
+        role: default_utility
+        description: "Qwen3 9B — lighter model for background memory extraction / audit"
+        size: "5.2 GB"
 
       - id: llava:34b
         type: vision
