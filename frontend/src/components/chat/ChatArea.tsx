@@ -11,6 +11,7 @@ import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
 import { Brain, Check } from "lucide-react";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
 
@@ -259,6 +260,50 @@ export function ChatArea() {
           } else {
             ms.clearLastExtraction();
           }
+        },
+        // RAG sources — the agent's rag_search tool retrieved chunks.
+        // Append them to the assistant message so MessageBubble can
+        // render the collapsible source cards.
+        onRagSources: (sources: RetrievedSourceDTO[], _toolCallId: string) => {
+          useChatStore
+            .getState()
+            .addSources(capturedConvId, assistantMsgId, sources);
+        },
+        // Document digestion progress — emitted while chat-uploaded
+        // documents are being extracted/chunked/embedded. Surface it
+        // in the right panel terminal so the user sees something is
+        // happening before the agent starts streaming.
+        onDocumentDigestProgress: (p: {
+          stage: string;
+          percent: number;
+          details: string;
+          filename?: string;
+        }) => {
+          if (p.percent === 0 || p.stage === "started") {
+            addTerminalLine(`📄 Digesting ${p.filename ?? "document"}...`);
+          } else if (p.stage === "done") {
+            // Handled in onDocumentDigestDone
+          } else if (p.stage === "error") {
+            addTerminalLine(`   ❌ ${p.details}`);
+          } else {
+            addTerminalLine(
+              `   ${p.percent}%  ${p.stage}  ${p.details ?? ""}`.trim(),
+            );
+          }
+        },
+        onDocumentDigestDone: (doc: {
+          filename: string;
+          total_chunks: number;
+          total_images: number;
+        }) => {
+          addTerminalLine(
+            `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
+          );
+        },
+        onDocumentDigestError: (info: { filename?: string; error: string }) => {
+          addTerminalLine(
+            `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
+          );
         },
         onToolCallStart: (
           toolCall: Omit<ToolCallResult, "id" | "startedAt">,
