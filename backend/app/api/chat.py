@@ -4,8 +4,8 @@ Chat API endpoints.
 Supports:
 - Plain text chat (streaming & non-streaming)
 - Image input (auto-invokes vision model)
-- Document upload (stored for future RAG)
-- AI agent with tool calling (web search, vision, code exec)
+- Document upload (digested synchronously into the RAG knowledge base)
+- AI agent with tool calling (web search, vision, code exec, rag_search)
 - Conversation persistence via PostgreSQL
 """
 
@@ -27,6 +27,7 @@ from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
+from app.services import rag as rag_service
 from app.services.memory_extractor import (
     extract_and_store,
     get_messages_since_watermark,
@@ -396,6 +397,7 @@ async def chat_stream(request: ChatRequest):
                 messages=messages,
                 model=_resolved_model,
                 images=None,
+                conversation_id=str(_conv_id) if _conv_id else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
@@ -598,12 +600,28 @@ async def chat_stream_multipart(
             len(b64),
         )
 
-    # Process documents (store for now, RAG later)
-    # TODO: Implement RAG pipeline for documents
+    # Process documents: digest synchronously into RAG with SSE progress.
+    # Documents uploaded through chat are PRIVATE to this conversation —
+    # they're retrievable only when the agent's rag_search tool fires from
+    # this same conversation. (Public docs go through the Brain page.)
     doc_count = len(documents)
     if doc_count > 0:
-        logger.info("Received %d documents (RAG not yet implemented)", doc_count)
+        logger.info(
+            "[chat] received %d document(s) for RAG digestion (conv=%s)",
+            doc_count,
+            conv_id,
+        )
         _log("   documents received: %s", [d.filename for d in documents])
+
+    # Read all file bytes up-front — UploadFile streams can't be re-read.
+    # Store (filename, bytes) pairs so the SSE generator can re-use them.
+    doc_buffers: List[tuple] = []
+    for d in documents:
+        try:
+            buf = await d.read()
+            doc_buffers.append((d.filename or "upload", buf))
+        except Exception as e:
+            logger.warning("[chat] failed to read uploaded doc %s: %s", d.filename, e)
 
     # Persist the user message EAGERLY using an independent session
     if conv_id and parsed_messages:
@@ -629,11 +647,76 @@ async def chat_stream_multipart(
         thinking_duration_sec = 0
         generation_duration_sec = 0
         accumulated_tool_calls = []
+        digested_doc_ids: List[str] = []  # for DB link to user message
+
+        # ── Digest uploaded documents synchronously BEFORE running the
+        # agent loop. This way the agent's rag_search tool can find the
+        # docs on the very same turn. Each doc emits document_digest_*
+        # SSE events so the frontend can show real-time progress in the
+        # chat input area.
+        if doc_buffers and _conv_id:
+            for fname, fbytes in doc_buffers:
+                progress_events: List[rag_service.DigestProgress] = []
+
+                def collect(p: rag_service.DigestProgress, _f=fname) -> None:
+                    progress_events.append(p)
+
+                _log("   📄 digesting %s (%d bytes) for RAG", fname, len(fbytes))
+                try:
+                    async with async_session_factory() as db:
+                        doc = await rag_service.digest_document(
+                            db,
+                            file_bytes=fbytes,
+                            filename=fname,
+                            scope="private",
+                            conversation_id=_conv_id,
+                            progress=collect,
+                        )
+                        digested_doc_ids.append(str(doc.id))
+                except Exception as e:
+                    logger.exception("[chat] doc digestion failed for %s: %s", fname, e)
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_error",
+                            "filename": fname,
+                            "error": str(e),
+                        }
+                    ) + "\n\n"
+                    continue
+
+                # Stream all progress events that fired during digestion.
+                # (digest_document is synchronous w.r.t. await points, so by
+                # the time it returns all events are already in the list.)
+                for p in progress_events:
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_progress",
+                            "stage": p.stage,
+                            "percent": p.percent,
+                            "details": p.details,
+                            "filename": fname,
+                            "document_id": p.document_id,
+                            "total_chunks": p.total_chunks,
+                            "total_images": p.total_images,
+                        }
+                    ) + "\n\n"
+
+                yield "data: " + json.dumps(
+                    {
+                        "event": "document_digest_done",
+                        "filename": fname,
+                        "document_id": str(doc.id),
+                        "total_chunks": doc.total_chunks,
+                        "total_images": doc.total_images,
+                    }
+                ) + "\n\n"
+
         try:
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
                 model=_resolved_model,
                 images=image_b64_list if image_b64_list else None,
+                conversation_id=str(_conv_id) if _conv_id else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
