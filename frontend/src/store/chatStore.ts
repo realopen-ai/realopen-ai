@@ -11,6 +11,7 @@ import {
   type MessageDTO,
   type ModuleInfo,
 } from "@/api/client";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ export interface Message {
   thinkingDuration?: number; // seconds
   generationDuration?: number; // seconds
   isThinking?: boolean;
+  // RAG sources — only populated when the agent's rag_search tool fires
+  sources?: RetrievedSourceDTO[];
 }
 
 export interface Conversation {
@@ -171,6 +174,14 @@ interface ChatState {
   setProfileName: (name: string) => void;
   setProfileLabel: (label: string) => void;
   setSelectedModel: (model: string) => void;
+
+  // RAG sources — append sources to a message when the agent's rag_search
+  // tool fires. Called from stream.ts when a `rag_sources` SSE event arrives.
+  addSources: (
+    conversationId: string,
+    messageId: string,
+    sources: RetrievedSourceDTO[],
+  ) => void;
 
   // Module actions
   loadModules: () => Promise<void>;
@@ -600,6 +611,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProfileName: (name) => set({ profileName: name }),
   setProfileLabel: (label) => set({ profileLabel: label }),
   setSelectedModel: (model) => set({ selectedModel: model }),
+
+  addSources: (conversationId, messageId, sources) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? {
+                      ...m,
+                      sources: [...(m.sources ?? []), ...sources],
+                    }
+                  : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
 
   // Module actions
   loadModules: async () => {
