@@ -1,4 +1,5 @@
 import type { ToolCallResult } from "@/store/chatStore";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 
 const log = createDebugLogger("stream");
@@ -21,6 +22,25 @@ export interface StreamCallbacks {
   ) => void;
   onMemoryExtractionStart?: () => void;
   onMemoryExtractionDone?: (data: { count: number; ran: boolean }) => void;
+  /** RAG sources — fired when the agent's rag_search tool retrieves chunks */
+  onRagSources?: (sources: RetrievedSourceDTO[], toolCallId: string) => void;
+  /** Document digestion progress — fired during chat-upload doc digestion */
+  onDocumentDigestProgress?: (p: {
+    stage: string;
+    percent: number;
+    details: string;
+    filename?: string;
+    document_id?: string | null;
+    total_chunks?: number;
+    total_images?: number;
+  }) => void;
+  onDocumentDigestDone?: (doc: {
+    filename: string;
+    document_id: string;
+    total_chunks: number;
+    total_images: number;
+  }) => void;
+  onDocumentDigestError?: (info: { filename?: string; error: string }) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -335,6 +355,56 @@ async function parseSSEStream(
             `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}`,
           );
           callbacks.onMemoryExtractionDone?.({ count, ran });
+        }
+
+        // ── RAG sources (agent's rag_search tool returned chunks) ──
+        if (eventType === "rag_sources" && parsed.sources) {
+          const sources = parsed.sources as RetrievedSourceDTO[];
+          const tcId = parsed.tool_call_id as string | undefined;
+          log(
+            `   🔎 rag_sources event received  sources=${sources.length}  tool_call_id=${tcId ?? "(none)"}`,
+          );
+          if (callbacks.onRagSources) {
+            callbacks.onRagSources(sources, tcId ?? "");
+          }
+        }
+
+        // ── Document digestion progress (chat-upload docs) ──
+        if (eventType === "document_digest_progress") {
+          log(
+            `   📄 document_digest_progress  stage=${parsed.stage}  percent=${parsed.percent}  file=${parsed.filename}`,
+          );
+          callbacks.onDocumentDigestProgress?.({
+            stage: parsed.stage,
+            percent: parsed.percent,
+            details: parsed.details,
+            filename: parsed.filename,
+            document_id: parsed.document_id,
+            total_chunks: parsed.total_chunks,
+            total_images: parsed.total_images,
+          });
+        }
+
+        if (eventType === "document_digest_done") {
+          log(
+            `   📄✅ document_digest_done  file=${parsed.filename}  chunks=${parsed.total_chunks}`,
+          );
+          callbacks.onDocumentDigestDone?.({
+            filename: parsed.filename,
+            document_id: parsed.document_id,
+            total_chunks: parsed.total_chunks,
+            total_images: parsed.total_images,
+          });
+        }
+
+        if (eventType === "document_digest_error") {
+          log(
+            `   📄❌ document_digest_error  file=${parsed.filename}  error=${parsed.error}`,
+          );
+          callbacks.onDocumentDigestError?.({
+            filename: parsed.filename,
+            error: parsed.error,
+          });
         }
 
         // ── Tool call event ──
