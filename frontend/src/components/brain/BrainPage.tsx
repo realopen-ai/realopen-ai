@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Brain } from "lucide-react";
 import { useT } from "@/store/settingsStore";
-import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
 import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
@@ -11,7 +10,6 @@ type BrainTab = "memories" | "skills" | "documents";
 
 export function BrainPage() {
   const [tab, setTab] = useState<BrainTab>("memories");
-  const setShowBrainPage = useUIStore((s) => s.setShowBrainPage);
   const t = useT();
 
   const tabs: { key: BrainTab; label: string }[] = [
