@@ -7,6 +7,7 @@ Endpoints under /api/documents:
   GET    /documents                   — list all (optionally filter by scope/conversation)
   GET    /documents/{id}              — get one
   GET    /documents/{id}/download     — stream the raw file
+  GET    /documents/chunks/{id}/image — get the image bytes for a chunk
   PATCH  /documents/{id}              — rename and/or toggle scope
   DELETE /documents/{id}              — delete (file + DB rows)
 
@@ -35,14 +36,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _log(msg: str, *args) -> None:
+    """Always-visible print() logger for the documents API."""
+    try:
+        formatted = msg % args if args else msg
+    except (TypeError, ValueError):
+        formatted = f"{msg} {args}"
+    print(f"[documents] {formatted}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _parse_uuid(s: str) -> uuid.UUID:
-    """Parse a UUID string, raising ValueError if invalid."""
-    return uuid.UUID(s)
+    """Parse a UUID string, raising HTTPException(400) if invalid."""
+    try:
+        return uuid.UUID(s)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail=f"Invalid UUID: {s}")
 
 
 def _parse_optional_uuid(s: Optional[str]) -> Optional[uuid.UUID]:
@@ -50,7 +63,7 @@ def _parse_optional_uuid(s: Optional[str]) -> Optional[uuid.UUID]:
         return None
     try:
         return uuid.UUID(s)
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=400, detail=f"Invalid UUID: {s}")
 
 
@@ -153,8 +166,8 @@ async def upload_document(
         )
 
     file_bytes = await file.read()
-    print(
-        "[documents] upload filename=%s size=%d scope=%s conv=%s",
+    _log(
+        "upload filename=%s size=%d scope=%s conv=%s",
         file.filename,
         len(file_bytes),
         scope,
@@ -163,7 +176,7 @@ async def upload_document(
 
     async with async_session_factory() as db:
         try:
-            print("[documents] starting digestion for %s", file.filename)
+            _log("starting digestion for %s", file.filename)
             doc = await rag_service.digest_document(
                 db,
                 file_bytes=file_bytes,
@@ -171,10 +184,10 @@ async def upload_document(
                 scope=scope,
                 conversation_id=conv_id,
             )
-            print("[documents] digestion completed for %s, id=%s", file.filename, doc.id)
+            _log("digestion completed for %s, id=%s", file.filename, doc.id)
             return rag_service.document_to_dict(doc, include_chunks=False)
         except Exception as e:
-            print("[documents] upload failed: %s", e)
+            _log("upload failed: %s", e)
             raise HTTPException(status_code=500, detail=f"Digestion failed: {e}")
 
 
@@ -213,30 +226,42 @@ async def upload_document_stream(
 
     file_bytes = await file.read()
     filename = file.filename or "upload"
-    print(
-        "[documents] upload/stream filename=%s size=%d scope=%s conv=%s",
+    _log(
+        "upload/stream filename=%s size=%d scope=%s conv=%s",
         filename,
         len(file_bytes),
         scope,
         conv_id,
     )
 
-    # Capture progress events in a queue so the async generator can yield
-    # them as SSE. We use a simple list-and-index approach since digestion
-    # is synchronous (awaits internally but doesn't run in parallel with
-    # this generator).
-    progress_events: List[rag_service.DigestProgress] = []
+    # Use an asyncio.Queue so progress events from the digestion task are
+    # delivered to the SSE generator in REAL TIME — the generator awaits
+    # queue.get() with a small timeout, and yields the event as soon as
+    # the digestion task pushes it. This avoids the previous list-based
+    # polling which only flushed events every 50ms AND would batch all
+    # events at the end if digestion ran in a tight loop.
+    import asyncio
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    # Sentinel pushed to the queue when digestion finishes so the
+    # generator knows to stop draining.
+    _DONE_SENTINEL = object()
 
     def collect_progress(p: rag_service.DigestProgress) -> None:
-        progress_events.append(p)
+        # collect_progress is a sync callback invoked from inside
+        # digest_document. We use put_nowait so it works from any
+        # thread (asyncio.to_thread runs sync code in a worker thread,
+        # but the progress callbacks are invoked from the main event
+        # loop thread because they're called between awaits).
+        try:
+            progress_queue.put_nowait(p)
+        except Exception as e:
+            _log("failed to enqueue progress event: %s", e)
 
     async def generate():
-        # Run digestion in a background task so we can interleave progress
-        # events with the SSE stream.
-        import asyncio
-
         digestion_error: List[Optional[Exception]] = [None]
         digestion_result: List[Optional[object]] = [None]
+        last_doc_id: List[Optional[str]] = [None]
 
         async def run_digestion():
             try:
@@ -252,41 +277,47 @@ async def upload_document_stream(
                     digestion_result[0] = doc
             except Exception as e:
                 digestion_error[0] = e
+            finally:
+                # Always push the sentinel so the generator's drain loop
+                # terminates even on error.
+                try:
+                    progress_queue.put_nowait(_DONE_SENTINEL)
+                except Exception:
+                    pass
 
         task = asyncio.create_task(run_digestion())
 
-        # Poll for progress events while digestion runs
-        seen = 0
-        while not task.done():
-            while seen < len(progress_events):
-                yield _progress_to_sse(progress_events[seen])
-                seen += 1
-            await asyncio.sleep(0.05)
-
-        # Drain any remaining events
-        while seen < len(progress_events):
-            yield _progress_to_sse(progress_events[seen])
-            seen += 1
+        # Drain the queue in real-time, yielding each progress event as
+        # an SSE chunk. Loop until we see the sentinel (digestion done).
+        while True:
+            try:
+                item = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                # No event in 100ms — check if task crashed without
+                # pushing the sentinel (defensive).
+                if task.done():
+                    break
+                continue
+            if item is _DONE_SENTINEL:
+                break
+            # Track the latest doc_id for error reporting
+            if getattr(item, "document_id", None):
+                last_doc_id[0] = item.document_id
+            yield _progress_to_sse(item)
 
         # Await the task to surface any exception
         try:
             await task
         except Exception as e:
-            print("[documents] digestion task failed: %s", e)
+            _log("digestion task failed: %s", e)
 
         if digestion_error[0] is not None:
             err = digestion_error[0]
-            # Find the doc_id from the last progress event if possible
-            doc_id = None
-            for p in reversed(progress_events):
-                if p.document_id:
-                    doc_id = p.document_id
-                    break
             yield _sse(
                 "document_digest_error",
                 {
                     "error": str(err),
-                    "document_id": doc_id,
+                    "document_id": last_doc_id[0],
                 },
             )
             return
@@ -346,6 +377,49 @@ async def list_documents(
             "documents": [rag_service.document_to_dict(d) for d in docs],
             "total": len(docs),
         }
+
+
+@router.get("/documents/chunks/{chunk_id}/image")
+async def get_chunk_image(chunk_id: str):
+    """Serve the original image bytes for an image_description chunk.
+
+    Used by the frontend to render image thumbnails in source cards
+    when the agent's rag_search tool returned an image_description
+    chunk (chunk_type="image_description" with a non-null image_path).
+
+    Returns 404 if the chunk doesn't exist or has no associated image.
+
+    NOTE: this route MUST be declared BEFORE /documents/{document_id}
+    so FastAPI doesn't match "chunks" as a document_id. Route order
+    matters — more specific paths first, parameterized paths last.
+    """
+    chunk_uuid = _parse_uuid(chunk_id)
+    async with async_session_factory() as db:
+        image_rel = await rag_service.get_chunk_image_path(db, chunk_uuid)
+        if not image_rel:
+            raise HTTPException(
+                status_code=404, detail="Chunk has no image or does not exist"
+            )
+        file_path = rag_service.resolve_document_path(image_rel)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Image file not found on disk")
+        # Guess the MIME type from the file extension.
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+            ".webp": "image/webp",
+            ".tiff": "image/tiff",
+        }
+        media_type = mime_map.get(ext, "image/png")
+        return FileResponse(
+            path=str(file_path),
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"},  # cache 24h
+        )
 
 
 @router.get("/documents/{document_id}")
