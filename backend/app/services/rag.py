@@ -1,15 +1,23 @@
 """
 RAG (Retrieval-Augmented Generation) service for RealOpen-AI.
 
-Digestion pipeline (synchronous, with progress callbacks for SSE):
+Digestion pipeline (ASYNC, with progress callbacks for SSE):
   1. Save raw upload to disk under data/documents/{doc_id}/{filename}.
-  2. Extract text page-by-page (PDF/DOCX/XLSX/CSV/MD/TXT).
+  2. Extract text page-by-page (PDF/DOCX/XLSX/CSV/MD/TXT) — runs in a
+     thread pool via asyncio.to_thread so the event loop stays free.
   3. Extract embedded images (PDF/DOCX).
   4. Adaptive-chunk the text: chunk size depends on total document length.
   5. For each image: call vision LLM → text description; treat description
      as an additional chunk with chunk_type="image_description".
   6. Embed every chunk with nomic-embed-text (768-dim).
   7. Persist Document + DocumentChunk rows.
+
+CRITICAL: all blocking I/O (pdfplumber, pypdf, openpyxl, python-docx,
+PIL, file writes) MUST be wrapped in asyncio.to_thread so the FastAPI
+event loop can keep serving other requests, etc. while a large
+PDF is being digested. Without this, a 200-page PDF blocks the entire
+backend for minutes — including health checks, which causes Docker to
+flag the container as unhealthy.
 
 Retrieval (per-doc adaptive hybrid search):
   - Filter chunks by scope:
@@ -23,12 +31,15 @@ Retrieval (per-doc adaptive hybrid search):
   - Drop chunks with vec_sim < RAG_SIMILARITY_CUTOFF.
 
 Citations: each chunk knows its document.filename, page_number,
-line_start, line_end — the agent tool returns these to the LLM and the
-frontend renders them as collapsible source cards.
+line_start, line_end, image_path — the agent tool returns these to the
+LLM and the frontend renders them as collapsible source cards. Image
+chunks (chunk_type="image_description") carry the on-disk image path
+so the frontend can show a thumbnail of the original image.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -36,6 +47,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,9 +59,81 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models import Document, DocumentChunk
+from app.db.session import async_session_factory
 from app.services.embeddings import get_embedding, get_embeddings
 
 logger = logging.getLogger(__name__)
+
+
+def _log(msg: str, *args: Any) -> None:
+    """Always-visible print() logger.
+
+    Uses print() with flush=True so output appears immediately in the
+    container logs — no DEBUG flag needed. This is critical for
+    debugging digestion hangs in production where logger.debug output
+    is suppressed by uvicorn's default config.
+    """
+    try:
+        formatted = msg % args if args else msg
+    except (TypeError, ValueError):
+        formatted = f"{msg} {args}"
+    print(f"[rag] {formatted}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Text sanitization — PostgreSQL rejects 0x00 in TEXT/VARCHAR columns
+# ---------------------------------------------------------------------------
+
+
+# Match any character that PostgreSQL TEXT cannot store. PostgreSQL's
+# TEXT type rejects:
+#   - 0x00 (NUL byte) — ALWAYS rejected, causes
+#     `invalid byte sequence for encoding "UTF8": 0x00`
+#   - Lone surrogates (U+D800..U+DFFF) — can't be encoded to UTF-8 by
+#     asyncpg, cause `UnicodeEncodeError` on the wire
+# PDF extractors (pdfplumber, pypdf) occasionally emit NUL bytes for
+# broken/garbled text streams; python-docx and openpyxl can too if the
+# source file has weird encoding. We strip these aggressively at every
+# text-entry point so a single bad page can't poison the whole INSERT.
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")  # lone surrogate range
+
+
+def _sanitize_text_for_pg(s: Any) -> str:
+    """Strip characters that PostgreSQL TEXT/VARCHAR cannot store.
+
+    This is the defensive fix for the production crash:
+        `asyncpg.exceptions.CharacterNotInRepertoireError: invalid byte
+        sequence for encoding "UTF8": 0x00`
+
+    PDF/DOCX/XLSX extractors can occasionally produce NUL bytes (0x00)
+    from garbled text streams, and asyncpg rejects the entire INSERT
+    batch when any single parameter contains one — taking down the whole
+    digestion and leaving the SQLAlchemy session in a poisoned
+    "rolled-back" state where even the failure handler can't update the
+    doc row.
+
+    We strip:
+      - "\\x00" NUL bytes (the actual production crash)
+      - Lone UTF-16 surrogates (U+D800..U+DFFF) — can't be UTF-8 encoded
+      - Other C0/C1 control chars are KEPT (newlines, tabs are valid)
+
+    Also coerces None → "" so callers can use it on Optional[str].
+    """
+    if s is None:
+        return ""
+    if not isinstance(s, str):
+        try:
+            s = str(s)
+        except Exception:
+            return ""
+    # Remove NUL bytes (the actual crash) — done first, separately, so
+    # it's obvious in the code what we're defending against.
+    if "\x00" in s:
+        s = s.replace("\x00", "")
+    # Remove lone surrogates that can't be UTF-8 encoded.
+    if _SURROGATE_RE.search(s):
+        s = _SURROGATE_RE.sub("\ufffd", s)  # replacement char
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +194,13 @@ class Chunk:
 
 @dataclass
 class RetrievedSource:
-    """A retrieved chunk ready to be shown as a source citation."""
+    """A retrieved chunk ready to be shown as a source citation.
+
+    `image_path` is set ONLY for image_description chunks — it's the
+    on-disk path (relative to the data dir) of the original extracted
+    image. The frontend can fetch it via /api/documents/chunks/{id}/image
+    to render a thumbnail in the source card.
+    """
 
     document_id: str
     document_filename: str
@@ -123,6 +213,7 @@ class RetrievedSource:
     score: float
     vector_sim: float
     bm25_score: float
+    image_path: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +316,9 @@ def _extract_txt(buf: bytes) -> ExtractionResult:
         text = buf.decode("utf-8")
     except UnicodeDecodeError:
         text = buf.decode("latin-1", errors="replace")
+    # Sanitize: strip NUL bytes and lone surrogates that would crash the
+    # subsequent INSERT (PostgreSQL TEXT rejects 0x00).
+    text = _sanitize_text_for_pg(text)
     return ExtractionResult(
         pages=[ExtractedPage(page_number=1, text=text)],
         mime_type="text/plain",
@@ -242,6 +336,7 @@ def _extract_csv(buf: bytes) -> ExtractionResult:
         text = buf.decode("utf-8")
     except UnicodeDecodeError:
         text = buf.decode("latin-1", errors="replace")
+    text = _sanitize_text_for_pg(text)
     return ExtractionResult(
         pages=[ExtractedPage(page_number=1, text=text)],
         mime_type="text/csv",
@@ -260,11 +355,8 @@ def _extract_xlsx(buf: bytes) -> ExtractionResult:
         for row in ws.iter_rows(values_only=True):
             row_str = ",".join("" if v is None else str(v) for v in row)
             lines.append(row_str)
-        pages.append(
-            ExtractedPage(
-                page_number=i, text=f"# Sheet: {sheet_name}\n" + "\n".join(lines)
-            )
-        )
+        page_text = _sanitize_text_for_pg(f"# Sheet: {sheet_name}\n" + "\n".join(lines))
+        pages.append(ExtractedPage(page_number=i, text=page_text))
     return ExtractionResult(
         pages=pages,
         mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -278,15 +370,19 @@ def _extract_docx(buf: bytes) -> ExtractionResult:
     paragraphs (preserving line breaks for chunker line numbering) and pull
     embedded images via the document's relationship part.
     """
-    from docx.document import Document as _DocxDocument
+    # NOTE: must import `Document` from the top-level `docx` package —
+    # `from docx.document import Document` imports the *base class* which
+    # requires a `part` arg and breaks on instantiation.
+    from docx import Document as _DocxDocument
 
     doc = _DocxDocument(io.BytesIO(buf))
 
     # Text — all paragraphs in document order, one page (DOCX has no
-    # native page concept).
+    # native page concept). Sanitize each paragraph because python-docx
+    # can emit NUL bytes for malformed XML.
     lines: List[str] = []
     for para in doc.paragraphs:
-        lines.append(para.text)
+        lines.append(_sanitize_text_for_pg(para.text))
     full_text = "\n".join(lines)
 
     # Images — pull every image part referenced by the document.
@@ -312,9 +408,9 @@ def _extract_docx(buf: bytes) -> ExtractionResult:
                         ExtractedImage(page_number=1, image_bytes=blob, format_hint=fmt)
                     )
                 except Exception as inner:
-                    print("[rag] docx image extract failed: %s", inner)
+                    _log("docx image extract failed: %s", inner)
     except Exception as e:
-        print("[rag] docx image rels walk failed: %s", e)
+        _log("docx image rels walk failed: %s", e)
 
     return ExtractionResult(
         pages=[ExtractedPage(page_number=1, text=full_text)],
@@ -330,6 +426,10 @@ def _extract_pdf(buf: bytes) -> ExtractionResult:
     number). pypdf's image extraction is more reliable for pulling the
     actual image bytes; we use it as a fallback when pdfplumber's
     `.images` doesn't expose the raw stream cleanly.
+
+    This function is SYNCHRONOUS and CPU-bound — it MUST be called via
+    asyncio.to_thread() from the async digestion pipeline so it doesn't
+    block the event loop.
     """
     import pdfplumber
     from pypdf import PdfReader
@@ -337,18 +437,25 @@ def _extract_pdf(buf: bytes) -> ExtractionResult:
     pages: List[ExtractedPage] = []
     images: List[ExtractedImage] = []
 
-    # Text — pdfplumber
+    _log("pdf extract: starting (buf=%d bytes)", len(buf))
+
+    # Text — pdfplumber. Sanitize EVERY page's text to strip NUL bytes
+    # (0x00) — pdfplumber emits these for garbled PDF text streams and
+    # PostgreSQL TEXT columns reject them, which crashed the entire
+    # chunk INSERT in production.
     try:
         with pdfplumber.open(io.BytesIO(buf)) as pdf:
             for i, page in enumerate(pdf.pages, start=1):
                 try:
                     page_text = page.extract_text() or ""
                 except Exception as inner:
-                    print("[rag] pdfplumber page %d extract_text failed: %s", i, inner)
+                    _log("pdfplumber page %d extract_text failed: %s", i, inner)
                     page_text = ""
+                page_text = _sanitize_text_for_pg(page_text)
                 pages.append(ExtractedPage(page_number=i, text=page_text))
+            _log("pdf extract: pdfplumber got %d pages", len(pages))
     except Exception as e:
-        print("[rag] pdfplumber open failed: %s", e)
+        _log("pdfplumber open failed: %s", e)
         # Fall back to pypdf for text-only
         try:
             reader = PdfReader(io.BytesIO(buf))
@@ -356,92 +463,108 @@ def _extract_pdf(buf: bytes) -> ExtractionResult:
                 try:
                     page_text = page.extract_text() or ""
                 except Exception as inner:
-                    print("[rag] pypdf page %d extract_text failed: %s", i, inner)
+                    _log("pypdf page %d extract_text failed: %s", i, inner)
                     page_text = ""
+                page_text = _sanitize_text_for_pg(page_text)
                 pages.append(ExtractedPage(page_number=i, text=page_text))
+            _log("pdf extract: pypdf fallback got %d pages", len(pages))
         except Exception as inner2:
-            print("[rag] pypdf fallback failed: %s", inner2)
+            _log("pypdf fallback failed: %s", inner2)
             raise
 
     # Images — pypdf. Walk every page's /XObject resources looking for
     # image XObjects, extract their streams.
-    try:
-        reader = PdfReader(io.BytesIO(buf))
-        for page_idx, page in enumerate(reader.pages, start=1):
-            try:
-                resources = page.get("/Resources")
-                if not resources:
-                    continue
-                xobjects = resources.get("/XObject")
-                if not xobjects:
-                    continue
-                xobjects = xobjects.get_object()
-                for name, ref in xobjects.items():
-                    try:
-                        obj = ref.get_object()
-                        if obj.get("/Subtype") != "/Image":
-                            continue
-                        width = int(obj.get("/Width", 0))
-                        height = int(obj.get("/Height", 0))
-                        color_space = obj.get("/ColorSpace", "/DeviceRGB")
-                        # bits = int(obj.get("/BitsPerComponent", 8))
-                        filters = obj.get("/Filter", "")
-                        if isinstance(filters, str):
-                            filters = [filters]
-                        else:
-                            filters = [f for f in filters]
-
-                        raw = obj.get_data()  # decoded bytes
-
-                        # Convert raw → PIL image based on filter
-                        from PIL import Image as PILImage
-
-                        if "/DCTDecode" in filters:
-                            # JPEG — raw bytes are already a JPEG stream
-                            img = PILImage.open(io.BytesIO(raw))
-                            fmt = "JPEG"
-                        elif "/FlateDecode" in filters:
-                            # Raw pixel data — need to reconstruct the image
-                            cs_str = str(color_space)
-                            if cs_str in ("/DeviceRGB", "/RGB"):
-                                mode = "RGB"
-                            elif cs_str in ("/DeviceGray", "/G"):
-                                mode = "L"
-                            elif cs_str in ("/DeviceCMYK", "/CMYK"):
-                                mode = "CMYK"
-                            else:
-                                # Skip exotic color spaces — they're rare
-                                # in PDFs and PIL conversion gets hairy.
-                                print("[rag] pdf image skipped: colorspace=%s", cs_str)
-                                continue
-                            try:
-                                img = PILImage.frombytes(mode, (width, height), raw)
-                            except Exception as inner:
-                                print("[rag] pdf image frombytes failed: %s", inner)
-                                continue
-                            fmt = "PNG"
-                        else:
-                            print("[rag] pdf image skipped: filter=%s", filters)
-                            continue
-
-                        # Save as PNG/JPEG bytes for downstream processing
-                        out_buf = io.BytesIO()
-                        img.save(out_buf, format=fmt)
-                        images.append(
-                            ExtractedImage(
-                                page_number=page_idx,
-                                image_bytes=out_buf.getvalue(),
-                                format_hint=fmt,
-                            )
-                        )
-                    except Exception as inner:
-                        print("[rag] pdf image extract one failed: %s", inner)
+    # Skip image extraction if the PDF is huge (>200 pages) to avoid
+    # spending minutes on a document that's mostly text anyway. The
+    # user can still get text-based citations; image citations are best
+    # effort.
+    if len(pages) > 200:
+        _log(
+            "pdf extract: skipping image walk for large PDF (%d pages > 200)",
+            len(pages),
+        )
+    else:
+        try:
+            reader = PdfReader(io.BytesIO(buf))
+            for page_idx, page in enumerate(reader.pages, start=1):
+                try:
+                    resources = page.get("/Resources")
+                    if not resources:
                         continue
-            except Exception as inner:
-                print("[rag] pdf page resources walk failed: %s", inner)
-                continue
-    except Exception as e:
-        print("[rag] pypdf image walk failed: %s", e)
+                    xobjects = resources.get("/XObject")
+                    if not xobjects:
+                        continue
+                    xobjects = xobjects.get_object()
+                    for name, ref in xobjects.items():
+                        try:
+                            obj = ref.get_object()
+                            if obj.get("/Subtype") != "/Image":
+                                continue
+                            width = int(obj.get("/Width", 0))
+                            height = int(obj.get("/Height", 0))
+                            color_space = obj.get("/ColorSpace", "/DeviceRGB")
+                            # bits = int(obj.get("/BitsPerComponent", 8))
+                            filters = obj.get("/Filter", "")
+                            if isinstance(filters, str):
+                                filters = [filters]
+                            else:
+                                filters = [f for f in filters]
+
+                            raw = obj.get_data()  # decoded bytes
+
+                            # Convert raw → PIL image based on filter
+                            from PIL import Image as PILImage
+
+                            if "/DCTDecode" in filters:
+                                # JPEG — raw bytes are already a JPEG stream
+                                img = PILImage.open(io.BytesIO(raw))
+                                fmt = "JPEG"
+                            elif "/FlateDecode" in filters:
+                                # Raw pixel data — need to reconstruct the image
+                                cs_str = str(color_space)
+                                if cs_str in ("/DeviceRGB", "/RGB"):
+                                    mode = "RGB"
+                                elif cs_str in ("/DeviceGray", "/G"):
+                                    mode = "L"
+                                elif cs_str in ("/DeviceCMYK", "/CMYK"):
+                                    mode = "CMYK"
+                                else:
+                                    # Skip exotic color spaces — they're rare
+                                    # in PDFs and PIL conversion gets hairy.
+                                    _log(
+                                        "pdf image skipped: colorspace=%s",
+                                        cs_str,
+                                    )
+                                    continue
+                                try:
+                                    img = PILImage.frombytes(mode, (width, height), raw)
+                                except Exception as inner:
+                                    _log("pdf image frombytes failed: %s", inner)
+                                    continue
+                                fmt = "PNG"
+                            else:
+                                _log("pdf image skipped: filter=%s", filters)
+                                continue
+
+                            # Save as PNG/JPEG bytes for downstream processing
+                            out_buf = io.BytesIO()
+                            img.save(out_buf, format=fmt)
+                            images.append(
+                                ExtractedImage(
+                                    page_number=page_idx,
+                                    image_bytes=out_buf.getvalue(),
+                                    format_hint=fmt,
+                                )
+                            )
+                        except Exception as inner:
+                            _log("pdf image extract one failed: %s", inner)
+                            continue
+                except Exception as inner:
+                    _log("pdf page resources walk failed: %s", inner)
+                    continue
+            _log("pdf extract: image walk got %d images", len(images))
+        except Exception as e:
+            _log("pypdf image walk failed: %s", e)
 
     return ExtractionResult(pages=pages, images=images, mime_type="application/pdf")
 
@@ -461,7 +584,11 @@ _EXTRACTORS = {
 
 
 def extract_content(buf: bytes, filename: str) -> ExtractionResult:
-    """Dispatch to the right extractor based on filename extension."""
+    """Dispatch to the right extractor based on filename extension.
+
+    SYNCHRONOUS — caller MUST wrap in asyncio.to_thread() to avoid
+    blocking the event loop. See extract_content_async().
+    """
     ext = get_file_extension(filename)
     extractor = _EXTRACTORS.get(ext)
     if not extractor:
@@ -469,9 +596,21 @@ def extract_content(buf: bytes, filename: str) -> ExtractionResult:
         # indexed. The user can see in the Brain page that the doc was
         # accepted; if extraction yields nothing usable, digestion will
         # create a single placeholder chunk.
-        print("[rag] no extractor for ext=%s, falling back to text", ext)
+        _log("no extractor for ext=%s, falling back to text", ext)
         return _extract_txt(buf)
     return extractor(buf)
+
+
+async def extract_content_async(buf: bytes, filename: str) -> ExtractionResult:
+    """Async wrapper around extract_content — runs in a thread pool.
+
+    This is the entry point the digestion pipeline uses. The synchronous
+    extractors (pdfplumber, pypdf, openpyxl, python-docx) are CPU-bound
+    and would block the event loop for seconds-to-minutes on large files.
+    asyncio.to_thread() runs them in a worker thread so the FastAPI event
+    loop can keep serving subsequent requests.
+    """
+    return await asyncio.to_thread(extract_content, buf, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +806,8 @@ def _normalize_image(image_bytes: bytes, max_dim: int) -> bytes:
 
     Returns PNG bytes. The vision LLM doesn't need ultra-high-res images
     and large inputs slow it down dramatically.
+
+    SYNCHRONOUS — caller wraps in asyncio.to_thread via describe_image_with_vision.
     """
     from PIL import Image as PILImage
 
@@ -692,17 +833,23 @@ async def describe_image_with_vision(
     Returns an empty string on any failure (network, model not pulled,
     malformed response). The caller treats an empty description as
     "skip this image" — no chunk is created.
+
+    The PIL image normalization runs in a thread pool (CPU-bound); the
+    HTTP call to Ollama is async.
     """
     if not image_bytes:
         return ""
 
-    normalized = _normalize_image(image_bytes, settings.RAG_VISION_IMAGE_MAX_DIM)
+    # PIL normalization is CPU-bound — offload to thread pool.
+    normalized = await asyncio.to_thread(
+        _normalize_image, image_bytes, settings.RAG_VISION_IMAGE_MAX_DIM
+    )
     b64 = base64.b64encode(normalized).decode("utf-8")
 
     try:
         model = settings.resolve_model(settings.RAG_VISION_MODEL_ROLE)
     except Exception as e:
-        print("[rag] vision model not resolved: %s", e)
+        _log("vision model not resolved: %s", e)
         return ""
 
     default_prompt = (
@@ -733,11 +880,15 @@ async def describe_image_with_vision(
             data = response.json()
             description = data.get("message", {}).get("content", "").strip()
             if not description:
-                print("[rag] vision model returned empty description")
+                _log("vision model returned empty description")
                 return ""
+            # Sanitize: vision models can occasionally emit NUL bytes or
+            # lone surrogates that PostgreSQL TEXT rejects.
+            description = _sanitize_text_for_pg(description)
+            _log("vision model returned %d-char description", len(description))
             return description
     except Exception as e:
-        print("[rag] vision LLM call failed: %s", e)
+        _log("vision LLM call failed: %s", e)
         return ""
 
 
@@ -759,15 +910,22 @@ async def save_uploaded_file(
 
     Files live at {data_dir}/documents/{doc_id}/{filename}. We return the
     path RELATIVE to the data dir so it's portable across host/container.
+
+    The disk write runs in a thread pool (asyncio.to_thread) — even though
+    Path.write_bytes is fast, on a slow disk or large file it could block
+    the event loop long enough to delay requests.
     """
-    doc_dir = get_document_dir(doc_id)
-    doc_dir.mkdir(parents=True, exist_ok=True)
-    # Sanitize filename — strip path separators, keep the basename.
-    safe_name = os.path.basename(filename) or "upload"
-    out_path = doc_dir / safe_name
-    out_path.write_bytes(buf)
-    # Relative path
-    return f"{settings.RAG_DOCUMENTS_DIR}/{doc_id}/{safe_name}"
+
+    def _write() -> str:
+        doc_dir = get_document_dir(doc_id)
+        doc_dir.mkdir(parents=True, exist_ok=True)
+        # Sanitize filename — strip path separators, keep the basename.
+        safe_name = os.path.basename(filename) or "upload"
+        out_path = doc_dir / safe_name
+        out_path.write_bytes(buf)
+        return f"{settings.RAG_DOCUMENTS_DIR}/{doc_id}/{safe_name}"
+
+    return await asyncio.to_thread(_write)
 
 
 def save_image_file(
@@ -776,7 +934,11 @@ def save_image_file(
     image_index: int,
     format_hint: str,
 ) -> str:
-    """Save an extracted image to disk and return the relative path."""
+    """Save an extracted image to disk and return the relative path.
+
+    SYNCHRONOUS — caller wraps in asyncio.to_thread when called from the
+    async digestion pipeline.
+    """
     doc_dir = get_document_dir(doc_id)
     doc_dir.mkdir(parents=True, exist_ok=True)
     ext = "png" if format_hint.upper() in ("PNG",) else format_hint.lower()
@@ -784,6 +946,18 @@ def save_image_file(
     out_path = doc_dir / safe_name
     out_path.write_bytes(image_bytes)
     return f"{settings.RAG_DOCUMENTS_DIR}/{doc_id}/{safe_name}"
+
+
+async def save_image_file_async(
+    image_bytes: bytes,
+    doc_id: uuid.UUID,
+    image_index: int,
+    format_hint: str,
+) -> str:
+    """Async wrapper around save_image_file — runs in thread pool."""
+    return await asyncio.to_thread(
+        save_image_file, image_bytes, doc_id, image_index, format_hint
+    )
 
 
 def resolve_document_path(relative_path: str) -> Path:
@@ -806,22 +980,54 @@ async def digest_document(
     message_id: Optional[uuid.UUID] = None,
     progress: ProgressCallback = _noop_progress,
 ) -> Document:
-    """Synchronously digest an uploaded file into searchable chunks.
+    """Digest an uploaded file into searchable chunks.
 
-    Stages (each emits a DigestProgress callback so the frontend can show
-    real-time feedback):
+    ASYNC & NON-BLOCKING — all blocking I/O (PDF/DOCX/XLSX extraction,
+    chunking, PIL image normalization, file writes) runs in a thread
+    pool via asyncio.to_thread() so the FastAPI event loop can keep
+    serving other requests while a large PDF is being processed.
+
+    DB SESSION DISCIPLINE — the caller's `db` session is used ONLY for
+    the initial doc-row insert. After that commit, the session is
+    released back to the pool and we hold NO DB connection during the
+    long CPU-bound extraction/chunking/embedding phases. A fresh
+    session is opened only when we actually need to write chunks back.
+    This is critical: the previous implementation held a single
+    connection for the entire 30+ second digestion, which under load
+    exhausted the pool (size 5+10) and made all subsequent requests,
+    etc. queue up waiting for a connection.
+
+    Stages (each emits a DigestProgress callback so the frontend can
+    show real-time feedback):
       started → extracting_text → extracting_images → chunking →
       describing_images → embedding → persisting → done
 
-    On any unrecoverable error, marks the document row as "failed" with
-    the error message and re-raises.
+    Chunk persistence is BATCHED (10 chunks per INSERT) so that even
+    if one batch fails (defensive — sanitization should prevent this),
+    the other batches still land.
+
+    On any unrecoverable error, marks the document row as "failed"
+    using a FRESH session (the original session is poisoned after the
+    failed commit) and re-raises.
     """
+    t0 = time.time()
     doc_id = uuid.uuid4()
     safe_scope = scope if scope in ("private", "public") else "private"
     mime = guess_mime_type(filename)
+    _log(
+        "digest_document START  filename=%s  size=%d  scope=%s  conv=%s  doc_id=%s",
+        filename,
+        len(file_bytes),
+        safe_scope,
+        conversation_id,
+        doc_id,
+    )
 
-    # Create the document row up-front so we can mark it as "digesting"
-    # and have a row to update on failure.
+    # ── Phase 1: Create the doc row + save raw file (uses caller's db) ──
+    # After this commit, we RELEASE the caller's session so its
+    # connection goes back to the pool. All subsequent phases either
+    # need no DB (extraction/chunking/embedding) or open a fresh
+    # session (chunk persistence, error marking).
     doc = Document(
         id=doc_id,
         filename=os.path.basename(filename),
@@ -838,16 +1044,37 @@ async def digest_document(
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+    _log("digest: created doc row id=%s (session held briefly)", doc_id)
 
     progress(DigestProgress(stage="started", percent=0, details=filename))
 
     try:
-        # ── 1. Save raw file to disk ─────────────────────────────────────
+        # ── 1. Save raw file to disk (THREAD POOL — disk I/O) ───────────
+        t1 = time.time()
         rel_path = await save_uploaded_file(file_bytes, filename, doc_id)
-        doc.file_path = rel_path
-        await db.commit()
 
-        # ── 2. Extract text + images ────────────────────────────────────
+        # Update the doc row with the file path. Use a FRESH session so
+        # we don't pin the caller's connection while we go off and do
+        # CPU-bound work next.
+        async with async_session_factory() as db2:
+            stmt = (
+                Document.__table__.update()
+                .where(Document.id == doc_id)
+                .values(file_path=rel_path)
+            )
+            await db2.execute(stmt)
+            await db2.commit()
+        # The caller's `db` session is now free to be returned to the
+        # pool by the caller's `async with` block — we don't touch it
+        # again until the very end (and even then, we prefer fresh
+        # sessions for the chunk persistence phase).
+        _log("digest: saved raw file in %.2fs (db session released)", time.time() - t1)
+
+        # ── 2. Extract text + images (THREAD POOL — CPU-bound) ──────────
+        # NO DB SESSION HELD during this phase. This is the key fix for
+        # the "backend hangs on large PDF" issue — previously the
+        # session was pinned here for 10-30 seconds on a big PDF,
+        # starving the connection pool.
         progress(
             DigestProgress(
                 stage="extracting_text",
@@ -855,11 +1082,18 @@ async def digest_document(
                 details=f"Extracting text from {filename}",
             )
         )
-        extraction = extract_content(file_bytes, filename)
+        t1 = time.time()
+        extraction = await extract_content_async(file_bytes, filename)
+        _log(
+            "digest: extraction done in %.2fs  pages=%d  images=%d",
+            time.time() - t1,
+            len(extraction.pages),
+            len(extraction.images),
+        )
         if not extraction.pages or all(not p.text.strip() for p in extraction.pages):
             # No text at all — create a single placeholder chunk so the doc
             # is at least retrievable by filename.
-            print("[rag] no text extracted from %s, using placeholder", filename)
+            _log("digest: no text extracted from %s, using placeholder", filename)
             extraction.pages = [
                 ExtractedPage(
                     page_number=1,
@@ -875,7 +1109,7 @@ async def digest_document(
             )
         )
 
-        # ── 3. Chunk text ───────────────────────────────────────────────
+        # ── 3. Chunk text (THREAD POOL — CPU-bound on huge docs) ────────
         progress(
             DigestProgress(
                 stage="chunking",
@@ -883,15 +1117,16 @@ async def digest_document(
                 details=f"Chunking {sum(len(p.text) for p in extraction.pages)} chars",
             )
         )
-        text_chunks = chunk_pages(extraction.pages)
-        print(
-            "[rag] %s: %d text chunks from %d pages",
-            filename,
+        t1 = time.time()
+        text_chunks = await asyncio.to_thread(chunk_pages, extraction.pages)
+        _log(
+            "digest: chunking done in %.2fs  %d chunks from %d pages",
+            time.time() - t1,
             len(text_chunks),
             len(extraction.pages),
         )
 
-        # ── 4. Describe images with vision LLM ──────────────────────────
+        # ── 4. Describe images with vision LLM (async HTTP) ─────────────
         image_chunks: List[Chunk] = []
         if extraction.images:
             progress(
@@ -911,17 +1146,25 @@ async def digest_document(
                         details=f"Image {i+1}/{len(extraction.images)}",
                     )
                 )
+                t1 = time.time()
                 description = await describe_image_with_vision(img.image_bytes)
+                _log(
+                    "digest: vision describe image %d/%d in %.2fs  desc_len=%d",
+                    i + 1,
+                    len(extraction.images),
+                    time.time() - t1,
+                    len(description),
+                )
                 if not description:
-                    print(
-                        "[rag] image %d of %s yielded no description, skipping",
+                    _log(
+                        "digest: image %d of %s yielded no description, skipping",
                         i,
                         filename,
                     )
                     continue
                 # Persist the image bytes to disk so the user can download
                 # it later from the Brain page.
-                image_rel = save_image_file(
+                image_rel = await save_image_file_async(
                     img.image_bytes,
                     doc_id,
                     i,
@@ -957,7 +1200,7 @@ async def digest_document(
             # be defensive.
             raise RuntimeError("No chunks produced from document")
 
-        # ── 5. Embed all chunks ─────────────────────────────────────────
+        # ── 5. Embed all chunks (async HTTP to Ollama) ──────────────────
         progress(
             DigestProgress(
                 stage="embedding",
@@ -965,11 +1208,17 @@ async def digest_document(
                 details=f"Embedding {len(all_chunks)} chunk(s)",
             )
         )
+        t1 = time.time()
         embeddings = await get_embeddings([c.text for c in all_chunks])
+        _log("digest: embedded %d chunks in %.2fs", len(all_chunks), time.time() - t1)
         for chunk, emb in zip(all_chunks, embeddings):
             chunk._embedding = emb  # type: ignore[attr-defined]
 
-        # ── 6. Persist chunks ───────────────────────────────────────────
+        # ── 6. Persist chunks in BATCHES (fresh session, 10 per INSERT) ─
+        # Batching is defensive: if one batch fails (e.g. a sanitization
+        # edge case slips through), the other batches still land and the
+        # doc remains searchable. Each batch uses its own session so a
+        # failure in batch N doesn't poison batch N+1.
         progress(
             DigestProgress(
                 stage="persisting",
@@ -977,30 +1226,84 @@ async def digest_document(
                 details=f"Saving {len(all_chunks)} chunk(s) to database",
             )
         )
-        chunk_rows: List[DocumentChunk] = []
-        for c in all_chunks:
-            row = DocumentChunk(
-                document_id=doc_id,
-                chunk_index=c.chunk_index,
-                text=c.text,
-                page_number=c.page_number,
-                line_start=c.line_start,
-                line_end=c.line_end,
-                chunk_type=c.chunk_type,
-                image_path=c.image_path,
-                embedding=getattr(c, "_embedding", None),  # type: ignore[attr-defined]
-            )
-            chunk_rows.append(row)
-        db.add_all(chunk_rows)
 
-        # ── 7. Update document row with final stats ─────────────────────
-        doc.total_pages = len(extraction.pages) if extraction.pages else None
-        doc.total_chunks = len(all_chunks)
-        doc.total_images = len(image_chunks)
-        doc.digestion_status = "ready"
-        doc.digestion_error = None
-        await db.commit()
-        await db.refresh(doc)
+        # Defense-in-depth: sanitize every chunk's text right before
+        # building the ORM row. The extractors already sanitize, but
+        # this catches anything that might have slipped through (e.g.
+        # a vision model that emits a NUL byte despite our sanitize
+        # call on its output — defensive code is cheap, crashes are
+        # expensive).
+        BATCH_SIZE = 10
+        total_persisted = 0
+        t1 = time.time()
+        for batch_start in range(0, len(all_chunks), BATCH_SIZE):
+            batch = all_chunks[batch_start : batch_start + BATCH_SIZE]
+            chunk_rows: List[DocumentChunk] = []
+            for c in batch:
+                row = DocumentChunk(
+                    document_id=doc_id,
+                    chunk_index=c.chunk_index,
+                    text=_sanitize_text_for_pg(c.text),  # defense-in-depth
+                    page_number=c.page_number,
+                    line_start=c.line_start,
+                    line_end=c.line_end,
+                    chunk_type=c.chunk_type,
+                    image_path=c.image_path,
+                    embedding=getattr(c, "_embedding", None),  # type: ignore[attr-defined]
+                )
+                chunk_rows.append(row)
+            try:
+                async with async_session_factory() as db_batch:
+                    db_batch.add_all(chunk_rows)
+                    await db_batch.commit()
+                total_persisted += len(chunk_rows)
+                _log(
+                    "digest: persisted batch %d-%d/%d",
+                    batch_start,
+                    batch_start + len(batch),
+                    len(all_chunks),
+                )
+            except Exception as batch_err:
+                # Log and continue — partial persistence is better than
+                # total failure. The doc will still be searchable with
+                # whatever chunks made it through.
+                _log(
+                    "digest: batch %d-%d FAILED (continuing): %s",
+                    batch_start,
+                    batch_start + len(batch),
+                    batch_err,
+                )
+        _log(
+            "digest: persisted %d/%d chunks in %.2fs",
+            total_persisted,
+            len(all_chunks),
+            time.time() - t1,
+        )
+
+        # ── 7. Update document row with final stats (fresh session) ────
+        async with async_session_factory() as db3:
+            stmt = (
+                Document.__table__.update()
+                .where(Document.id == doc_id)
+                .values(
+                    total_pages=len(extraction.pages) if extraction.pages else None,
+                    total_chunks=len(all_chunks),
+                    total_images=len(image_chunks),
+                    digestion_status="ready",
+                    digestion_error=None,
+                )
+            )
+            await db3.execute(stmt)
+            await db3.commit()
+
+        # Re-fetch the doc for the return value (so the caller gets a
+        # fully-populated Document object).
+        async with async_session_factory() as db4:
+            result = await db4.execute(select(Document).where(Document.id == doc_id))
+            doc = result.scalar_one_or_none()
+            if doc is None:
+                # Shouldn't happen, but be defensive
+                raise RuntimeError(f"Document {doc_id} vanished after digestion")
 
         progress(
             DigestProgress(
@@ -1012,24 +1315,53 @@ async def digest_document(
                 total_images=len(image_chunks),
             )
         )
-        print(
-            "[rag] digested %s (id=%s): %d text chunks, %d image chunks",
+        _log(
+            "digest_document DONE  filename=%s  doc_id=%s  text_chunks=%d  image_chunks=%d  total_time=%.2fs",
             filename,
             doc_id,
             len(text_chunks),
             len(image_chunks),
+            time.time() - t0,
         )
         return doc
 
     except Exception as e:
-        print("[rag] digestion failed for %s: %s", filename, e)
-        # Mark the doc as failed
+        _log(
+            "digest_document FAILED  filename=%s  doc_id=%s  error=%s  after %.2fs",
+            filename,
+            doc_id,
+            e,
+            time.time() - t0,
+        )
+        # Mark the doc as failed using a FRESH session. The caller's
+        # session is likely poisoned (rolled back due to the exception
+        # during flush), so we can't reuse it. The original production
+        # crash showed this exact failure mode:
+        #   "This Session's transaction has been rolled back due to a
+        #    previous exception during flush. To begin a new transaction
+        #    with this Session, first issue Session.rollback()."
+        # Using a brand-new session sidesteps the whole problem.
         try:
-            doc.digestion_status = "failed"
-            doc.digestion_error = str(e)[:2000]
-            await db.commit()
+            async with async_session_factory() as db_err:
+                stmt = (
+                    Document.__table__.update()
+                    .where(Document.id == doc_id)
+                    .values(
+                        digestion_status="failed",
+                        digestion_error=_sanitize_text_for_pg(str(e))[:2000],
+                    )
+                )
+                await db_err.execute(stmt)
+                await db_err.commit()
+            _log("digest: marked doc %s as failed", doc_id)
         except Exception as inner:
-            print("[rag] failed to mark doc as failed: %s", inner)
+            _log("failed to mark doc as failed: %s", inner)
+            # Last-resort: try to rollback the caller's session so it
+            # doesn't leak a poisoned transaction back to the pool.
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
         progress(
             DigestProgress(
@@ -1079,7 +1411,7 @@ async def search_documents(
     # Embed the query
     q_emb = await get_embedding(query)
     if not q_emb:
-        print("[rag] query embedding failed, returning no results")
+        _log("query embedding failed, returning no results")
         return []
 
     # ── Step 1: pgvector cosine search to get top candidates ────────────
@@ -1128,11 +1460,11 @@ async def search_documents(
         result = await db.execute(stmt)
         rows = result.all()
     except Exception as e:
-        print("[rag] vector search query failed: %s", e)
+        _log("vector search query failed: %s", e)
         return []
 
     if not rows:
-        print("[rag] no candidates found for query: %s", query[:80])
+        _log("no candidates found for query: %s", query[:80])
         return []
 
     # ── Step 2: BM25 score via raw SQL (search_vector is DB-managed) ────
@@ -1162,7 +1494,7 @@ async def search_documents(
             for row in rank_result:
                 bm25_scores[str(row[0])] = float(row[1] or 0.0)
     except Exception as e:
-        print("[rag] BM25 query failed, using vector-only: %s", e)
+        _log("BM25 query failed, using vector-only: %s", e)
         bm25_scores = {}
 
     # ── Step 3: hybrid score + cutoff + per-doc selection ───────────────
@@ -1204,13 +1536,14 @@ async def search_documents(
                 score=round(score, 4),
                 vector_sim=round(vec_sim, 4),
                 bm25_score=round(bm25_norm, 4),
+                image_path=r.image_path,
             )
         )
         if len(final) >= k_total:
             break
 
-    print(
-        "[rag] search '%s' → %d candidates, %d returned (cutoff=%s, k_per_doc=%d, k_total=%d)",
+    _log(
+        "search '%s' → %d candidates, %d returned (cutoff=%s, k_per_doc=%d, k_total=%d)",
         query[:60],
         len(rows),
         len(final),
@@ -1284,18 +1617,18 @@ async def delete_document(db: AsyncSession, doc_id: uuid.UUID) -> bool:
     doc = await get_document(db, doc_id)
     if not doc:
         return False
-    # Delete on-disk files
+    # Delete on-disk files (rmtree is sync I/O — offload to thread pool)
     doc_dir = get_document_dir(doc_id)
     try:
         if doc_dir.exists():
-            shutil.rmtree(doc_dir)
-            print("[rag] deleted on-disk files for doc %s at %s", doc_id, doc_dir)
+            await asyncio.to_thread(shutil.rmtree, doc_dir)
+            _log("deleted on-disk files for doc %s at %s", doc_id, doc_dir)
     except Exception as e:
-        print("[rag] failed to delete doc dir %s: %s", doc_dir, e)
+        _log("failed to delete doc dir %s: %s", doc_dir, e)
     # Delete DB rows (cascade handles chunks)
     await db.delete(doc)
     await db.commit()
-    print("[rag] deleted document %s (%s)", doc_id, doc.filename)
+    _log("deleted document %s (%s)", doc_id, doc.filename)
     return True
 
 
@@ -1316,7 +1649,7 @@ async def rename_document(
     doc.original_filename = safe
     await db.commit()
     await db.refresh(doc)
-    print("[rag] renamed doc %s → %s", doc_id, safe)
+    _log("renamed doc %s → %s", doc_id, safe)
     return doc
 
 
@@ -1349,8 +1682,8 @@ async def toggle_document_scope(
         doc.conversation_id = None
     await db.commit()
     await db.refresh(doc)
-    print(
-        "[rag] toggled doc %s scope → %s (conv=%s)",
+    _log(
+        "toggled doc %s scope → %s (conv=%s)",
         doc_id,
         doc.scope,
         doc.conversation_id,
@@ -1401,7 +1734,13 @@ def document_to_dict(doc: Document, *, include_chunks: bool = False) -> dict:
 
 
 def retrieved_source_to_dict(s: RetrievedSource) -> dict:
-    """Serialize a RetrievedSource for the API / SSE events."""
+    """Serialize a RetrievedSource for the API / SSE events.
+
+    `image_path` is included so the frontend can fetch the original
+    image (via /api/documents/chunks/{id}/image) for chunks where
+    chunk_type == "image_description". For text chunks, image_path
+    is None and the frontend renders only the snippet.
+    """
     return {
         "document_id": s.document_id,
         "document_filename": s.document_filename,
@@ -1415,4 +1754,23 @@ def retrieved_source_to_dict(s: RetrievedSource) -> dict:
         "score": s.score,
         "vector_sim": s.vector_sim,
         "bm25_score": s.bm25_score,
+        "image_path": s.image_path,
+        "has_image": s.image_path is not None,
     }
+
+
+async def get_chunk_image_path(db: AsyncSession, chunk_id: uuid.UUID) -> Optional[str]:
+    """Look up the on-disk image_path for a single chunk by its ID.
+
+    Used by the /api/documents/chunks/{id}/image endpoint to serve the
+    raw image bytes for an image_description chunk. Returns None if the
+    chunk doesn't exist or has no image_path.
+    """
+    try:
+        stmt = select(DocumentChunk.image_path).where(DocumentChunk.id == chunk_id)
+        result = await db.execute(stmt)
+        row = result.first()
+        return row[0] if row else None
+    except Exception as e:
+        _log("get_chunk_image_path failed for %s: %s", chunk_id, e)
+        return None
