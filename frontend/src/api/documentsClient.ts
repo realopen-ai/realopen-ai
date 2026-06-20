@@ -70,6 +70,11 @@ export interface RetrievedSourceDTO {
   score: number;
   vector_sim: number;
   bm25_score: number;
+  /** On-disk path of the original extracted image (relative to data dir).
+   *  Only set for image_description chunks. The frontend fetches the
+   *  actual bytes via /api/documents/chunks/{chunk_id}/image. */
+  image_path?: string | null;
+  has_image?: boolean;
 }
 
 // ─── Digestion progress (SSE event payload) ──────────────────────────
