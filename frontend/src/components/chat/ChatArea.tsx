@@ -158,7 +158,9 @@ export function ChatArea() {
       ];
 
       // Now add the user and assistant messages to the store for UI display
-      store.addMessage(convId, {
+      // Capture the user message ID so we can attach document digestion
+      // progress events to it later (real-time inline progress indicator).
+      const userMsgId = store.addMessage(convId, {
         role: "user",
         content,
         shrugOverlay: options?.shrug,
@@ -271,14 +273,19 @@ export function ChatArea() {
         },
         // Document digestion progress — emitted while chat-uploaded
         // documents are being extracted/chunked/embedded. Surface it
-        // in the right panel terminal so the user sees something is
-        // happening before the agent starts streaming.
+        // BOTH in the right panel terminal AND inline on the user's
+        // message bubble so the user sees real-time progress in the
+        // conversation itself (not just in a side panel).
         onDocumentDigestProgress: (p: {
           stage: string;
           percent: number;
           details: string;
           filename?: string;
+          document_id?: string | null;
+          total_chunks?: number;
+          total_images?: number;
         }) => {
+          // Terminal log
           if (p.percent === 0 || p.stage === "started") {
             addTerminalLine(`📄 Digesting ${p.filename ?? "document"}...`);
           } else if (p.stage === "done") {
@@ -290,6 +297,26 @@ export function ChatArea() {
               `   ${p.percent}%  ${p.stage}  ${p.details ?? ""}`.trim(),
             );
           }
+          // Inline progress on the user's message bubble
+          // so the user sees feedback directly in the conversation.
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: p.filename ?? "document",
+            stage: p.stage as
+              | "started"
+              | "extracting_text"
+              | "extracting_images"
+              | "chunking"
+              | "describing_images"
+              | "embedding"
+              | "persisting"
+              | "done"
+              | "error",
+            percent: p.percent,
+            details: p.details,
+            documentId: p.document_id,
+            totalChunks: p.total_chunks,
+            totalImages: p.total_images,
+          });
         },
         onDocumentDigestDone: (doc: {
           filename: string;
@@ -299,11 +326,27 @@ export function ChatArea() {
           addTerminalLine(
             `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
           );
+          // Final "done" item so the inline indicator shows completion
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: doc.filename,
+            stage: "done",
+            percent: 100,
+            details: `${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
+            totalChunks: doc.total_chunks,
+            totalImages: doc.total_images,
+          });
         },
         onDocumentDigestError: (info: { filename?: string; error: string }) => {
           addTerminalLine(
             `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
           );
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: info.filename ?? "document",
+            stage: "error",
+            percent: 100,
+            details: info.error,
+            error: info.error,
+          });
         },
         onToolCallStart: (
           toolCall: Omit<ToolCallResult, "id" | "startedAt">,

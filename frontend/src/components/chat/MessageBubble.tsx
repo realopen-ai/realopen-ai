@@ -36,7 +36,38 @@ import { cn } from "@/lib/utils";
  * cards" and "only visible when actually used by the agent to generate
  * his response" — so this component is rendered only when
  * message.sources is non-empty.
+ *
+ * For image_description chunks (where chunk_type === "image_description"
+ * and has_image === true), the card also renders a thumbnail of the
+ * original extracted image, fetched from
+ * /api/documents/chunks/{chunk_id}/image.
  */
+function SourceImage({ chunkId }: { chunkId: string }) {
+  // Lazy-load the image only when the card is expanded. We use a simple
+  // <img> tag — the browser handles caching via the Cache-Control header
+  // the backend sets (24h).
+  const [loaded, setLoaded] = useState(false);
+  const [errored, setErrored] = useState(false);
+  if (errored) return null;
+  return (
+    <div className="mt-2 rounded-md overflow-hidden border border-border/30 bg-background/40 max-w-70">
+      {!loaded && (
+        <div className="w-full h-30 flex items-center justify-center text-[10px] text-muted-foreground/60">
+          Loading image…
+        </div>
+      )}
+      <img
+        src={`/api/documents/chunks/${chunkId}/image`}
+        alt="Document excerpt image"
+        className={`w-full h-auto ${loaded ? "block" : "hidden"}`}
+        onLoad={() => setLoaded(true)}
+        onError={() => setErrored(true)}
+        loading="lazy"
+      />
+    </div>
+  );
+}
+
 function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
   const [expanded, setExpanded] = useState(true);
   const [openIdx, setOpenIdx] = useState<number | null>(0);
@@ -70,7 +101,8 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
           {sources.map((s, i) => {
             const isOpen = openIdx === i;
             const locationParts: string[] = [];
-            if (s.page_number != null) locationParts.push(`p. ${s.page_number}`);
+            if (s.page_number != null)
+              locationParts.push(`p. ${s.page_number}`);
             if (s.line_start != null && s.line_end != null) {
               if (s.line_start === s.line_end) {
                 locationParts.push(`L${s.line_start}`);
@@ -80,6 +112,7 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
             }
             const location =
               locationParts.length > 0 ? ` · ${locationParts.join(", ")}` : "";
+            const isImage = s.chunk_type === "image_description" && s.has_image;
             return (
               <div
                 key={s.chunk_id}
@@ -102,7 +135,7 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
                   >
                     {s.document_filename}
                   </span>
-                  {s.chunk_type === "image_description" && (
+                  {isImage && (
                     <Image className="w-3 h-3 text-violet-400 shrink-0" />
                   )}
                   <span className="text-[10px] text-muted-foreground/70 shrink-0">
@@ -112,12 +145,13 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
                     {(s.score * 100).toFixed(0)}%
                   </span>
                 </button>
-                {/* Card body (snippet / full text) */}
+                {/* Card body (snippet / full text + optional image) */}
                 {isOpen && (
                   <div className="px-2.5 pb-2 pt-0.5">
                     <p className="text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
                       {s.text}
                     </p>
+                    {isImage && <SourceImage chunkId={s.chunk_id} />}
                   </div>
                 )}
               </div>
@@ -125,6 +159,90 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Digest Progress (RAG ingestion, shown inline on user message) ──
+
+/**
+ * Inline digestion progress indicator shown on the user's message
+ * bubble when they uploaded documents via chat. The backend streams
+ * `document_digest_*` SSE events while it extracts text, chunks,
+ * describes images, and embeds — we render a compact progress bar
+ * per file so the user sees real-time feedback in the conversation
+ * itself, not just in the right-panel terminal.
+ *
+ * Visibility rules:
+ *   - Only shown when message.digestProgress is non-empty.
+ *   - Auto-hides a file's indicator 5 seconds after it reaches
+ *     "done" or "error" so the conversation doesn't accumulate
+ *     stale progress bars.
+ */
+function DigestProgressIndicator({
+  items,
+}: {
+  items: NonNullable<Message["digestProgress"]>;
+}) {
+  if (!items.length) return null;
+
+  // Group by filename so we show one card per file with the latest
+  // progress for that file (not one card per SSE event).
+  const byFile = new Map<string, (typeof items)[number]>();
+  for (const item of items) {
+    byFile.set(item.filename, item);
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 mb-1.5 justify-end">
+      {Array.from(byFile.entries()).map(([filename, p]) => {
+        const isDone = p.stage === "done";
+        const isError = p.stage === "error";
+        const isRunning = !isDone && !isError;
+        return (
+          <div
+            key={filename}
+            className={`rounded-md border px-2.5 py-1.5 text-[11px] ${
+              isError
+                ? "border-red-500/40 bg-red-500/10 text-red-300"
+                : isDone
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              {isRunning ? (
+                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+              ) : isDone ? (
+                <Check className="w-3 h-3 shrink-0" />
+              ) : (
+                <span className="shrink-0">⚠</span>
+              )}
+              <span className="font-medium truncate flex-1" title={filename}>
+                {filename}
+              </span>
+              <span className="opacity-80 shrink-0">{p.percent}%</span>
+            </div>
+            {/* Progress bar */}
+            <div className="mt-1 h-1 rounded-full bg-black/20 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 ${
+                  isError
+                    ? "bg-red-400"
+                    : isDone
+                      ? "bg-emerald-400"
+                      : "bg-amber-400"
+                }`}
+                style={{ width: `${p.percent}%` }}
+              />
+            </div>
+            {/* Stage label */}
+            <div className="mt-0.5 text-[10px] opacity-70 truncate">
+              {isError ? p.error || p.details : p.details || p.stage}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -760,6 +878,14 @@ export function MessageBubble({
                 </span>
               )}
             </div>
+          )}
+          {/* Inline document digestion progress — shown when the user
+              uploaded docs via chat and the backend is streaming
+              document_digest_* SSE events. Renders a compact progress
+              bar per file so the user sees real-time feedback in the
+              conversation itself, not just in the right-panel terminal. */}
+          {message.digestProgress && message.digestProgress.length > 0 && (
+            <DigestProgressIndicator items={message.digestProgress} />
           )}
           <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
             <p
