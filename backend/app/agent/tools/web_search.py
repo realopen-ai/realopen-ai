@@ -21,12 +21,27 @@ logger = logging.getLogger(__name__)
 class WebSearchTool(BaseTool):
     name = "use_websearch"
     description = (
-        "Search the web for information using a search engine. "
-        "Use this when you need to find current information, look up facts, "
-        "or research topics that may not be in your training data. "
-        "Provide a search query string."
+        "Search the web. Use for current info, facts, "
+        "or topics beyond your training data."
     )
     tool_type = ToolType.WEB_SEARCH
+
+    param_aliases = {
+        "query": "query",
+        "search": "query",
+        "q": "query",
+    }
+
+    def get_parameters(self) -> dict:
+        return {
+            "query": {
+                "type": "string",
+                "description": "The search query",
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        return ["query"]
 
     async def execute(self, *, query: str, **kwargs) -> ToolResult:
         """Search SearXNG and return formatted results."""
@@ -47,11 +62,11 @@ class WebSearchTool(BaseTool):
             tool_call.completed_at = time.time()
             tool_call.web_results = results
 
-            if not results:
-                output = f"No results found for: {query}"
-            else:
-                output = self._format_results(query, results)
-
+            output = (
+                self._format_results(query, results)
+                if results
+                else f"No results for: {query}"
+            )
             return ToolResult(success=True, output=output, tool_call=tool_call)
 
         except Exception as e:
@@ -75,19 +90,28 @@ class WebSearchTool(BaseTool):
             "language": "en",
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/91.0.4472.124 Safari/537.36"
+                ),
+                "Accept": (
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                ),
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
+            },
+            follow_redirects=True,
+        ) as client:
             response = await client.get(
                 url,
                 params=params,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/128.0.0.0 Safari/537.36"
-                    ),
-                    "X-Forwarded-For": "127.0.0.1",
-                    "X-Real-IP": "127.0.0.1",
-                },
             )
             response.raise_for_status()
             data = response.json()
@@ -107,9 +131,7 @@ class WebSearchTool(BaseTool):
         """Format search results into a string for the LLM."""
         lines = [f'Web search results for "{query}":\n']
         for i, r in enumerate(results, 1):
-            lines.append(f"{i}. {r['title']}")
-            lines.append(f"   URL: {r['url']}")
-            lines.append(f"   {r['snippet']}\n")
+            lines.append(f"{i}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n")
         return "\n".join(lines)
 
 
