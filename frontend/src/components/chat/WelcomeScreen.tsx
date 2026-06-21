@@ -1,4 +1,4 @@
-import { Bot, Lightbulb, Code2, Search, Terminal } from "lucide-react";
+import { Bot, Lightbulb, Code2, Search, Terminal, Cpu } from "lucide-react";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 
@@ -7,7 +7,7 @@ export function WelcomeScreen({
 }: {
   onSend: (message: string) => void;
 }) {
-  const { profileLabel, models } = useChatStore();
+  const { profileLabel, models, selectedModel } = useChatStore();
   const t = useT();
 
   const suggestions = [
@@ -32,7 +32,7 @@ export function WelcomeScreen({
       icon: Search,
       title: t("welcome.searchWeb"),
       subtitle: t("welcome.searchWebSub"),
-      prompt: "Search the web for the latest breakthroughs in AI research 2025",
+      prompt: "Search the web for the latest breakthroughs in AI research 2026",
       color: "text-blue-400",
       bg: "bg-blue-500/10",
     },
@@ -51,6 +51,14 @@ export function WelcomeScreen({
     name: m.description || m.id,
     type: m.type,
   }));
+
+  // Detect if user is on a small model (<8B parameters)
+  const currentModelName = (
+    models.find((m) => m.role === selectedModel)?.id ||
+    selectedModel ||
+    ""
+  ).toLowerCase();
+  const isSmallModel = /(3b|4b|7b|8b|1\.5b|0\.5b)/.test(currentModelName);
 
   return (
     <div className="flex-1 flex items-center justify-center p-6">
@@ -114,6 +122,20 @@ export function WelcomeScreen({
                 </span>
               ))}
             </div>
+          </div>
+        )}
+
+        {isSmallModel && (
+          <div className="pt-2 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-left">
+            <div className="flex items-center gap-2 mb-1">
+              <Cpu className="w-3.5 h-3.5 text-amber-400" />
+              <span className="text-[11px] font-medium text-amber-400">
+                {t("welcome.smallModelTips")}
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-400/80 leading-relaxed">
+              {t("welcome.smallModelTipsSub")}
+            </p>
           </div>
         )}
       </div>
