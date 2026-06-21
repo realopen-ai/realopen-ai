@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Optional
+from typing import Optional, List
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
@@ -50,19 +50,28 @@ class RagSearchTool(BaseTool):
 
     name = "rag_search"
     description = (
-        "Search the user's uploaded document knowledge base for information "
-        "relevant to a question. Use this PROACTIVELY when the user has "
-        "uploaded documents (PDFs, DOCX, spreadsheets, text files, etc.) "
-        "and is asking about their content — even if they don't explicitly "
-        "mention the documents. Also use this when the user asks to "
-        "'summarize', 'find', 'look up', 'extract', or 'cite' content. "
-        "Returns matching excerpts with source citations (document name, "
-        "page, line range). ALWAYS try this tool first when documents are "
-        "available before answering from general knowledge. "
-        "Args: {query: string (the question or search terms)}"
+        "Search uploaded documents (PDFs, DOCX, text files, spreadsheets) for information. "
+        "Use when the user has uploaded documents and asks about their content."
     )
-    tool_type = ToolType.FILE_READ  # reuse the "file" tool type — closest match
-    # in the existing enum. The frontend treats it like a file-read badge.
+    tool_type = ToolType.FILE_READ
+
+    param_aliases = {
+        "query": "query",
+        "search": "query",
+        "question": "query",
+        "q": "query",
+    }
+
+    def get_parameters(self) -> dict:
+        return {
+            "query": {
+                "type": "string",
+                "description": "Search query to find relevant document excerpts",
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        return ["query"]
 
     async def execute(
         self, *, query: str, conversation_id: Optional[str] = None, **kwargs
@@ -101,7 +110,7 @@ class RagSearchTool(BaseTool):
             _log("empty query — nothing to search")
             return ToolResult(
                 success=True,
-                output="No query provided — nothing to search.",
+                output="No query provided.",
                 tool_call=tool_call,
             )
 
@@ -166,6 +175,6 @@ class RagSearchTool(BaseTool):
         )
 
 
-# Register at import time — main.py imports app.agent.tools which triggers this.
+# Register the tool
 tool_registry.register(RagSearchTool())
 logger.info("[rag_tool] RagSearchTool registered")
