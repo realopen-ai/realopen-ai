@@ -19,6 +19,8 @@
   "welcome.runCode": "Exécuter du code",
   "welcome.runCodeSub": "dans un bac à sable",
   "welcome.availableModels": "Modèles disponibles",
+  "welcome.smallModelTips": "Conseils pour les modèles petits",
+  "welcome.smallModelTipsSub": "Vous utilisez un petit modèle ? Gardez les prompts courts et spécifiques. Utilisez la recherche web pour les faits, l'exécution de code pour les calculs. Pour les tâches complexes, envisagez de passer à un modèle plus grand si possible.",
   "input.placeholder": "Envoyer un message à RealOpen-AI...",
   "input.runningLocally": "Fonctionne localement via Ollama",
   "input.slash": "Commandes",

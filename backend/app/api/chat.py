@@ -4,8 +4,8 @@ Chat API endpoints.
 Supports:
 - Plain text chat (streaming & non-streaming)
 - Image input (auto-invokes vision model)
-- Document upload (stored for future RAG)
-- AI agent with tool calling (web search, vision, code exec)
+- Document upload (digested synchronously into the RAG knowledge base)
+- AI agent with tool calling (web search, vision, code exec, rag_search)
 - Conversation persistence via PostgreSQL
 """
 
@@ -27,6 +27,7 @@ from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
+from app.services import rag as rag_service
 from app.services.memory_extractor import (
     extract_and_store,
     get_messages_since_watermark,
@@ -396,6 +397,7 @@ async def chat_stream(request: ChatRequest):
                 messages=messages,
                 model=_resolved_model,
                 images=None,
+                conversation_id=str(_conv_id) if _conv_id else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
@@ -598,12 +600,28 @@ async def chat_stream_multipart(
             len(b64),
         )
 
-    # Process documents (store for now, RAG later)
-    # TODO: Implement RAG pipeline for documents
+    # Process documents: digest synchronously into RAG with SSE progress.
+    # Documents uploaded through chat are PRIVATE to this conversation —
+    # they're retrievable only when the agent's rag_search tool fires from
+    # this same conversation. (Public docs go through the Brain page.)
     doc_count = len(documents)
     if doc_count > 0:
-        logger.info("Received %d documents (RAG not yet implemented)", doc_count)
+        logger.info(
+            "[chat] received %d document(s) for RAG digestion (conv=%s)",
+            doc_count,
+            conv_id,
+        )
         _log("   documents received: %s", [d.filename for d in documents])
+
+    # Read all file bytes up-front — UploadFile streams can't be re-read.
+    # Store (filename, bytes) pairs so the SSE generator can re-use them.
+    doc_buffers: List[tuple] = []
+    for d in documents:
+        try:
+            buf = await d.read()
+            doc_buffers.append((d.filename or "upload", buf))
+        except Exception as e:
+            logger.warning("[chat] failed to read uploaded doc %s: %s", d.filename, e)
 
     # Persist the user message EAGERLY using an independent session
     if conv_id and parsed_messages:
@@ -629,11 +647,143 @@ async def chat_stream_multipart(
         thinking_duration_sec = 0
         generation_duration_sec = 0
         accumulated_tool_calls = []
+        digested_doc_ids: List[str] = []  # for DB link to user message
+        # Track digested document filenames so we can inject a system
+        # hint into the agent's messages telling it these files are now
+        # searchable via rag_search. Without this hint the LLM doesn't
+        # know it has fresh documents to look up.
+        digested_doc_filenames: List[str] = []
+
+        # ── Digest uploaded documents BEFORE running the agent loop.
+        # This way the agent's rag_search tool can find the docs on the
+        # very same turn. Each doc emits document_digest_* SSE events
+        # in REAL TIME via an asyncio.Queue — the user sees progress
+        # immediately in the chat conversation, not after digestion
+        # completes.
+        if doc_buffers and _conv_id:
+            import asyncio as _asyncio
+
+            for fname, fbytes in doc_buffers:
+                progress_queue: _asyncio.Queue = _asyncio.Queue()
+                _DONE_SENTINEL = object()
+
+                def collect(p: "rag_service.DigestProgress", _f=fname) -> None:
+                    try:
+                        progress_queue.put_nowait(p)
+                    except Exception as _e:
+                        _log("   ⚠️  failed to enqueue progress event: %s", _e)
+
+                _log("   📄 digesting %s (%d bytes) for RAG", fname, len(fbytes))
+
+                # Digestion runs as a background task while we drain
+                # progress events from the queue in real-time. This is
+                # the same pattern as /documents/upload/stream.
+                digestion_err: List[Optional[Exception]] = [None]
+                digestion_doc: List[Optional[object]] = [None]
+
+                async def run_digest(_f=fname, _b=fbytes):
+                    try:
+                        async with async_session_factory() as db:
+                            doc = await rag_service.digest_document(
+                                db,
+                                file_bytes=_b,
+                                filename=_f,
+                                scope="private",
+                                conversation_id=_conv_id,
+                                progress=collect,
+                            )
+                            digestion_doc[0] = doc
+                    except Exception as e:
+                        digestion_err[0] = e
+                    finally:
+                        try:
+                            progress_queue.put_nowait(_DONE_SENTINEL)
+                        except Exception:
+                            pass
+
+                digest_task = _asyncio.create_task(run_digest())
+
+                # Drain the queue and yield each progress event as an
+                # SSE chunk in real-time. Loop until we see the sentinel.
+                while True:
+                    try:
+                        item = await _asyncio.wait_for(
+                            progress_queue.get(), timeout=0.1
+                        )
+                    except _asyncio.TimeoutError:
+                        if digest_task.done():
+                            break
+                        continue
+                    if item is _DONE_SENTINEL:
+                        break
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_progress",
+                            "stage": item.stage,
+                            "percent": item.percent,
+                            "details": item.details,
+                            "filename": fname,
+                            "document_id": item.document_id,
+                            "total_chunks": item.total_chunks,
+                            "total_images": item.total_images,
+                        }
+                    ) + "\n\n"
+
+                # Await the task to surface any exception
+                try:
+                    await digest_task
+                except Exception as e:
+                    _log("   ⚠️  digest task crashed for %s: %s", fname, e)
+
+                if digestion_err[0] is not None:
+                    e = digestion_err[0]
+                    logger.exception("[chat] doc digestion failed for %s: %s", fname, e)
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_error",
+                            "filename": fname,
+                            "error": str(e),
+                        }
+                    ) + "\n\n"
+                    continue
+
+                if digestion_doc[0] is not None:
+                    doc = digestion_doc[0]
+                    digested_doc_ids.append(str(doc.id))
+                    digested_doc_filenames.append(doc.filename)
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_done",
+                            "filename": fname,
+                            "document_id": str(doc.id),
+                            "total_chunks": doc.total_chunks,
+                            "total_images": doc.total_images,
+                        }
+                    ) + "\n\n"
+
+        # ── Inject a system hint about freshly-uploaded documents.
+        # If we just digested any docs, prepend a user-role hint telling
+        # the agent these files are now searchable via rag_search. This
+        # dramatically increases the chance the LLM uses rag_search
+        # proactively instead of answering from generic knowledge.
+        if digested_doc_filenames:
+            hint = (
+                f"[System: The user just uploaded {len(digested_doc_filenames)} "
+                f"document(s): {', '.join(digested_doc_filenames)}. "
+                f"These are now indexed in your knowledge base. "
+                f"If the user's question is about content in these files, "
+                f"USE the rag_search tool to retrieve relevant excerpts "
+                f"BEFORE answering. Do not answer from generic knowledge "
+                f"when the documents may contain the specific information.]"
+            )
+            parsed_messages.append({"role": "user", "content": hint})
+
         try:
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
                 model=_resolved_model,
                 images=image_b64_list if image_b64_list else None,
+                conversation_id=str(_conv_id) if _conv_id else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:

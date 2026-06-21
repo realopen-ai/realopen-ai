@@ -19,6 +19,8 @@
   "welcome.runCode": "Run code",
   "welcome.runCodeSub": "in a sandbox",
   "welcome.availableModels": "Available Models",
+  "welcome.smallModelTips": "Small model tips",
+  "welcome.smallModelTipsSub": "Using a small model ? Keep prompts short and specific. Use web search for facts, code execution for math. For complex tasks, consider switching to a larger model if possible.",
   "input.placeholder": "Message RealOpen-AI...",
   "input.runningLocally": "Running locally via Ollama",
   "input.slash": "Commands",

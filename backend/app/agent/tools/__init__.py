@@ -10,6 +10,7 @@ from app.agent.tools.vision import VisionTool
 from app.agent.tools.code_exec import CodeExecTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.image_gen import ImageGenTool
+from app.agent.tools.rag_search import RagSearchTool
 
 __all__ = [
     "WebSearchTool",
@@ -17,4 +18,5 @@ __all__ = [
     "CodeExecTool",
     "WebFetchTool",
     "ImageGenTool",
+    "RagSearchTool",
 ]

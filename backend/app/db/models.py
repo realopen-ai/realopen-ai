@@ -70,14 +70,120 @@ class Message(Base):
 
 
 class Document(Base):
+    """A user-uploaded document digested for RAG.
+
+    Scope:
+      - "public":  retrievable by ANY conversation (knowledge base)
+      - "private": retrievable ONLY by the conversation whose ID matches
+                   `conversation_id` (per-conversation document)
+
+    The raw file lives on disk under {data_dir}/documents/{id}/{filename};
+    only metadata lives in the DB. Text + image-description chunks live in
+    `document_chunks` with their own 768-dim embedding (nomic-embed-text).
+
+    Digestion is synchronous with SSE progress events. The `digestion_status`
+    column drives the Brain page UI:
+      pending  → just uploaded, not yet processed
+      digesting → extraction/chunking/embedding in progress
+      ready    → chunks created, searchable
+      failed   → see `digestion_error`
+    """
+
     __tablename__ = "documents"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     filename = Column(String(512), nullable=False)
-    content = Column(Text, nullable=False)
-    embedding = Column(Vector(1536), nullable=True)  # pgvector column
-    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
+    # Original user-facing filename (preserved on rename, used for display)
+    original_filename = Column(String(512), nullable=False)
+    mime_type = Column(String(128), nullable=False, default="application/octet-stream")
+
+    # Relative path under the data dir, e.g. "documents/abc-123/file.pdf".
+    # Joined with the data dir at read time so we never store absolute paths
+    # (which would break across container vs host).
+    file_path = Column(String(1024), nullable=False)
+    file_size_bytes = Column(Integer, nullable=False, default=0)
+    content_hash = Column(String(64), nullable=True, index=True)  # sha256 hex
+
+    scope = Column(
+        String(16), nullable=False, default="private"
+    )  # "private" | "public"
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    message_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    total_pages = Column(Integer, nullable=True)
+    total_chunks = Column(Integer, nullable=False, default=0)
+    total_images = Column(Integer, nullable=False, default=0)
+
+    digestion_status = Column(String(16), nullable=False, default="pending")
+    digestion_error = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    chunks = relationship(
+        "DocumentChunk",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        foreign_keys="DocumentChunk.document_id",
+    )
+
+
+class DocumentChunk(Base):
+    """A retrievable chunk of a document.
+
+    Chunks are either:
+      - chunk_type="text":              a slice of the document's text
+      - chunk_type="image_description": a vision-LLM-generated description
+                                        of an image embedded in the document
+                                        (PDF/DOCX), stored alongside the
+                                        image bytes on disk for download.
+
+    Each chunk has a 768-dim embedding (nomic-embed-text) for vector search
+    and a tsvector (DB-managed) for BM25 keyword ranking.
+
+    `page_number`, `line_start`, `line_end` power the source citation shown
+    below assistant messages that called the RAG tool.
+    """
+
+    __tablename__ = "document_chunks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index = Column(Integer, nullable=False, default=0)
+
+    text = Column(Text, nullable=False)
+    page_number = Column(Integer, nullable=True)
+    line_start = Column(Integer, nullable=True)
+    line_end = Column(Integer, nullable=True)
+
+    chunk_type = Column(
+        String(32), nullable=False, default="text"
+    )  # "text" | "image_description"
+    # For chunk_type="image_description": relative path to the saved image.
+    image_path = Column(String(1024), nullable=True)
+
+    # 768-dim to match nomic-embed-text (same as memories.embedding).
+    embedding = Column(Vector(768), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    document = relationship(
+        "Document",
+        back_populates="chunks",
+        foreign_keys=[document_id],
+    )
 
 
 class Memory(Base):
@@ -87,8 +193,8 @@ class Memory(Base):
     text = Column(Text, nullable=False)
     category = Column(
         String(50), default="fact"
-    )  # identity, preference, fact, contact, project, goal
-    source = Column(String(20), default="auto")  # auto, user, ai_agent
+    )  # "identity" | "preference" | "fact" | "contact" | "project" | "goal"
+    source = Column(String(20), default="auto")  # "auto" | "user" | "ai_agent"
     pinned = Column(Boolean, default=False)
     uses = Column(Integer, default=0)
     conversation_id = Column(
@@ -112,6 +218,7 @@ class AppState(Base):
       - 'memory.audit_fingerprint' : SHA-256 of memory set at last audit
       - 'memory.extractions_since_audit' : int counter (alternative to timestamp)
     """
+
     __tablename__ = "app_state"
 
     key = Column(String(128), primary_key=True)

@@ -10,6 +10,7 @@ Used by:
 - app.services.memory.MemoryManager.get_relevant_memories (to embed the query
   for pgvector cosine similarity search)
 - app.services.memory_extractor (to embed new facts for vector dedup)
+- app.services.rag.digest_document (to embed document chunks)
 
 Design:
 - Module-level singleton with lazy init — embeddings are stateless, share
@@ -17,8 +18,12 @@ Design:
 - Per-call try/except so a transient Ollama failure degrades gracefully
   (caller falls back to BM25-only retrieval or Jaccard-only dedup).
 - Returns None on failure instead of raising — callers must handle.
+- A semaphore caps concurrent Ollama calls so a 50-chunk digestion
+  doesn't fire 50 simultaneous HTTP requests at a single-threaded
+  Ollama instance (which would queue them and could cause timeouts).
 """
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -32,6 +37,30 @@ logger = logging.getLogger(__name__)
 _resolved_model: Optional[str] = None
 _ollama_url: Optional[str] = None
 
+# Cap concurrent Ollama embedding calls. Ollama is single-threaded for
+# embedding generation, so firing 50 parallel requests just makes them
+# queue up internally and risks HTTP timeouts. A semaphore of 5 keeps
+# the pipeline flowing without overwhelming the server. Print-logged
+# so we can see contention in the container logs.
+_EMBED_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Lazy-init the semaphore so it binds to the running event loop."""
+    global _EMBED_SEMAPHORE
+    if _EMBED_SEMAPHORE is None:
+        _EMBED_SEMAPHORE = asyncio.Semaphore(5)
+    return _EMBED_SEMAPHORE
+
+
+def _log(msg: str, *args) -> None:
+    """Always-visible print() logger for the embeddings service."""
+    try:
+        formatted = msg % args if args else msg
+    except (TypeError, ValueError):
+        formatted = f"{msg} {args}"
+    print(f"[embeddings] {formatted}", flush=True)
+
 
 def _ensure_resolved() -> None:
     """Resolve the embedding model ID and Ollama URL once, cache for the process."""
@@ -39,11 +68,7 @@ def _ensure_resolved() -> None:
     if _resolved_model is None:
         _resolved_model = settings.resolve_model(settings.MEMORY_EMBEDDING_MODEL_ROLE)
         _ollama_url = settings.OLLAMA_BASE_URL
-        logger.info(
-            "[embeddings] resolved embedding model=%s url=%s",
-            _resolved_model,
-            _ollama_url,
-        )
+        _log("resolved embedding model=%s url=%s", _resolved_model, _ollama_url)
 
 
 def get_embedding_model() -> str:
@@ -64,32 +89,30 @@ async def get_embedding(text: str) -> Optional[List[float]]:
 
     _ensure_resolved()
     if not _ollama_url or not _resolved_model:
-        logger.debug("[embeddings] not configured, skipping")
+        _log("not configured, skipping embedding")
         return None
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{_ollama_url}/api/embeddings",
-                json={"model": _resolved_model, "prompt": text},
-            )
-            response.raise_for_status()
-            data = response.json()
-            embedding = data.get("embedding")
-            if isinstance(embedding, list) and embedding:
-                return embedding
-            logger.warning(
-                "[embeddings] empty embedding in response for text: %s",
-                text[:60],
-            )
+    # Acquire the semaphore so we don't fire more than 5 concurrent
+    # requests at Ollama. This prevents the "fire 50 at once and they
+    # all time out" failure mode on large digestions.
+    sem = _get_semaphore()
+    async with sem:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{_ollama_url}/api/embeddings",
+                    json={"model": _resolved_model, "prompt": text},
+                )
+                response.raise_for_status()
+                data = response.json()
+                embedding = data.get("embedding")
+                if isinstance(embedding, list) and embedding:
+                    return embedding
+                _log("empty embedding in response for text: %s", text[:60])
+                return None
+        except Exception as e:
+            _log("failed for text '%s...': %s", text[:60], e)
             return None
-    except Exception as e:
-        logger.warning(
-            "[embeddings] failed for text '%s...': %s",
-            text[:60],
-            e,
-        )
-        return None
 
 
 async def get_embeddings(texts: List[str]) -> List[Optional[List[float]]]:
@@ -98,17 +121,18 @@ async def get_embeddings(texts: List[str]) -> List[Optional[List[float]]]:
     Returns a list parallel to `texts` — each element is either a list of
     floats or None if that specific embedding failed. Maintains order.
 
-    Implemented as parallel single-text calls (Ollama's /api/embeddings
-    endpoint takes one prompt at a time). For very large batches this could
-    be optimized with a semaphore, but memory extraction typically processes
-    ≤5 facts at a time so the simple approach is fine.
+    Implemented as concurrent single-text calls (Ollama's /api/embeddings
+    endpoint takes one prompt at a time), GATED by a semaphore so we
+    don't overwhelm Ollama. For a 50-chunk digestion this now runs ~5
+    at a time instead of 50 at once — slightly slower in wall-clock
+    but vastly more reliable.
     """
-    import asyncio
-
     if not texts:
         return []
 
-    # Run all calls concurrently — embedding calls are independent
+    _log("embedding %d texts (semaphore=5)", len(texts))
+    # Run all calls concurrently — the semaphore inside get_embedding
+    # caps the actual concurrency at 5.
     results = await asyncio.gather(
         *(get_embedding(t) for t in texts), return_exceptions=False
     )

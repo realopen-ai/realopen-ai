@@ -171,7 +171,6 @@ function MemoryCard({
   t: (key: string) => string;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const colors = categoryColors[memory.category] ?? categoryColors.fact;
 
   if (isEditing) {
     return (
@@ -185,7 +184,7 @@ function MemoryCard({
           <textarea
             value={editText}
             onChange={(e) => onEditTextChange(e.target.value)}
-            className="w-full min-h-[60px] px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+            className="w-full min-h-15 px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
             autoFocus
           />
           <div className="flex items-center gap-2">
@@ -330,7 +329,7 @@ function AddMemoryForm({
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={t("brain.memories.textPlaceholder")}
-          className="w-full min-h-[60px] px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+          className="w-full min-h-15 px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
           autoFocus
         />
         <div className="flex items-center gap-2">
@@ -565,7 +564,10 @@ export function MemoriesTab() {
         {auditResult && auditResult.removed > 0 && (
           <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 text-emerald-500 text-[12px]">
             <Sparkles className="w-3.5 h-3.5" />
-            {t("brain.memories.auditDone", { count: auditResult.removed })}
+            {t("brain.memories.auditDone").replace(
+              "{count}",
+              String(auditResult.removed),
+            )}
           </div>
         )}
 
@@ -656,7 +658,7 @@ export function MemoriesTab() {
             !searchQuery.trim() && (
               <div className="flex flex-col items-center justify-center py-16 text-center">
                 <Brain className="w-10 h-10 text-muted-foreground/20 mb-3" />
-                <p className="text-[13px] text-muted-foreground/60 max-w-[260px]">
+                <p className="text-[13px] text-muted-foreground/60 max-w-65">
                   {t("brain.memories.empty")}
                 </p>
               </div>
@@ -682,7 +684,7 @@ export function MemoriesTab() {
               <MemoryCard
                 key={memory.id}
                 memory={memory}
-                onEdit={(id) => handleStartEdit(memory)}
+                onEdit={(_id: string) => handleStartEdit(memory)}
                 onDelete={handleDelete}
                 onPin={handlePin}
                 isEditing={editingId === memory.id}

@@ -11,6 +11,7 @@ import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
 import { Brain, Check } from "lucide-react";
 import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
 
@@ -157,7 +158,9 @@ export function ChatArea() {
       ];
 
       // Now add the user and assistant messages to the store for UI display
-      store.addMessage(convId, {
+      // Capture the user message ID so we can attach document digestion
+      // progress events to it later (real-time inline progress indicator).
+      const userMsgId = store.addMessage(convId, {
         role: "user",
         content,
         shrugOverlay: options?.shrug,
@@ -259,6 +262,91 @@ export function ChatArea() {
           } else {
             ms.clearLastExtraction();
           }
+        },
+        // RAG sources — the agent's rag_search tool retrieved chunks.
+        // Append them to the assistant message so MessageBubble can
+        // render the collapsible source cards.
+        onRagSources: (sources: RetrievedSourceDTO[], _toolCallId: string) => {
+          useChatStore
+            .getState()
+            .addSources(capturedConvId, assistantMsgId, sources);
+        },
+        // Document digestion progress — emitted while chat-uploaded
+        // documents are being extracted/chunked/embedded. Surface it
+        // BOTH in the right panel terminal AND inline on the user's
+        // message bubble so the user sees real-time progress in the
+        // conversation itself (not just in a side panel).
+        onDocumentDigestProgress: (p: {
+          stage: string;
+          percent: number;
+          details: string;
+          filename?: string;
+          document_id?: string | null;
+          total_chunks?: number;
+          total_images?: number;
+        }) => {
+          // Terminal log
+          if (p.percent === 0 || p.stage === "started") {
+            addTerminalLine(`📄 Digesting ${p.filename ?? "document"}...`);
+          } else if (p.stage === "done") {
+            // Handled in onDocumentDigestDone
+          } else if (p.stage === "error") {
+            addTerminalLine(`   ❌ ${p.details}`);
+          } else {
+            addTerminalLine(
+              `   ${p.percent}%  ${p.stage}  ${p.details ?? ""}`.trim(),
+            );
+          }
+          // Inline progress on the user's message bubble
+          // so the user sees feedback directly in the conversation.
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: p.filename ?? "document",
+            stage: p.stage as
+              | "started"
+              | "extracting_text"
+              | "extracting_images"
+              | "chunking"
+              | "describing_images"
+              | "embedding"
+              | "persisting"
+              | "done"
+              | "error",
+            percent: p.percent,
+            details: p.details,
+            documentId: p.document_id,
+            totalChunks: p.total_chunks,
+            totalImages: p.total_images,
+          });
+        },
+        onDocumentDigestDone: (doc: {
+          filename: string;
+          total_chunks: number;
+          total_images: number;
+        }) => {
+          addTerminalLine(
+            `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
+          );
+          // Final "done" item so the inline indicator shows completion
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: doc.filename,
+            stage: "done",
+            percent: 100,
+            details: `${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
+            totalChunks: doc.total_chunks,
+            totalImages: doc.total_images,
+          });
+        },
+        onDocumentDigestError: (info: { filename?: string; error: string }) => {
+          addTerminalLine(
+            `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
+          );
+          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
+            filename: info.filename ?? "document",
+            stage: "error",
+            percent: 100,
+            details: info.error,
+            error: info.error,
+          });
         },
         onToolCallStart: (
           toolCall: Omit<ToolCallResult, "id" | "startedAt">,

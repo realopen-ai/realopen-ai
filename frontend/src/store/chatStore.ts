@@ -11,6 +11,7 @@ import {
   type MessageDTO,
   type ModuleInfo,
 } from "@/api/client";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -70,6 +71,42 @@ export interface Message {
   thinkingDuration?: number; // seconds
   generationDuration?: number; // seconds
   isThinking?: boolean;
+  // RAG sources — only populated when the agent's rag_search tool fires
+  sources?: RetrievedSourceDTO[];
+  // Document digestion progress — populated when the user uploads docs
+  // via chat and the backend streams document_digest_* SSE events. The
+  // frontend renders an inline digestion progress indicator on the
+  // user's message bubble while these are present.
+  digestProgress?: DigestProgressItem[];
+}
+
+/**
+ * One document digestion progress event for a chat-uploaded document.
+ *
+ * The backend emits `document_digest_progress`, `document_digest_done`,
+ * and `document_digest_error` SSE events while digesting docs uploaded
+ * via the chat input. We attach these to the user's message so the UI
+ * can show real-time progress inline in the conversation — not just in
+ * the right-panel terminal.
+ */
+export interface DigestProgressItem {
+  filename: string;
+  stage:
+    | "started"
+    | "extracting_text"
+    | "extracting_images"
+    | "chunking"
+    | "describing_images"
+    | "embedding"
+    | "persisting"
+    | "done"
+    | "error";
+  percent: number;
+  details: string;
+  documentId?: string | null;
+  totalChunks?: number;
+  totalImages?: number;
+  error?: string;
 }
 
 export interface Conversation {
@@ -171,6 +208,23 @@ interface ChatState {
   setProfileName: (name: string) => void;
   setProfileLabel: (label: string) => void;
   setSelectedModel: (model: string) => void;
+
+  // RAG sources — append sources to a message when the agent's rag_search
+  // tool fires. Called from stream.ts when a `rag_sources` SSE event arrives.
+  addSources: (
+    conversationId: string,
+    messageId: string,
+    sources: RetrievedSourceDTO[],
+  ) => void;
+
+  // RAG digestion progress — append a progress item to the user's
+  // message when a `document_digest_*` SSE event arrives during chat
+  // upload. The MessageBubble renders an inline progress indicator.
+  addDigestProgress: (
+    conversationId: string,
+    messageId: string,
+    item: DigestProgressItem,
+  ) => void;
 
   // Module actions
   loadModules: () => Promise<void>;
@@ -600,6 +654,61 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProfileName: (name) => set({ profileName: name }),
   setProfileLabel: (label) => set({ profileLabel: label }),
   setSelectedModel: (model) => set({ selectedModel: model }),
+
+  addSources: (conversationId, messageId, sources) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === messageId
+                  ? {
+                      ...m,
+                      sources: [...(m.sources ?? []), ...sources],
+                    }
+                  : m,
+              ),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  /**
+   * Append a digestion progress event to the user's message. Called
+   * from stream.ts when a `document_digest_progress` SSE event arrives.
+   * The MessageBubble renders these as an inline progress indicator
+   * so the user sees real-time feedback in the conversation itself.
+   */
+  addDigestProgress: (conversationId, messageId, item) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                // Replace any existing item with the same filename+stage
+                // to avoid duplicates, then append the new one.
+                const existing = (m.digestProgress ?? []).filter(
+                  (p) =>
+                    !(
+                      p.filename === item.filename &&
+                      p.stage === item.stage &&
+                      p.percent === item.percent
+                    ),
+                );
+                return {
+                  ...m,
+                  digestProgress: [...existing, item],
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
 
   // Module actions
   loadModules: async () => {

@@ -10,7 +10,7 @@ export function SkillsTab() {
       <p className="text-[14px] font-medium text-muted-foreground/60 mb-1">
         {t("brain.skills.comingSoon")}
       </p>
-      <p className="text-[12px] text-muted-foreground/40 max-w-[260px]">
+      <p className="text-[12px] text-muted-foreground/40 max-w-65">
         {t("brain.skills.description")}
       </p>
     </div>

@@ -459,6 +459,46 @@ class Settings(BaseSettings):
     # Context window (in messages) sent to the extraction LLM.
     MEMORY_EXTRACTION_CONTEXT_WINDOW: int = 6
 
+    # ── RAG (document retrieval) ────────────────────────────────────────
+    # Embedding + vision model roles (resolved via profiles.yml).
+    RAG_EMBEDDING_MODEL_ROLE: str = "default_embedding"
+    RAG_VISION_MODEL_ROLE: str = "default_vision"
+    # Directory (under data/) where raw uploaded files are stored.
+    # Each document gets a subdirectory named after its UUID.
+    RAG_DOCUMENTS_DIR: str = "documents"
+
+    # Adaptive chunking — chunk size depends on total document length so
+    # short docs get fine-grained chunks (better Q&A precision) while
+    # long docs get bigger chunks (less context fragmentation).
+    #   <5k chars  → small  (RAG_CHUNK_SIZE_SMALL)
+    #   5k–50k     → medium (RAG_CHUNK_SIZE_MEDIUM)
+    #   >50k       → large  (RAG_CHUNK_SIZE_LARGE)
+    RAG_CHUNK_SIZE_SMALL: int = 500
+    RAG_CHUNK_SIZE_MEDIUM: int = 1000
+    RAG_CHUNK_SIZE_LARGE: int = 2000
+    # Overlap as a fraction of chunk size. 0.2 = 20% overlap.
+    RAG_CHUNK_OVERLAP_RATIO: float = 0.2
+    # Char-count thresholds for choosing small/medium/large chunk size.
+    RAG_SMALL_DOC_THRESHOLD: int = 5000
+    RAG_LARGE_DOC_THRESHOLD: int = 50000
+
+    # Retrieval — per-doc adaptive.
+    # Take top RAG_TOP_K_PER_DOC chunks per matched document, then keep the
+    # top RAG_TOP_K_TOTAL overall. This guarantees a single big document
+    # can't crowd out hits from other relevant docs.
+    RAG_TOP_K_PER_DOC: int = 3
+    RAG_TOP_K_TOTAL: int = 8
+    # Drop chunks whose vector cosine similarity is below this.
+    RAG_SIMILARITY_CUTOFF: float = 0.20
+    # Hybrid retrieval weights (vector + BM25). Recency is irrelevant for
+    # documents so it's omitted (unlike the memory system).
+    RAG_RETRIEVAL_VECTOR_WEIGHT: float = 0.65
+    RAG_RETRIEVAL_BM25_WEIGHT: float = 0.35
+
+    # Max image size (pixels per side) sent to the vision model. Larger
+    # images are downscaled to keep vision-LLM latency reasonable.
+    RAG_VISION_IMAGE_MAX_DIM: int = 1024
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

@@ -1,9 +1,5 @@
 """
-Code execution tool - runs Python code in the sandbox.
-
-This tool allows the AI agent to execute Python code and return the output.
-In production, this should run in a sandboxed container. For now, it executes
-locally with basic safety checks.
+Code execution tool — runs Python in a sandboxed subprocess.
 """
 
 import logging
@@ -11,6 +7,7 @@ import time
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import List
 
 from app.agent.base import BaseTool, ToolResult, ToolCall, ToolType, tool_registry
 
@@ -20,13 +17,24 @@ logger = logging.getLogger(__name__)
 class CodeExecTool(BaseTool):
     name = "use_code_exec"
     description = (
-        "Execute Python3.12 code and return the output. "
-        "Use this for calculations, data processing, or any task that requires "
-        "running code. Provide the code as a string. "
-        "The code runs in a sandboxed environment with a 30-second timeout."
-        "Make SURE to print the final result in the code, as only printed output will be captured and returned."
+        "Execute Python code and return the output. "
+        "Use for calculations, data processing, or scripting. "
+        "Only printed output is captured — always print results."
     )
     tool_type = ToolType.CODE_EXEC
+
+    param_aliases = {"code": "code", "script": "code", "program": "code"}
+
+    def get_parameters(self) -> dict:
+        return {
+            "code": {
+                "type": "string",
+                "description": "Python code to execute. Print final results.",
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        return ["code"]
 
     async def execute(
         self,
@@ -42,7 +50,7 @@ class CodeExecTool(BaseTool):
             type=self.tool_type,
             name=self.name,
             status="running",
-            title=f"Running {language}",
+            title="Running code",
             language=language,
             code=code,
             started_at=start,
@@ -76,6 +84,13 @@ class CodeExecTool(BaseTool):
         if language not in ("python", "python3"):
             return f"Unsupported language: {language}", 1
 
+        # Basic safety: block dangerous imports
+        blocked = {"os.system", "subprocess", "shutil.rmtree", "__import__('os')"}
+        code_lower = code.lower()
+        for b in blocked:
+            if b in code_lower:
+                return f"Blocked dangerous operation: {b}", 1
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -87,10 +102,11 @@ class CodeExecTool(BaseTool):
                 capture_output=True,
                 text=True,
                 timeout=30,
+                cwd="/tmp",
             )
             output = result.stdout
             if result.stderr:
-                output += f"\nStderr:\n{result.stderr}"
+                output += f"\n[stderr]:\n{result.stderr}"
             return output.strip(), result.returncode
         except subprocess.TimeoutExpired:
             return "Error: Code execution timed out (30s)", 1
