@@ -8,7 +8,7 @@ the configured vision model (from profiles.yml).
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, List
 
 import httpx
 
@@ -22,11 +22,20 @@ class VisionTool(BaseTool):
     name = "use_vision"
     description = (
         "Analyze an image using a vision model. "
-        "Provide a base64-encoded image and an optional prompt describing "
-        "what you want to know about the image. "
-        "This tool is automatically invoked when the user sends an image."
+        "Automatically invoked when the user sends an image."
     )
     tool_type = ToolType.VISION
+
+    def get_parameters(self) -> dict:
+        return {
+            "prompt": {
+                "type": "string",
+                "description": "What to look for in the image",
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        return []
 
     async def execute(
         self,
