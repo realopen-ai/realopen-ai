@@ -459,6 +459,23 @@ class Settings(BaseSettings):
     # Context window (in messages) sent to the extraction LLM.
     MEMORY_EXTRACTION_CONTEXT_WINDOW: int = 6
 
+    # ── Context compaction ──────────────────────────────────────────────
+    # When context usage exceeds this fraction of the model's window,
+    # compact older messages into a summary. Default 0.80 = 80% full.
+    CONTEXT_COMPACT_THRESHOLD: float = 0.80
+    # Number of recent turns to always preserve during compaction.
+    CONTEXT_COMPACT_PRESERVE_TURNS: int = 6
+    # Maximum tokens for the compaction summary response.
+    CONTEXT_COMPACT_SUMMARY_TOKENS: int = 512
+
+    # ── Conversation memory (cross-session context) ─────────────────────
+    # Minimum messages before a conversation is summarized for cross-session memory.
+    CONVERSATION_SUMMARY_MIN_MESSAGES: int = 8
+    # Maximum past conversation summaries to inject into new conversations.
+    CONVERSATION_SUMMARY_MAX_INJECT: int = 2
+    # Minimum time between re-summaries of the same conversation (seconds).
+    CONVERSATION_SUMMARY_COOLDOWN_SECONDS: int = 3600
+
     # ── RAG (document retrieval) ────────────────────────────────────────
     # Embedding + vision model roles (resolved via profiles.yml).
     RAG_EMBEDDING_MODEL_ROLE: str = "default_embedding"
