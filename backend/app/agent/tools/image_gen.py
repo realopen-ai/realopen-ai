@@ -1,14 +1,10 @@
 """
 Image generation tool using Ollama-compatible image models.
-
-When the image_generation module is enabled, this tool allows the agent
-to generate images from text descriptions. The model used depends on
-the current hardware profile (defined in modules.yml).
 """
 
 import logging
 import time
-from typing import Optional
+from typing import List
 from base64 import b64decode, b64encode
 
 import httpx
@@ -22,20 +18,22 @@ logger = logging.getLogger(__name__)
 class ImageGenTool(BaseTool):
     name = "use_image_gen"
     description = (
-        "Generate an image from a text description. "
-        "Provide a detailed prompt describing the image you want to create. "
-        "The image will be generated locally using AI models. "
-        "Be specific and descriptive for best results."
+        "Generate an image from a text description. Be specific and descriptive."
     )
     tool_type = ToolType.IMAGE_GEN
 
-    async def execute(
-        self,
-        *,
-        prompt: str,
-        **kwargs,
-    ) -> ToolResult:
-        """Generate an image from a text prompt using the configured model."""
+    def get_parameters(self) -> dict:
+        return {
+            "prompt": {
+                "type": "string",
+                "description": "Detailed description of the image to generate",
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        return ["prompt"]
+
+    async def execute(self, *, prompt: str, **kwargs) -> ToolResult:
         start = time.time()
         resolved_model = settings.resolve_model("default_image_gen")
         tool_call = ToolCall(
@@ -50,20 +48,11 @@ class ImageGenTool(BaseTool):
         try:
             # Check if the model is available in Ollama
             if not await self._is_model_available(resolved_model):
+                msg = f"Model '{resolved_model}' not installed. Run: ollama pull {resolved_model}"
                 tool_call.status = "error"
                 tool_call.completed_at = time.time()
-                tool_call.error = (
-                    f"Image generation model '{resolved_model}' is not installed. "
-                    f"Please install it with: ollama pull {resolved_model}"
-                )
-                return ToolResult(
-                    success=False,
-                    output=(
-                        f"Image generation model '{resolved_model}' is not installed. "
-                        f"Please install it with: ollama pull {resolved_model}"
-                    ),
-                    tool_call=tool_call,
-                )
+                tool_call.error = msg
+                return ToolResult(success=False, output=msg, tool_call=tool_call)
 
             # Generate image using Ollama API
             # Note: This uses the standard Ollama generate endpoint.
@@ -79,7 +68,7 @@ class ImageGenTool(BaseTool):
 
             return ToolResult(
                 success=True,
-                output=f"Image generated successfully for prompt: {prompt}",
+                output=f"Image generated for: {prompt}",
                 tool_call=tool_call,
             )
 
@@ -98,7 +87,7 @@ class ImageGenTool(BaseTool):
         """Check if a model is available in Ollama."""
         return await ModuleConfig.check_model_downloaded(model)
 
-    async def _generate_image(self, model: str, prompt: str) -> Optional[bytes]:
+    async def _generate_image(self, model: str, prompt: str) -> bytes:
         """Generate an image using Ollama's API.
 
         This calls the Ollama /api/generate endpoint which, for image
