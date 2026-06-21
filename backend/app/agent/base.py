@@ -1,5 +1,10 @@
 """
 Base tool interface and tool registry for the AI agent.
+
+Each tool supports:
+- A text description for the system prompt
+- JSON Schema parameters for native Ollama/OpenAI function calling
+- Multi-format tool call parsing (fenced blocks, JSON, XML, native)
 """
 
 import logging
@@ -57,11 +62,21 @@ class ToolResult:
 
 
 class BaseTool(ABC):
-    """Abstract base class for all agent tools."""
+    """Abstract base class for all agent tools.
+
+    Override get_parameters() and get_required_params() to expose
+    JSON Schema for native Ollama/OpenAI function calling. The base
+    returns an empty schema (tool accepts any kwargs).
+    """
 
     name: str = ""
     description: str = ""
     tool_type: ToolType = ToolType.WEB_SEARCH
+
+    # Parameter aliases — maps common names to the tool's expected kwarg names.
+    # e.g. {"query": "query", "search": "query"} means both "query" and
+    # "search" in tool args map to the `query` kwarg.
+    param_aliases: Dict[str, str] = {}
 
     @abstractmethod
     async def execute(self, **kwargs) -> ToolResult:
@@ -75,6 +90,49 @@ class BaseTool(ABC):
             "description": self.description,
             "type": self.tool_type.value,
         }
+
+    def get_parameters(self) -> dict:
+        """Return JSON Schema properties for native function calling.
+
+        Override in subclasses to declare specific parameters.
+        The default returns a simple 'input' parameter.
+        """
+        return {
+            "input": {
+                "type": "string",
+                "description": self.description[:200],
+            },
+        }
+
+    def get_required_params(self) -> List[str]:
+        """Return list of required parameter names."""
+        return ["input"]
+
+    def _apply_aliases(self, kwargs: dict) -> dict:
+        """Apply parameter aliases to normalize argument names."""
+        if not self.param_aliases:
+            return kwargs
+        result = {}
+        used_source = set()
+        for target, sources in self._invert_aliases().items():
+            for src in sources:
+                if src in kwargs and src not in used_source:
+                    result[target] = kwargs[src]
+                    used_source.add(src)
+                    break
+        # Pass through any unknown keys
+        for k, v in kwargs.items():
+            if k not in result:
+                result[k] = v
+        return result
+
+    def _invert_aliases(self) -> Dict[str, List[str]]:
+        """Invert param_aliases to {target_param: [alias1, alias2, ...]}."""
+        inverted: Dict[str, List[str]] = {}
+        for alias, target in self.param_aliases.items():
+            inverted.setdefault(target, []).append(alias)
+            inverted[target].append(target)  # canonical name is also valid
+        return inverted
 
 
 class ToolRegistry:
