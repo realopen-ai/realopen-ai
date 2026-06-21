@@ -30,6 +30,14 @@ class Conversation(Base):
         nullable=True,
     )
 
+    # Conversation summary for cross-session context memory.
+    # Generated automatically when a conversation reaches min_messages.
+    # summary_embedding enables pgvector search across past conversations.
+    # See migration: add_conversation_summary_embedding.
+    summary = Column(Text, nullable=True)
+    summary_embedding = Column(Vector(768), nullable=True)
+    summary_at = Column(DateTime, nullable=True)
+
     messages = relationship(
         "Message",
         back_populates="conversation",
