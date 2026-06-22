@@ -52,10 +52,9 @@ export interface StreamCallbacks {
  * considered dead and aborted. This handles cases where the connection is
  * silently dropped or the backend crashes without sending an error event.
  *
- * Set to 2 minutes — generous enough for tool execution gaps (web search,
- * code execution can take 30-60s) but short enough to detect dead connections.
+ * Set to 10 minutes.
  */
-const STREAM_IDLE_TIMEOUT_MS = 2 * 60 * 1000;
+const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Absolute maximum duration for a streaming request (safety net).

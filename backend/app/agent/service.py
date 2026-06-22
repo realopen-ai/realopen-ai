@@ -20,6 +20,8 @@ from app.config import settings
 from app.core.logger import is_debug
 from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
+from app.services.context_compactor import compact_conversation
+from app.services.conversation_memory import build_cross_session_context
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -354,6 +356,23 @@ async def run_agent_stream(
     except Exception as e:
         logger.debug("Memory injection failed: %s", e)
 
+    # ── Inject cross-session context from past conversations ──
+    try:
+        if last_user.strip() and conversation_id:
+            async with async_session_factory() as db:
+                cross_ctx = await build_cross_session_context(
+                    db,
+                    last_user,
+                    conversation_id=conversation_id,
+                    max_summaries=2,
+                )
+                if cross_ctx:
+                    system_prompt += cross_ctx
+                    _dbg("Injected cross-session context (%d chars)", len(cross_ctx))
+    except Exception as e:
+        logger.debug("Cross-session context injection failed: %s", e)
+        _dbg("Cross-session context injection failed: %s", e)
+
     # ── Auto-vision for image attachments ──
     if images:
         vision_tool = registry.get("use_vision")
@@ -409,12 +428,28 @@ async def run_agent_stream(
     ollama_tools = _build_ollama_tools(selected_tools) if use_native_tools else None
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
-    max_rounds = 5
+    max_rounds = 10
     for _ in range(max_rounds):
-        # Build Ollama request messages
+        # Build Ollama request messages and check for context compaction
         ollama_messages = [{"role": "system", "content": system_prompt}]
         for m in messages:
             ollama_messages.append({"role": m["role"], "content": m["content"]})
+
+        # Compact if approaching context limit (essential for small models)
+        try:
+            compacted, was_compacted = await compact_conversation(
+                ollama_messages, resolved_model
+            )
+            if was_compacted:
+                ollama_messages = compacted
+                _dbg(
+                    "Compacted conversation: %d -> %d messages",
+                    len(messages) + 1,
+                    len(compacted),
+                )
+        except Exception as e:
+            logger.debug("Context compaction failed: %s", e)
+            _dbg("Context compaction failed: %s", e)
 
         full_response = ""
         thinking_content = ""
@@ -423,7 +458,7 @@ async def run_agent_stream(
         thinking_start = None
 
         try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
+            async with httpx.AsyncClient(timeout=1200.0) as client:
                 payload = {
                     "model": resolved_model,
                     "messages": ollama_messages,
@@ -436,6 +471,7 @@ async def run_agent_stream(
                     "POST",
                     f"{settings.OLLAMA_BASE_URL}/api/chat",
                     json=payload,
+                    timeout=1200.0,
                 ) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
