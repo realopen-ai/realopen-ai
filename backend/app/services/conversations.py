@@ -154,13 +154,25 @@ async def save_document(
 
 
 async def conversation_to_dict(conv: Conversation) -> dict:
-    """Convert a Conversation ORM object to a dict for API responses."""
+    """Convert a Conversation ORM object to a dict for API responses.
+
+    Exposes the cross-session summary fields (summary, summary_at) so the
+    frontend can display what was injected as past-conversation context.
+    """
     return {
         "id": str(conv.id),
         "title": conv.title,
         "model": conv.model,
         "createdAt": int(conv.created_at.timestamp() * 1000) if conv.created_at else 0,
         "updatedAt": int(conv.updated_at.timestamp() * 1000) if conv.updated_at else 0,
+        # Cross-session context visibility — lets the Brain page show
+        # which conversations have been summarized and what the summary is.
+        "summary": conv.summary if hasattr(conv, "summary") else None,
+        "summaryAt": (
+            int(conv.summary_at.timestamp() * 1000)
+            if hasattr(conv, "summary_at") and conv.summary_at
+            else None
+        ),
     }
 
 
