@@ -5,8 +5,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import make_asgi_app
 
 from app.config import settings
+from app.core import metrics as app_metrics
 from app.api.health import router as health_router
 from app.api.chat import router as chat_router
 from app.api.models import router as models_router
@@ -201,7 +203,19 @@ app.add_middleware(
 app.add_middleware(DebugLoggingMiddleware)
 
 # Prometheus metrics
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+Instrumentator(
+    excluded_handlers=[
+        "/metrics",
+        "/api/health",
+        "/api/docs",
+        "/api/redoc",
+        "/api/openapi.json",
+    ],
+).instrument(app)
+
+# Mount a combined metrics endpoint: fastapi instrumentator + custom AI metrics
+metrics_app = make_asgi_app(registry=app_metrics.REGISTRY)
+app.mount("/metrics", metrics_app)
 
 # Routes
 app.include_router(health_router, prefix="/api", tags=["health"])
