@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -63,10 +63,17 @@ class Message(Base):
     image_count = Column(Integer, default=0)
     document_count = Column(Integer, default=0)
 
-    thinking = Column(Text, nullable=True)
-    thinking_duration = Column(Integer, nullable=True)
+    # Ordered rendering blocks for multi-round agent turns. Each block is
+    # one of: thinking, text, tool_call, error. NULL for user/system
+    # messages. See migration e2b7c4f1a93d.
+    #
+    # For assistant messages, `content` holds the concatenation of all
+    # text blocks (for tsvector search via search_vector); `blocks` holds
+    # the full ordered structure for chronological display.
+    blocks = Column(JSONB, nullable=True)
+    # Total generation duration across all agent rounds (seconds). Used
+    # for the response-time badge under assistant messages.
     generation_duration = Column(Integer, nullable=True)
-    tool_calls_json = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
