@@ -50,8 +50,10 @@ class RagSearchTool(BaseTool):
 
     name = "rag_search"
     description = (
-        "Search uploaded documents (PDFs, DOCX, text files, spreadsheets) for information. "
-        "Use when the user has uploaded documents and asks about their content."
+        "Search the user's knowledge base of uploaded documents (PDFs, DOCX, text files, "
+        "spreadsheets) for information. Use PROACTIVELY when the user has uploaded documents "
+        "and asks about their content — retrieve relevant excerpts BEFORE answering so you "
+        "can ground your response in the actual document text."
     )
     tool_type = ToolType.FILE_READ
 
