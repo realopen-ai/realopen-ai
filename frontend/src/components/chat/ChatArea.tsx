@@ -199,21 +199,21 @@ export function ChatArea() {
         onToken: (token: string) =>
           useChatStore
             .getState()
-            .appendToMessage(capturedConvId, assistantMsgId, token),
+            .appendTextToken(capturedConvId, assistantMsgId, token),
         onThinkingStart: () => {
           useChatStore
             .getState()
-            .setThinkingState(capturedConvId, assistantMsgId, true);
+            .startThinkingBlock(capturedConvId, assistantMsgId);
         },
         onThinkingToken: (token: string) => {
           useChatStore
             .getState()
-            .appendToThinking(capturedConvId, assistantMsgId, token);
+            .appendThinkingToken(capturedConvId, assistantMsgId, token);
         },
         onThinkingDone: (durationSeconds: number) => {
           useChatStore
             .getState()
-            .setThinkingDuration(
+            .finishThinkingBlock(
               capturedConvId,
               assistantMsgId,
               durationSeconds,
@@ -229,13 +229,6 @@ export function ChatArea() {
             assistantMsgId,
             data.generationDuration,
           );
-          if (data.thinkingDuration != null) {
-            s.setThinkingDuration(
-              capturedConvId,
-              assistantMsgId,
-              data.thinkingDuration,
-            );
-          }
           // Re-enable the input as soon as generation completes — the
           // memory extraction step (which runs after this event but before
           // [DONE]) is non-blocking and shouldn't keep the input disabled.
@@ -275,13 +268,16 @@ export function ChatArea() {
             ms.clearLastExtraction();
           }
         },
-        // RAG sources — the agent's rag_search tool retrieved chunks.
-        // Append them to the assistant message so MessageBubble can
-        // render the collapsible source cards.
-        onRagSources: (sources: RetrievedSourceDTO[], _toolCallId: string) => {
+        // RAG sources — attach to the tool_call block by tool call ID.
+        onRagSources: (sources: RetrievedSourceDTO[], toolCallId: string) => {
           useChatStore
             .getState()
-            .addSources(capturedConvId, assistantMsgId, sources);
+            .setToolCallSources(
+              capturedConvId,
+              assistantMsgId,
+              toolCallId,
+              sources,
+            );
         },
         // Document digestion progress — emitted while chat-uploaded
         // documents are being extracted/chunked/embedded. Surface it
@@ -360,12 +356,9 @@ export function ChatArea() {
             error: info.error,
           });
         },
-        onToolCallStart: (
-          toolCall: Omit<ToolCallResult, "id" | "startedAt">,
-        ) => {
+        onToolCallStart: (toolCall: ToolCallResult) => {
           const s = useChatStore.getState();
-          const tcId = s.addToolCall(capturedConvId, assistantMsgId, toolCall);
-          s.openSandbox(capturedConvId, assistantMsgId);
+          s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
 
           if (toolCall.type === "code_exec") {
             setRightPanelOpen(true);
@@ -383,8 +376,6 @@ export function ChatArea() {
           } else if (toolCall.type === "websearch") {
             addTerminalLine(`$ Searching: ${toolCall.query ?? content}`);
           }
-
-          return tcId;
         },
         onToolCallUpdate: (
           toolCallId: string,
@@ -392,7 +383,7 @@ export function ChatArea() {
         ) => {
           useChatStore
             .getState()
-            .updateToolCall(
+            .updateToolCallBlock(
               capturedConvId,
               assistantMsgId,
               toolCallId,
