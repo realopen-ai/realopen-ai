@@ -18,6 +18,7 @@ import httpx
 from app.agent.base import ToolCall, get_tool_registry
 from app.config import settings
 from app.core.logger import is_debug
+from app.core.prompt_security import untrusted_context_message
 from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
 from app.services.context_compactor import compact_conversation
@@ -39,11 +40,15 @@ def _dbg(msg: str, *args) -> None:
 
 
 # ── Always-available tools (shown regardless of query) ──
+# manage_memory is always available because "remember this" can follow
+# any message regardless of topic. search_past_conversations is keyword-
+# triggered to avoid bloating the tool list on every turn.
 _ALWAYS_TOOLS: Set[str] = {
     "use_websearch",
     "use_webfetch",
     "use_code_exec",
     "rag_search",
+    "manage_memory",
 }
 
 # ── Keyword → tool mapping for dynamic selection ──
@@ -72,6 +77,18 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "news": {"use_websearch"},
     "weather": {"use_websearch"},
     "price": {"use_websearch"},
+    # Past-conversation search triggers
+    "last week": {"search_past_conversations"},
+    "yesterday": {"search_past_conversations"},
+    "before": {"search_past_conversations"},
+    "previous": {"search_past_conversations"},
+    "earlier": {"search_past_conversations"},
+    "we discussed": {"search_past_conversations"},
+    "i told you": {"search_past_conversations"},
+    "i said": {"search_past_conversations"},
+    "i mentioned": {"search_past_conversations"},
+    "remember when": {"search_past_conversations"},
+    "what did i": {"search_past_conversations"},
 }
 
 
@@ -144,7 +161,14 @@ def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
 
 
 def _build_system_prompt(tool_names: Set[str]) -> str:
-    """Build a compact system prompt with only the selected tools."""
+    """Build a compact, STABLE system prompt with only the selected tools.
+
+    KV-CACHE DESIGN: This prompt must be byte-identical across turns of
+    the same conversation (same selected tools) so Ollama/llama.cpp can
+    reuse their cached prompt prefix. Therefore NOTHING volatile goes
+    here — no datetime, no retrieved memories, no cross-session context.
+    Those are appended as tail user-role messages in run_agent_stream().
+    """
     registry = get_tool_registry()
     lines = []
     for name in sorted(tool_names):
@@ -153,11 +177,7 @@ def _build_system_prompt(tool_names: Set[str]) -> str:
             lines.append(f"- **{tool.name}**: {tool.description[:200]}")
     schema_text = "\n".join(lines) if lines else "(no tools available)"
 
-    return format_prompt(
-        "agent_system",
-        tool_schemas=schema_text,
-        current_datetime=time.strftime("%Y-%m-%d %H:%M:%S"),
-    )
+    return format_prompt("agent_system", tool_schemas=schema_text)
 
 
 # ── Tool parsing (multi-format) ──
@@ -168,6 +188,8 @@ _TOOL_TAGS = {
     "use_vision",
     "rag_search",
     "use_image_gen",
+    "manage_memory",
+    "search_past_conversations",
 }
 
 # Fenced code blocks: ```tool_name\n...\n```
@@ -239,7 +261,7 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
     lines = content.strip().split("\n")
     tag_lower = tag.lower()
 
-    if tag_lower in ("use_websearch", "rag_search"):
+    if tag_lower in ("use_websearch", "rag_search", "search_past_conversations"):
         args["query"] = lines[0]
     elif tag_lower == "use_webfetch":
         args["url"] = lines[0]
@@ -249,6 +271,26 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
         args["prompt"] = lines[0] if lines else content
         if len(lines) > 1:
             args["image_base64"] = lines[1]
+    elif tag_lower == "manage_memory":
+        # Format: action on line 1, then key:value pairs
+        if lines:
+            args["action"] = lines[0].strip().lower()
+            for line in lines[1:]:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip().lower().replace(" ", "_")
+                    if key in (
+                        "action",
+                        "text",
+                        "memory_id",
+                        "id",
+                        "category",
+                        "query",
+                    ):
+                        # Map 'id' to 'memory_id'
+                        if key == "id":
+                            key = "memory_id"
+                        args[key] = val.strip()
 
     return {"tool": tag_lower, "args": args}
 
@@ -341,22 +383,65 @@ async def run_agent_stream(
     selected_tools = _select_tools(last_user)
     _dbg("Selected tools: %s", sorted(selected_tools))
 
+    # ── KV-CACHE-AWARE MESSAGE CONSTRUCTION ────────────────────────────
+    # The system prompt is STABLE across turns (same selected tools → same
+    # bytes) so Ollama/llama.cpp can reuse its cached prompt prefix. All
+    # volatile content (datetime, memories, cross-session context) goes
+    # into tail user-role "context" messages appended AFTER the
+    # conversation, wrapped as untrusted data for prompt-injection safety.
+    #
+    # This can halve per-turn latency on small models where the system
+    # prompt is ~1-2k tokens — without this, every turn re-processes the
+    # full prompt from scratch because the datetime changed.
     system_prompt = _build_system_prompt(selected_tools)
 
-    # Inject memories if available
+    # Build the list of dynamic context messages (appended after convo).
+    context_messages: List[Dict[str, Any]] = []
+
+    # Memory injection — wrapped as untrusted data (memories are
+    # auto-extracted from past conversations and could contain injected
+    # content from a malicious document).
     try:
         if last_user.strip():
             async with async_session_factory() as db:
-                relevant = await get_relevant_memories(db, last_user, top_k=8)
+                relevant = await get_relevant_memories(
+                    db, last_user, top_k=settings.MEMORY_INJECTION_TOP_K
+                )
                 if relevant:
-                    lines = ["\n\n## Known facts about the user\n"]
-                    for m in relevant:
-                        lines.append(f"- {m.text} [{m.category}]")
-                    system_prompt += "\n".join(lines)
+                    pinned = [m for m in relevant if m.pinned]
+                    extended = [m for m in relevant if not m.pinned]
+                    if pinned:
+                        pinned_text = "\n".join(
+                            f"- {m.text} [{m.category}]" for m in pinned
+                        )
+                        context_messages.append(
+                            untrusted_context_message(
+                                "saved memory: pinned user facts",
+                                f"Core facts about the user (always in context):\n{pinned_text}",
+                            )
+                        )
+                    if extended:
+                        ext_text = "\n".join(
+                            f"- {m.text} [{m.category}]" for m in extended
+                        )
+                        context_messages.append(
+                            untrusted_context_message(
+                                "saved memory: retrieved context",
+                                f"Memory context. Do not reference unless the user asks "
+                                f"about these topics.\n{ext_text}",
+                            )
+                        )
+                    _dbg(
+                        "Injected %d memories (%d pinned, %d extended)",
+                        len(relevant),
+                        len(pinned),
+                        len(extended),
+                    )
     except Exception as e:
         logger.debug("Memory injection failed: %s", e)
+        _dbg("Memory injection failed: %s", e)
 
-    # ── Inject cross-session context from past conversations ──
+    # Cross-session context from past conversations.
     try:
         if last_user.strip() and conversation_id:
             async with async_session_factory() as db:
@@ -364,14 +449,35 @@ async def run_agent_stream(
                     db,
                     last_user,
                     conversation_id=conversation_id,
-                    max_summaries=2,
+                    max_summaries=settings.CONVERSATION_SUMMARY_MAX_INJECT,
                 )
                 if cross_ctx:
-                    system_prompt += cross_ctx
-                    _dbg("Injected cross-session context (%d chars)", len(cross_ctx))
+                    context_messages.append(
+                        untrusted_context_message(
+                            "past conversation summaries", cross_ctx
+                        )
+                    )
+                    _dbg(
+                        "Injected cross-session context (%d chars)",
+                        len(cross_ctx),
+                    )
     except Exception as e:
         logger.debug("Cross-session context injection failed: %s", e)
         _dbg("Cross-session context injection failed: %s", e)
+
+    # Current datetime — volatile, so it's a tail context message (not
+    # in the system prompt). Wrapped as untrusted for consistency though
+    # it's system-generated.
+    context_messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"[Context: The current date and time is "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')}. "
+                f"Use this for recency reasoning.]"
+            ),
+        }
+    )
 
     # ── Auto-vision for image attachments ──
     if images:
@@ -430,10 +536,17 @@ async def run_agent_stream(
 
     max_rounds = 10
     for _ in range(max_rounds):
-        # Build Ollama request messages and check for context compaction
+        # Build Ollama request messages: stable system prefix + conversation
+        # turns + dynamic context messages (memories/cross-session/datetime).
+        # The context_messages are appended AFTER the conversation so the
+        # system prompt + conversation prefix stays cacheable.
         ollama_messages = [{"role": "system", "content": system_prompt}]
         for m in messages:
             ollama_messages.append({"role": m["role"], "content": m["content"]})
+        # Append dynamic context (memories, cross-session, datetime).
+        # These are user-role messages wrapped as untrusted data.
+        for cm in context_messages:
+            ollama_messages.append({"role": cm["role"], "content": cm["content"]})
 
         # Compact if approaching context limit (essential for small models)
         try:
@@ -600,6 +713,15 @@ async def run_agent_stream(
                 tool_args.setdefault("conversation_id", conversation_id)
                 _dbg(
                     "   🔎 rag_search: injected conversation_id=%s",
+                    conversation_id,
+                )
+
+            # search_past_conversations: inject conversation_id so the
+            # tool excludes the current conversation from its results.
+            if tool_name == "search_past_conversations" and conversation_id:
+                tool_args.setdefault("conversation_id", conversation_id)
+                _dbg(
+                    "   🔎 search_past_conversations: injected conversation_id=%s",
                     conversation_id,
                 )
 
