@@ -236,6 +236,107 @@ async def _persist_message(
         return None
 
 
+# ─── Block builder (reconstructs ordered blocks from SSE events) ──────
+
+
+class _BlockBuilder:
+    """Reconstructs the ordered `blocks` array from SSE events.
+
+    Both the /chat/stream and /chat/stream/multipart generate() functions
+    use this to accumulate blocks in chronological order as the agent
+    emits events. The resulting blocks list is persisted to the DB and
+    also matches what the frontend reconstructs independently.
+
+    Block types:
+      - thinking: {type, content, duration}
+      - text:     {type, content}
+      - tool_call: {type, tool_call: {id, type, status, title, ...}}
+      - error:    {type, content}
+    """
+
+    def __init__(self):
+        self.blocks: list[dict] = []
+        self._current_text: dict | None = None
+        self._current_thinking: dict | None = None
+        self._tool_call_blocks: dict[str, dict] = {}  # tc_id -> block ref
+        self.generation_duration: int = 0
+
+    def _close_text(self):
+        self._current_text = None
+
+    def _close_thinking(self):
+        self._current_thinking = None
+
+    def on_thinking_start(self):
+        """Open a new thinking block (closes any open text block)."""
+        self._close_text()
+        self._current_thinking = {"type": "thinking", "content": "", "duration": None}
+        self.blocks.append(self._current_thinking)
+
+    def on_thinking_token(self, token: str):
+        if self._current_thinking is not None:
+            self._current_thinking["content"] += token
+
+    def on_thinking_done(self, duration: int):
+        if self._current_thinking is not None:
+            self._current_thinking["duration"] = duration
+        self._close_thinking()
+
+    def on_message_token(self, token: str):
+        """Append a text token. Opens a new text block if needed."""
+        if self._current_thinking is not None:
+            # thinking_done should have fired, but just in case
+            self._close_thinking()
+        if self._current_text is None:
+            self._current_text = {"type": "text", "content": ""}
+            self.blocks.append(self._current_text)
+        self._current_text["content"] += token
+
+    def on_tool_call_start(self, tc: dict):
+        """Create a new tool_call block (closes any open text/thinking)."""
+        self._close_text()
+        self._close_thinking()
+        tc_id = tc.get("id", "")
+        block = {"type": "tool_call", "tool_call": dict(tc)}
+        self.blocks.append(block)
+        if tc_id:
+            self._tool_call_blocks[tc_id] = block
+
+    def on_tool_call_update(self, tc_id: str, updates: dict):
+        """Update an existing tool_call block by ID."""
+        block = self._tool_call_blocks.get(tc_id)
+        if block is not None:
+            block["tool_call"].update(updates)
+
+    def on_rag_sources(self, tc_id: str, sources: list):
+        """Attach RAG sources to a tool_call block by ID."""
+        block = self._tool_call_blocks.get(tc_id)
+        if block is not None:
+            block["tool_call"]["sources"] = sources
+
+    def on_generation_done(self, duration: int):
+        self.generation_duration += duration
+
+    def on_error(self, error: str):
+        """Append an error block."""
+        self._close_text()
+        self._close_thinking()
+        self.blocks.append({"type": "error", "content": error})
+
+    def get_text_content(self) -> str:
+        """Concatenation of all text block contents (for the `content`
+        column + tsvector search)."""
+        return "".join(
+            b.get("content", "") for b in self.blocks if b.get("type") == "text"
+        )
+
+    def to_db_blocks(self) -> list[dict]:
+        """Return the blocks list for DB persistence (strips any internal
+        state). Called after the stream completes."""
+        # Close any dangling open blocks
+        return self.blocks
+
+
 # ─── Memory extraction helper ──────────────────────────────────────────
 
 
@@ -395,11 +496,7 @@ async def chat_stream(request: ChatRequest):
         if _conv_id:
             await mark_stream_active(str(_conv_id))
         chunk_count = 0
-        full_assistant_content = ""
-        full_thinking_content = ""
-        thinking_duration_sec = 0
-        generation_duration_sec = 0
-        accumulated_tool_calls = []  # Collect tool call data for DB persistence
+        builder = _BlockBuilder()
         try:
             async for chunk in run_agent_stream(
                 messages=messages,
@@ -414,52 +511,50 @@ async def chat_stream(request: ChatRequest):
                         chunk_count,
                         chunk[:200] if chunk else "(empty)",
                     )
-                # Accumulate assistant content from SSE chunks
+                # Reconstruct ordered blocks from SSE events for DB persistence.
                 data_str = chunk.strip()
                 if data_str.startswith("data: "):
                     try:
                         parsed = json.loads(data_str[6:])
                         event_type = parsed.get("event")
 
-                        if event_type == "message" and parsed.get("message", {}).get(
-                            "content"
-                        ):
-                            full_assistant_content += parsed["message"]["content"]
+                        if event_type == "thinking_start":
+                            builder.on_thinking_start()
 
                         if event_type == "thinking" and parsed.get("thinking"):
-                            full_thinking_content += parsed["thinking"]
+                            builder.on_thinking_token(parsed["thinking"])
 
                         if (
                             event_type == "thinking_done"
                             and parsed.get("thinkingDuration") is not None
                         ):
-                            thinking_duration_sec += parsed["thinkingDuration"]
+                            builder.on_thinking_done(parsed["thinkingDuration"])
 
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
-                                generation_duration_sec += parsed["generationDuration"]
-                            if (
-                                parsed.get("thinkingDuration") is not None
-                                and thinking_duration_sec == 0
-                            ):
-                                thinking_duration_sec = parsed["thinkingDuration"]
+                                builder.on_generation_done(parsed["generationDuration"])
+
+                        if event_type == "message" and parsed.get("message", {}).get(
+                            "content"
+                        ):
+                            builder.on_message_token(parsed["message"]["content"])
 
                         if event_type == "tool_call" and parsed.get("tool_call"):
                             tc = parsed["tool_call"]
-                            tc_id = tc.get("id")
-
-                            existing = next(
-                                (
-                                    t
-                                    for t in accumulated_tool_calls
-                                    if t.get("id") == tc_id
-                                ),
-                                None,
-                            )
-                            if existing:
-                                existing.update(tc)
+                            tc_id = tc.get("id", "")
+                            if tc.get("status") == "running":
+                                builder.on_tool_call_start(tc)
                             else:
-                                accumulated_tool_calls.append(dict(tc))
+                                # completed or error — update existing block
+                                updates = {k: v for k, v in tc.items() if k != "id"}
+                                builder.on_tool_call_update(tc_id, updates)
+
+                        if event_type == "rag_sources" and parsed.get("sources"):
+                            tc_id = parsed.get("tool_call_id", "")
+                            builder.on_rag_sources(tc_id, parsed["sources"])
+
+                        if event_type == "error" and parsed.get("error"):
+                            builder.on_error(str(parsed["error"]))
 
                     except json.JSONDecodeError:
                         pass
@@ -468,32 +563,26 @@ async def chat_stream(request: ChatRequest):
             import traceback
 
             _log("   ❌ generate() exception: %s\n%s", e, traceback.format_exc())
+            builder.on_error(str(e))
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
+        full_assistant_content = builder.get_text_content()
         _log(
-            "   ✅ generate() finished — total chunks=%d  content_len=%d  thinking_len=%d",
+            "   ✅ generate() finished — total chunks=%d  blocks=%d  content_len=%d",
             chunk_count,
+            len(builder.blocks),
             len(full_assistant_content),
-            len(full_thinking_content),
         )
 
         # Persist the assistant message BEFORE yielding [DONE].
-        # If we yield [DONE] first, the client may disconnect and the
-        # ASGI server may garbage-collect the generator before the DB
-        # write completes.
-        if _conv_id and full_assistant_content:
-            tool_calls_json_str = (
-                json.dumps(accumulated_tool_calls) if accumulated_tool_calls else None
-            )
+        if _conv_id and builder.blocks:
             await _persist_message(
                 _conv_id,
                 "assistant",
                 full_assistant_content,
                 model=_resolved_model,
-                thinking=full_thinking_content or None,
-                thinking_duration=thinking_duration_sec,
-                generation_duration=generation_duration_sec,
-                tool_calls_json=tool_calls_json_str,
+                blocks=builder.to_db_blocks(),
+                generation_duration=builder.generation_duration,
             )
 
             # Mark the stream as idle so the background extraction queue
@@ -676,11 +765,7 @@ async def chat_stream_multipart(
         if _conv_id:
             await mark_stream_active(str(_conv_id))
         chunk_count = 0
-        full_assistant_content = ""
-        full_thinking_content = ""
-        thinking_duration_sec = 0
-        generation_duration_sec = 0
-        accumulated_tool_calls = []
+        builder = _BlockBuilder()
         digested_doc_ids: List[str] = []  # for DB link to user message
         # Track digested document filenames so we can inject a system
         # hint into the agent's messages telling it these files are now
@@ -826,85 +911,76 @@ async def chat_stream_multipart(
                         chunk_count,
                         chunk[:200] if chunk else "(empty)",
                     )
-                # Accumulate assistant content from SSE chunks
+                # Reconstruct ordered blocks from SSE events for DB persistence.
                 data_str = chunk.strip()
                 if data_str.startswith("data: "):
                     try:
                         parsed = json.loads(data_str[6:])
                         event_type = parsed.get("event")
 
-                        if event_type == "message" and parsed.get("message", {}).get(
-                            "content"
-                        ):
-                            full_assistant_content += parsed["message"]["content"]
+                        if event_type == "thinking_start":
+                            builder.on_thinking_start()
 
                         if event_type == "thinking" and parsed.get("thinking"):
-                            full_thinking_content += parsed["thinking"]
+                            builder.on_thinking_token(parsed["thinking"])
 
                         if (
                             event_type == "thinking_done"
                             and parsed.get("thinkingDuration") is not None
                         ):
-                            thinking_duration_sec += parsed["thinkingDuration"]
+                            builder.on_thinking_done(parsed["thinkingDuration"])
 
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
-                                generation_duration_sec += parsed["generationDuration"]
-                            if (
-                                parsed.get("thinkingDuration") is not None
-                                and thinking_duration_sec == 0
-                            ):
-                                thinking_duration_sec = parsed["thinkingDuration"]
+                                builder.on_generation_done(parsed["generationDuration"])
+
+                        if event_type == "message" and parsed.get("message", {}).get(
+                            "content"
+                        ):
+                            builder.on_message_token(parsed["message"]["content"])
 
                         if event_type == "tool_call" and parsed.get("tool_call"):
                             tc = parsed["tool_call"]
-                            tc_id = tc.get("id")
-
-                            existing = next(
-                                (
-                                    t
-                                    for t in accumulated_tool_calls
-                                    if t.get("id") == tc_id
-                                ),
-                                None,
-                            )
-                            if existing:
-                                existing.update(tc)
+                            tc_id = tc.get("id", "")
+                            if tc.get("status") == "running":
+                                builder.on_tool_call_start(tc)
                             else:
-                                accumulated_tool_calls.append(dict(tc))
+                                updates = {k: v for k, v in tc.items() if k != "id"}
+                                builder.on_tool_call_update(tc_id, updates)
+
+                        if event_type == "rag_sources" and parsed.get("sources"):
+                            tc_id = parsed.get("tool_call_id", "")
+                            builder.on_rag_sources(tc_id, parsed["sources"])
+
+                        if event_type == "error" and parsed.get("error"):
+                            builder.on_error(str(parsed["error"]))
 
                     except json.JSONDecodeError:
                         pass
                 yield chunk
         except Exception as e:
             dbg("   ❌ generate() exception: %s", e)
+            builder.on_error(str(e))
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
+        full_assistant_content = builder.get_text_content()
         _log(
             "   ✅ generate() finished (multipart) — total chunks=%d  "
-            "content_len=%d  thinking_len=%d",
+            "blocks=%d  content_len=%d",
             chunk_count,
+            len(builder.blocks),
             len(full_assistant_content),
-            len(full_thinking_content),
         )
 
         # Persist the assistant message BEFORE yielding [DONE].
-        # If we yield [DONE] first, the client may disconnect and the
-        # ASGI server may garbage-collect the generator before the DB
-        # write completes.
-        if _conv_id and full_assistant_content:
-            tool_calls_json_str = (
-                json.dumps(accumulated_tool_calls) if accumulated_tool_calls else None
-            )
+        if _conv_id and builder.blocks:
             await _persist_message(
                 _conv_id,
                 "assistant",
                 full_assistant_content,
                 model=_resolved_model,
-                thinking=full_thinking_content or None,
-                thinking_duration=thinking_duration_sec,
-                generation_duration=generation_duration_sec,
-                tool_calls_json=tool_calls_json_str,
+                blocks=builder.to_db_blocks(),
+                generation_duration=builder.generation_duration,
             )
 
             # Mark stream idle so background extraction can proceed.

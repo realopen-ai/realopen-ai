@@ -48,6 +48,25 @@ export interface ToolCallResult {
   fileContent?: string;
   // Error
   error?: string;
+  // RAG sources (for rag_search tool calls)
+  sources?: RetrievedSourceDTO[];
+}
+
+/** A single rendering block in a multi-round assistant message.
+ * Blocks are rendered in array order to preserve the chronological flow
+ * of the agent turn (thinking → text → tool_call → thinking → ...).
+ */
+export interface MessageBlock {
+  /** Frontend-generated stable ID for React keys. NOT persisted to DB
+   * (the DB uses array index as implicit order). */
+  id: string;
+  type: "thinking" | "text" | "tool_call" | "error";
+  // thinking / text / error
+  content?: string;
+  // thinking only — seconds, null while still thinking
+  duration?: number | null;
+  // tool_call only
+  toolCall?: ToolCallResult;
 }
 
 export interface Message {
@@ -55,8 +74,10 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   model?: string;
-  toolCalls: ToolCallResult[];
-  sandboxOpen: boolean;
+  /** Ordered rendering blocks for assistant messages. NULL/undefined for
+   * user/system messages. Each block is rendered in order to show the
+   * chronological flow of a multi-round agent turn. */
+  blocks?: MessageBlock[];
   isStreaming: boolean;
   createdAt: number;
   completedAt?: number;
@@ -66,17 +87,10 @@ export interface Message {
   hasDocument?: boolean;
   imageCount?: number;
   documentCount?: number;
-  // Thinking / reasoning
-  thinking?: string;
-  thinkingDuration?: number; // seconds
-  generationDuration?: number; // seconds
-  isThinking?: boolean;
-  // RAG sources — only populated when the agent's rag_search tool fires
-  sources?: RetrievedSourceDTO[];
+  // Total generation duration across all agent rounds (seconds).
+  generationDuration?: number;
   // Document digestion progress — populated when the user uploads docs
-  // via chat and the backend streams document_digest_* SSE events. The
-  // frontend renders an inline digestion progress indicator on the
-  // user's message bubble while these are present.
+  // via chat and the backend streams document_digest_* SSE events.
   digestProgress?: DigestProgressItem[];
 }
 
@@ -151,54 +165,15 @@ interface ChatState {
   loadConversationById: (id: string) => Promise<boolean>;
   addMessage: (
     conversationId: string,
-    message: Omit<
-      Message,
-      "id" | "createdAt" | "toolCalls" | "sandboxOpen" | "isStreaming"
-    > & { shrugOverlay?: boolean },
+    message: Omit<Message, "id" | "createdAt" | "isStreaming"> & {
+      shrugOverlay?: boolean;
+    },
   ) => string;
   updateMessage: (
     conversationId: string,
     messageId: string,
     updates: Partial<Message>,
   ) => void;
-  appendToMessage: (
-    conversationId: string,
-    messageId: string,
-    content: string,
-  ) => void;
-  appendToThinking: (
-    conversationId: string,
-    messageId: string,
-    thinking: string,
-  ) => void;
-  setThinkingState: (
-    conversationId: string,
-    messageId: string,
-    isThinking: boolean,
-  ) => void;
-  setThinkingDuration: (
-    conversationId: string,
-    messageId: string,
-    duration: number,
-  ) => void;
-  setGenerationDuration: (
-    conversationId: string,
-    messageId: string,
-    duration: number,
-  ) => void;
-  addToolCall: (
-    conversationId: string,
-    messageId: string,
-    toolCall: Omit<ToolCallResult, "id" | "startedAt">,
-  ) => string;
-  updateToolCall: (
-    conversationId: string,
-    messageId: string,
-    toolCallId: string,
-    updates: Partial<ToolCallResult>,
-  ) => void;
-  toggleSandbox: (conversationId: string, messageId: string) => void;
-  openSandbox: (conversationId: string, messageId: string) => void;
   setStreaming: (
     conversationId: string,
     messageId: string,
@@ -209,17 +184,58 @@ interface ChatState {
   setProfileLabel: (label: string) => void;
   setSelectedModel: (model: string) => void;
 
-  // RAG sources — append sources to a message when the agent's rag_search
-  // tool fires. Called from stream.ts when a `rag_sources` SSE event arrives.
-  addSources: (
+  // ── Block-based actions (replace the old toolCalls/thinking actions) ──
+  /** Start a new thinking block. Closes any open text block. */
+  startThinkingBlock: (conversationId: string, messageId: string) => void;
+  /** Append a thinking token to the current thinking block. */
+  appendThinkingToken: (
     conversationId: string,
     messageId: string,
+    token: string,
+  ) => void;
+  /** Finalize the current thinking block with a duration. */
+  finishThinkingBlock: (
+    conversationId: string,
+    messageId: string,
+    duration: number,
+  ) => void;
+  /** Append a text token. Opens a new text block if the last block isn't text. */
+  appendTextToken: (
+    conversationId: string,
+    messageId: string,
+    token: string,
+  ) => void;
+  /** Start a new tool_call block with status=running. Returns the block ID
+   * (which matches the backend tool call ID for later updates). */
+  startToolCallBlock: (
+    conversationId: string,
+    messageId: string,
+    toolCall: ToolCallResult,
+  ) => void;
+  /** Update a tool_call block by its tool call ID. */
+  updateToolCallBlock: (
+    conversationId: string,
+    messageId: string,
+    toolCallId: string,
+    updates: Partial<ToolCallResult>,
+  ) => void;
+  /** Attach RAG sources to a tool_call block by tool call ID. */
+  setToolCallSources: (
+    conversationId: string,
+    messageId: string,
+    toolCallId: string,
     sources: RetrievedSourceDTO[],
+  ) => void;
+  /** Set the total generation duration on the message. */
+  setGenerationDuration: (
+    conversationId: string,
+    messageId: string,
+    duration: number,
   ) => void;
 
   // RAG digestion progress — append a progress item to the user's
   // message when a `document_digest_*` SSE event arrives during chat
-  // upload. The MessageBubble renders an inline progress indicator.
+  // upload.
   addDigestProgress: (
     conversationId: string,
     messageId: string,
@@ -238,7 +254,6 @@ interface ChatState {
 
 let msgCounter = 0;
 const genId = () => `msg-${Date.now()}-${++msgCounter}`;
-const genToolId = () => `tool-${Date.now()}-${++msgCounter}`;
 
 /** Convert a backend ConversationDTO to the frontend Conversation shape */
 function dtoToConversation(dto: ConversationDTO): Conversation {
@@ -252,44 +267,62 @@ function dtoToConversation(dto: ConversationDTO): Conversation {
   };
 }
 
-/** Convert a backend MessageDTO to the frontend Message shape */
+/** Convert a backend MessageDTO to the frontend Message shape.
+ *
+ * The backend stores blocks as a JSONB array; we add frontend-generated
+ * IDs for React keys (the DB uses array index as implicit order).
+ */
 function dtoToMessage(dto: MessageDTO): Message {
-  // Convert backend tool calls to frontend ToolCallResult format
-  const toolCalls: ToolCallResult[] = (dto.toolCalls ?? []).map((tc, i) => ({
-    id: tc.id ?? `restored-tc-${i}`,
-    type: (tc.type as ToolCallResult["type"]) ?? "websearch",
-    status: (tc.status as ToolCallResult["status"]) ?? "completed",
-    title: tc.title ?? tc.type ?? "Tool",
-    startedAt: dto.createdAt,
-    completedAt: tc.completedAt,
-    query: tc.query,
-    webResults: tc.webResults,
-    genResults: tc.genResults,
-    language: tc.language,
-    code: tc.code,
-    output: tc.output,
-    exitCode: tc.exitCode,
-    imageDescription: tc.imageDescription,
-    error: tc.error,
-  }));
+  // Convert backend blocks (raw JSON) to frontend MessageBlock[] with IDs.
+  const blocks: MessageBlock[] | undefined = dto.blocks
+    ? dto.blocks.map((b, i) => {
+        if (b.type === "tool_call" && b.tool_call) {
+          return {
+            id: `block-${dto.id}-${i}`,
+            type: "tool_call",
+            toolCall: {
+              id: b.tool_call.id ?? `tc-${dto.id}-${i}`,
+              type: (b.tool_call.type as ToolCallResult["type"]) ?? "websearch",
+              status:
+                (b.tool_call.status as ToolCallResult["status"]) ?? "completed",
+              title: b.tool_call.title ?? b.tool_call.type ?? "Tool",
+              startedAt: dto.createdAt,
+              completedAt: b.tool_call.completedAt,
+              query: b.tool_call.query,
+              webResults: b.tool_call.webResults,
+              genResults: b.tool_call.genResults,
+              language: b.tool_call.language,
+              code: b.tool_call.code,
+              output: b.tool_call.output,
+              exitCode: b.tool_call.exitCode,
+              imageDescription: b.tool_call.imageDescription,
+              error: b.tool_call.error,
+              sources: b.tool_call.sources,
+            },
+          };
+        }
+        return {
+          id: `block-${dto.id}-${i}`,
+          type: b.type as MessageBlock["type"],
+          content: b.content,
+          duration: b.duration,
+        };
+      })
+    : undefined;
 
   return {
     id: dto.id,
     role: dto.role,
     content: dto.content,
     model: dto.model ?? undefined,
-    toolCalls,
-    sandboxOpen: true,
+    blocks,
     isStreaming: false,
     createdAt: dto.createdAt,
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
-    thinking: dto.thinking || undefined,
-    thinkingDuration: dto.thinkingDuration,
     generationDuration: dto.generationDuration,
-    isThinking: false,
   };
 }
 
@@ -442,8 +475,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const msg: Message = {
       ...message,
       id: msgId,
-      toolCalls: [],
-      sandboxOpen: false,
+      blocks: message.blocks ?? (message.role === "assistant" ? [] : undefined),
       isStreaming: false,
       createdAt: Date.now(),
       shrugOverlay: message.shrugOverlay,
@@ -473,68 +505,194 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  appendToMessage: (conversationId, messageId, content) => {
+  // ── Block-based actions ───────────────────────────────────────────
+  // These reconstruct the ordered blocks array from SSE events. Each
+  // action finds the message and mutates its blocks array in place.
+  // Block IDs are generated as `block-${msgId}-${counter}` so they're
+  // stable across re-renders.
+
+  startThinkingBlock: (conversationId, messageId) => {
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === conversationId
           ? {
               ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, content: m.content + content } : m,
-              ),
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                const blocks = m.blocks ?? [];
+                const blockId = `block-${messageId}-${blocks.length}`;
+                return {
+                  ...m,
+                  blocks: [
+                    ...blocks,
+                    {
+                      id: blockId,
+                      type: "thinking" as const,
+                      content: "",
+                      duration: null,
+                    },
+                  ],
+                };
+              }),
             }
           : c,
       ),
     }));
   },
 
-  appendToThinking: (conversationId, messageId, thinking) => {
+  appendThinkingToken: (conversationId, messageId, token) => {
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === conversationId
           ? {
               ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, thinking: (m.thinking ?? "") + thinking }
-                  : m,
-              ),
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId || !m.blocks?.length) return m;
+                const blocks = [...m.blocks];
+                const last = blocks[blocks.length - 1];
+                if (last.type === "thinking") {
+                  blocks[blocks.length - 1] = {
+                    ...last,
+                    content: (last.content ?? "") + token,
+                  };
+                }
+                return { ...m, blocks };
+              }),
             }
           : c,
       ),
     }));
   },
 
-  setThinkingState: (conversationId, messageId, isThinking) => {
+  finishThinkingBlock: (conversationId, messageId, duration) => {
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === conversationId
           ? {
               ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, isThinking } : m,
-              ),
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId || !m.blocks?.length) return m;
+                const blocks = [...m.blocks];
+                const last = blocks[blocks.length - 1];
+                if (last.type === "thinking") {
+                  blocks[blocks.length - 1] = { ...last, duration };
+                }
+                return { ...m, blocks };
+              }),
             }
           : c,
       ),
     }));
   },
 
-  setThinkingDuration: (conversationId, messageId, duration) => {
+  appendTextToken: (conversationId, messageId, token) => {
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === conversationId
           ? {
               ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId
-                  ? {
-                      ...m,
-                      thinkingDuration: (m.thinkingDuration ?? 0) + duration,
-                      isThinking: false,
-                    }
-                  : m,
-              ),
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                const blocks = m.blocks ?? [];
+                const last = blocks[blocks.length - 1];
+                // If the last block is text, append to it.
+                if (last && last.type === "text") {
+                  const newBlocks = [...blocks];
+                  newBlocks[newBlocks.length - 1] = {
+                    ...last,
+                    content: (last.content ?? "") + token,
+                  };
+                  return {
+                    ...m,
+                    blocks: newBlocks,
+                    content: (m.content ?? "") + token,
+                  };
+                }
+                // Otherwise, start a new text block.
+                const blockId = `block-${messageId}-${blocks.length}`;
+                return {
+                  ...m,
+                  blocks: [
+                    ...blocks,
+                    { id: blockId, type: "text" as const, content: token },
+                  ],
+                  content: (m.content ?? "") + token,
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  startToolCallBlock: (conversationId, messageId, toolCall) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                const blocks = m.blocks ?? [];
+                const blockId = `block-${messageId}-${blocks.length}`;
+                return {
+                  ...m,
+                  blocks: [
+                    ...blocks,
+                    {
+                      id: blockId,
+                      type: "tool_call" as const,
+                      toolCall,
+                    },
+                  ],
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  updateToolCallBlock: (conversationId, messageId, toolCallId, updates) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId || !m.blocks) return m;
+                return {
+                  ...m,
+                  blocks: m.blocks.map((b) =>
+                    b.type === "tool_call" && b.toolCall?.id === toolCallId
+                      ? { ...b, toolCall: { ...b.toolCall, ...updates } }
+                      : b,
+                  ),
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  setToolCallSources: (conversationId, messageId, toolCallId, sources) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId || !m.blocks) return m;
+                return {
+                  ...m,
+                  blocks: m.blocks.map((b) =>
+                    b.type === "tool_call" && b.toolCall?.id === toolCallId
+                      ? { ...b, toolCall: { ...b.toolCall, sources } }
+                      : b,
+                  ),
+                };
+              }),
             }
           : c,
       ),
@@ -548,79 +706,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? {
               ...c,
               messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, generationDuration: duration } : m,
-              ),
-            }
-          : c,
-      ),
-    }));
-  },
-
-  addToolCall: (conversationId, messageId, toolCall) => {
-    const tcId = genToolId();
-    const tc: ToolCallResult = { ...toolCall, id: tcId, startedAt: Date.now() };
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === conversationId
-          ? {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, toolCalls: [...m.toolCalls, tc] }
-                  : m,
-              ),
-            }
-          : c,
-      ),
-    }));
-    return tcId;
-  },
-
-  updateToolCall: (conversationId, messageId, toolCallId, updates) => {
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === conversationId
-          ? {
-              ...c,
-              messages: c.messages.map((m) =>
                 m.id === messageId
                   ? {
                       ...m,
-                      toolCalls: m.toolCalls.map((tc) =>
-                        tc.id === toolCallId ? { ...tc, ...updates } : tc,
-                      ),
+                      generationDuration:
+                        (m.generationDuration ?? 0) + duration,
                     }
                   : m,
-              ),
-            }
-          : c,
-      ),
-    }));
-  },
-
-  toggleSandbox: (conversationId, messageId) => {
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === conversationId
-          ? {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, sandboxOpen: !m.sandboxOpen } : m,
-              ),
-            }
-          : c,
-      ),
-    }));
-  },
-
-  openSandbox: (conversationId, messageId) => {
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === conversationId
-          ? {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId ? { ...m, sandboxOpen: true } : m,
               ),
             }
           : c,
@@ -654,26 +746,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProfileName: (name) => set({ profileName: name }),
   setProfileLabel: (label) => set({ profileLabel: label }),
   setSelectedModel: (model) => set({ selectedModel: model }),
-
-  addSources: (conversationId, messageId, sources) => {
-    set((s) => ({
-      conversations: s.conversations.map((c) =>
-        c.id === conversationId
-          ? {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === messageId
-                  ? {
-                      ...m,
-                      sources: [...(m.sources ?? []), ...sources],
-                    }
-                  : m,
-              ),
-            }
-          : c,
-      ),
-    }));
-  },
 
   /**
    * Append a digestion progress event to the user's message. Called
