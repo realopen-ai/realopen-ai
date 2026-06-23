@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Conversation, Message
 from app.services.embeddings import get_embedding
 from app.services.context_compactor import summarize_conversation
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -67,24 +68,27 @@ async def maybe_summarize_conversation(
     db: AsyncSession,
     conversation_id: uuid.UUID,
     model: str,
-    min_messages: int = 8,
+    min_messages: Optional[int] = None,
 ) -> bool:
     """Summarize a conversation if it has enough messages and no existing summary.
 
     Called after each assistant response. Only runs when:
-    - Conversation has >= min_messages messages
-    - No existing summary (or summary is >1 day old)
-    - Conversation is not already summarized recently
+    - Conversation has >= CONVERSATION_SUMMARY_MIN_MESSAGES messages
+    - No existing summary (or summary is older than CONVERSATION_SUMMARY_COOLDOWN_SECONDS)
     """
+    if min_messages is None:
+        min_messages = settings.CONVERSATION_SUMMARY_MIN_MESSAGES
+    cooldown_seconds = settings.CONVERSATION_SUMMARY_COOLDOWN_SECONDS
+
     try:
         conv = await db.get(Conversation, conversation_id)
         if not conv:
             return False
 
-        # Skip if already summarized recently (within 1 hour)
+        # Skip if already summarized recently (within cooldown)
         if conv.summary and conv.summary_at:
             age_seconds = (datetime.utcnow() - conv.summary_at).total_seconds()
-            if age_seconds < 3600:
+            if age_seconds < cooldown_seconds:
                 return False
 
         # Count messages
@@ -289,13 +293,15 @@ async def build_cross_session_context(
     db: AsyncSession,
     user_message: str,
     conversation_id: Optional[uuid.UUID] = None,
-    max_summaries: int = 2,
+    max_summaries: Optional[int] = None,
 ) -> str:
     """Build a cross-session context block for system prompt injection.
 
     Finds relevant past conversation summaries and formats them compactly.
     Designed for small local models — keeps it brief.
     """
+    if max_summaries is None:
+        max_summaries = settings.CONVERSATION_SUMMARY_MAX_INJECT
     conv_uuid = uuid.UUID(str(conversation_id)) if conversation_id else None
 
     # Try vector search first
