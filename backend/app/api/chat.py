@@ -12,6 +12,7 @@ Supports:
 import base64
 import json
 import logging
+import time
 from typing import Any, List, Optional
 import uuid
 
@@ -38,6 +39,7 @@ from app.services.background_queue import (
     mark_stream_active,
     mark_stream_idle,
 )
+from app.core import metrics as app_metrics
 
 logger = logging.getLogger(__name__)
 dbg = get_debug_logger(__name__)
@@ -400,7 +402,9 @@ async def chat_stream(request: ChatRequest):
         thinking_duration_sec = 0
         generation_duration_sec = 0
         accumulated_tool_calls = []  # Collect tool call data for DB persistence
+        request_start = None
         try:
+            request_start = time.time()
             async for chunk in run_agent_stream(
                 messages=messages,
                 model=_resolved_model,
@@ -551,6 +555,22 @@ async def chat_stream(request: ChatRequest):
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
 
+        # ── Record metrics for the chat request ──
+        if request_start:
+            elapsed = time.time() - request_start
+            app_metrics.chat_duration_seconds.labels(model=_resolved_model).observe(
+                elapsed
+            )
+            app_metrics.chat_requests_total.labels(
+                model=_resolved_model, status="success"
+            ).inc()
+            token_estimate = len(full_assistant_content) + sum(
+                len(m.get("content", "")) for m in messages
+            )
+            app_metrics.chat_tokens_total.labels(model=_resolved_model).inc(
+                int(token_estimate * 0.4)
+            )
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -681,6 +701,7 @@ async def chat_stream_multipart(
         thinking_duration_sec = 0
         generation_duration_sec = 0
         accumulated_tool_calls = []
+        request_start = None
         digested_doc_ids: List[str] = []  # for DB link to user message
         # Track digested document filenames so we can inject a system
         # hint into the agent's messages telling it these files are now
@@ -813,6 +834,7 @@ async def chat_stream_multipart(
             parsed_messages.append({"role": "user", "content": hint})
 
         try:
+            request_start = time.time()
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
                 model=_resolved_model,
@@ -956,6 +978,22 @@ async def chat_stream_multipart(
                         _log("   📝 conversation summarized (multipart)")
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
+
+        # ── Record metrics for the multipart chat request ──
+        if request_start:
+            elapsed = time.time() - request_start
+            app_metrics.chat_duration_seconds.labels(model=_resolved_model).observe(
+                elapsed
+            )
+            app_metrics.chat_requests_total.labels(
+                model=_resolved_model, status="success"
+            ).inc()
+            token_estimate = len(full_assistant_content) + sum(
+                len(m.get("content", "")) for m in messages
+            )
+            app_metrics.chat_tokens_total.labels(model=_resolved_model).inc(
+                int(token_estimate * 0.4)
+            )
 
         yield "data: [DONE]\n\n"
 
