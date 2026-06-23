@@ -29,11 +29,15 @@ from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import rag as rag_service
 from app.services.memory_extractor import (
-    extract_and_store,
     get_messages_since_watermark,
     update_watermark,
 )
 from app.services.conversation_memory import maybe_summarize_conversation
+from app.services.background_queue import (
+    enqueue_extraction_job,
+    mark_stream_active,
+    mark_stream_idle,
+)
 
 logger = logging.getLogger(__name__)
 dbg = get_debug_logger(__name__)
@@ -239,28 +243,26 @@ async def _maybe_run_memory_extraction(
     conv_id: uuid.UUID,
     full_assistant_content: str,
     request_messages: list,
-) -> tuple[int, bool]:
-    """Check the conversation watermark and run memory extraction if due.
+) -> tuple[int, bool, bool]:
+    """Check the conversation watermark and enqueue memory extraction if due.
 
-    Returns (added_count, did_run). When did_run is False, the caller should
-    not emit any extraction-related SSE events.
+    Returns (added_count, did_run, pending). When did_run is False, the
+    caller should not emit any extraction-related SSE events.
 
-    The extraction context is built from the last N request messages PLUS
-    the just-generated assistant response (which is not in request_messages
-    because the request payload was assembled BEFORE the response was
-    generated). This ensures the LLM sees the new user question AND the
-    answer it just gave, so it can extract facts the assistant elicited.
+    KV-CACHE DESIGN:
+    The watermark check (fast DB read) runs inline. The actual LLM
+    extraction is ENQUEUED to the background queue, which waits for the
+    chat stream to go idle before running — protecting the KV cache on
+    local 4-slot backends (llama.cpp). This means the SSE stream can
+    close immediately after [DONE] without waiting for extraction.
 
-    Watermark semantics:
-    - On each call, count messages in this conversation created AFTER the
-      watermark (or ALL messages if watermark is NULL).
-    - If count >= MEMORY_EXTRACTION_INTERVAL (default 4), run extraction
-      and advance the watermark to the latest message ID.
-    - Otherwise, return (0, False) without doing anything.
+    The returned ``pending`` flag is True when extraction was enqueued
+    but hasn't completed yet (fire-and-forget). The frontend can use this
+    to show a "memory update queued" indicator.
     """
     interval = settings.MEMORY_EXTRACTION_INTERVAL
     if interval <= 0:
-        return 0, False
+        return 0, False, False
 
     try:
         async with async_session_factory() as db:
@@ -273,7 +275,7 @@ async def _maybe_run_memory_extraction(
                     len(new_messages),
                     interval,
                 )
-                return 0, False
+                return 0, False, False
 
             # Build extraction context: last N request messages + the
             # just-generated assistant response.
@@ -293,19 +295,15 @@ async def _maybe_run_memory_extraction(
 
             _log(
                 "   🧠 memory extraction DUE: %d new messages >= interval %d — "
-                "running with %d context messages",
+                "enqueuing with %d context messages",
                 len(new_messages),
                 interval,
                 len(extraction_messages),
             )
 
-        # Run extraction in its own session (extract_and_store creates its own).
-        added = await extract_and_store(
-            messages=extraction_messages,
-            conversation_id=str(conv_id),
-        )
-
-        # Advance the watermark so the same messages are never re-extracted.
+        # Advance the watermark IMMEDIATELY (before extraction runs) so
+        # that if the user sends another message while extraction is
+        # queued, we don't re-enqueue the same messages.
         try:
             async with async_session_factory() as db:
                 await update_watermark(db, str(conv_id), latest_message_id)
@@ -313,11 +311,16 @@ async def _maybe_run_memory_extraction(
         except Exception as e:
             _log("   ⚠️  failed to advance memory watermark: %s", e)
 
-        return added, True
+        # Enqueue the extraction job (fire-and-forget). The background
+        # queue waits for the chat stream to go idle before running.
+        enqueue_extraction_job(str(conv_id), extraction_messages)
+
+        # Return pending=True since we don't have the count yet.
+        return 0, True, True
 
     except Exception as e:
         _log("   ⚠️  memory extraction helper failed: %s", e)
-        return 0, False
+        return 0, False, False
 
 
 @router.post("/chat/stream")
@@ -387,6 +390,10 @@ async def chat_stream(request: ChatRequest):
 
     async def generate():
         _log("   🔄 generate() started — entering agent loop")
+        # Mark this conversation's stream as active so the background
+        # extraction queue knows to wait before running (KV-cache protection).
+        if _conv_id:
+            await mark_stream_active(str(_conv_id))
         chunk_count = 0
         full_assistant_content = ""
         full_thinking_content = ""
@@ -489,16 +496,22 @@ async def chat_stream(request: ChatRequest):
                 tool_calls_json=tool_calls_json_str,
             )
 
-            # Memory extraction — watermark-gated, awaited (not fire-and-forget)
-            # so we can emit start/done SSE events for the frontend indicator.
-            # See _maybe_run_memory_extraction() for the watermark logic.
+            # Mark the stream as idle so the background extraction queue
+            # knows it's safe to run without evicting the KV cache.
+            if _conv_id:
+                await mark_stream_idle(str(_conv_id))
+
+            # Memory extraction — watermark check is inline (fast DB read),
+            # the actual LLM extraction is enqueued to the background queue
+            # which waits for stream idle before running. See
+            # _maybe_run_memory_extraction() for details.
             try:
                 yield "data: " + json.dumps(
                     {
                         "event": "memory_extraction_start",
                     }
                 ) + "\n\n"
-                added, did_run = await _maybe_run_memory_extraction(
+                added, did_run, pending = await _maybe_run_memory_extraction(
                     _conv_id,
                     full_assistant_content,
                     messages,
@@ -508,6 +521,7 @@ async def chat_stream(request: ChatRequest):
                         "event": "memory_extraction_done",
                         "count": added,
                         "ran": did_run,
+                        "pending": pending,
                     }
                 ) + "\n\n"
             except Exception as e:
@@ -530,7 +544,6 @@ async def chat_stream(request: ChatRequest):
                         summ_db,
                         _conv_id,
                         _resolved_model,
-                        min_messages=8,
                     )
                     if summarized:
                         await summ_db.commit()
@@ -659,6 +672,9 @@ async def chat_stream_multipart(
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — entering agent loop")
+        # Mark this conversation's stream as active (KV-cache protection).
+        if _conv_id:
+            await mark_stream_active(str(_conv_id))
         chunk_count = 0
         full_assistant_content = ""
         full_thinking_content = ""
@@ -891,15 +907,19 @@ async def chat_stream_multipart(
                 tool_calls_json=tool_calls_json_str,
             )
 
-            # Memory extraction — watermark-gated, awaited (not fire-and-forget)
-            # so we can emit start/done SSE events for the frontend indicator.
+            # Mark stream idle so background extraction can proceed.
+            if _conv_id:
+                await mark_stream_idle(str(_conv_id))
+
+            # Memory extraction — watermark check inline, LLM extraction
+            # enqueued to background queue (KV-cache protection).
             try:
                 yield "data: " + json.dumps(
                     {
                         "event": "memory_extraction_start",
                     }
                 ) + "\n\n"
-                added, did_run = await _maybe_run_memory_extraction(
+                added, did_run, pending = await _maybe_run_memory_extraction(
                     _conv_id,
                     full_assistant_content,
                     parsed_messages,
@@ -909,6 +929,7 @@ async def chat_stream_multipart(
                         "event": "memory_extraction_done",
                         "count": added,
                         "ran": did_run,
+                        "pending": pending,
                     }
                 ) + "\n\n"
             except Exception as e:
@@ -929,7 +950,6 @@ async def chat_stream_multipart(
                         summ_db,
                         _conv_id,
                         _resolved_model,
-                        min_messages=8,
                     )
                     if summarized:
                         await summ_db.commit()
@@ -1029,6 +1049,44 @@ async def update_conversation(
         await conv_service.update_conversation_title(db, conv_id, title)
     dbg("   updated conversation %s", conversation_id)
     return {"status": "updated"}
+
+
+# ─── Past-conversation search ────────────────────────────────────────
+
+
+@router.post("/conversations/search")
+async def search_past_conversations(
+    query: str,
+    exclude_conversation_id: Optional[str] = None,
+    limit: int = 10,
+):
+    """Search past conversation transcripts by keyword.
+
+    Uses PostgreSQL tsvector + ts_rank_cd on messages.content for fast
+    BM25-ranked search. Returns matching messages with their source
+    conversation title, role, snippet, and rank.
+
+    This endpoint powers the Brain page's past-conversations search UI
+    and is also callable by the LLM via the search_past_conversations tool.
+    """
+    from app.services.session_search import search_past_messages
+
+    try:
+        async with async_session_factory() as db:
+            results = await search_past_messages(
+                db,
+                query=query,
+                limit=limit,
+                exclude_conversation_id=exclude_conversation_id,
+            )
+        return {
+            "results": results,
+            "total": len(results),
+            "query": query,
+        }
+    except Exception as e:
+        _log("past-conversation search failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Models endpoint ─────────────────────────────────────────────────
