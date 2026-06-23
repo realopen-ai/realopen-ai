@@ -86,26 +86,84 @@ EXTRACT_SYSTEM_PROMPT = (
     "Return ONLY valid JSON, no markdown fences, no extra commentary."
 )
 
-AUDIT_SYSTEM_PROMPT = (
-    "You are a memory database curator. Be CONSERVATIVE: remove only TRUE "
-    "duplicates and clearly useless entries. Every distinct fact must survive. "
-    "When in doubt, KEEP the entry. Return the cleaned list.\n\n"
-    "Rules:\n"
-    "1. MERGE only entries that state the SAME fact in different words. If you "
-    "are not sure two entries are the same fact, KEEP BOTH.\n"
-    "   Merge: 'User's name is Sam' + 'The user is called Sam' -> one.\n"
-    "   Do NOT merge related-but-distinct facts: 'Likes Python' and 'Uses "
-    "Python at work' are DIFFERENT — keep both.\n"
-    "2. REMOVE only entries that are genuinely worthless: about what the AI did "
-    "(not the user), empty, or meaningless. Do NOT drop a real fact just "
-    "because it seems minor or niche.\n"
-    "3. Keep the original wording. Only lightly trim obvious redundancy — do "
-    "NOT aggressively rewrite or shorten.\n"
-    "4. Preserve the 'id' of the entry you keep when merging.\n"
-    "5. Never invent facts. When unsure, KEEP.\n\n"
-    "Return a JSON array of objects with fields: id, text, category.\n"
-    "Return ONLY valid JSON, no markdown fences, no extra commentary."
-)
+AUDIT_SYSTEM_PROMPT = """
+You are a memory database auditor.
+
+Goal:
+Reduce redundancy WITHOUT losing information.
+
+DEFAULT ACTION: KEEP.
+
+Deletion or merge requires HIGH CONFIDENCE that no information is lost.
+
+Procedure:
+
+Step 1 — Classify each memory:
+- identity → stable personal attributes
+- fact → concrete factual statement
+- preference → likes/dislikes/tendencies
+- project → goals, work, plans, initiatives
+- other
+
+Step 2 — Compare memories pairwise.
+
+MERGE only if ALL are true:
+A. Same subject
+B. Same category
+C. Same information content
+D. One can be removed with ZERO loss of meaning
+
+Examples:
+MERGE:
+- "User's name is Sam"
+- "The user is called Sam"
+
+KEEP BOTH:
+- "User likes Python"
+- "User uses Python at work"
+
+KEEP BOTH:
+- "User works on cloud cost optimization"
+- "User likes DevOps"
+
+KEEP BOTH:
+- "User lives in Casablanca"
+- "User name is Abdel and lives in Casablanca"
+(composite memories are NOT replacements)
+
+KEEP BOTH:
+- Specific fact vs broader summary
+  Example:
+  "User has Cloud Cost Optimizer project"
+  +
+  "User prefers DevOps projects"
+
+→ KEEP BOTH.
+
+Step 3 — Remove only:
+- empty text
+- malformed entries
+- AI-behavior statements
+- exact duplicates
+
+Rules:
+- NEVER generalize.
+- NEVER replace specific memories with broader summaries.
+- NEVER infer equivalence.
+- Prefer redundancy over deletion.
+- Preserve original wording.
+- Preserve id of kept entries.
+- Output entries in original order.
+
+Return ONLY:
+[
+  {
+    "id": "...",
+    "text": "...",
+    "category": "..."
+  }
+]
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +412,7 @@ async def extract_and_store(
             model,
         )
 
-        # Strip media from messages — only need text for extraction
+        # Strip media from messages — only need text for extraction.
         stripped_recent: List[dict] = []
         for msg in messages:
             role = msg.get("role") if isinstance(msg, dict) else _message_role(msg)
@@ -370,17 +428,45 @@ async def extract_and_store(
                 if not text_only and content:
                     continue
                 content = text_only
-            if role == "user" and content:
+            if role in ("user", "assistant") and content:
                 stripped_recent.append({"role": role, "content": content})
 
         if not stripped_recent:
             return 0
 
-        fallback_facts = _fallback_memory_candidates(stripped_recent)
+        fallback_facts = _fallback_memory_candidates(
+            [m for m in stripped_recent if m["role"] == "user"]
+        )
+
+        # ── FLATTENED TRANSCRIPT ──────────────────
+        # Small local models (qwen3:4b, etc.) treat alternating-role
+        # messages as a conversation to CONTINUE rather than a transcript
+        # to ANALYZE, so they reliably return [] — they "answer" instead
+        # of extracting. Controlled repro on qwen3.5:4b-mlx: 0/6 trials
+        # with alternating roles vs 6/6 with a flattened single user
+        # message. So we flatten the whole window into ONE user message
+        # labeled "Conversation to analyze".
+        transcript_parts: List[str] = []
+        for m in stripped_recent:
+            role_label = m["role"].upper()
+            text = m["content"] if isinstance(m["content"], str) else str(m["content"])
+            # Cap each turn to keep the total payload small for 4B models.
+            if len(text) > 1200:
+                text = text[:1200] + "…"
+            transcript_parts.append(f"{role_label}: {text}")
+        transcript = "\n\n".join(transcript_parts)
 
         extraction_messages = [
             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-        ] + stripped_recent
+            {
+                "role": "user",
+                "content": (
+                    "Conversation to analyze:\n\n"
+                    + transcript
+                    + "\n\nReturn the JSON array of durable facts now (or [] if none)."
+                ),
+            },
+        ]
 
         facts: list = []
         rounds = 0
