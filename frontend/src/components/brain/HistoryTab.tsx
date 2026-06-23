@@ -19,17 +19,13 @@ import { useUIStore } from "@/store/uiStore";
 // ─── Relative time ──────────────────────────────────────────────
 
 function relativeTime(timestamp: number): string {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const seconds = Math.floor(diff / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
+  const diff = Math.floor(Date.now() / 1000 - timestamp);
 
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return "just now";
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 // ─── Result Card ─────────────────────────────────────────────────
