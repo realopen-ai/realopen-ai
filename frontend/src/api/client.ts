@@ -1,4 +1,5 @@
 import type { ModelOption } from "@/store/chatStore";
+import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 
 const log = createDebugLogger("client");
@@ -158,7 +159,7 @@ export async function installModuleModels(
 
 // ─── Conversations ───────────────────────────────────────────────
 
-/** Shape of a tool call as stored in the backend DB (JSON-serialized) */
+/** Shape of a tool call as stored inside a block's `tool_call` field */
 export interface BackendToolCall {
   id?: string;
   type?: string;
@@ -174,6 +175,15 @@ export interface BackendToolCall {
   imageDescription?: string;
   error?: string;
   completedAt?: number;
+  sources?: RetrievedSourceDTO[];
+}
+
+/** A rendering block as stored in the messages.blocks JSONB column. */
+export interface BackendBlock {
+  type: "thinking" | "text" | "tool_call" | "error";
+  content?: string;
+  duration?: number | null;
+  tool_call?: BackendToolCall;
 }
 
 export interface ConversationDTO {
@@ -200,10 +210,10 @@ export interface MessageDTO {
   imageCount: number;
   documentCount: number;
   createdAt: number;
-  thinking?: string;
-  thinkingDuration?: number;
+  /** Ordered rendering blocks (thinking/text/tool_call/error) for
+   * assistant messages. NULL for user/system messages. */
+  blocks?: BackendBlock[] | null;
   generationDuration?: number;
-  toolCalls?: BackendToolCall[];
 }
 
 export async function fetchConversations(
