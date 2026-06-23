@@ -94,27 +94,97 @@ def get_text_similarity(text1: str, text2: str) -> float:
 #   1. Standard English function words (the, a, is, has, named, ...)
 #   2. Memory-domain boilerplate ("user", "user's", "the user") — appears
 #      in nearly every memory text, so it carries no signal for dedup.
-_CONTENT_STOPWORDS: frozenset = frozenset({
-    # articles / determiners
-    "the", "a", "an", "this", "that", "these", "those",
-    # pronouns
-    "i", "me", "my", "mine", "we", "us", "our", "ours",
-    "you", "your", "yours", "he", "him", "his", "she", "her", "hers",
-    "it", "its", "they", "them", "their", "theirs",
-    # common verbs (be, have, do)
-    "is", "are", "was", "were", "be", "been", "being",
-    "has", "have", "had", "having",
-    "does", "do", "did", "doing", "done",
-    "wants", "want", "wanted", "likes", "like", "liked",
-    # prepositions / conjunctions
-    "and", "or", "but", "of", "to", "in", "on", "at", "for", "with",
-    "from", "by", "as", "into", "about", "than", "then", "so",
-    # memory-domain boilerplate
-    "user", "users", "user's",
-    # common linking filler
-    "named", "called", "lives", "works", "wants", "prefers",
-    "s", "t",  # stray apostrophe-split tokens
-})
+_CONTENT_STOPWORDS: frozenset = frozenset(
+    {
+        # articles / determiners
+        "the",
+        "a",
+        "an",
+        "this",
+        "that",
+        "these",
+        "those",
+        # pronouns
+        "i",
+        "me",
+        "my",
+        "mine",
+        "we",
+        "us",
+        "our",
+        "ours",
+        "you",
+        "your",
+        "yours",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "hers",
+        "it",
+        "its",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        # common verbs (be, have, do)
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "having",
+        "does",
+        "do",
+        "did",
+        "doing",
+        "done",
+        "wants",
+        "want",
+        "wanted",
+        "likes",
+        "like",
+        "liked",
+        # prepositions / conjunctions
+        "and",
+        "or",
+        "but",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "from",
+        "by",
+        "as",
+        "into",
+        "about",
+        "than",
+        "then",
+        "so",
+        # memory-domain boilerplate
+        "user",
+        "users",
+        "user's",
+        # common linking filler
+        "named",
+        "called",
+        "lives",
+        "works",
+        "wants",
+        "prefers",
+        "s",
+        "t",  # stray apostrophe-split tokens
+    }
+)
 
 
 def content_tokens(text: str) -> set:
@@ -203,16 +273,13 @@ def is_likely_duplicate(
         # (cj >= 0.5), they're likely the same fact — accept the normal
         # threshold so paraphrases like "User's name is Sam" ≈ "The user
         # is called Sam" (cj=0.5, sim=0.90) still match.
-        if (
-            short_text_threshold is not None
-            and n1 < 5
-            and n2 < 5
-            and cj < 0.5
-        ):
+        if short_text_threshold is not None and n1 < 5 and n2 < 5 and cj < 0.5:
             effective_threshold = max(vector_threshold, short_text_threshold)
 
-        min_overlap = content_min_overlap if content_min_overlap is not None else (
-            settings.MEMORY_DEDUP_CONTENT_MIN_OVERLAP if settings else 0.10
+        min_overlap = (
+            content_min_overlap
+            if content_min_overlap is not None
+            else (settings.MEMORY_DEDUP_CONTENT_MIN_OVERLAP if settings else 0.10)
         )
 
         if vector_sim >= effective_threshold and cj >= min_overlap:
@@ -530,7 +597,40 @@ class MemoryManager:
         if max_bm25 <= 0:
             max_bm25 = 6.0  # default normalizer
 
-        # 4. For each memory, compute the final hybrid score
+        # 4. Compute vector similarities in ONE batch query (was N+1 — one
+        # query per memory, which at 1k memories = 1k round-trips per turn).
+        # Now: a single SELECT that returns (id, 1-cosine_distance) for all
+        # candidate memory ids in one shot.
+        vector_sims: dict[str, float] = {}  # memory_id_str -> similarity
+        if query_embedding is not None:
+            try:
+                # Build a single batched query: unnest the candidate ids and
+                # join against the embeddings. This is O(1) round-trips
+                # regardless of candidate count.
+                candidate_ids = [
+                    str(m.id) for m in all_memories if m.embedding is not None
+                ]
+                if candidate_ids:
+                    # Use unnest to pass the id list as a single parameter.
+                    vec_batch_stmt = text(
+                        "SELECT id::text AS mid, "
+                        "GREATEST(0.0, 1 - (embedding <=> CAST(:q AS vector))) AS sim "
+                        "FROM memories "
+                        "WHERE id = ANY(CAST(:ids AS uuid[]))"
+                    ).bindparams(
+                        q=str(query_embedding),
+                        ids="{" + ",".join(candidate_ids) + "}",
+                    )
+                    vec_result = await db.execute(vec_batch_stmt)
+                    for row in vec_result:
+                        mid_str = str(row[0])
+                        sim = float(row[1]) if row[1] is not None else 0.0
+                        vector_sims[mid_str] = max(0.0, sim)
+            except Exception as e:
+                print("[memory] batch vector distance query failed: %s", e)
+                vector_sims = {}
+
+        # 5. For each memory, compute the final hybrid score
         scored: List[Tuple[float, Memory]] = []
         now = datetime.utcnow()
 
@@ -550,25 +650,8 @@ class MemoryManager:
                 scored.append((1.0, m))
                 continue
 
-            # Vector similarity (1 - cosine_distance)
-            vs = 0.0
-            if query_embedding is not None and m.embedding is not None:
-                try:
-                    # Use pgvector's cosine distance operator
-                    dist_stmt = text(
-                        "SELECT 1 - (embedding <=> CAST(:q AS vector)) AS sim "
-                        "FROM memories WHERE id = CAST(:id AS uuid)"
-                    ).bindparams(q=str(query_embedding), id=str(m.id))
-                    dist_result = await db.execute(dist_stmt)
-                    row = dist_result.first()
-                    if row and row[0] is not None:
-                        vs = max(0.0, float(row[0]))
-                except Exception as e:
-                    print(
-                        "[memory] vector distance query failed for %s: %s",
-                        mid_str,
-                        e,
-                    )
+            # Vector similarity (looked up from the batch query above)
+            vs = vector_sims.get(mid_str, 0.0)
 
             # BM25 normalized to 0..1, with category boost
             raw_bm25 = bm25_scores.get(mid_str, 0.0)
