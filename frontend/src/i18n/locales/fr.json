@@ -129,5 +129,10 @@
   "brain.documents.description": "Les documents téléchargés et la base de connaissances apparaîtront ici",
   "brain.memories.extracting": "Extraction des souvenirs...",
   "brain.memories.extracted": "Nouveau souvenir extrait !",
-  "brain.memories.extractedN": "{count} nouveaux souvenirs extraits !"
+  "brain.memories.extractedN": "{count} nouveaux souvenirs extraits !",
+  "brain.history": "Historique",
+  "brain.history.search": "Rechercher dans les conversations passées...",
+  "brain.history.info": "Recherchez par mot-clé dans tous vos messages de conversations passées. L'IA peut aussi rechercher automatiquement quand vous parlez de quelque chose discuté précédemment.",
+  "brain.history.empty": "Aucune conversation correspondante trouvée.",
+  "brain.history.open": "Ouvrir la conversation"
 }
