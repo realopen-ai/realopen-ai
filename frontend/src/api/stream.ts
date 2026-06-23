@@ -13,9 +13,7 @@ export interface StreamCallbacks {
     thinkingDuration?: number;
     generationDuration: number;
   }) => void;
-  onToolCallStart: (
-    toolCall: Omit<ToolCallResult, "id" | "startedAt">,
-  ) => string;
+  onToolCallStart: (toolCall: ToolCallResult) => void;
   onToolCallUpdate: (
     toolCallId: string,
     updates: Partial<ToolCallResult>,
@@ -277,9 +275,6 @@ async function parseSSEStream(
   let buffer = "";
   let eventCount = 0;
 
-  // Track tool calls by their backend-provided IDs so updates match
-  const toolCallIdMap = new Map<string, string>();
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
@@ -414,13 +409,19 @@ async function parseSSEStream(
         // ── Tool call event ──
         if (eventType === "tool_call" && parsed.tool_call) {
           const tc = parsed.tool_call;
+          const tcId = tc.id ?? `tc-${Date.now()}`;
 
           if (tc.status === "running") {
             log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
-            const frontendId = callbacks.onToolCallStart({
+            // Build the full ToolCallResult and start a new tool_call block.
+            // The backend-provided ID is used directly (no frontend remapping)
+            // so subsequent updates and rag_sources events can match by ID.
+            callbacks.onToolCallStart({
+              id: tcId,
               type: tc.type,
               status: "running",
               title: tc.title ?? tc.type,
+              startedAt: Date.now(),
               query: tc.query,
               language: tc.language,
               code: tc.code,
@@ -430,13 +431,9 @@ async function parseSSEStream(
               output: tc.output,
               exitCode: tc.exitCode,
             });
-            // Map backend ID → frontend ID for future updates
-            if (tc.id) {
-              toolCallIdMap.set(tc.id, frontendId);
-            }
             // If the backend already sent results in the start event, mark as completed
             if (tc.webResults && tc.webResults.length > 0) {
-              callbacks.onToolCallUpdate(frontendId, {
+              callbacks.onToolCallUpdate(tcId, {
                 status: "completed",
                 completedAt: Date.now(),
                 webResults: tc.webResults,
@@ -444,7 +441,7 @@ async function parseSSEStream(
             }
             // Similarly for genResults
             if (tc.genResults && tc.genResults.length > 0) {
-              callbacks.onToolCallUpdate(frontendId, {
+              callbacks.onToolCallUpdate(tcId, {
                 status: "completed",
                 completedAt: Date.now(),
                 genResults: tc.genResults,
@@ -452,7 +449,6 @@ async function parseSSEStream(
             }
           } else if (tc.status === "completed" || tc.status === "error") {
             log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
-            const frontendId = tc.id ? toolCallIdMap.get(tc.id) : undefined;
 
             const updates: Partial<ToolCallResult> = {
               status: tc.status,
@@ -466,9 +462,7 @@ async function parseSSEStream(
               updates.imageDescription = tc.imageDescription;
             if (tc.error) updates.error = tc.error;
 
-            if (frontendId) {
-              callbacks.onToolCallUpdate(frontendId, updates);
-            }
+            callbacks.onToolCallUpdate(tcId, updates);
           }
         }
 
@@ -538,10 +532,13 @@ export async function streamChatDemo(
   callbacks.onThinkingDone(2);
 
   if (hasSearch) {
-    const tcId = callbacks.onToolCallStart({
+    const tcId = `demo-tc-search-${Date.now()}`;
+    callbacks.onToolCallStart({
+      id: tcId,
       type: "websearch",
       status: "running",
       title: "Searching the web",
+      startedAt: Date.now(),
       query: userMessage,
     });
     await delay(1200);
@@ -574,10 +571,13 @@ export async function streamChatDemo(
   if (hasCode) {
     const codeSnippet = `import numpy as np\n\ndata = np.random.randn(1000)\nmean = np.mean(data)\nstd = np.std(data)\nprint(f"Mean: {mean:.4f}")\nprint(f"Std:  {std:.4f}")`;
 
-    const tcId = callbacks.onToolCallStart({
+    const tcId = `demo-tc-code-${Date.now()}`;
+    callbacks.onToolCallStart({
+      id: tcId,
       type: "code_exec",
       status: "running",
       title: "Running code",
+      startedAt: Date.now(),
       language: "python",
       code: codeSnippet,
     });
