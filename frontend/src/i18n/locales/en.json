@@ -129,5 +129,10 @@
   "brain.documents.description": "Uploaded documents and knowledge base will appear here",
   "brain.memories.extracting": "Extracting memories...",
   "brain.memories.extracted": "New memory extracted!",
-  "brain.memories.extractedN": "{count} new memories extracted!"
+  "brain.memories.extractedN": "{count} new memories extracted!",
+  "brain.history": "History",
+  "brain.history.search": "Search past conversations...",
+  "brain.history.info": "Search through all your past conversation messages by keyword. The AI can also search these automatically when you ask about something discussed previously.",
+  "brain.history.empty": "No matching conversations found.",
+  "brain.history.open": "Open conversation"
 }

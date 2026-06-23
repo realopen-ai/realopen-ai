@@ -5,8 +5,9 @@ import { cn } from "@/lib/utils";
 import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
 import { DocumentsTab } from "@/components/brain/DocumentsTab";
+import { HistoryTab } from "@/components/brain/HistoryTab";
 
-type BrainTab = "memories" | "skills" | "documents";
+type BrainTab = "memories" | "history" | "skills" | "documents";
 
 export function BrainPage() {
   const [tab, setTab] = useState<BrainTab>("memories");
@@ -14,6 +15,7 @@ export function BrainPage() {
 
   const tabs: { key: BrainTab; label: string }[] = [
     { key: "memories", label: t("brain.memories") },
+    { key: "history", label: t("brain.history") },
     { key: "skills", label: t("brain.skills") },
     { key: "documents", label: t("brain.documents") },
   ];
@@ -54,6 +56,7 @@ export function BrainPage() {
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {tab === "memories" && <MemoriesTab />}
+        {tab === "history" && <HistoryTab />}
         {tab === "skills" && <SkillsTab />}
         {tab === "documents" && <DocumentsTab />}
       </div>

@@ -30,6 +30,8 @@ modules:
       - use_webfetch
       - use_code_exec
       - use_vision
+      - rag_search
+      - manage_memory
     # Models reference roles from profiles.yml — they are resolved automatically
     # based on the current hardware profile. This list is informational only.
     models:

@@ -6,6 +6,19 @@ context window limit. This is essential for local models with small
 context windows.
 
 Also handles end-of-conversation summarization for cross-session memory.
+
+IMPROVEMENTS:
+- Tool-call-aware token estimation: counts tool_calls[].function.arguments
+  (not just content), with 4 tokens overhead per tool_call. Without this,
+  a tool-only assistant turn (content=None, large tool body) reads as
+  ~0 tokens and compaction triggers late.
+- Better token estimate: 0.3 tokens/char (was 0.4) — closer to real BPE
+  output. Code and CJK are still underestimated but less so.
+- Post-trim tool-message sanitization: drops orphan `role:"tool"`
+  messages whose parent was compacted away, preventing the OpenAI API's
+  "tool message without preceding tool_call" 400 error.
+- Refuse-to-compact on summarizer failure: returns the original messages
+  intact rather than silently dropping the older half.
 """
 
 import logging
@@ -44,20 +57,66 @@ DEFAULT_CONTEXT_LENGTHS: Dict[str, int] = {
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token count: ~0.4 tokens per character for English text."""
+    """Rough token count: ~0.3 tokens per character for English text.
+
+    Uses 0.3 (chars * 0.3) instead of the commonly-cited 0.25
+    (chars/4) because 0.3 is closer to real BPE output. Still a rough
+    estimate — code and CJK are off, but better than 0.4 which
+    overestimates English and triggers compaction too early.
+    """
     if not text:
         return 0
-    return max(1, int(len(text) * 0.4))
+    return max(1, int(len(text) * 0.3))
 
 
 def _estimate_message_tokens(msg: Dict) -> int:
-    """Estimate tokens in a message dict."""
+    """Estimate tokens in a message dict — TOOL-CALL-AWARE.
+
+    Counts:
+    - The text content (str or list-of-blocks)
+    - 4 tokens per-message overhead (role, formatting)
+    - tool_calls[].function.name + .arguments (with 4 tokens per call)
+      — a tool-only assistant turn carries content=None with the real
+      payload in tool_calls, so ignoring them made the compaction gates
+      blind to large tool arguments.
+    """
+    total = 4  # per-message overhead
     content = msg.get("content", "")
-    if isinstance(content, list):
-        content = " ".join(
-            b.get("text", "") for b in content if isinstance(b, dict) and b.get("text")
-        )
-    return _estimate_tokens(str(content)) + 4  # role overhead
+    if isinstance(content, str):
+        total += _estimate_tokens(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    total += _estimate_tokens(item.get("text", ""))
+                elif item.get("type") == "image_url":
+                    total += 256  # image placeholder overhead (rough)
+
+    # Count tool_calls (assistant messages with function calls). A tool-only
+    # turn carries content=None with the real payload in tool_calls —
+    # ignoring them made the compaction gates blind to large tool args.
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            total += 4  # per-tool-call overhead
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+            name = str(fn.get("name", ""))
+            args = fn.get("arguments", "")
+            if not isinstance(args, str):
+                import json as _json
+
+                try:
+                    args = _json.dumps(args)
+                except Exception:
+                    args = str(args)
+            total += _estimate_tokens(name + args)
+
+    # role:"tool" messages carry tool_call_id + content — count the content
+    # (already handled above) plus a small overhead for the tool_call_id ref.
+    if msg.get("role") == "tool":
+        total += 4
+
+    return total
 
 
 def _estimate_context_window(model_name: str) -> int:
@@ -150,6 +209,27 @@ def _format_message_for_compaction(msg: Dict) -> str:
                     parts.append("[image]")
         content = " ".join(parts)
 
+    # Include tool_calls in the compaction text so the summary knows what
+    # tools were called and with what arguments (truncated).
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        tc_parts = []
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else tc
+            name = fn.get("name", "unknown")
+            args = fn.get("arguments", "")
+            if not isinstance(args, str):
+                import json as _json
+
+                try:
+                    args = _json.dumps(args)
+                except Exception:
+                    args = str(args)
+            if len(args) > 200:
+                args = args[:200] + "…"
+            tc_parts.append(f"[tool: {name}({args})]")
+        content = (str(content) + " " + " ".join(tc_parts)).strip()
+
     content = str(content)[:2000]  # Cap per-message
     return f"{role}: {content}"
 
@@ -159,6 +239,71 @@ def _build_compaction_text(messages: List[Dict]) -> str:
     return "\n\n".join(_format_message_for_compaction(m) for m in messages)
 
 
+def _sanitize_tool_messages_after_compact(messages: List[Dict]) -> List[Dict]:
+    """Drop orphan tool/assistant-tool_calls messages after compaction.
+
+    After compaction splits the conversation, a `role:"tool"` message
+    may end up without its parent `assistant.tool_calls` message (which
+    got summarized into the compacted block). Ollama/OpenAI APIs reject
+    this with "tool message without preceding tool_call". Similarly, a
+    dangling `assistant.tool_calls` with no following tool response
+    breaks the pairing.
+
+    Two passes:
+    1. Drop orphan `role:"tool"` messages (no preceding assistant.tool_calls).
+    2. Strip `tool_calls` from assistant messages that have no following
+       tool response (keep their text content if any).
+    """
+    if not messages:
+        return messages
+
+    result: List[Dict] = []
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if role == "tool":
+            # Check if the previous KEPT message is an assistant with tool_calls
+            has_parent = False
+            if result:
+                prev = result[-1]
+                if (
+                    prev.get("role") == "assistant"
+                    and isinstance(prev.get("tool_calls"), list)
+                    and prev["tool_calls"]
+                ):
+                    has_parent = True
+            if not has_parent:
+                _log("dropping orphan tool message after compaction")
+                continue
+        result.append(dict(m))
+
+    # Pass 2: strip dangling assistant.tool_calls (no following tool response)
+    final: List[Dict] = []
+    for i, m in enumerate(result):
+        if (
+            m.get("role") == "assistant"
+            and isinstance(m.get("tool_calls"), list)
+            and m["tool_calls"]
+        ):
+            # Check if any of the next messages is a tool response
+            has_response = False
+            for nxt in result[i + 1 :]:
+                if nxt.get("role") == "tool":
+                    has_response = True
+                    break
+                if nxt.get("role") == "user":
+                    break  # user message ends the tool-response window
+            if not has_response:
+                _log("stripping dangling assistant.tool_calls after compaction")
+                m = {k: v for k, v in m.items() if k != "tool_calls"}
+                # If content is empty/None, give it a placeholder so the
+                # message isn't dropped by the API for having no content.
+                if not m.get("content"):
+                    m["content"] = "(tool call summarized)"
+        final.append(m)
+
+    return final
+
+
 async def compact_conversation(
     messages: List[Dict],
     model: str,
@@ -166,7 +311,8 @@ async def compact_conversation(
     """Check if compaction is needed and compact if so.
 
     Args:
-        messages: Current conversation messages (including system prompt)
+        messages: Current conversation messages (including system prompt and
+            any dynamic context messages appended after the conversation).
         model: Ollama model name (for context window detection)
 
     Returns:
@@ -189,9 +335,24 @@ async def compact_conversation(
         context_length,
     )
 
-    # Split into system + conversation
+    # Split into system + conversation + tail-context.
+    # Tail-context messages (memories, cross-session, datetime) are
+    # user-role messages we appended AFTER the conversation — they should
+    # NOT be compacted away. Identify them by the untrusted-context guard
+    # markers or the [Context: ...] prefix.
     system_msgs = [m for m in messages if m.get("role") == "system"]
-    convo_msgs = [m for m in messages if m.get("role") != "system"]
+    convo_msgs = []
+    tail_context_msgs = []
+    for m in messages:
+        if m.get("role") == "system":
+            continue
+        content = str(m.get("content", ""))
+        # Tail context messages are wrapped in untrusted guards or have
+        # the [Context: ...] prefix. Keep them out of compaction.
+        if "<<<UNTRUSTED_SOURCE_DATA>>>" in content or content.startswith("[Context:"):
+            tail_context_msgs.append(m)
+        else:
+            convo_msgs.append(m)
 
     if len(convo_msgs) < settings.CONTEXT_COMPACT_PRESERVE_TURNS + 2:
         return messages, False
@@ -214,8 +375,10 @@ async def compact_conversation(
         model, compaction_text, settings.CONTEXT_COMPACT_SUMMARY_TOKENS
     )
     if not summary:
+        # Refuse-to-compact on failure: return original intact rather
+        # than silently dropping the older half.
         logger.warning("Compaction summary failed — keeping original messages")
-        _log("Compaction summary failed for text: %s", compaction_text)
+        _log("Compaction summary failed — keeping original messages")
         return messages, False
 
     # Build the compacted message list
@@ -234,7 +397,11 @@ async def compact_conversation(
         if "[Compacted conversation" not in str(m.get("content", ""))
     ]
 
-    result = compacted_system + [summary_msg] + recent
+    # Reassemble: system prefix + compaction summary + recent convo + tail context
+    result = compacted_system + [summary_msg] + recent + tail_context_msgs
+
+    # Sanitize: drop orphan tool messages left by the compaction split
+    result = _sanitize_tool_messages_after_compact(result)
 
     new_tokens = sum(_estimate_message_tokens(m) for m in result)
     _log(

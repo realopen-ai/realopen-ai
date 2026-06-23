@@ -21,7 +21,11 @@ export interface StreamCallbacks {
     updates: Partial<ToolCallResult>,
   ) => void;
   onMemoryExtractionStart?: () => void;
-  onMemoryExtractionDone?: (data: { count: number; ran: boolean }) => void;
+  onMemoryExtractionDone?: (data: {
+    count: number;
+    ran: boolean;
+    pending?: boolean;
+  }) => void;
   /** RAG sources — fired when the agent's rag_search tool retrieves chunks */
   onRagSources?: (sources: RetrievedSourceDTO[], toolCallId: string) => void;
   /** Document digestion progress — fired during chat-upload doc digestion */
@@ -350,10 +354,11 @@ async function parseSSEStream(
         if (eventType === "memory_extraction_done") {
           const count = parsed.count ?? 0;
           const ran = parsed.ran ?? true;
+          const pending = parsed.pending ?? false;
           log(
-            `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}`,
+            `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}  pending=${pending}`,
           );
-          callbacks.onMemoryExtractionDone?.({ count, ran });
+          callbacks.onMemoryExtractionDone?.({ count, ran, pending });
         }
 
         // ── RAG sources (agent's rag_search tool returned chunks) ──

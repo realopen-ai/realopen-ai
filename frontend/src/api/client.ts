@@ -182,6 +182,10 @@ export interface ConversationDTO {
   model: string | null;
   createdAt: number;
   updatedAt: number;
+  // Cross-session context visibility — lets the Brain page show which
+  // conversations have been summarized and what the summary is.
+  summary?: string | null;
+  summaryAt?: number | null;
 }
 
 export interface MessageDTO {
@@ -311,4 +315,43 @@ export async function fetchConversationDetail(
     dbgError(`   ❌ fetchConversationDetail error: ${err}`);
   }
   return null;
+}
+
+// ─── Past-conversation search ────────────────────────────────────
+
+export interface PastConversationResult {
+  message_id: string;
+  conversation_id: string;
+  conversation_title: string;
+  role: string;
+  content_snippet: string;
+  content_full: string;
+  rank: number;
+  created_at: number;
+}
+
+export async function searchPastConversations(
+  query: string,
+  excludeConversationId?: string,
+  limit = 10,
+): Promise<PastConversationResult[]> {
+  log(`➡️  searchPastConversations  query=${query}`);
+  try {
+    const params = new URLSearchParams({ query, limit: String(limit) });
+    if (excludeConversationId) {
+      params.set("exclude_conversation_id", excludeConversationId);
+    }
+    const res = await fetch(`/api/conversations/search?${params.toString()}`, {
+      method: "POST",
+    });
+    log(`   response  status=${res.status}  ok=${res.ok}`);
+    if (res.ok) {
+      const data = await res.json();
+      return data.results ?? [];
+    }
+    dbgError(`   ❌ searchPastConversations NOT OK  status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ searchPastConversations error: ${err}`);
+  }
+  return [];
 }

@@ -1014,6 +1014,44 @@ async def digest_document(
     doc_id = uuid.uuid4()
     safe_scope = scope if scope in ("private", "public") else "private"
     mime = guess_mime_type(filename)
+
+    # ── Content-hash dedup ──────────────────────────────────────────────
+    # If a document with the same content_hash already exists with the
+    # same scope (and same conversation_id for private docs), skip
+    # re-digestion and return the existing document. This prevents
+    # re-embedding a 200-page PDF that was already uploaded.
+    content_hash = _sha256(file_bytes)
+    try:
+        dedup_stmt = select(Document).where(Document.content_hash == content_hash)
+        if safe_scope == "private" and conversation_id:
+            dedup_stmt = dedup_stmt.where(
+                Document.scope == "private",
+                Document.conversation_id == conversation_id,
+            )
+        else:
+            dedup_stmt = dedup_stmt.where(Document.scope == safe_scope)
+        dedup_result = await db.execute(dedup_stmt)
+        existing_doc = dedup_result.scalar_one_or_none()
+        if existing_doc and existing_doc.digestion_status == "ready":
+            _log(
+                "digest: SKIP — content_hash %s already digested as doc %s",
+                content_hash[:12],
+                existing_doc.id,
+            )
+            progress(
+                DigestProgress(
+                    stage="done",
+                    percent=100,
+                    details=f"Duplicate of existing document: {existing_doc.filename}",
+                    document_id=str(existing_doc.id),
+                    total_chunks=existing_doc.total_chunks,
+                    total_images=existing_doc.total_images,
+                )
+            )
+            return existing_doc
+    except Exception as e:
+        _log("digest: dedup check failed (non-fatal): %s", e)
+
     _log(
         "digest_document START  filename=%s  size=%d  scope=%s  conv=%s  doc_id=%s",
         filename,
@@ -1035,7 +1073,7 @@ async def digest_document(
         mime_type=mime,
         file_path="",  # filled in after save
         file_size_bytes=len(file_bytes),
-        content_hash=_sha256(file_bytes),
+        content_hash=content_hash,  # reuse the hash computed for dedup
         scope=safe_scope,
         conversation_id=conversation_id if safe_scope == "private" else None,
         message_id=message_id,
@@ -1390,12 +1428,23 @@ async def search_documents(
 ) -> List[RetrievedSource]:
     """Hybrid vector + BM25 search with per-doc adaptive top-k.
 
+    IMPROVEMENTS OVER PREVIOUS IMPLEMENTATION:
+    - Query expansion: expands the query with synonyms before embedding
+      (cheap, no LLM call). Improves recall for short queries.
+    - Larger candidate pool: fetches RAG_CANDIDATE_POOL (60) vector
+      candidates instead of 30, AND separately fetches keyword-only
+      matches via tsvector (UNION). Previously only 30 vector candidates
+      were BM25-scored, biasing toward vector similarity and hiding
+      keyword-only matches.
+    - LLM reranking: optionally reranks the top-N chunks with a small LLM
+      call. Costs one extra inference but meaningfully reorders results.
+
     Scope filter:
       - public                                → any conversation
       - private AND conversation_id = ?       → only that conversation
 
     Returns at most top_k_total chunks, with at most top_k_per_doc chunks
-    per document. Sorted by hybrid score (descending).
+    per document. Sorted by hybrid score (or reranked score if reranking).
     """
     if not query or not query.strip():
         return []
@@ -1408,16 +1457,19 @@ async def search_documents(
         else settings.RAG_SIMILARITY_CUTOFF
     )
 
-    # Embed the query
-    q_emb = await get_embedding(query)
+    # ── Query expansion ─────────────────────────────────────────────────
+    expanded_query = query
+    if settings.RAG_QUERY_EXPANSION:
+        expanded_query = _expand_query(query)
+
+    # Embed the (expanded) query
+    q_emb = await get_embedding(expanded_query)
     if not q_emb:
         _log("query embedding failed, returning no results")
         return []
 
-    # ── Step 1: pgvector cosine search to get top candidates ────────────
-    # We over-fetch so the per-doc selection still has enough to work with
-    # after the cutoff filter and per-doc cap are applied.
-    fetch_k = max(k_total * 3, 30)
+    # ── Step 1: pgvector cosine search — larger candidate pool ──────────
+    fetch_k = max(settings.RAG_CANDIDATE_POOL, k_total * 3)
     distance_expr = DocumentChunk.embedding.cosine_distance(q_emb)
 
     stmt = (
@@ -1440,9 +1492,7 @@ async def search_documents(
         .limit(fetch_k)
     )
 
-    # Apply scope filter:
-    #   - public docs always searchable
-    #   - private docs searchable only when their conversation_id matches
+    # Apply scope filter
     if conversation_id:
         stmt = stmt.where(
             or_(
@@ -1458,67 +1508,121 @@ async def search_documents(
 
     try:
         result = await db.execute(stmt)
-        rows = result.all()
+        vector_rows = result.all()
     except Exception as e:
         _log("vector search query failed: %s", e)
         return []
 
-    if not rows:
+    if not vector_rows:
         _log("no candidates found for query: %s", query[:80])
         return []
 
-    # ── Step 2: BM25 score via raw SQL (search_vector is DB-managed) ────
-    # Same pattern as the memory system: search_vector is a GENERATED column
-    # not in the ORM, so we issue a separate raw SQL query to get ts_rank_cd
-    # for the matching chunk IDs.
-    chunk_ids = [r.id for r in rows]
+    # ── Step 2: BM25 keyword search — catch keyword-only matches ────────
+    # Previously BM25 was only scored on the vector candidates, so a chunk
+    # with great keyword overlap but mediocre vector similarity never got
+    # a chance. Now we run a separate tsvector query to fetch keyword-only
+    # candidates and merge them with the vector candidates.
+    chunk_ids = [r.id for r in vector_rows]
     bm25_scores: Dict[str, float] = {}
+    keyword_only_rows: Dict[str, Any] = {}  # chunk_id_str -> row-like dict
+
     try:
         # Build a tsquery from query tokens — OR them so any match contributes.
         tokens = re.findall(r"\w+", query.lower())
         tokens = [t for t in tokens if len(t) >= 2]
         if tokens:
             tsquery = " | ".join(f"'{t}'" for t in tokens)
-            # Build an inline UUID list for the WHERE IN clause.
-            # We use a parameter for the tsquery and a tuple literal for
-            # the IDs (PostgreSQL accepts this directly).
-            id_list = ",".join(f"'{cid}'" for cid in chunk_ids)
-            rank_sql = text(f"""
-                SELECT id,
-                       ts_rank_cd(search_vector, to_tsquery('simple', :q)) AS rank
-                FROM document_chunks
-                WHERE search_vector @@ to_tsquery('simple', :q)
-                  AND id IN ({id_list})
-            """).bindparams(q=tsquery)
-            rank_result = await db.execute(rank_sql)
-            for row in rank_result:
-                bm25_scores[str(row[0])] = float(row[1] or 0.0)
+            # Fetch keyword matches that AREN'T already in the vector set
+            # (those we already have). We also get their text + metadata
+            # so we can include them as candidates.
+            scope_clause = ""
+            params = {"q": tsquery, "lim": fetch_k}
+            if conversation_id:
+                scope_clause = (
+                    "AND (d.scope = 'public' OR "
+                    "(d.scope = 'private' AND d.conversation_id = CAST(:cid AS uuid)))"
+                )
+                params["cid"] = str(conversation_id)
+            else:
+                scope_clause = "AND d.scope = 'public'"
+
+            kw_sql = text(f"""
+                SELECT dc.id, dc.document_id, dc.text, dc.page_number,
+                       dc.line_start, dc.line_end, dc.chunk_type, dc.image_path,
+                       d.filename AS doc_filename,
+                       ts_rank_cd(dc.search_vector, to_tsquery('simple', :q)) AS rank
+                FROM document_chunks dc
+                JOIN documents d ON d.id = dc.document_id
+                WHERE dc.search_vector @@ to_tsquery('simple', :q)
+                  AND d.digestion_status = 'ready'
+                  {scope_clause}
+                ORDER BY rank DESC
+                LIMIT :lim
+            """).bindparams(**params)
+            kw_result = await db.execute(kw_sql)
+            for row in kw_result:
+                cid_str = str(row[0])
+                bm25_scores[cid_str] = float(row[9] or 0.0)
+                # If this chunk isn't in the vector results, add it as a
+                # keyword-only candidate (with distance=None so vec_sim=0).
+                if cid_str not in {str(r.id) for r in vector_rows}:
+                    keyword_only_rows[cid_str] = row
+
+            # Also score the vector candidates that match keywords
+            existing_ids = {str(r.id) for r in vector_rows}
+            if existing_ids:
+                id_list = ",".join(f"'{cid}'" for cid in existing_ids)
+                rank_sql = text(f"""
+                    SELECT id,
+                           ts_rank_cd(search_vector, to_tsquery('simple', :q)) AS rank
+                    FROM document_chunks
+                    WHERE search_vector @@ to_tsquery('simple', :q)
+                      AND id IN ({id_list})
+                """).bindparams(q=tsquery)
+                rank_result = await db.execute(rank_sql)
+                for row in rank_result:
+                    bm25_scores[str(row[0])] = float(row[1] or 0.0)
     except Exception as e:
         _log("BM25 query failed, using vector-only: %s", e)
         bm25_scores = {}
 
-    # ── Step 3: hybrid score + cutoff + per-doc selection ───────────────
+    # ── Step 3: merge vector + keyword-only candidates ──────────────────
+    # Build a unified candidate list. Vector candidates have a distance;
+    # keyword-only candidates have distance=None (vec_sim=0).
+    all_candidates: List[Tuple[float, float, float, Any]] = []
+
     w_vec = settings.RAG_RETRIEVAL_VECTOR_WEIGHT
     w_bm25 = settings.RAG_RETRIEVAL_BM25_WEIGHT
 
     # Normalize BM25 to 0..1 across the candidate set
     max_bm25 = max(bm25_scores.values()) if bm25_scores else 0.0
+    if max_bm25 <= 0:
+        max_bm25 = 6.0  # default normalizer (matches memory system)
 
-    candidates: List[Tuple[float, float, float, Any]] = []
-    for r in rows:
+    # Vector candidates
+    for r in vector_rows:
         vec_sim = 1.0 - (r.distance or 1.0)
-        if vec_sim < cutoff:
-            continue
+        if vec_sim < cutoff and bm25_scores.get(str(r.id), 0.0) == 0:
+            continue  # below cutoff AND no keyword match — skip
         bm25_raw = bm25_scores.get(str(r.id), 0.0)
-        bm25_norm = bm25_raw / max_bm25 if max_bm25 > 0 else 0.0
+        bm25_norm = min(bm25_raw / max_bm25, 1.0)
         score = w_vec * vec_sim + w_bm25 * bm25_norm
-        candidates.append((score, vec_sim, bm25_norm, r))
+        all_candidates.append((score, vec_sim, bm25_norm, r))
 
-    candidates.sort(key=lambda x: x[0], reverse=True)
+    # Keyword-only candidates (not in vector results)
+    for cid_str, row in keyword_only_rows.items():
+        bm25_raw = bm25_scores.get(cid_str, 0.0)
+        bm25_norm = min(bm25_raw / max_bm25, 1.0)
+        vec_sim = 0.0  # no vector match
+        score = w_bm25 * bm25_norm  # keyword-only score
+        all_candidates.append((score, vec_sim, bm25_norm, row))
 
+    all_candidates.sort(key=lambda x: x[0], reverse=True)
+
+    # ── Step 4: per-doc selection ───────────────────────────────────────
     per_doc_count: Dict[str, int] = {}
     final: List[RetrievedSource] = []
-    for score, vec_sim, bm25_norm, r in candidates:
+    for score, vec_sim, bm25_norm, r in all_candidates:
         doc_id_str = str(r.document_id)
         if per_doc_count.get(doc_id_str, 0) >= k_per_doc:
             continue
@@ -1539,19 +1643,192 @@ async def search_documents(
                 image_path=r.image_path,
             )
         )
-        if len(final) >= k_total:
+        if len(final) >= max(k_total, settings.RAG_RERANK_TOP_N):
             break
 
+    # ── Step 5: LLM reranking (optional) ────────────────────────────────
+    if settings.RAG_LLM_RERANK and len(final) > 1:
+        final = await _rerank_with_llm(query, final, k_total)
+
+    final = final[:k_total]
+
     _log(
-        "search '%s' → %d candidates, %d returned (cutoff=%s, k_per_doc=%d, k_total=%d)",
+        "search '%s' → %d vector + %d keyword candidates, %d returned "
+        "(cutoff=%s, k_per_doc=%d, k_total=%d, rerank=%s)",
         query[:60],
-        len(rows),
+        len(vector_rows),
+        len(keyword_only_rows),
         len(final),
         cutoff,
         k_per_doc,
         k_total,
+        settings.RAG_LLM_RERANK,
     )
     return final
+
+
+# ── Query expansion ────────────────────────────────────────────────────
+
+
+# Lightweight synonym map for common query terms. This is NOT a full
+# wordnet-style expansion — just catches obvious synonyms that small
+# models can't reformulate themselves. Kept short to avoid query bloat.
+_QUERY_SYNONYMS: Dict[str, List[str]] = {
+    "how": ["way", "method", "approach"],
+    "what": ["definition", "description", "explain"],
+    "why": ["reason", "cause", "because"],
+    "problem": ["issue", "error", "bug", "failure"],
+    "fix": ["solve", "resolve", "repair", "correct"],
+    "create": ["make", "build", "generate", "produce"],
+    "delete": ["remove", "drop", "destroy", "erase"],
+    "update": ["modify", "change", "edit", "alter"],
+    "find": ["locate", "search", "discover", "identify"],
+    "start": ["begin", "launch", "initiate", "commence"],
+    "stop": ["end", "halt", "terminate", "cease"],
+    "fast": ["quick", "speedy", "rapid", "efficient"],
+    "big": ["large", "huge", "major", "significant"],
+    "small": ["little", "minor", "tiny", "compact"],
+    "good": ["best", "optimal", "recommended", "preferred"],
+    "bad": ["poor", "worst", "broken", "faulty"],
+}
+
+
+def _expand_query(query: str) -> str:
+    """Expand a query with synonyms (cheap, no LLM call).
+
+    Tokenizes the query, looks up each token in the synonym map, and
+    appends synonyms to the query. The original tokens are kept first
+    (so the embedding still matches the original intent) and synonyms
+    are appended (so the embedding also catches paraphrases).
+
+    Example: "how to fix the problem" → "how to fix the problem way method approach solve resolve repair correct issue error bug failure"
+    """
+    if not query or not query.strip():
+        return query
+    tokens = re.findall(r"\w+", query.lower())
+    expansions: List[str] = []
+    for tok in tokens:
+        syns = _QUERY_SYNONYMS.get(tok)
+        if syns:
+            expansions.extend(syns[:2])  # cap at 2 synonyms per token
+    if not expansions:
+        return query
+    # Keep original query first, append expansions (deduped)
+    seen = set(query.lower().split())
+    unique_expansions = [s for s in expansions if s not in seen][:6]
+    if not unique_expansions:
+        return query
+    return query + " " + " ".join(unique_expansions)
+
+
+# ── LLM reranking ──────────────────────────────────────────────────────
+
+
+_RERANK_SYSTEM_PROMPT = """You are a relevance judge. Given a user query and a list of document excerpts, rank them by how relevant each excerpt is to answering the query.
+
+Return ONLY a JSON array of numbers — the 1-based indices of the excerpts, most relevant first. Do not include any other text.
+
+Example:
+Query: "how to install Python"
+Excerpts:
+1. To install Python, download from python.org...
+2. Python is a programming language...
+3. The weather today is sunny...
+Output: [1, 2, 3]
+"""
+
+
+async def _rerank_with_llm(
+    query: str,
+    sources: List["RetrievedSource"],
+    final_k: int,
+) -> List["RetrievedSource"]:
+    """Rerank retrieved sources with a small LLM call.
+
+    Sends the query + top-N chunk texts to the utility model and asks it
+    to rank them by relevance. Falls back to the original order on any
+    failure (reranking is a nice-to-have, not critical).
+
+    Uses the default_utility model (falls back to chat model) with a
+    short timeout — if the LLM is slow or fails, we keep the hybrid-score
+    ordering.
+    """
+    if not sources or len(sources) <= 1:
+        return sources
+
+    try:
+        model = settings.resolve_model(settings.MEMORY_EXTRACTION_MODEL_ROLE)
+        ollama_url = settings.OLLAMA_BASE_URL
+        if not ollama_url or not model:
+            return sources
+
+        # Build the excerpts list (truncate each chunk to keep payload small)
+        excerpts_lines: List[str] = []
+        for i, s in enumerate(sources[: settings.RAG_RERANK_TOP_N], start=1):
+            text = (s.text or "")[:300]
+            excerpts_lines.append(f"{i}. {text}")
+        excerpts = "\n".join(excerpts_lines)
+
+        user_msg = (
+            f"Query: {query}\n\nExcerpts:\n{excerpts}\n\n"
+            f"Return the JSON array of indices, most relevant first."
+        )
+
+        import httpx as _httpx
+
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{ollama_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": _RERANK_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "think": False,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"num_predict": 256},
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("message", {}).get("content", "").strip()
+
+        # Parse the JSON array of indices
+        import json as _json
+
+        # Strip markdown fences / <think> tags
+        raw_clean = raw
+        if raw_clean.startswith("```"):
+            raw_clean = raw_clean.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        start = raw_clean.find("[")
+        end = raw_clean.rfind("]")
+        if start < 0 or end <= start:
+            return sources
+        order = _json.loads(raw_clean[start : end + 1])
+        if not isinstance(order, list):
+            return sources
+
+        # Reorder sources by the LLM's ranking
+        reranked: List["RetrievedSource"] = []
+        used = set()
+        for idx in order:
+            if isinstance(idx, int) and 1 <= idx <= len(sources):
+                src = sources[idx - 1]
+                if id(src) not in used:
+                    reranked.append(src)
+                    used.add(id(src))
+        # Append any sources the LLM didn't rank
+        for s in sources:
+            if id(s) not in used:
+                reranked.append(s)
+
+        _log("LLM rerank: reordered %d sources", len(reranked))
+        return reranked[:final_k] if final_k else reranked
+
+    except Exception as e:
+        _log("LLM rerank failed (keeping hybrid order): %s", e)
+        return sources
 
 
 def format_sources_for_llm(sources: List[RetrievedSource]) -> str:

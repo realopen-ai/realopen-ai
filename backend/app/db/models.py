@@ -70,6 +70,11 @@ class Message(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # search_vector is a GENERATED ALWAYS AS tsvector column managed by
+    # PostgreSQL (see migration f1a5b3c9d2e7). It is NOT mapped as a
+    # regular Column here to avoid ORM write attempts — queries that need
+    # it use raw SQL (see app/services/session_search.py).
+
     conversation = relationship(
         "Conversation",
         back_populates="messages",

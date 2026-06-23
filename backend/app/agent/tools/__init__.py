@@ -11,6 +11,8 @@ from app.agent.tools.code_exec import CodeExecTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.image_gen import ImageGenTool
 from app.agent.tools.rag_search import RagSearchTool
+from app.agent.tools.manage_memory import ManageMemoryTool
+from app.agent.tools.search_past_conversations import SearchPastConversationsTool
 
 __all__ = [
     "WebSearchTool",
@@ -19,4 +21,6 @@ __all__ = [
     "WebFetchTool",
     "ImageGenTool",
     "RagSearchTool",
+    "ManageMemoryTool",
+    "SearchPastConversationsTool",
 ]
