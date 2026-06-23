@@ -72,7 +72,7 @@ clean:
 
 # ── Monitoring stack ──
 .PHONY: monitor
-monitor:
+monitor: startup detect-hardware
 	@echo "Starting monitoring stack..."
 	@$(COMPOSE_MON) up -d
 	@echo ""

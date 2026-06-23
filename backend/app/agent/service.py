@@ -23,6 +23,7 @@ from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
 from app.services.context_compactor import compact_conversation
 from app.services.conversation_memory import build_cross_session_context
+from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
 
 logger = logging.getLogger(__name__)
@@ -535,7 +536,9 @@ async def run_agent_stream(
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
     max_rounds = 10
-    for _ in range(max_rounds):
+    for round_number in range(max_rounds):
+        if round_number == max_rounds - 1:
+            app_metrics.record_agent_rounds(round_number + 1)
         # Build Ollama request messages: stable system prefix + conversation
         # turns + dynamic context messages (memories/cross-session/datetime).
         # The context_messages are appended AFTER the conversation so the
@@ -555,6 +558,7 @@ async def run_agent_stream(
             )
             if was_compacted:
                 ollama_messages = compacted
+                app_metrics.record_context_compaction(resolved_model)
                 _dbg(
                     "Compacted conversation: %d -> %d messages",
                     len(messages) + 1,
@@ -755,7 +759,8 @@ async def run_agent_stream(
 
             # Execute the tool (with error handling)
             try:
-                result = await tool.execute(**tool_args)
+                with app_metrics.track_tool_call(tool_name):
+                    result = await tool.execute(**tool_args)
             except Exception as e:
                 logger.exception("Tool %s failed: %s", tool_name, e)
                 yield _sse_event(
