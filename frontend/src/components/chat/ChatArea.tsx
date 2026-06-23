@@ -247,9 +247,11 @@ export function ChatArea() {
         onMemoryExtractionDone: ({
           count,
           ran,
+          pending,
         }: {
           count: number;
           ran: boolean;
+          pending?: boolean;
         }) => {
           const ms = useMemoryStore.getState();
           ms.setExtracting(false);
@@ -259,6 +261,16 @@ export function ChatArea() {
             // memories appear if the user navigates there.
             ms.loadMemories();
             ms.loadCategories();
+          } else if (ran && pending) {
+            // Extraction was enqueued to the background queue (KV-cache
+            // protection). The actual count isn't available yet — refresh
+            // the memories list after a short delay so the user sees the
+            // new memories once the background job completes.
+            ms.clearLastExtraction();
+            setTimeout(() => {
+              ms.loadMemories();
+              ms.loadCategories();
+            }, 5000);
           } else {
             ms.clearLastExtraction();
           }
