@@ -516,6 +516,49 @@ class Settings(BaseSettings):
     # images are downscaled to keep vision-LLM latency reasonable.
     RAG_VISION_IMAGE_MAX_DIM: int = 1024
 
+    # ── RAG quality enhancements ────────────────────────────────────────
+    # When true, rag_search expands the user's query with keyword synonyms
+    # before retrieval (cheap, no LLM call). Improves recall for short
+    # queries on small models that can't reformulate themselves.
+    RAG_QUERY_EXPANSION: bool = True
+    # When true, rag_search runs a lightweight LLM reranker over the top-K
+    # retrieved chunks before returning them to the agent. Costs one extra
+    # small-LLM call per rag_search invocation but meaningfully reorders
+    # results. Uses the default_utility model (falls back to chat model).
+    RAG_LLM_RERANK: bool = True
+    # How many chunks to send to the reranker (top-N after hybrid retrieval).
+    RAG_RERANK_TOP_N: int = 8
+    # How many chunks to return to the agent after reranking.
+    RAG_RERANK_FINAL_K: int = 5
+    # Candidate pool size for BM25 scoring. The retrieval pipeline fetches
+    # this many vector candidates, THEN scores them with BM25 (previously
+    # only 30 vector candidates were BM25-scored, biasing toward vector
+    # similarity and hiding keyword-only matches).
+    RAG_CANDIDATE_POOL: int = 60
+
+    # ── Memory + cross-session improvements ─────────────────────────────
+    # When true, injected memory/RAG/cross-session blocks are wrapped in
+    # untrusted-context guard markers (prompt-injection defense).
+    MEMORY_UNTRUSTED_WRAP: bool = True
+    # When true, memory extraction + audit run as a sequential background
+    # queue AFTER the chat stream goes idle (protects the chat model's KV
+    # cache on local 4-slot backends like llama.cpp). When false, they run
+    # inline (old behavior — blocks the SSE stream).
+    MEMORY_BACKGROUND_QUEUE: bool = True
+    # Max wait (seconds) for the chat stream to go idle before the background
+    # queue gives up and runs anyway.
+    MEMORY_BG_QUEUE_MAX_WAIT: int = 120
+    # Poll interval (seconds) for the background queue's idle check.
+    MEMORY_BG_QUEUE_POLL: float = 0.25
+
+    # ── KV-cache-aware system prompt ────────────────────────────────────
+    # When true, the agent builds a STABLE system prefix (agent persona +
+    # tool list + untrusted-context policy) and appends DYNAMIC content
+    # (memories, RAG, cross-session, current datetime) as tail user-role
+    # context messages. This lets Ollama/llama.cpp reuse their cached
+    # prompt prefix across turns, halving per-turn latency on small models.
+    KV_CACHE_AWARE_PROMPT: bool = True
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
