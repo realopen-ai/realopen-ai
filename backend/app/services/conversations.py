@@ -6,7 +6,6 @@ SQLAlchemy async sessions.
 """
 
 import uuid
-import json as _json
 from datetime import datetime
 from typing import List, Optional
 
@@ -87,12 +86,16 @@ async def add_message(
     has_document: bool = False,
     image_count: int = 0,
     document_count: int = 0,
-    thinking: Optional[str] = None,
-    thinking_duration: Optional[int] = None,
+    blocks: Optional[list] = None,
     generation_duration: Optional[int] = None,
-    tool_calls_json: Optional[str] = None,
 ) -> Message:
-    """Add a message to a conversation."""
+    """Add a message to a conversation.
+
+    For assistant messages, `blocks` is the ordered array of rendering
+    blocks (thinking / text / tool_call / error) and `content` is the
+    concatenation of text blocks (for tsvector search). For user messages,
+    `blocks` is None and `content` is the user's text.
+    """
     msg = Message(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
@@ -104,10 +107,8 @@ async def add_message(
         has_document=has_document,
         image_count=image_count,
         document_count=document_count,
-        thinking=thinking,
-        thinking_duration=thinking_duration,
+        blocks=blocks,
         generation_duration=generation_duration,
-        tool_calls_json=tool_calls_json,
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -192,20 +193,15 @@ async def message_to_dict(msg: Message) -> dict:
         "createdAt": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
     }
 
-    if msg.thinking is not None:
-        result["thinking"] = msg.thinking
-    if msg.thinking_duration is not None:
-        result["thinkingDuration"] = msg.thinking_duration
+    # blocks — ordered rendering blocks for assistant messages.
+    # NULL for user/system messages. The frontend renders these in order
+    # to preserve the chronological flow of multi-round agent turns.
+    if msg.blocks is not None:
+        result["blocks"] = msg.blocks
+    else:
+        result["blocks"] = None
+
     if msg.generation_duration is not None:
         result["generationDuration"] = msg.generation_duration
-
-    # Parse tool_calls_json back into a list for the frontend
-    if msg.tool_calls_json:
-        try:
-            result["toolCalls"] = _json.loads(msg.tool_calls_json)
-        except _json.JSONDecodeError:
-            result["toolCalls"] = []
-    else:
-        result["toolCalls"] = []
 
     return result
