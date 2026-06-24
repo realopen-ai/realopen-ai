@@ -13,6 +13,7 @@ from app.agent.tools.image_gen import ImageGenTool
 from app.agent.tools.rag_search import RagSearchTool
 from app.agent.tools.manage_memory import ManageMemoryTool
 from app.agent.tools.search_past_conversations import SearchPastConversationsTool
+from app.agent.tools.report_gen import ReportGenTool
 
 __all__ = [
     "WebSearchTool",
@@ -23,4 +24,5 @@ __all__ = [
     "RagSearchTool",
     "ManageMemoryTool",
     "SearchPastConversationsTool",
+    "ReportGenTool",
 ]
