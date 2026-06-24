@@ -18,6 +18,8 @@ import {
   FileText,
   Quote,
   AlertCircle,
+  Download,
+  FileType,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -394,6 +396,11 @@ function ToolCallBlockView({
       label: "Generated image",
       text: "text-emerald-400",
     },
+    report_gen: {
+      icon: FileText,
+      label: "Generated report",
+      text: "text-amber-400",
+    },
   };
   const {
     icon: Icon,
@@ -469,7 +476,13 @@ function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
-  if (tc.type === "image_gen") return <ImageGenDetail tc={tc} />;
+  if (tc.type === "image_gen") {
+    // Route to ReportGenDetail if genResults contain a report deliverable
+    if (tc.genResults?.some((r) => r.type === "report")) {
+      return <ReportGenDetail tc={tc} />;
+    }
+    return <ImageGenDetail tc={tc} />;
+  }
   return <GenericToolDetail tc={tc} />;
 }
 
@@ -631,6 +644,85 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
                 </div>
               ),
           )}
+        </div>
+      )}
+      {tc.error && (
+        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
+          <p className="text-[11px] text-red-400">{tc.error}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Report Deliverable Badge ────────────────────────────────────────
+
+function ReportDeliverableBadge({
+  filename,
+  format,
+  downloadUrl,
+}: {
+  filename: string;
+  format: string;
+  downloadUrl: string;
+}) {
+  const isPdf = format === "pdf";
+  return (
+    <a
+      href={downloadUrl}
+      download={filename}
+      className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 hover:bg-accent transition-colors cursor-pointer group"
+    >
+      <div
+        className={cn(
+          "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+          isPdf ? "bg-red-500/10" : "bg-blue-500/10",
+        )}
+      >
+        <FileType
+          className={cn("w-4 h-4", isPdf ? "text-red-400" : "text-blue-400")}
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[12px] font-medium text-foreground truncate">
+          {filename}
+        </p>
+        <p
+          className={cn(
+            "text-[10px] font-medium uppercase",
+            isPdf ? "text-red-400/70" : "text-blue-400/70",
+          )}
+        >
+          {format} Report
+        </p>
+      </div>
+      <Download className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
+    </a>
+  );
+}
+
+function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
+  const reportResults = tc.genResults?.filter((r) => r.type === "report") ?? [];
+  return (
+    <div className="space-y-2">
+      {tc.status === "running" && (
+        <div className="flex items-center gap-2 px-2">
+          <div className="w-3 h-3 border-[1.5px] border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          <span className="text-[11px] text-muted-foreground">
+            Generating report...
+          </span>
+        </div>
+      )}
+      {reportResults.length > 0 && (
+        <div className="space-y-1.5">
+          {reportResults.map((r, i) => (
+            <ReportDeliverableBadge
+              key={i}
+              filename={r.filename ?? "report"}
+              format={r.format ?? "pdf"}
+              downloadUrl={r.download_url ?? "#"}
+            />
+          ))}
         </div>
       )}
       {tc.error && (
@@ -878,6 +970,24 @@ export function MessageBubble({
         <div className="flex items-center gap-2 text-muted-foreground py-2">
           <Loader2 className="w-4 h-4 animate-spin" />
           <span className="text-[12px]">Thinking...</span>
+        </div>
+      )}
+
+      {/* Persisted deliverables (from DB) — rendered as download badges.
+          These are also rendered inline inside tool_call blocks via
+          genResults, but we show them here as a fallback when the
+          blocks don't contain the full genResults (e.g. after refresh
+          if the tool_call block's genResults weren't persisted). */}
+      {message.deliverables && message.deliverables.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {message.deliverables.map((d, i) => (
+            <ReportDeliverableBadge
+              key={i}
+              filename={d.filename}
+              format={d.format}
+              downloadUrl={d.download_url}
+            />
+          ))}
         </div>
       )}
 
