@@ -5,6 +5,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
+    libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir poetry
@@ -20,6 +21,7 @@ FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl \
+    libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
