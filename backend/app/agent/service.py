@@ -78,6 +78,9 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "news": {"use_websearch"},
     "weather": {"use_websearch"},
     "price": {"use_websearch"},
+    # Report generation triggers
+    "report": {"use_report_gen"},
+    "deliverable": {"use_report_gen"},
     # Past-conversation search triggers
     "last week": {"search_past_conversations"},
     "yesterday": {"search_past_conversations"},
@@ -189,6 +192,7 @@ _TOOL_TAGS = {
     "use_vision",
     "rag_search",
     "use_image_gen",
+    "use_report_gen",
     "manage_memory",
     "search_past_conversations",
 }
@@ -272,6 +276,19 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
         args["prompt"] = lines[0] if lines else content
         if len(lines) > 1:
             args["image_base64"] = lines[1]
+    elif tag_lower == "use_report_gen":
+        # Format: topic on line 1, optional key:value pairs after
+        if lines:
+            args["topic"] = lines[0]
+            for line in lines[1:]:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == "format" and val in ("pdf", "docx"):
+                        args["format"] = val
+                    elif key == "outline":
+                        args["outline"] = val
     elif tag_lower == "manage_memory":
         # Format: action on line 1, then key:value pairs
         if lines:
@@ -332,6 +349,8 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["query"] = tc.query
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.language:
         d["language"] = tc.language
     if tc.code:
@@ -353,6 +372,8 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["completedAt"] = int(tc.completed_at * 1000)
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.output:
         d["output"] = tc.output
     if tc.exit_code is not None:
