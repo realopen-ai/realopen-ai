@@ -106,7 +106,11 @@ export function ChatArea() {
 
   // ── Scroll to bottom on new messages ──
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // wait 100ms to allow the new message to render before scrolling
+    const timeout = setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+    return () => clearTimeout(timeout);
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
   // ── Handle sending a message ──
