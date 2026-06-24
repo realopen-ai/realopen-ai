@@ -88,6 +88,7 @@ async def add_message(
     document_count: int = 0,
     blocks: Optional[list] = None,
     generation_duration: Optional[int] = None,
+    deliverables: Optional[list] = None,
 ) -> Message:
     """Add a message to a conversation.
 
@@ -95,6 +96,10 @@ async def add_message(
     blocks (thinking / text / tool_call / error) and `content` is the
     concatenation of text blocks (for tsvector search). For user messages,
     `blocks` is None and `content` is the user's text.
+
+    `deliverables` is an optional array of file metadata for generated
+    deliverables (reports, etc.) — persisted so the frontend can render
+    download badges that survive page refresh.
     """
     msg = Message(
         id=uuid.uuid4(),
@@ -109,6 +114,7 @@ async def add_message(
         document_count=document_count,
         blocks=blocks,
         generation_duration=generation_duration,
+        deliverables=deliverables,
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -203,5 +209,13 @@ async def message_to_dict(msg: Message) -> dict:
 
     if msg.generation_duration is not None:
         result["generationDuration"] = msg.generation_duration
+
+    # deliverables — array of file metadata for generated reports etc.
+    # NULL when no deliverables were produced. The frontend renders
+    # download badges from this so they survive page refresh.
+    if msg.deliverables is not None:
+        result["deliverables"] = msg.deliverables
+    else:
+        result["deliverables"] = None
 
     return result
