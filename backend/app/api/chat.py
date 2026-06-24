@@ -262,6 +262,7 @@ class _BlockBuilder:
         self._current_thinking: dict | None = None
         self._tool_call_blocks: dict[str, dict] = {}  # tc_id -> block ref
         self.generation_duration: int = 0
+        self.deliverables: list[dict] = []  # report/file deliverables for DB
 
     def _close_text(self):
         self._current_text = None
@@ -309,6 +310,23 @@ class _BlockBuilder:
         block = self._tool_call_blocks.get(tc_id)
         if block is not None:
             block["tool_call"].update(updates)
+        # Extract deliverables from genResults (reports, etc.)
+        gen_results = updates.get("genResults")
+        if isinstance(gen_results, list):
+            for gr in gen_results:
+                if isinstance(gr, dict) and gr.get("type") == "report":
+                    # Add to the deliverables list for DB persistence
+                    self.deliverables.append(
+                        {
+                            "type": "report",
+                            "format": gr.get("format", "pdf"),
+                            "filename": gr.get("filename", "report"),
+                            "file_path": gr.get("file_path", ""),
+                            "download_url": gr.get("download_url", ""),
+                            "report_id": gr.get("report_id", ""),
+                            "created_at": gr.get("created_at", int(time.time())),
+                        }
+                    )
 
     def on_rag_sources(self, tc_id: str, sources: list):
         """Attach RAG sources to a tool_call block by ID."""
@@ -587,6 +605,7 @@ async def chat_stream(request: ChatRequest):
                 model=_resolved_model,
                 blocks=builder.to_db_blocks(),
                 generation_duration=builder.generation_duration,
+                deliverables=builder.deliverables if builder.deliverables else None,
             )
 
             # Mark the stream as idle so the background extraction queue
@@ -1003,6 +1022,7 @@ async def chat_stream_multipart(
                 model=_resolved_model,
                 blocks=builder.to_db_blocks(),
                 generation_duration=builder.generation_duration,
+                deliverables=builder.deliverables if builder.deliverables else None,
             )
 
             # Mark stream idle so background extraction can proceed.
