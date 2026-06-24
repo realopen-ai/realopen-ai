@@ -65,7 +65,7 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "document": {"rag_search"},
     "pdf": {"rag_search"},
     "file": {"rag_search"},
-    "image": {"use_vision"},
+    "image": {"use_vision", "use_image_gen"},
     "picture": {"use_vision"},
     "photo": {"use_vision"},
     "video": {"use_vision"},
@@ -78,9 +78,12 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "news": {"use_websearch"},
     "weather": {"use_websearch"},
     "price": {"use_websearch"},
+    "imagine": {"use_image_gen"},
     # Report generation triggers
     "report": {"use_report_gen"},
     "deliverable": {"use_report_gen"},
+    "generate": {"use_report_gen", "use_image_gen"},
+    "create": {"use_report_gen", "use_image_gen"},
     # Past-conversation search triggers
     "last week": {"search_past_conversations"},
     "yesterday": {"search_past_conversations"},
