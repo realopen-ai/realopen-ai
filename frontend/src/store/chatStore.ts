@@ -41,8 +41,18 @@ export interface ToolCallResult {
   imageDescription?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
-  // Media generation
-  genResults?: { type: string; data: string; filename?: string }[];
+  // Media generation — images (type: "image", data: base64) and reports
+  // (type: "report", format, filename, download_url, etc.)
+  genResults?: {
+    type: string;
+    data?: string;
+    filename?: string;
+    format?: string;
+    download_url?: string;
+    report_id?: string;
+    file_path?: string;
+    created_at?: number;
+  }[];
   // Files
   filePath?: string;
   fileContent?: string;
@@ -89,6 +99,9 @@ export interface Message {
   documentCount?: number;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
+  // Deliverable files (reports, etc.) produced by tool calls. Persisted
+  // in the DB so download badges survive page refresh.
+  deliverables?: Deliverable[];
   // Document digestion progress — populated when the user uploads docs
   // via chat and the backend streams document_digest_* SSE events.
   digestProgress?: DigestProgressItem[];
@@ -121,6 +134,18 @@ export interface DigestProgressItem {
   totalChunks?: number;
   totalImages?: number;
   error?: string;
+}
+
+/** A deliverable file (report, etc.) produced by a tool call. Persisted
+ * in the DB so download badges survive page refresh. */
+export interface Deliverable {
+  type: string; // "report"
+  format: string; // "pdf" | "docx"
+  filename: string;
+  file_path: string;
+  download_url: string;
+  report_id?: string;
+  created_at?: number;
 }
 
 export interface Conversation {
@@ -323,6 +348,7 @@ function dtoToMessage(dto: MessageDTO): Message {
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     generationDuration: dto.generationDuration,
+    deliverables: dto.deliverables ?? undefined,
   };
 }
 
