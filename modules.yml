@@ -31,6 +31,7 @@ modules:
       - use_code_exec
       - use_vision
       - use_report_gen
+      - use_pptx_gen
       - rag_search
       - manage_memory
     # Models reference roles from profiles.yml — they are resolved automatically
