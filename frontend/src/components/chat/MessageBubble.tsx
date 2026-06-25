@@ -401,6 +401,11 @@ function ToolCallBlockView({
       label: "Generated report",
       text: "text-amber-400",
     },
+    presentation_gen: {
+      icon: FileText,
+      label: "Generated presentation",
+      text: "text-amber-400",
+    },
   };
   const {
     icon: Icon,
@@ -477,8 +482,11 @@ function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "image_gen") {
-    // Route to ReportGenDetail if genResults contain a report deliverable
-    if (tc.genResults?.some((r) => r.type === "report")) {
+    if (
+      tc.genResults?.some(
+        (r) => r.type === "report" || r.type === "presentation",
+      )
+    ) {
       return <ReportGenDetail tc={tc} />;
     }
     return <ImageGenDetail tc={tc} />;
@@ -661,12 +669,32 @@ function ReportDeliverableBadge({
   filename,
   format,
   downloadUrl,
+  label,
 }: {
   filename: string;
   format: string;
   downloadUrl: string;
+  label?: string;
 }) {
   const isPdf = format === "pdf";
+  const isPptx = format === "pptx";
+  const iconBg = isPdf
+    ? "bg-red-500/10"
+    : isPptx
+      ? "bg-amber-500/10"
+      : "bg-blue-500/10";
+  const iconColor = isPdf
+    ? "text-red-400"
+    : isPptx
+      ? "text-amber-400"
+      : "text-blue-400";
+  const labelColor = isPdf
+    ? "text-red-400/70"
+    : isPptx
+      ? "text-amber-400/70"
+      : "text-blue-400/70";
+  const displayLabel = label ?? (isPptx ? "Presentation" : "Report");
+
   return (
     <a
       href={downloadUrl}
@@ -676,24 +704,17 @@ function ReportDeliverableBadge({
       <div
         className={cn(
           "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-          isPdf ? "bg-red-500/10" : "bg-blue-500/10",
+          iconBg,
         )}
       >
-        <FileType
-          className={cn("w-4 h-4", isPdf ? "text-red-400" : "text-blue-400")}
-        />
+        <FileType className={cn("w-4 h-4", iconColor)} />
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-medium text-foreground truncate">
           {filename}
         </p>
-        <p
-          className={cn(
-            "text-[10px] font-medium uppercase",
-            isPdf ? "text-red-400/70" : "text-blue-400/70",
-          )}
-        >
-          {format} Report
+        <p className={cn("text-[10px] font-medium uppercase", labelColor)}>
+          {format} {displayLabel}
         </p>
       </div>
       <Download className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
@@ -702,25 +723,36 @@ function ReportDeliverableBadge({
 }
 
 function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
-  const reportResults = tc.genResults?.filter((r) => r.type === "report") ?? [];
+  const deliverableResults =
+    tc.genResults?.filter(
+      (r) => r.type === "report" || r.type === "presentation",
+    ) ?? [];
+  const isPresentation = deliverableResults.some(
+    (r) => r.type === "presentation",
+  );
+  const generatingLabel = isPresentation
+    ? "Generating presentation..."
+    : "Generating report...";
+
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
         <div className="flex items-center gap-2 px-2">
           <div className="w-3 h-3 border-[1.5px] border-emerald-400 border-t-transparent rounded-full animate-spin" />
           <span className="text-[11px] text-muted-foreground">
-            Generating report...
+            {generatingLabel}
           </span>
         </div>
       )}
-      {reportResults.length > 0 && (
+      {deliverableResults.length > 0 && (
         <div className="space-y-1.5">
-          {reportResults.map((r, i) => (
+          {deliverableResults.map((r, i) => (
             <ReportDeliverableBadge
               key={i}
               filename={r.filename ?? "report"}
               format={r.format ?? "pdf"}
               downloadUrl={r.download_url ?? "#"}
+              label={r.type === "presentation" ? "Presentation" : "Report"}
             />
           ))}
         </div>
