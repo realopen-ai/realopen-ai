@@ -14,6 +14,7 @@ from app.agent.tools.rag_search import RagSearchTool
 from app.agent.tools.manage_memory import ManageMemoryTool
 from app.agent.tools.search_past_conversations import SearchPastConversationsTool
 from app.agent.tools.report_gen import ReportGenTool
+from app.agent.tools.pptx_gen import PptxGenTool
 
 __all__ = [
     "WebSearchTool",
@@ -25,4 +26,5 @@ __all__ = [
     "ManageMemoryTool",
     "SearchPastConversationsTool",
     "ReportGenTool",
+    "PptxGenTool",
 ]
