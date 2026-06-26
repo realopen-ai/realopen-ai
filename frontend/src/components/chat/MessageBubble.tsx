@@ -357,73 +357,118 @@ function ToolCallBlockView({
   const tc = block.toolCall;
   if (!tc) return null;
 
+  // Detect deliverable-producing tool calls (report_gen / pptx_gen both
+  // use ToolType.IMAGE_GEN but carry genResults with type "report" or
+  // "presentation"). We override the label/icon for these.
+  const hasDeliverable = tc.genResults?.some(
+    (r) => r.type === "report" || r.type === "presentation",
+  );
+  //   const isPresentationDeliverable = tc.genResults?.some(
+  //     (r) => r.type === "presentation",
+  //   );
+  // During "running" phase, genResults aren't set yet — detect via title
+  const titleLower = (tc.title || "").toLowerCase();
+  const isReportTool =
+    hasDeliverable ||
+    (tc.status === "running" && titleLower.includes("report"));
+  const isPresentationTool =
+    hasDeliverable ||
+    (tc.status === "running" && titleLower.includes("presentation"));
+
   const configs: Record<
     string,
-    { icon: typeof Search; label: string; text: string }
+    { icon: typeof Search; label: string; runningLabel: string; text: string }
   > = {
     websearch: {
       icon: Globe,
       label: "Searched the web",
+      runningLabel: "Searching the web...",
       text: "text-blue-400",
     },
     vision: {
       icon: Eye,
       label: "Analyzed image",
+      runningLabel: "Analyzing image...",
       text: "text-violet-400",
     },
     deepsearch: {
       icon: Brain,
       label: "Deep research",
+      runningLabel: "Researching...",
       text: "text-purple-400",
     },
     code_exec: {
       icon: Code2,
       label: "Ran code",
+      runningLabel: "Running code...",
       text: "text-emerald-400",
     },
     file_read: {
       icon: FileCode,
       label: "Read file",
+      runningLabel: "Reading file...",
       text: "text-amber-400",
     },
     file_write: {
       icon: FileCode,
       label: "Wrote file",
+      runningLabel: "Writing file...",
       text: "text-amber-400",
     },
     image_gen: {
       icon: Image,
       label: "Generated image",
+      runningLabel: "Generating image...",
       text: "text-emerald-400",
     },
     report_gen: {
       icon: FileText,
       label: "Generated report",
+      runningLabel: "Generating report...",
       text: "text-amber-400",
     },
     presentation_gen: {
       icon: FileText,
       label: "Generated presentation",
+      runningLabel: "Generating presentation...",
       text: "text-amber-400",
     },
   };
+
+  // For image_gen type with deliverable genResults or report/presentation
+  // title during running, override to show document icon/label instead
+  // of image icon/label.
+  let effectiveType: string = tc.type;
+  if (tc.type === "image_gen" && (isReportTool || isPresentationTool)) {
+    effectiveType = isPresentationTool ? "presentation_gen" : "report_gen";
+  }
+
   const {
     icon: Icon,
     label,
+    runningLabel,
     text,
-  } = configs[tc.type] ?? {
+  } = configs[effectiveType] ?? {
     icon: Zap,
     label: tc.title,
+    runningLabel: tc.title,
     text: "text-muted-foreground",
   };
+
+  // Display label: "Generating..." while running, "Generated ..." when done
+  const displayLabel = tc.status === "running" ? runningLabel : label;
+
   const resultCount = tc.webResults?.length || tc.genResults?.length;
   const duration =
     tc.completedAt && tc.startedAt
       ? ((tc.completedAt - tc.startedAt) / 1000).toFixed(1)
       : null;
 
-  // Auto-expand while running so the user sees progress
-  const autoExpand = tc.status === "running";
+  // Auto-expand while running so the user sees progress, AND auto-expand
+  // when completed with deliverables so the download badge is visible.
+  const autoExpand =
+    tc.status === "running" ||
+    ((isReportTool || isPresentationTool) && tc.status === "completed");
   const isExpanded = expanded || autoExpand;
 
   return (
@@ -440,7 +485,9 @@ function ToolCallBlockView({
         ) : (
           <Icon className={cn("w-3.5 h-3.5 shrink-0", text)} />
         )}
-        <span className={cn("text-[12px] font-medium", text)}>{label}</span>
+        <span className={cn("text-[12px] font-medium", text)}>
+          {displayLabel}
+        </span>
         {tc.query && (
           <span className="text-[11px] text-muted-foreground truncate">
             &quot;{tc.query}&quot;
@@ -482,11 +529,17 @@ function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "image_gen") {
-    if (
-      tc.genResults?.some(
-        (r) => r.type === "report" || r.type === "presentation",
-      )
-    ) {
+    // Check genResults for report/presentation deliverables
+    const hasDeliverable = tc.genResults?.some(
+      (r) => r.type === "report" || r.type === "presentation",
+    );
+    // During "running" phase, genResults aren't set yet — detect via title
+    const titleLower = (tc.title || "").toLowerCase();
+    const isReportOrPptx =
+      hasDeliverable ||
+      (tc.status === "running" &&
+        (titleLower.includes("report") || titleLower.includes("presentation")));
+    if (isReportOrPptx) {
       return <ReportGenDetail tc={tc} />;
     }
     return <ImageGenDetail tc={tc} />;
@@ -730,9 +783,12 @@ function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
   const isPresentation = deliverableResults.some(
     (r) => r.type === "presentation",
   );
-  const generatingLabel = isPresentation
-    ? "Generating presentation..."
-    : "Generating report...";
+  // During "running" phase, detect via title since genResults aren't set yet
+  const titleLower = (tc.title || "").toLowerCase();
+  const generatingLabel =
+    isPresentation || titleLower.includes("presentation")
+      ? "Generating presentation..."
+      : "Generating report...";
 
   return (
     <div className="space-y-2">
