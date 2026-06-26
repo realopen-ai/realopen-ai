@@ -310,15 +310,18 @@ class _BlockBuilder:
         block = self._tool_call_blocks.get(tc_id)
         if block is not None:
             block["tool_call"].update(updates)
-        # Extract deliverables from genResults (reports, etc.)
+        # Extract deliverables from genResults (reports, presentations, etc.)
         gen_results = updates.get("genResults")
         if isinstance(gen_results, list):
             for gr in gen_results:
-                if isinstance(gr, dict) and gr.get("type") == "report":
+                if isinstance(gr, dict) and gr.get("type") in (
+                    "report",
+                    "presentation",
+                ):
                     # Add to the deliverables list for DB persistence
                     self.deliverables.append(
                         {
-                            "type": "report",
+                            "type": gr.get("type", "report"),
                             "format": gr.get("format", "pdf"),
                             "filename": gr.get("filename", "report"),
                             "file_path": gr.get("file_path", ""),

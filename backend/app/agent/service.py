@@ -835,9 +835,43 @@ async def run_agent_stream(
                 result.tool_call.id = tc_id  # Ensure the tool call ID is consistent
                 update_dict = _tool_call_to_update_dict(result.tool_call)
                 update_dict["id"] = tc_id
+                update_dict["title"] = result.tool_call.title
+                update_dict["type"] = result.tool_call.type.value
                 if on_tool_call_update:
                     on_tool_call_update(tc_id, update_dict)
                 yield _sse_event("tool_call", {"tool_call": update_dict})
+
+                # If the tool produced deliverables (reports, presentations),
+                # emit a separate SSE event so the frontend can add them to
+                # the message's deliverables array immediately.
+                if result.tool_call.gen_results:
+                    deliverables = []
+                    for gr in result.tool_call.gen_results:
+                        if isinstance(gr, dict) and gr.get("type") in (
+                            "report",
+                            "presentation",
+                        ):
+                            deliverables.append(
+                                {
+                                    "type": gr.get("type", "report"),
+                                    "format": gr.get("format", "pdf"),
+                                    "filename": gr.get("filename", "report"),
+                                    "file_path": gr.get("file_path", ""),
+                                    "download_url": gr.get("download_url", ""),
+                                    "report_id": gr.get("report_id", ""),
+                                    "created_at": gr.get(
+                                        "created_at", int(time.time())
+                                    ),
+                                }
+                            )
+                    if deliverables:
+                        yield _sse_event(
+                            "deliverables",
+                            {
+                                "deliverables": deliverables,
+                                "tool_call_id": tc_id,
+                            },
+                        )
 
             # RAG sources event
             if tool_name == "rag_search" and result.tool_call:
