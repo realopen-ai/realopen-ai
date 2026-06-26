@@ -249,3 +249,30 @@ class AppState(Base):
     key = Column(String(128), primary_key=True)
     value = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Template(Base):
+    """A PPTX template for presentation generation.
+
+    Templates are .pptx files stored under backend/app/templates/pptx/.
+    The DB row holds metadata (display name, description, tags, thumbnail)
+    so the Workspace UI can display and manage them dynamically.
+
+    The `slug` is generated from `display_name` and is also the filename
+    on disk (e.g. slug="research_template" → file="research_template.pptx").
+    The `path` field stores the relative path from the templates directory.
+    """
+
+    __tablename__ = "templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    display_name = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    tags = Column(JSONB, nullable=True)  # ["corporate", "minimal", ...]
+    thumbnail = Column(Text, nullable=True)  # base64-encoded small preview image
+    path = Column(
+        String(1024), nullable=False
+    )  # relative path: "research_template.pptx"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
