@@ -360,20 +360,23 @@ function ToolCallBlockView({
   // Detect deliverable-producing tool calls (report_gen / pptx_gen both
   // use ToolType.IMAGE_GEN but carry genResults with type "report" or
   // "presentation"). We override the label/icon for these.
+  // Also detect during the "running" phase via the tool call title.
   const hasDeliverable = tc.genResults?.some(
     (r) => r.type === "report" || r.type === "presentation",
   );
-  //   const isPresentationDeliverable = tc.genResults?.some(
-  //     (r) => r.type === "presentation",
-  //   );
-  // During "running" phase, genResults aren't set yet — detect via title
+  const isPresentationDeliverable = tc.genResults?.some(
+    (r) => r.type === "presentation",
+  );
+  // During "running" phase, genResults aren't set yet — detect via title.
+  // The running event title is "Calling use_report_gen" or "Calling use_pptx_gen".
+  // Check for "report", "pptx", "presentation", and "slides" in the title.
   const titleLower = (tc.title || "").toLowerCase();
   const isReportTool =
     hasDeliverable ||
     (tc.status === "running" && titleLower.includes("report"));
   const isPresentationTool =
-    hasDeliverable ||
-    (tc.status === "running" && titleLower.includes("presentation"));
+    isPresentationDeliverable ||
+    (tc.status === "running" && titleLower.includes("pptx"));
 
   const configs: Record<
     string,
@@ -538,7 +541,7 @@ function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
     const isReportOrPptx =
       hasDeliverable ||
       (tc.status === "running" &&
-        (titleLower.includes("report") || titleLower.includes("presentation")));
+        (titleLower.includes("report") || titleLower.includes("pptx")));
     if (isReportOrPptx) {
       return <ReportGenDetail tc={tc} />;
     }
@@ -780,15 +783,11 @@ function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
     tc.genResults?.filter(
       (r) => r.type === "report" || r.type === "presentation",
     ) ?? [];
-  const isPresentation = deliverableResults.some(
-    (r) => r.type === "presentation",
-  );
   // During "running" phase, detect via title since genResults aren't set yet
   const titleLower = (tc.title || "").toLowerCase();
-  const generatingLabel =
-    isPresentation || titleLower.includes("presentation")
-      ? "Generating presentation..."
-      : "Generating report...";
+  const generatingLabel = titleLower.includes("pptx")
+    ? "Generating presentation..."
+    : "Generating report...";
 
   return (
     <div className="space-y-2">
