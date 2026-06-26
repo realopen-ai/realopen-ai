@@ -74,6 +74,11 @@ class Message(Base):
     # Total generation duration across all agent rounds (seconds). Used
     # for the response-time badge under assistant messages.
     generation_duration = Column(Integer, nullable=True)
+    # Deliverable files (reports, etc.) produced by tool calls during this
+    # message. Array of {type, format, filename, file_path, download_url,
+    # created_at}. NULL when no deliverables were produced. See migration
+    # f3c8d1e5b4a2.
+    deliverables = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

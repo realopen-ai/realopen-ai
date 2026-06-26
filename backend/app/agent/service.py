@@ -65,7 +65,7 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "document": {"rag_search"},
     "pdf": {"rag_search"},
     "file": {"rag_search"},
-    "image": {"use_vision"},
+    "image": {"use_vision", "use_image_gen"},
     "picture": {"use_vision"},
     "photo": {"use_vision"},
     "video": {"use_vision"},
@@ -78,6 +78,19 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "news": {"use_websearch"},
     "weather": {"use_websearch"},
     "price": {"use_websearch"},
+    "imagine": {"use_image_gen"},
+    # Report generation triggers
+    "report": {"use_report_gen"},
+    "deliverable": {"use_report_gen", "use_pptx_gen"},
+    "generate": {"use_report_gen", "use_image_gen", "use_pptx_gen"},
+    "create": {"use_report_gen", "use_image_gen", "use_pptx_gen"},
+    # Presentation generation triggers
+    "presentation": {"use_pptx_gen"},
+    "slides": {"use_pptx_gen"},
+    "slideshow": {"use_pptx_gen"},
+    "pptx": {"use_pptx_gen"},
+    "deck": {"use_pptx_gen"},
+    "powerpoint": {"use_pptx_gen"},
     # Past-conversation search triggers
     "last week": {"search_past_conversations"},
     "yesterday": {"search_past_conversations"},
@@ -189,6 +202,8 @@ _TOOL_TAGS = {
     "use_vision",
     "rag_search",
     "use_image_gen",
+    "use_report_gen",
+    "use_pptx_gen",
     "manage_memory",
     "search_past_conversations",
 }
@@ -272,6 +287,31 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
         args["prompt"] = lines[0] if lines else content
         if len(lines) > 1:
             args["image_base64"] = lines[1]
+    elif tag_lower == "use_report_gen":
+        # Format: topic on line 1, optional key:value pairs after
+        if lines:
+            args["topic"] = lines[0]
+            for line in lines[1:]:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == "format" and val in ("pdf", "docx"):
+                        args["format"] = val
+                    elif key == "outline":
+                        args["outline"] = val
+    elif tag_lower == "use_pptx_gen":
+        if lines:
+            args["topic"] = lines[0]
+            for line in lines[1:]:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == "template" and val in ("corporate", "modern", "elegant"):
+                        args["template"] = val
+                    elif key == "outline":
+                        args["outline"] = val
     elif tag_lower == "manage_memory":
         # Format: action on line 1, then key:value pairs
         if lines:
@@ -332,6 +372,8 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["query"] = tc.query
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.language:
         d["language"] = tc.language
     if tc.code:
@@ -353,6 +395,8 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["completedAt"] = int(tc.completed_at * 1000)
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.gen_results:
+        d["genResults"] = tc.gen_results
     if tc.output:
         d["output"] = tc.output
     if tc.exit_code is not None:
@@ -791,9 +835,43 @@ async def run_agent_stream(
                 result.tool_call.id = tc_id  # Ensure the tool call ID is consistent
                 update_dict = _tool_call_to_update_dict(result.tool_call)
                 update_dict["id"] = tc_id
+                update_dict["title"] = result.tool_call.title
+                update_dict["type"] = result.tool_call.type.value
                 if on_tool_call_update:
                     on_tool_call_update(tc_id, update_dict)
                 yield _sse_event("tool_call", {"tool_call": update_dict})
+
+                # If the tool produced deliverables (reports, presentations),
+                # emit a separate SSE event so the frontend can add them to
+                # the message's deliverables array immediately.
+                if result.tool_call.gen_results:
+                    deliverables = []
+                    for gr in result.tool_call.gen_results:
+                        if isinstance(gr, dict) and gr.get("type") in (
+                            "report",
+                            "presentation",
+                        ):
+                            deliverables.append(
+                                {
+                                    "type": gr.get("type", "report"),
+                                    "format": gr.get("format", "pdf"),
+                                    "filename": gr.get("filename", "report"),
+                                    "file_path": gr.get("file_path", ""),
+                                    "download_url": gr.get("download_url", ""),
+                                    "report_id": gr.get("report_id", ""),
+                                    "created_at": gr.get(
+                                        "created_at", int(time.time())
+                                    ),
+                                }
+                            )
+                    if deliverables:
+                        yield _sse_event(
+                            "deliverables",
+                            {
+                                "deliverables": deliverables,
+                                "tool_call_id": tc_id,
+                            },
+                        )
 
             # RAG sources event
             if tool_name == "rag_search" and result.tool_call:

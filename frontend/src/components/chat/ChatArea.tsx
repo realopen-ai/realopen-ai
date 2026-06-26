@@ -4,7 +4,11 @@ import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { InputArea } from "@/components/chat/InputArea";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
-import { useChatStore, type ToolCallResult } from "@/store/chatStore";
+import {
+  useChatStore,
+  type ToolCallResult,
+  type Deliverable as DelivType,
+} from "@/store/chatStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
@@ -106,7 +110,11 @@ export function ChatArea() {
 
   // ── Scroll to bottom on new messages ──
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // wait 100ms to allow the new message to render before scrolling
+    const timeout = setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+    return () => clearTimeout(timeout);
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
   // ── Handle sending a message ──
@@ -277,6 +285,28 @@ export function ChatArea() {
               assistantMsgId,
               toolCallId,
               sources,
+            );
+        },
+        // Deliverables — add to the message's deliverables array so the
+        // download badges show up immediately (without page refresh).
+        onDeliverables: (
+          deliverables: Array<{
+            type: string;
+            format: string;
+            filename: string;
+            file_path: string;
+            download_url: string;
+            report_id?: string;
+            created_at?: number;
+          }>,
+          _toolCallId: string,
+        ) => {
+          useChatStore
+            .getState()
+            .addDeliverables(
+              capturedConvId,
+              assistantMsgId,
+              deliverables as DelivType[],
             );
         },
         // Document digestion progress — emitted while chat-uploaded

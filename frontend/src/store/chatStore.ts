@@ -41,8 +41,18 @@ export interface ToolCallResult {
   imageDescription?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
-  // Media generation
-  genResults?: { type: string; data: string; filename?: string }[];
+  // Media generation — images (type: "image", data: base64) and reports
+  // (type: "report", format, filename, download_url, etc.)
+  genResults?: {
+    type: string;
+    data?: string;
+    filename?: string;
+    format?: string;
+    download_url?: string;
+    report_id?: string;
+    file_path?: string;
+    created_at?: number;
+  }[];
   // Files
   filePath?: string;
   fileContent?: string;
@@ -89,6 +99,9 @@ export interface Message {
   documentCount?: number;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
+  // Deliverable files (reports, etc.) produced by tool calls. Persisted
+  // in the DB so download badges survive page refresh.
+  deliverables?: Deliverable[];
   // Document digestion progress — populated when the user uploads docs
   // via chat and the backend streams document_digest_* SSE events.
   digestProgress?: DigestProgressItem[];
@@ -121,6 +134,18 @@ export interface DigestProgressItem {
   totalChunks?: number;
   totalImages?: number;
   error?: string;
+}
+
+/** A deliverable file (report, etc.) produced by a tool call. Persisted
+ * in the DB so download badges survive page refresh. */
+export interface Deliverable {
+  type: string; // "report"
+  format: string; // "pdf" | "docx"
+  filename: string;
+  file_path: string;
+  download_url: string;
+  report_id?: string;
+  created_at?: number;
 }
 
 export interface Conversation {
@@ -242,6 +267,15 @@ interface ChatState {
     item: DigestProgressItem,
   ) => void;
 
+  // Deliverables — append deliverable file metadata to a message when
+  // a `deliverables` SSE event arrives (report/presentation generated).
+  // This makes the download badges show up immediately without refresh.
+  addDeliverables: (
+    conversationId: string,
+    messageId: string,
+    deliverables: Deliverable[],
+  ) => void;
+
   // Module actions
   loadModules: () => Promise<void>;
   toggleModule: (moduleName: string, enabled: boolean) => Promise<boolean>;
@@ -323,6 +357,7 @@ function dtoToMessage(dto: MessageDTO): Message {
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     generationDuration: dto.generationDuration,
+    deliverables: dto.deliverables ?? undefined,
   };
 }
 
@@ -774,6 +809,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 return {
                   ...m,
                   digestProgress: [...existing, item],
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  addDeliverables: (conversationId, messageId, deliverables) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                // Avoid duplicates: only add deliverables whose download_url
+                // isn't already in the message's deliverables array.
+                const existingUrls = new Set(
+                  (m.deliverables ?? []).map((d) => d.download_url),
+                );
+                const newOnes = deliverables.filter(
+                  (d) => !existingUrls.has(d.download_url),
+                );
+                if (newOnes.length === 0) return m;
+                return {
+                  ...m,
+                  deliverables: [...(m.deliverables ?? []), ...newOnes],
                 };
               }),
             }

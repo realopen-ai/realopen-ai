@@ -171,7 +171,16 @@ export interface BackendToolCall {
   output?: string;
   exitCode?: number;
   webResults?: { title: string; url: string; snippet: string }[];
-  genResults?: { type: string; data: string; filename?: string }[];
+  genResults?: {
+    type: string;
+    data?: string;
+    filename?: string;
+    format?: string;
+    download_url?: string;
+    report_id?: string;
+    file_path?: string;
+    created_at?: number;
+  }[];
   imageDescription?: string;
   error?: string;
   completedAt?: number;
@@ -214,6 +223,21 @@ export interface MessageDTO {
    * assistant messages. NULL for user/system messages. */
   blocks?: BackendBlock[] | null;
   generationDuration?: number;
+  /** Deliverable files (reports, etc.) produced by tool calls. NULL
+   * when no deliverables. The frontend renders download badges from
+   * this so they survive page refresh. */
+  deliverables?: BackendDeliverable[] | null;
+}
+
+/** A deliverable file as stored in the messages.deliverables JSONB column. */
+export interface BackendDeliverable {
+  type: string; // "report"
+  format: string; // "pdf" | "docx"
+  filename: string;
+  file_path: string;
+  download_url: string;
+  report_id?: string;
+  created_at?: number;
 }
 
 export async function fetchConversations(
