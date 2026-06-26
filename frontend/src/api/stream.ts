@@ -26,6 +26,19 @@ export interface StreamCallbacks {
   }) => void;
   /** RAG sources — fired when the agent's rag_search tool retrieves chunks */
   onRagSources?: (sources: RetrievedSourceDTO[], toolCallId: string) => void;
+  /** Deliverables — fired when a tool produces a downloadable file (report, presentation) */
+  onDeliverables?: (
+    deliverables: Array<{
+      type: string;
+      format: string;
+      filename: string;
+      file_path: string;
+      download_url: string;
+      report_id?: string;
+      created_at?: number;
+    }>,
+    toolCallId: string,
+  ) => void;
   /** Document digestion progress — fired during chat-upload doc digestion */
   onDocumentDigestProgress?: (p: {
     stage: string;
@@ -365,6 +378,26 @@ async function parseSSEStream(
           );
           if (callbacks.onRagSources) {
             callbacks.onRagSources(sources, tcId ?? "");
+          }
+        }
+
+        // ── Deliverables (reports, presentations) ──
+        if (eventType === "deliverables" && parsed.deliverables) {
+          const deliverables = parsed.deliverables as Array<{
+            type: string;
+            format: string;
+            filename: string;
+            file_path: string;
+            download_url: string;
+            report_id?: string;
+            created_at?: number;
+          }>;
+          const tcId = parsed.tool_call_id as string | undefined;
+          log(
+            `   📦 deliverables event received  count=${deliverables.length}  tool_call_id=${tcId ?? "(none)"}`,
+          );
+          if (callbacks.onDeliverables) {
+            callbacks.onDeliverables(deliverables, tcId ?? "");
           }
         }
 
