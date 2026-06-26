@@ -267,6 +267,15 @@ interface ChatState {
     item: DigestProgressItem,
   ) => void;
 
+  // Deliverables — append deliverable file metadata to a message when
+  // a `deliverables` SSE event arrives (report/presentation generated).
+  // This makes the download badges show up immediately without refresh.
+  addDeliverables: (
+    conversationId: string,
+    messageId: string,
+    deliverables: Deliverable[],
+  ) => void;
+
   // Module actions
   loadModules: () => Promise<void>;
   toggleModule: (moduleName: string, enabled: boolean) => Promise<boolean>;
@@ -800,6 +809,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 return {
                   ...m,
                   digestProgress: [...existing, item],
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  addDeliverables: (conversationId, messageId, deliverables) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                // Avoid duplicates: only add deliverables whose download_url
+                // isn't already in the message's deliverables array.
+                const existingUrls = new Set(
+                  (m.deliverables ?? []).map((d) => d.download_url),
+                );
+                const newOnes = deliverables.filter(
+                  (d) => !existingUrls.has(d.download_url),
+                );
+                if (newOnes.length === 0) return m;
+                return {
+                  ...m,
+                  deliverables: [...(m.deliverables ?? []), ...newOnes],
                 };
               }),
             }
