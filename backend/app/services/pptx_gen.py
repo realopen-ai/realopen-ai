@@ -54,10 +54,57 @@ AVAILABLE_TEMPLATES = ["corporate", "modern", "elegant"]
 DEFAULT_TEMPLATE = "corporate"
 
 
+async def _get_available_templates_from_db() -> list[str]:
+    """Query the DB for all template slugs. Falls back to hardcoded list if DB unavailable."""
+    try:
+        from app.db.session import async_session_factory
+        from app.db.models import Template
+        from sqlalchemy import select
+
+        async with async_session_factory() as db:
+            result = await db.execute(select(Template.slug))
+            slugs = [r[0] for r in result.all()]
+            if slugs:
+                return slugs
+    except Exception as e:
+        _log("failed to query templates from DB, using hardcoded: %s", e)
+    return AVAILABLE_TEMPLATES
+
+
+async def _get_templates_with_descriptions() -> list[tuple[str, str]]:
+    """Query the DB for all templates as (slug, description) tuples.
+
+    Falls back to hardcoded list if DB unavailable. Used by the tool's
+    get_dynamic_description() so the LLM can see template names and
+    their descriptions.
+    """
+    try:
+        from app.db.session import async_session_factory
+        from app.db.models import Template
+        from sqlalchemy import select
+
+        async with async_session_factory() as db:
+            result = await db.execute(select(Template.slug, Template.description))
+            rows = result.all()
+            if rows:
+                return [(r[0], r[1] or "") for r in rows]
+    except Exception as e:
+        _log("failed to query templates with descriptions from DB: %s", e)
+    return [(slug, "") for slug in AVAILABLE_TEMPLATES]
+
+
 def _resolve_template_path(template_name: Optional[str]) -> Path:
+    """Resolve a template name to its .pptx file path.
+
+    First checks the DB for the template slug, then falls back to the
+    filesystem. If the named template doesn't exist, falls back to the
+    default template.
+    """
     templates_dir = _get_templates_dir()
     name = (template_name or DEFAULT_TEMPLATE).lower().strip()
     tpl_path = templates_dir / f"{name}.pptx"
+    if name not in AVAILABLE_TEMPLATES:
+        tpl_path = templates_dir / "custom" / f"{name}.pptx"
     if not tpl_path.exists():
         _log("template '%s' not found, falling back to '%s'", name, DEFAULT_TEMPLATE)
         tpl_path = templates_dir / f"{DEFAULT_TEMPLATE}.pptx"
