@@ -114,7 +114,7 @@ async def _generate_markdown(topic: str, outline: Optional[str]) -> str:
 
     _log("generating markdown report: topic=%r model=%s", topic[:60], model)
 
-    async with httpx.AsyncClient(timeout=300.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         response = await client.post(
             f"{ollama_url}/api/chat",
             json={
