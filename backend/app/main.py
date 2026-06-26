@@ -1,4 +1,5 @@
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from app.api.setup import router as setup_router
 from app.api.memory import router as memory_router
 from app.api.documents import router as documents_router
 from app.api.reports import router as reports_router
+from app.api.workspace import router as workspace_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
@@ -112,6 +114,65 @@ def _apply_module_config() -> None:
         )
 
 
+async def _seed_default_templates():
+    """Seed default PPTX templates into the DB if the table is empty.
+
+    Checks if the templates table has any rows. If empty, inserts rows
+    for each .pptx file found in backend/app/templates/pptx/ that matches
+    the known default templates (corporate, modern, elegant).
+    """
+    from app.db.session import async_session_factory
+    from app.db.models import Template
+    from sqlalchemy import select
+    from datetime import datetime
+    from pathlib import Path
+
+    templates_dir = Path(__file__).resolve().parent / "templates" / "pptx"
+    defaults = {
+        "corporate": {
+            "display_name": "Corporate",
+            "description": "Navy blue professional theme",
+            "tags": ["corporate", "professional", "navy"],
+        },
+        "modern": {
+            "display_name": "Modern",
+            "description": "Teal and orange vibrant theme",
+            "tags": ["modern", "vibrant", "teal"],
+        },
+        "elegant": {
+            "display_name": "Elegant",
+            "description": "Dark purple and gold sophisticated theme",
+            "tags": ["elegant", "sophisticated", "dark"],
+        },
+    }
+
+    async with async_session_factory() as db:
+        # Check if any templates exist
+        result = await db.execute(select(Template).limit(1))
+        if result.scalar_one_or_none():
+            return  # Table already has templates
+
+        # Seed defaults
+        for slug, meta in defaults.items():
+            pptx_path = templates_dir / f"{slug}.pptx"
+            if pptx_path.exists():
+                t = Template(
+                    id=uuid.uuid4(),
+                    display_name=meta["display_name"],
+                    slug=slug,
+                    description=meta["description"],
+                    tags=meta["tags"],
+                    thumbnail=None,
+                    path=f"{slug}.pptx",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(t)
+                logger.info("📦 Seeded template: %s (%s)", meta["display_name"], slug)
+
+        await db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown events."""
@@ -176,6 +237,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database migration on startup failed: %s", e)
 
+    # Seed default templates into the DB if the templates table is empty
+    try:
+        await _seed_default_templates()
+    except Exception as e:
+        logger.warning("Template seeding failed: %s", e)
+
     yield
 
     # Shutdown
@@ -227,3 +294,4 @@ app.include_router(setup_router, prefix="/api", tags=["setup"])
 app.include_router(memory_router, prefix="/api", tags=["memory"])
 app.include_router(documents_router, prefix="/api", tags=["documents"])
 app.include_router(reports_router, prefix="/api", tags=["reports"])
+app.include_router(workspace_router, prefix="/api", tags=["workspace"])
