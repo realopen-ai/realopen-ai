@@ -165,6 +165,16 @@ async def create_template(
     content = await file.read()
     file_path.write_bytes(content)
 
+    # Auto-generate a schematic thumbnail if none was uploaded
+    final_thumbnail = thumbnail
+    if not final_thumbnail:
+        try:
+            from app.services.thumbnail_gen import generate_schematic_thumbnail
+
+            final_thumbnail = generate_schematic_thumbnail(file_path, display_name)
+        except Exception as e:
+            logger.warning("Auto-thumbnail generation failed: %s", e)
+
     # Parse tags
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
 
@@ -175,7 +185,7 @@ async def create_template(
         slug=slug,
         description=description or None,
         tags=tag_list if tag_list else None,
-        thumbnail=thumbnail,
+        thumbnail=final_thumbnail,
         path=f"{slug}.pptx",
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
