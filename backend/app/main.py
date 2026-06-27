@@ -156,13 +156,24 @@ async def _seed_default_templates():
         for slug, meta in defaults.items():
             pptx_path = templates_dir / f"{slug}.pptx"
             if pptx_path.exists():
+                # Auto-generate schematic thumbnail
+                thumbnail_b64 = None
+                try:
+                    from app.services.thumbnail_gen import generate_schematic_thumbnail
+
+                    thumbnail_b64 = generate_schematic_thumbnail(
+                        pptx_path, meta["display_name"]
+                    )
+                except Exception as e:
+                    logger.warning("Thumbnail generation failed for %s: %s", slug, e)
+
                 t = Template(
                     id=uuid.uuid4(),
                     display_name=meta["display_name"],
                     slug=slug,
                     description=meta["description"],
                     tags=meta["tags"],
-                    thumbnail=None,
+                    thumbnail=thumbnail_b64,
                     path=f"{slug}.pptx",
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
