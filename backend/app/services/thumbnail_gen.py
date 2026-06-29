@@ -254,6 +254,7 @@ def _draw_text_overlay(
     img_w, img_h = img.size
 
     # Determine text color based on background brightness
+    brightness = 255  # default to light background
     if bg_color:
         r, g, b = _hex_to_rgb(bg_color)
         brightness = (r * 299 + g * 587 + b * 114) / 1000

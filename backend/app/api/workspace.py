@@ -167,13 +167,18 @@ async def create_template(
 
     # Auto-generate a schematic thumbnail if none was uploaded
     final_thumbnail = thumbnail
+    print(f"Thumbnail provided: {final_thumbnail}")
     if not final_thumbnail:
         try:
             from app.services.thumbnail_gen import generate_schematic_thumbnail
 
+            print("generating thumbnail...")
             final_thumbnail = generate_schematic_thumbnail(file_path, display_name)
+            print(final_thumbnail)
         except Exception as e:
             logger.warning("Auto-thumbnail generation failed: %s", e)
+            print("Auto-thumb gen failed:")
+            print(e)
 
     # Parse tags
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -286,9 +291,15 @@ async def validate_template(file: UploadFile = File(...)):
 
     Performs lightweight checks:
     - File is a valid PPTX (can be opened by python-pptx)
-    - Has at least 1 slide layout
-    - Has at least 3 slide layouts (title, content, blank)
-    - Title and content placeholders exist on appropriate layouts
+    - Has at least 3 slide layouts
+    - At least one layout has a title placeholder (idx=0)
+    - At least one layout has a content/body placeholder (idx=1)
+    - Slide dimensions are 16:9
+    - Can add a slide without error
+
+    Many professional templates don't follow the standard
+    PowerPoint layout ordering, so we scan ALL layouts instead of
+    assuming Layout 0 = Title and Layout 1 = Content.
 
     Returns {valid: true} on success, {valid: false, error: "..."} on failure.
     """
@@ -306,50 +317,58 @@ async def validate_template(file: UploadFile = File(...)):
         if len(prs.slide_layouts) < 3:
             return {
                 "valid": False,
-                "error": f"Template has only {len(prs.slide_layouts)} slide layouts (need at least 3: Title, Content, Blank)",
+                "error": f"Template has only {len(prs.slide_layouts)} slide layouts (need at least 3)",
             }
 
-        # Check 2: Layout 0 (Title Slide) has a title placeholder
-        title_layout = prs.slide_layouts[0]
-        has_title_ph = any(
-            ph.placeholder_format.idx == 0 for ph in title_layout.placeholders
-        )
-        if not has_title_ph:
+        # Check 2: Scan ALL layouts for a title placeholder (idx=0)
+        # and a content/body placeholder (idx=1)
+        has_title_layout = False
+        has_content_layout = False
+        title_layout_idx = None
+        content_layout_idx = None
+        blank_layout_idx = None
+
+        for i, layout in enumerate(prs.slide_layouts):
+            layout_has_title = False
+            layout_has_content = False
+            for ph in layout.placeholders:
+                if ph.placeholder_format.idx == 0:
+                    layout_has_title = True
+                if ph.placeholder_format.idx == 1:
+                    layout_has_content = True
+
+            if layout_has_title and not has_title_layout:
+                has_title_layout = True
+                title_layout_idx = i
+            if layout_has_title and layout_has_content and not has_content_layout:
+                has_content_layout = True
+                content_layout_idx = i
+            # A "blank" layout is one with no placeholders
+            if not list(layout.placeholders) and blank_layout_idx is None:
+                blank_layout_idx = i
+
+        if not has_title_layout:
             return {
                 "valid": False,
-                "error": "Layout 0 (Title Slide) is missing a title placeholder (idx=0)",
+                "error": "No layout has a title placeholder (idx=0). The template needs at least one layout with a title text placeholder.",
+            }
+        if not has_content_layout:
+            return {
+                "valid": False,
+                "error": "No layout has both a title (idx=0) and content/body (idx=1) placeholder. The template needs at least one content layout.",
             }
 
-        # Check 3: Layout 1 (Title and Content) has title + content placeholders
-        content_layout = prs.slide_layouts[1]
-        has_title = any(
-            ph.placeholder_format.idx == 0 for ph in content_layout.placeholders
-        )
-        has_content = any(
-            ph.placeholder_format.idx == 1 for ph in content_layout.placeholders
-        )
-        if not has_title:
-            return {
-                "valid": False,
-                "error": "Layout 1 (Title and Content) is missing a title placeholder (idx=0)",
-            }
-        if not has_content:
-            return {
-                "valid": False,
-                "error": "Layout 1 (Title and Content) is missing a content placeholder (idx=1)",
-            }
-
-        # Check 4: Slide dimensions are 16:9 (w/h ≈ 1.778)
+        # Check 3: Slide dimensions are 16:9 (w/h ≈ 1.778)
         aspect = prs.slide_width / prs.slide_height
-        if abs(aspect - 16 / 9) > 0.1:
+        if abs(aspect - 16 / 9) > 0.15:
             return {
                 "valid": False,
                 "error": f'Slide aspect ratio is {aspect:.3f} (expected 16:9 ≈ 1.778). Got {prs.slide_width/914400:.1f}" x {prs.slide_height/914400:.1f}"',
             }
 
-        # Check 5: Can add a slide without error
+        # Check 4: Can add a slide using the content layout without error
         try:
-            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            slide = prs.slides.add_slide(prs.slide_layouts[content_layout_idx])
             for ph in slide.placeholders:
                 if ph.placeholder_format.idx == 0:
                     ph.text = "Test Title"
@@ -358,10 +377,19 @@ async def validate_template(file: UploadFile = File(...)):
         except Exception as e:
             return {
                 "valid": False,
-                "error": f"Failed to add a test slide: {e}",
+                "error": f"Failed to add a test slide (layout {content_layout_idx}): {e}",
             }
 
         # All checks passed
+        layout_info = []
+        for i, layout in enumerate(prs.slide_layouts):
+            phs = []
+            for ph in layout.placeholders:
+                phs.append(f"idx={ph.placeholder_format.idx}")
+            layout_info.append(
+                f"  Layout {i} '{layout.name}': {', '.join(phs) if phs else 'no placeholders'}"
+            )
+
         return {
             "valid": True,
             "details": {
@@ -369,6 +397,10 @@ async def validate_template(file: UploadFile = File(...)):
                 "slide_width": f"{prs.slide_width/914400:.2f}in",
                 "slide_height": f"{prs.slide_height/914400:.2f}in",
                 "aspect_ratio": f"{aspect:.3f}",
+                "title_layout_index": title_layout_idx,
+                "content_layout_index": content_layout_idx,
+                "blank_layout_index": blank_layout_idx,
+                "layout_map": "\n".join(layout_info),
             },
         }
 
