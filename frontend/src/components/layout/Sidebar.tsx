@@ -9,6 +9,7 @@ import {
   Menu,
   Settings,
   Brain,
+  FolderOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -34,6 +35,8 @@ export function Sidebar() {
   const setSidebarMobileOpen = useUIStore((s) => s.setSidebarMobileOpen);
   const setShowBrainPage = useUIStore((s) => s.setShowBrainPage);
   const showBrainPage = useUIStore((s) => s.showBrainPage);
+  const setShowWorkspacePage = useUIStore((s) => s.setShowWorkspacePage);
+  const showWorkspacePage = useUIStore((s) => s.showWorkspacePage);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const t = useT();
@@ -43,6 +46,7 @@ export function Sidebar() {
     // by sending a message from the welcome screen
     navigate("/");
     setShowBrainPage(false);
+    setShowWorkspacePage(false);
     setSidebarMobileOpen(false);
   };
 
@@ -50,6 +54,7 @@ export function Sidebar() {
     // Navigate to the conversation URL
     navigate(`/${id}`);
     setShowBrainPage(false);
+    setShowWorkspacePage(false);
     setSidebarMobileOpen(false);
   };
 
@@ -146,6 +151,48 @@ export function Sidebar() {
           </Button>
         </div>
       )}
+
+      {/* Workspace Button */}
+      {!sidebarCollapsed ? (
+        <div className="px-2 pb-2">
+          <button
+            onClick={() => {
+              setShowWorkspacePage(!showWorkspacePage);
+              setSidebarMobileOpen(false);
+            }}
+            className={cn(
+              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] transition-colors",
+              showWorkspacePage
+                ? "text-primary bg-primary/10 font-medium"
+                : "text-muted-foreground hover:text-foreground bg-sidebar-accent/60 hover:bg-accent",
+            )}
+          >
+            <FolderOpen className="w-4 h-4" />
+            Workspace
+          </button>
+        </div>
+      ) : (
+        <div className="flex justify-center pb-2">
+          <Button
+            onClick={() => {
+              setShowWorkspacePage(!showWorkspacePage);
+              setSidebarMobileOpen(false);
+            }}
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "h-7 w-7 rounded-lg",
+              showWorkspacePage
+                ? "text-primary bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent",
+            )}
+          >
+            <FolderOpen className="w-4 h-4" />
+          </Button>
+        </div>
+      )}
+
+      <div className="border-t border-sidebar-border opacity-80 pt-2 my-1 mx-5" />
 
       {/* Conversation List */}
       <ScrollArea className="flex-1 px-2">

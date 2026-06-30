@@ -149,20 +149,31 @@ def _model_supports_native_tools(model_name: str) -> bool:
 
 
 # ── Tool format conversion ──
-def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
-    """Build OpenAI-style tool schemas for Ollama's /api/chat tools param."""
+async def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
+    """Build OpenAI-style tool schemas for Ollama's /api/chat tools param.
+
+    Async because some tools (e.g. use_pptx_gen) have dynamic descriptions
+    that query the DB for available templates.
+    """
     registry = get_tool_registry()
     tools = []
     for name in sorted(tool_names):
         tool = registry.get(name)
         if not tool:
             continue
+        # Check if the tool has a dynamic description (async method)
+        desc = tool.description
+        if hasattr(tool, "get_dynamic_description"):
+            try:
+                desc = await tool.get_dynamic_description()
+            except Exception:
+                pass  # fall back to static description
         tools.append(
             {
                 "type": "function",
                 "function": {
                     "name": tool.name,
-                    "description": tool.description[:300],
+                    "description": desc,
                     "parameters": {
                         "type": "object",
                         "properties": tool.get_parameters(),
@@ -174,21 +185,24 @@ def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
     return tools
 
 
-def _build_system_prompt(tool_names: Set[str]) -> str:
-    """Build a compact, STABLE system prompt with only the selected tools.
+async def _build_system_prompt(tool_names: Set[str]) -> str:
+    """Build a compact system prompt with only the selected tools.
 
-    KV-CACHE DESIGN: This prompt must be byte-identical across turns of
-    the same conversation (same selected tools) so Ollama/llama.cpp can
-    reuse their cached prompt prefix. Therefore NOTHING volatile goes
-    here — no datetime, no retrieved memories, no cross-session context.
-    Those are appended as tail user-role messages in run_agent_stream().
+    Async because some tools have dynamic descriptions that query the DB.
     """
     registry = get_tool_registry()
     lines = []
     for name in sorted(tool_names):
         tool = registry.get(name)
         if tool:
-            lines.append(f"- **{tool.name}**: {tool.description[:200]}")
+            # Use dynamic description if available
+            desc = tool.description
+            if hasattr(tool, "get_dynamic_description"):
+                try:
+                    desc = await tool.get_dynamic_description()
+                except Exception:
+                    pass
+            lines.append(f"- **{tool.name}**: {desc}")
     schema_text = "\n".join(lines) if lines else "(no tools available)"
 
     return format_prompt("agent_system", tool_schemas=schema_text)
@@ -438,7 +452,7 @@ async def run_agent_stream(
     # This can halve per-turn latency on small models where the system
     # prompt is ~1-2k tokens — without this, every turn re-processes the
     # full prompt from scratch because the datetime changed.
-    system_prompt = _build_system_prompt(selected_tools)
+    system_prompt = await _build_system_prompt(selected_tools)
 
     # Build the list of dynamic context messages (appended after convo).
     context_messages: List[Dict[str, Any]] = []
@@ -576,7 +590,9 @@ async def run_agent_stream(
 
     # ── Decide: native tools or text parsing ──
     use_native_tools = _model_supports_native_tools(resolved_model)
-    ollama_tools = _build_ollama_tools(selected_tools) if use_native_tools else None
+    ollama_tools = (
+        await _build_ollama_tools(selected_tools) if use_native_tools else None
+    )
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
     max_rounds = 10

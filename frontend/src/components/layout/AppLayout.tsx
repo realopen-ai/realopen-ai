@@ -9,6 +9,7 @@ import { Sidebar, MobileMenuButton } from "@/components/layout/Sidebar";
 import { RightPanel, RightPanelToggle } from "@/components/layout/RightPanel";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { BrainPage } from "@/components/brain/BrainPage";
+import { WorkspacePage } from "@/components/workspace/WorkspacePage";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { FileExplorer } from "@/components/file-explorer/FileExplorer";
 import { useUIStore } from "@/store/uiStore";
@@ -38,6 +39,7 @@ export function AppLayout() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
   const showBrainPage = useUIStore((s) => s.showBrainPage);
+  const showWorkspacePage = useUIStore((s) => s.showWorkspacePage);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
@@ -112,7 +114,13 @@ export function AppLayout() {
               minSize={35}
               className={panelTransitionClass}
             >
-              {showBrainPage ? <BrainPage /> : <ChatArea />}
+              {showWorkspacePage ? (
+                <WorkspacePage />
+              ) : showBrainPage ? (
+                <BrainPage />
+              ) : (
+                <ChatArea />
+              )}
             </Panel>
 
             <PanelResizeHandle
@@ -146,7 +154,9 @@ export function AppLayout() {
 
         {/* Mobile: tabbed views */}
         <div className="flex md:hidden flex-1 flex-col min-h-0">
-          {showBrainPage ? (
+          {showWorkspacePage ? (
+            <WorkspacePage />
+          ) : showBrainPage ? (
             <BrainPage />
           ) : (
             <>

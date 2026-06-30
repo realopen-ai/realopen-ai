@@ -46,6 +46,7 @@ backend/alembic/versions/__pycache__/
 
 # Uploads
 uploads/
+backend/app/templates/pptx/custom/
 
 # Data directory
 data/
