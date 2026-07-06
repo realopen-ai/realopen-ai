@@ -34,14 +34,18 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# Copy profiles.yml (from project root - Docker context is ./backend)
-# NOTE: The docker-compose.yml build context is ./backend,
-# so we mount profiles.yml via volume in docker-compose instead.
-# See docker-compose.yml volumes for the backend service.
+# ── Optional dependency overlay ──────────────────────────────────────
+# /opt/optional is a Docker volume (see docker-compose.yml). Optional deps
+# are extracted here (not installed to system paths), so they survive 
+# container rebuilds without re-downloading or re-extracting.
+#
+# We add /opt/optional/usr/bin to PATH and the lib dirs to LD_LIBRARY_PATH
+# so binaries and libraries in the overlay are found automatically.
+RUN mkdir -p /opt/optional
 
-# Non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+ENV PATH="/opt/optional/usr/bin:/opt/optional/usr/sbin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/optional/usr/lib/x86_64-linux-gnu:/opt/optional/usr/lib:/opt/optional/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH}"
+ENV PYTHONPATH="/opt/optional/usr/lib/python3/dist-packages:${PYTHONPATH}"
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1

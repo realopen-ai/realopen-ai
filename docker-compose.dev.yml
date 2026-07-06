@@ -34,6 +34,8 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini
       - ./profiles.yml:/app/profiles.yml:ro
       - ./modules.yml:/app/modules.yml:ro
+      - apt-cache:/var/cache/apt
+      - optional-deps:/opt/optional
     ports:
       - "8000:8000"
     extra_hosts:

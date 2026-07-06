@@ -85,6 +85,8 @@ services:
       - ./modules.yml:/app/modules.yml:ro
       - module-state:/app/state
       - ./data:/app/data
+      - apt-cache:/var/cache/apt
+      - optional-deps:/opt/optional
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
@@ -148,6 +150,8 @@ volumes:
   upload-data:
   module-state:
   nginx-cache:
+  apt-cache:
+  optional-deps:
 
 networks:
   realopen-net:
