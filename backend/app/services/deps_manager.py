@@ -31,11 +31,15 @@ NOT installed to the system paths. This means:
 
 ## Uninstall flow
 
-  1. Read file list from manifest
-  2. Remove each file from `/opt/optional/`
-  3. Remove system symlinks
-  4. Clean up empty directories
-  5. Update manifest
+  1. Remove system symlinks (ephemeral, in container filesystem)
+  2. Remove extracted files from the overlay volume (`/opt/optional/`)
+  3. Clean up empty directories in the overlay
+  4. Delete .deb files from the apt cache volume (`/var/cache/apt/archives/`)
+  5. Update manifest (remove the entry)
+
+  Steps 2 + 4 ensure the dependency is fully purged from BOTH Docker volumes,
+  so it stays uninstalled even after a container rebuild, there are no cached
+  .debs to re-extract from, and no manifest entry to trigger re-extraction.
 """
 
 from __future__ import annotations
@@ -671,6 +675,31 @@ def _cleanup_empty_dirs(root: Path) -> None:
             pass  # Not empty — leave it
 
 
+def _remove_debs_from_cache(deb_names: list[str]) -> int:
+    """Delete .deb files from the apt cache volume.
+
+    This ensures that after an uninstall, the downloaded .deb files are also
+    removed — so the dependency stays uninstalled even after a container
+    rebuild (no cached .debs to re-extract from, and no manifest entry to
+    trigger re-extraction).
+
+    Returns the number of .deb files actually deleted.
+    """
+    removed = 0
+    if not APT_CACHE_DIR.exists():
+        return 0
+    for deb_name in deb_names:
+        deb_path = APT_CACHE_DIR / deb_name
+        try:
+            if deb_path.is_file():
+                deb_path.unlink()
+                removed += 1
+                _log("deleted cached .deb: %s", deb_name)
+        except (OSError, PermissionError) as e:
+            _log("warning: could not delete cached .deb %s: %s", deb_name, e)
+    return removed
+
+
 # ── Installation with SSE progress ───────────────────────────────────
 
 
@@ -849,10 +878,17 @@ async def install_dependency(
 async def uninstall_dependency(
     dep: Dependency,
 ) -> AsyncGenerator[dict, None]:
-    """Uninstall a dependency from the overlay.
+    """Uninstall a dependency — fully removes it from BOTH volumes.
 
-    Removes all files that were extracted for this dependency, then
-    removes the system symlinks and updates the manifest.
+    Removes:
+      1. System symlinks (ephemeral, in container filesystem)
+      2. Extracted files from the overlay volume (/opt/optional)
+      3. Downloaded .deb files from the apt cache volume (/var/cache/apt)
+      4. Manifest entry
+
+    This ensures the dependency stays uninstalled even after a container
+    rebuild — there are no cached .debs to re-extract from, and no manifest
+    entry to trigger re-extraction.
     """
     manifest = _read_manifest()
     entry = manifest.get("installed", {}).get(dep.name)
@@ -864,22 +900,24 @@ async def uninstall_dependency(
         }
         return
 
+    # Capture the deb file list BEFORE we start removing things — we need
+    # it both for overlay file removal AND for cache cleanup.
+    deb_files = entry.get("deb_files", []) if entry else []
+
     yield {
         "stage": "uninstalling",
-        "output": f"Removing {dep.display_name} from overlay...",
+        "output": f"Removing {dep.display_name}...",
     }
 
     # ── Step 1: Remove system symlinks ──
     _remove_system_symlinks(dep)
     yield {"stage": "uninstalling", "output": "Removed system symlinks."}
 
-    # ── Step 2: Remove files from overlay ──
-    # We need the file list. Try to reconstruct from cached .debs.
-    deb_files = entry.get("deb_files", []) if entry else []
+    # ── Step 2: Remove extracted files from the overlay volume ──
     removed_count = 0
 
     if deb_files:
-        # Re-read file lists from cached .debs
+        # Re-read file lists from cached .debs to know exactly what to remove
         for deb_name in deb_files:
             deb_path = APT_CACHE_DIR / deb_name
             if deb_path.exists():
@@ -905,11 +943,12 @@ async def uninstall_dependency(
                     _log("could not read deb contents for %s: %s", deb_name, e)
             else:
                 _log(
-                    "deb file not in cache: %s — cannot cleanly remove files", deb_name
+                    "deb file not in cache: %s — cannot cleanly remove files",
+                    deb_name,
                 )
         yield {
             "stage": "uninstalling",
-            "output": f"Removed {removed_count} files from overlay.",
+            "output": f"Removed {removed_count} files from overlay volume (/opt/optional).",
         }
     else:
         # No deb file list — try to remove based on binary name
@@ -925,16 +964,36 @@ async def uninstall_dependency(
             "output": f"Removed binary (no deb list; {removed_count} file(s)).",
         }
 
-    # ── Step 3: Clean up empty directories ──
+    # ── Step 3: Clean up empty directories in the overlay ──
     _cleanup_empty_dirs(OVERLAY_ROOT)
 
-    # ── Step 4: Update manifest ──
+    # ── Step 4: Delete .deb files from the apt cache volume ──
+    # This is critical: without this step, the .deb files would survive in
+    # /var/cache/apt/archives and could be re-extracted after a rebuild.
+    # By deleting them, we ensure the dependency stays uninstalled.
+    debs_removed = _remove_debs_from_cache(deb_files)
+    if debs_removed > 0:
+        yield {
+            "stage": "uninstalling",
+            "output": f"Deleted {debs_removed} .deb file(s) from apt cache volume (/var/cache/apt)",
+        }
+    elif deb_files:
+        yield {
+            "stage": "uninstalling",
+            "output": "No .deb files found in cache (already cleared)",
+        }
+
+    # ── Step 5: Update manifest ──
     _record_uninstall(dep)
 
     yield {
         "stage": "done",
         "exit_code": 0,
-        "output": f"{dep.display_name} uninstalled ({removed_count} files removed).",
+        "output": (
+            f"{dep.display_name} fully uninstalled "
+            f"({removed_count} overlay files + {debs_removed} cached .deb(s) removed). "
+            f"Will stay uninstalled after rebuild."
+        ),
     }
 
 
