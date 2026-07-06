@@ -33,6 +33,7 @@ import { installModuleModels } from "@/api/client";
 import type { ModuleInfo } from "@/api/client";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { DependenciesTab } from "@/components/settings/DependenciesTab";
 
 // ─── Radio Option ────────────────────────────────────────────────
 
@@ -351,9 +352,9 @@ export function SettingsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<"general" | "modules" | "notifications">(
-    "general",
-  );
+  const [tab, setTab] = useState<
+    "general" | "modules" | "dependencies" | "notifications"
+  >("general");
   const t = useT();
 
   const appearance = useSettingsStore((s) => s.appearance);
@@ -449,6 +450,7 @@ export function SettingsModal({
   const tabs = [
     { key: "general" as const, label: t("settings.general") },
     { key: "modules" as const, label: t("settings.modules") },
+    { key: "dependencies" as const, label: "Dependencies" },
     { key: "notifications" as const, label: t("settings.notifications") },
   ];
 
@@ -651,6 +653,8 @@ export function SettingsModal({
               )}
             </div>
           )}
+
+          {tab === "dependencies" && <DependenciesTab />}
 
           {tab === "notifications" && (
             <div className="space-y-4">
