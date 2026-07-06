@@ -255,6 +255,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Template seeding failed: %s", e)
 
+    # Verify optional dependency overlay.
+    # This is FAST: the overlay volume already has the extracted files,
+    # so we just create system symlinks.
+    # If the overlay is missing but the apt cache survives, we re-extract from
+    # cache.
+    try:
+        from app.services.deps_manager import verify_overlay_on_startup
+
+        await verify_overlay_on_startup()
+    except Exception as e:
+        logger.warning("Overlay verification on startup failed: %s", e)
+
     yield
 
     # Shutdown
