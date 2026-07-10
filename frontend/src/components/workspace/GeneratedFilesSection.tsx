@@ -22,6 +22,7 @@ interface GeneratedFile {
   conversation_title: string | null;
   file_size: number | null;
   original_prompt: string | null;
+  thumbnail_url: string | null;
 }
 
 const fileTypeConfig: Record<
@@ -82,6 +83,46 @@ function getToolName(deliverableType: string): string {
   if (deliverableType === "report") return "use_report_gen";
   if (deliverableType === "image") return "use_image_gen";
   return deliverableType;
+}
+
+/** Thumbnail with onError fallback to a file-type icon.
+ */
+function FileThumbnail({
+  fileType,
+  thumbnailUrl,
+}: {
+  fileType: string;
+  thumbnailUrl: string | null;
+}) {
+  const [thumbError, setThumbError] = useState(false);
+  const cfg = fileTypeConfig[fileType] ?? fileTypeConfig.image;
+  const Icon = cfg.icon;
+  const showThumb = thumbnailUrl && !thumbError;
+
+  if (showThumb) {
+    return (
+      <div className="w-14 h-10 rounded-lg shrink-0 overflow-hidden bg-secondary/50 ring-1 ring-border">
+        <img
+          src={thumbnailUrl!}
+          alt="thumbnail"
+          onError={() => setThumbError(true)}
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
+        cfg.bg,
+      )}
+    >
+      <Icon className={cn("w-5 h-5", cfg.color)} />
+    </div>
+  );
 }
 
 export function GeneratedFilesSection({
@@ -169,24 +210,16 @@ export function GeneratedFilesSection({
           ) : (
             <div className="space-y-1.5">
               {files.map((file, i) => {
-                const cfg =
-                  fileTypeConfig[file.file_type] ?? fileTypeConfig.image;
-                const Icon = cfg.icon;
                 const { date, time } = formatDate(file.created_at);
                 return (
                   <div
                     key={i}
                     className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-accent/20 transition-colors"
                   >
-                    {/* File icon */}
-                    <div
-                      className={cn(
-                        "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-                        cfg.bg,
-                      )}
-                    >
-                      <Icon className={cn("w-5 h-5", cfg.color)} />
-                    </div>
+                    <FileThumbnail
+                      fileType={file.file_type}
+                      thumbnailUrl={file.thumbnail_url}
+                    />
 
                     {/* File info */}
                     <div className="flex-1 min-w-0">

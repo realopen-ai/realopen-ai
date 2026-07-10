@@ -725,13 +725,16 @@ function ReportDeliverableBadge({
   filename,
   format,
   downloadUrl,
+  thumbnailUrl,
   label,
 }: {
   filename: string;
   format: string;
   downloadUrl: string;
+  thumbnailUrl?: string;
   label?: string;
 }) {
+  const [thumbError, setThumbError] = useState(false);
   const isPdf = format === "pdf";
   const isPptx = format === "pptx";
   const iconBg = isPdf
@@ -751,20 +754,35 @@ function ReportDeliverableBadge({
       : "text-blue-400/70";
   const displayLabel = label ?? (isPptx ? "Presentation" : "Report");
 
+  const showThumb = isPptx && thumbnailUrl && !thumbError;
+
   return (
     <a
       href={downloadUrl}
       download={filename}
-      className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 hover:bg-accent transition-colors cursor-pointer group"
+      className="flex items-center gap-3 rounded-lg border border-border bg-card pr-3 hover:bg-accent transition-colors cursor-pointer group overflow-hidden"
     >
-      <div
-        className={cn(
-          "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-          iconBg,
-        )}
-      >
-        <FileType className={cn("w-4 h-4", iconColor)} />
-      </div>
+      {/* Thumbnail / Icon area — fixed width, consistent for both modes */}
+      {showThumb ? (
+        <div className="w-20 h-14 shrink-0 relative bg-secondary/50 overflow-hidden">
+          <img
+            src={thumbnailUrl}
+            alt={filename}
+            onError={() => setThumbError(true)}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "w-10 h-10 ml-2.5 rounded-lg flex items-center justify-center shrink-0",
+            iconBg,
+          )}
+        >
+          <FileType className={cn("w-4 h-4", iconColor)} />
+        </div>
+      )}
       <div className="flex-1 min-w-0">
         <p className="text-[12px] font-medium text-foreground truncate">
           {filename}
@@ -807,6 +825,7 @@ function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
               filename={r.filename ?? "report"}
               format={r.format ?? "pdf"}
               downloadUrl={r.download_url ?? "#"}
+              thumbnailUrl={r.thumbnail_url}
               label={r.type === "presentation" ? "Presentation" : "Report"}
             />
           ))}
@@ -1073,6 +1092,7 @@ export function MessageBubble({
               filename={d.filename}
               format={d.format}
               downloadUrl={d.download_url}
+              thumbnailUrl={d.thumbnail_url}
             />
           ))}
         </div>
