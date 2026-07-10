@@ -49,6 +49,7 @@ export interface ToolCallResult {
     filename?: string;
     format?: string;
     download_url?: string;
+    thumbnail_url?: string;
     report_id?: string;
     file_path?: string;
     created_at?: number;
@@ -139,11 +140,12 @@ export interface DigestProgressItem {
 /** A deliverable file (report, etc.) produced by a tool call. Persisted
  * in the DB so download badges survive page refresh. */
 export interface Deliverable {
-  type: string; // "report"
-  format: string; // "pdf" | "docx"
+  type: string; // "report" | "presentation"
+  format: string; // "pdf" | "docx" | "pptx"
   filename: string;
   file_path: string;
   download_url: string;
+  thumbnail_url?: string;
   report_id?: string;
   created_at?: number;
 }
@@ -357,7 +359,14 @@ function dtoToMessage(dto: MessageDTO): Message {
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     generationDuration: dto.generationDuration,
-    deliverables: dto.deliverables ?? undefined,
+    deliverables: (dto.deliverables ?? undefined)?.map((d) => ({
+      ...d,
+      thumbnail_url:
+        d.thumbnail_url ??
+        (d.format === "pptx" && d.report_id
+          ? `/api/reports/${d.report_id}/thumbnail`
+          : undefined),
+    })),
   };
 }
 
@@ -830,9 +839,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const existingUrls = new Set(
                   (m.deliverables ?? []).map((d) => d.download_url),
                 );
-                const newOnes = deliverables.filter(
-                  (d) => !existingUrls.has(d.download_url),
-                );
+                const newOnes = deliverables
+                  .filter((d) => !existingUrls.has(d.download_url))
+                  .map((d) => ({
+                    ...d,
+                    // Fallback: construct thumbnail_url for PPTX if missing
+                    thumbnail_url:
+                      d.thumbnail_url ??
+                      (d.format === "pptx" && d.report_id
+                        ? `/api/reports/${d.report_id}/thumbnail`
+                        : undefined),
+                  }));
                 if (newOnes.length === 0) return m;
                 return {
                   ...m,
