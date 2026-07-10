@@ -874,6 +874,7 @@ async def run_agent_stream(
                                     "filename": gr.get("filename", "report"),
                                     "file_path": gr.get("file_path", ""),
                                     "download_url": gr.get("download_url", ""),
+                                    "thumbnail_url": gr.get("thumbnail_url"),
                                     "report_id": gr.get("report_id", ""),
                                     "created_at": gr.get(
                                         "created_at", int(time.time())
