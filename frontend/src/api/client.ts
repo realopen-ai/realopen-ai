@@ -237,6 +237,7 @@ export interface BackendDeliverable {
   file_path: string;
   download_url: string;
   report_id?: string;
+  thumbnail_url?: string;
   created_at?: number;
 }
 
