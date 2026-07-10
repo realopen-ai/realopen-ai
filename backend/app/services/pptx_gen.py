@@ -1189,6 +1189,28 @@ async def generate_presentation(
         len(slides),
     )
 
+    # ── Generate thumbnail via LibreOffice (if available) ──
+    # The thumbnail URL is always exposed; the endpoint generates on-demand
+    # if the cached file is missing (e.g. LibreOffice was installed after
+    # the presentation was created, or generation failed at the time).
+    thumb_path = reports_dir / f"{report_id}_thumb.jpg"
+    try:
+        from app.services.integrations import libreoffice
+
+        if libreoffice.is_available():
+            _log("generating thumbnail via LibreOffice...")
+            cached = await libreoffice.generate_and_cache_thumbnail(
+                output_path, thumb_path, max_width=400
+            )
+            if cached:
+                _log("thumbnail generated at creation time")
+            else:
+                _log("thumbnail generation failed — will retry on-demand")
+        else:
+            _log("LibreOffice not available — skipping thumbnail generation")
+    except Exception as e:
+        _log("thumbnail generation error (non-fatal): %s", e)
+
     safe_topic = re.sub(r"[^\w\s-]", "", topic)[:50].strip()
     safe_topic = re.sub(r"[\s-]+", "_", safe_topic) or "presentation"
     filename = f"{safe_topic}.pptx"
@@ -1201,6 +1223,7 @@ async def generate_presentation(
         "filename": filename,
         "file_path": rel_path,
         "download_url": f"/api/reports/{report_id}/download",
+        "thumbnail_url": f"/api/reports/{report_id}/thumbnail",
         "report_id": report_id,
         "created_at": int(time.time()),
         "slide_count": len(slides),
