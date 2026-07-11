@@ -1,23 +1,16 @@
 """
 LibreOffice helper — headless document conversion and thumbnail rendering.
 
-This module wraps the `soffice` (LibreOffice) binary to provide:
-  - PPTX -> PNG thumbnail rendering
-  - PPTX -> PDF conversion
+This module wraps the `soffice` wrapper script (at /usr/lib/libreoffice/program/soffice)
+to provide PPTX → PNG thumbnail rendering and PPTX → PDF conversion.
 
-## Concurrency
+LibreOffice is installed to its DEFAULT system location (/usr/lib/libreoffice)
+via apt-get install, and that path is mounted as a Docker volume. This means:
+  - All hardcoded paths in fundamentalrc are correct by default
+  - The wrapper script handles URE_BOOTSTRAP, LD_LIBRARY_PATH, etc. itself
+  - No env var hacks, no path patching, no overlay extraction needed
 
-LibreOffice does NOT handle concurrent invocations well (it uses a
-single-user-profile lock). We serialize all calls with an asyncio.Lock
-and give each call its own temporary user profile directory via
-`-env:UserInstallation`.
-
-## Availability
-
-LibreOffice is an optional dependency (installed via the Dependencies UI
-to the /opt/optional overlay volume). All functions gracefully degrade
-when it's not available — callers should check `is_available()` first
-or handle `None` returns.
+We just call the wrapper script. That's it.
 """
 
 from __future__ import annotations
@@ -49,29 +42,22 @@ _so_lock = asyncio.Lock()
 # corrupted files; we don't want to block the backend forever.
 _SOFFICE_TIMEOUT = 60
 
+# Path to the soffice wrapper script (on the mounted volume)
+_SOFFICE_PATH = "/usr/lib/libreoffice/program/soffice"
+
+# Path to soffice.bin (used for diagnostics)
+_SOFFICE_BIN = "/usr/lib/libreoffice/program/soffice.bin"
+
 
 def is_available() -> bool:
-    """Check if LibreOffice (soffice) is installed and available.
-
-    Checks the /opt/optional overlay first, then the system PATH.
-    """
-    from app.services.deps_manager import is_installed, get_dependency
-
-    dep = get_dependency("libreoffice")
-    if dep and is_installed(dep):
-        return True
-
-    # Fallback: check PATH directly (e.g. dev environment without overlay)
-    return shutil.which("soffice") is not None
+    """Check if LibreOffice (soffice) is installed."""
+    return Path(_SOFFICE_BIN).exists() or shutil.which("soffice") is not None
 
 
 def _find_soffice() -> Optional[str]:
-    """Find the soffice binary path."""
-    # Check overlay first
-    overlay_bin = Path("/opt/optional/usr/bin/soffice")
-    if overlay_bin.exists():
-        return str(overlay_bin)
-    # Check system PATH
+    """Find the soffice wrapper script."""
+    if Path(_SOFFICE_PATH).exists():
+        return _SOFFICE_PATH
     return shutil.which("soffice")
 
 
@@ -79,17 +65,18 @@ async def _run_soffice(
     args: list[str],
     timeout: int = _SOFFICE_TIMEOUT,
 ) -> tuple[int, str, str]:
-    """Run a soffice command with a temporary user profile.
+    """Run a soffice command. Returns (returncode, stdout, stderr).
 
-    Returns (returncode, stdout, stderr).
+    We call the wrapper script (not soffice.bin directly) because the wrapper
+    handles all the environment setup: URE_BOOTSTRAP, LD_LIBRARY_PATH,
+    fundamentalrc resolution, etc. Since LibreOffice is installed to its
+    default location (/usr/lib/libreoffice), all paths are correct by default.
     """
     soffice = _find_soffice()
     if not soffice:
         return -1, "", "LibreOffice (soffice) not found"
 
-    # Create a temp dir for the user profile + output
     profile_dir = tempfile.mkdtemp(prefix="lo_profile_")
-    output_dir = tempfile.mkdtemp(prefix="lo_output_")
 
     try:
         cmd = [
@@ -102,16 +89,13 @@ async def _run_soffice(
             f"-env:UserInstallation=file://{profile_dir}",
         ] + args
 
-        _log("running: %s", " ".join(cmd[:3]) + " ... " + " ".join(args))
+        _log("running: %s ... %s", " ".join(cmd[:3]), " ".join(args))
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={
-                **os.environ,
-                "HOME": profile_dir,  # soffice may write to HOME
-            },
+            env={**os.environ, "HOME": profile_dir},
         )
 
         try:
@@ -128,12 +112,52 @@ async def _run_soffice(
         return rc, out, err
 
     finally:
-        # Clean up temp dirs (best effort)
-        for d in (profile_dir, output_dir):
-            try:
-                shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+async def _diagnose_soffice_failure() -> None:
+    """Run diagnostic checks when soffice fails."""
+    _log("=== running diagnostics ===")
+
+    # Check 1: soffice --version
+    rc, out, err = await _run_soffice(["--version"], timeout=15)
+    if rc == 0:
+        _log("soffice --version OK: %s", out.strip()[:100])
+    else:
+        _log("soffice --version FAILED (rc=%d): %s", rc, err.strip()[:500])
+
+    # Check 2: fonts
+    for d in [Path("/usr/share/fonts"), Path("/usr/local/share/fonts")]:
+        if d.exists():
+            fonts = list(d.rglob("*.ttf")) + list(d.rglob("*.otf"))
+            _log("%s — %d font files", d, len(fonts))
+
+    # Check 3: fontconfig
+    if Path("/etc/fonts/fonts.conf").exists():
+        _log("/etc/fonts/fonts.conf exists (fontconfig OK)")
+
+    # Check 4: shared libraries
+    if Path(_SOFFICE_BIN).exists():
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["ldd", _SOFFICE_BIN],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            missing = [i for i in result.stdout.split("\n") if "not found" in i]
+            if missing:
+                _log("MISSING LIBRARIES:")
+                for m in missing:
+                    _log("  %s", m.strip())
+            else:
+                _log("all shared libraries resolved")
+        except Exception as e:
+            _log("could not run ldd: %s", e)
+
+    _log("=== diagnostics complete ===")
 
 
 async def render_pptx_thumbnail(
@@ -142,15 +166,8 @@ async def render_pptx_thumbnail(
 ) -> Optional[bytes]:
     """Render the first slide of a PPTX as a JPEG thumbnail.
 
-    Uses LibreOffice to convert the PPTX to PNG (first slide), then
-    Pillow to resize and convert to JPEG.
-
-    Args:
-        pptx_path: Path to the .pptx file
-        max_width: Maximum thumbnail width in pixels (aspect ratio preserved)
-
-    Returns:
-        JPEG image bytes, or None if LibreOffice is unavailable / conversion failed.
+    Uses LibreOffice to convert PPTX to PNG, then Pillow to resize to JPEG.
+    Returns JPEG bytes, or None if unavailable/failed.
     """
     if not is_available():
         _log("LibreOffice not available — cannot render thumbnail")
@@ -164,20 +181,21 @@ async def render_pptx_thumbnail(
         # Create a temp output dir for the PNG
         out_dir = Path(tempfile.mkdtemp(prefix="lo_thumb_"))
         try:
-            # Convert PPTX → PNG (soffice renders the first slide as PNG)
+            # Convert PPTX to PNG (soffice renders the first slide as PNG)
             rc, stdout, stderr = await _run_soffice(
                 ["--convert-to", "png", "--outdir", str(out_dir), str(pptx_path)]
             )
 
             if rc != 0:
-                _log("soffice conversion failed (rc=%d): %s", rc, stderr[:200])
+                _log("soffice conversion failed (rc=%d)", rc)
+                _log("stderr: %s", stderr.strip()[:1000])
+                await _diagnose_soffice_failure()
                 return None
 
-            # Find the output PNG — same stem as input, .png extension
+            # Find the output PNG
             stem = pptx_path.stem
             png_path = out_dir / f"{stem}.png"
             if not png_path.exists():
-                # Sometimes soffice names it differently — find any .png
                 pngs = list(out_dir.glob("*.png"))
                 if not pngs:
                     _log("no PNG output found in %s", out_dir)
@@ -201,6 +219,7 @@ def _resize_to_jpeg(png_path: Path, max_width: int) -> Optional[bytes]:
     """Resize a PNG to max_width (maintaining aspect ratio) and return JPEG bytes."""
     try:
         from PIL import Image
+        import io
 
         img = Image.open(str(png_path))
         if img.mode in ("RGBA", "LA", "P"):
@@ -218,8 +237,6 @@ def _resize_to_jpeg(png_path: Path, max_width: int) -> Optional[bytes]:
         if w > max_width:
             new_h = int(h * max_width / w)
             img = img.resize((max_width, new_h), Image.LANCZOS)
-
-        import io
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
@@ -258,7 +275,7 @@ async def convert_pptx_to_pdf(pptx_path: Path) -> Optional[Path]:
     out_dir = pptx_path.parent
 
     async with _so_lock:
-        rc, stdout, stderr = await _run_soffice(
+        rc, _, stderr = await _run_soffice(
             ["--convert-to", "pdf", "--outdir", str(out_dir), str(pptx_path)]
         )
 
