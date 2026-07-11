@@ -123,7 +123,7 @@ CATALOG: list[Dependency] = [
         display_name="LibreOffice",
         description="Headless document conversion and rendering. Required for high-quality PPTX template thumbnails, PPTX→PDF conversion, and proper template-based slide generation.",
         category="System",
-        kind="system",
+        kind="system-direct",
         binary_name="soffice",
         install_size="~500 MB",
         enables=[
@@ -131,11 +131,6 @@ CATALOG: list[Dependency] = [
             "PPTX → PDF conversion",
             "Proper slide generation from templates (preserves images & backgrounds)",
             "DOCX → PDF conversion",
-        ],
-        system_links=[
-            # LibreOffice's internal scripts hardcode /usr/lib/libreoffice/
-            SystemLink("/usr/lib/libreoffice", "/opt/optional/usr/lib/libreoffice"),
-            SystemLink("/usr/share/libreoffice", "/opt/optional/usr/share/libreoffice"),
         ],
     ),
 ]
@@ -172,6 +167,22 @@ def _is_system_dep_installed(dep: Dependency) -> bool:
     return False
 
 
+def _is_direct_dep_installed(dep: Dependency) -> bool:
+    """Check if a system-direct dep is installed at its default location.
+
+    For system-direct deps, we check the actual file path (not PATH) because
+    /usr/bin/soffice (the symlink) is in the ephemeral container filesystem
+    and won't exist after a rebuild — but /usr/lib/libreoffice/program/soffice.bin
+    is on the mounted volume and persists.
+    """
+    if dep.name == "libreoffice":
+        return Path("/usr/lib/libreoffice/program/soffice.bin").exists()
+    # Generic fallback: check PATH
+    if dep.binary_name:
+        return shutil.which(dep.binary_name) is not None
+    return False
+
+
 def _is_pip_dep_installed(dep: Dependency) -> bool:
     """Check if a Python package is installed."""
     if not dep.pip_name:
@@ -185,7 +196,9 @@ def _is_pip_dep_installed(dep: Dependency) -> bool:
 
 def is_installed(dep: Dependency) -> bool:
     """Check if a dependency is installed."""
-    if dep.kind == "system":
+    if dep.kind == "system-direct":
+        return _is_direct_dep_installed(dep)
+    elif dep.kind == "system":
         return _is_system_dep_installed(dep)
     elif dep.kind == "pip":
         return _is_pip_dep_installed(dep)
@@ -446,6 +459,152 @@ def _ensure_system_symlinks(dep: Dependency) -> None:
         except (OSError, PermissionError) as e:
             _log("warning: could not create symlink %s: %s", sys_path, e)
 
+    # For LibreOffice: also register the program directory with the dynamic
+    # linker so soffice.bin can find its shared libraries (libreglo.so, etc.)
+    # and patch config files to use overlay paths.
+    if dep.name == "libreoffice":
+        _ensure_ldconfig_for_libreoffice()
+        _patch_libreoffice_rc_files()
+
+
+def _ensure_ldconfig_for_libreoffice() -> None:
+    """Register LibreOffice's program directory with the dynamic linker.
+
+    When LibreOffice is installed via apt, the post-install script creates
+    /etc/ld.so.conf.d/libreoffice-core.conf and runs ldconfig. In our overlay
+    extraction, we need to do this manually — otherwise soffice.bin can't
+    find libreglo.so and other shared libraries in its program directory.
+
+    This is a system-wide fix (benefits ALL processes, not just our Python
+    invocations). It's idempotent — safe to call multiple times.
+
+    Also creates /etc/fonts → overlay fonts symlink so fontconfig can find
+    its config (LibreOffice crashes with a UNO RuntimeException if fontconfig
+    can't initialize).
+    """
+    prog_dir = OVERLAY_ROOT / "usr" / "lib" / "libreoffice" / "program"
+    if not prog_dir.exists():
+        return
+
+    # ── 1. Register LibreOffice program dir with ldconfig ──
+    conf_path = Path("/etc/ld.so.conf.d/libreoffice-overlay.conf")
+    conf_content = f"{prog_dir}\n"
+
+    try:
+        # Only write if the content differs (avoids unnecessary ldconfig runs)
+        existing = ""
+        if conf_path.exists():
+            existing = conf_path.read_text()
+        if existing != conf_content:
+            conf_path.write_text(conf_content)
+            _log("wrote ld.so.conf.d entry: %s", conf_path)
+
+        # Run ldconfig to update the linker cache
+        result = subprocess.run(
+            ["ldconfig"],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            _log("ldconfig updated (LibreOffice libs registered)")
+        else:
+            _log(
+                "ldconfig returned %d: %s",
+                result.returncode,
+                result.stderr.decode(errors="replace")[:200],
+            )
+    except (OSError, PermissionError) as e:
+        _log("warning: could not configure ldconfig for LibreOffice: %s", e)
+    except subprocess.TimeoutExpired:
+        _log("warning: ldconfig timed out")
+
+    # ── 2. Create /etc/fonts symlink for fontconfig ──
+    # fontconfig looks for /etc/fonts/fonts.conf. If fontconfig is extracted
+    # to the overlay, its config is at /opt/optional/etc/fonts/. We create
+    # a symlink so fontconfig can find it. If /etc/fonts already exists (from
+    # the base image), we skip this.
+    overlay_fonts = OVERLAY_ROOT / "etc" / "fonts"
+    sys_fonts = Path("/etc/fonts")
+    if overlay_fonts.exists() and not sys_fonts.exists():
+        try:
+            sys_fonts.parent.mkdir(parents=True, exist_ok=True)
+            sys_fonts.symlink_to(str(overlay_fonts))
+            _log("created symlink /etc/fonts → %s", overlay_fonts)
+        except (OSError, PermissionError) as e:
+            _log("warning: could not create /etc/fonts symlink: %s", e)
+    elif sys_fonts.exists():
+        _log("/etc/fonts already exists (system fontconfig OK)")
+
+    # ── 3. Rebuild fontconfig cache if needed ──
+    # fontconfig caches font info in /var/cache/fontconfig/. If the cache
+    # doesn't exist or is stale, fontconfig rebuilds it on next use — but
+    # this can be slow or fail in some containers. Run fc-cache to be safe.
+    fc_cache = shutil.which("fc-cache") or str(
+        OVERLAY_ROOT / "usr" / "bin" / "fc-cache"
+    )
+    if Path(fc_cache).exists():
+        try:
+            result = subprocess.run(
+                [fc_cache, "-f"],
+                capture_output=True,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                _log("fontconfig cache rebuilt (fc-cache -f)")
+            else:
+                _log("fc-cache returned %d (non-fatal)", result.returncode)
+        except Exception as e:
+            _log("fc-cache failed (non-fatal): %s", e)
+
+
+def _patch_libreoffice_rc_files() -> None:
+    """Patch LibreOffice .rc config files to use overlay paths.
+
+    When LibreOffice is extracted to the overlay, its config files (fundamentalrc,
+    unorc, etc.) still reference file:///usr/lib/libreoffice — the system path.
+    We patch them to reference file:///opt/optional/usr/lib/libreoffice instead,
+    so LibreOffice can find its resources (registry, fonts, etc.) without relying
+    on symlinks.
+
+    This is idempotent — if the files are already patched, the old path won't be
+    found and no changes will be made.
+
+    This runs at install time AND on every startup (via _ensure_system_symlinks),
+    so existing installs get patched automatically.
+    """
+    prog_dir = OVERLAY_ROOT / "usr" / "lib" / "libreoffice" / "program"
+    if not prog_dir.exists():
+        return
+
+    old_base = "file:///usr/lib/libreoffice"
+    new_base = f"file://{OVERLAY_ROOT / 'usr' / 'lib' / 'libreoffice'}"
+
+    # Also patch /usr/share/libreoffice references if they exist
+    old_share = "file:///usr/share/libreoffice"
+    new_share = f"file://{OVERLAY_ROOT / 'usr' / 'share' / 'libreoffice'}"
+
+    patched_count = 0
+    for rc_file in prog_dir.glob("*.rc"):
+        try:
+            content = rc_file.read_text()
+            if old_base not in content and old_share not in content:
+                continue  # Already patched or no paths to fix
+
+            patched = content.replace(old_base, new_base).replace(old_share, new_share)
+            rc_file.write_text(patched)
+            patched_count += 1
+            _log("patched %s: paths updated to overlay location", rc_file.name)
+        except (OSError, PermissionError) as e:
+            _log("warning: could not patch %s: %s", rc_file.name, e)
+        except UnicodeDecodeError:
+            # Some .rc files might be binary — skip them
+            pass
+
+    if patched_count > 0:
+        _log("patched %d .rc file(s) with overlay paths", patched_count)
+    else:
+        _log("no .rc files needed patching (already patched or no paths found)")
+
 
 def _remove_system_symlinks(dep: Dependency) -> None:
     """Remove the system symlinks created for this dependency."""
@@ -459,6 +618,30 @@ def _remove_system_symlinks(dep: Dependency) -> None:
                     _log("removed symlink %s", sys_path)
             except OSError as e:
                 _log("warning: could not remove symlink %s: %s", sys_path, e)
+
+    # For LibreOffice: also remove the ld.so.conf.d entry, /etc/fonts symlink,
+    # and re-run ldconfig
+    if dep.name == "libreoffice":
+        conf_path = Path("/etc/ld.so.conf.d/libreoffice-overlay.conf")
+        try:
+            if conf_path.exists():
+                conf_path.unlink()
+                _log("removed ld.so.conf.d entry: %s", conf_path)
+                subprocess.run(["ldconfig"], capture_output=True, timeout=30)
+        except (OSError, PermissionError) as e:
+            _log("warning: could not remove ld.so.conf.d entry: %s", e)
+
+        # Remove /etc/fonts symlink (if we created it)
+        sys_fonts = Path("/etc/fonts")
+        overlay_fonts = str(OVERLAY_ROOT / "etc" / "fonts")
+        if sys_fonts.is_symlink():
+            try:
+                current = os.readlink(str(sys_fonts))
+                if current == overlay_fonts:
+                    sys_fonts.unlink()
+                    _log("removed /etc/fonts symlink")
+            except OSError as e:
+                _log("warning: could not remove /etc/fonts symlink: %s", e)
 
 
 # ── apt-get download + dpkg-deb extract ──────────────────────────────
@@ -703,6 +886,293 @@ def _remove_debs_from_cache(deb_names: list[str]) -> int:
 # ── Installation with SSE progress ───────────────────────────────────
 
 
+async def _install_system_direct(
+    dep: Dependency,
+    distro: str,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> AsyncGenerator[dict, None]:
+    """Install a system-direct dep via apt-get install to the default location.
+
+    This installs normally (apt-get install -y), NOT download+extract. The
+    files go to /usr/lib/libreoffice (the default location), which is mounted
+    as a Docker volume — so they persist across rebuilds.
+
+    All hardcoded paths in fundamentalrc etc. are correct by default.
+    No overlay extraction, no path patching, no URE_BOOTSTRAP hacks.
+    """
+    packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
+    if not packages:
+        yield {
+            "stage": "error",
+            "error": f"{dep.display_name} is not available for {distro}.",
+        }
+        return
+
+    pkgs_str = " ".join(shlex.quote(p) for p in packages)
+
+    # Step 1: apt-get update
+    yield {"stage": "updating", "output": "Updating package lists..."}
+    async for event in _run_command_streaming(
+        "env DEBIAN_FRONTEND=noninteractive apt-get update -qq",
+        "updating",
+        [],
+    ):
+        if "output" in event:
+            if progress_callback:
+                progress_callback(event)
+            yield event
+
+    # Step 2: apt-get install (uses cached .debs if available)
+    yield {"stage": "installing", "output": f"Installing {pkgs_str}..."}
+    install_cmd = f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}"
+    install_lines: list[str] = []
+    rc = 0
+    async for event in _run_command_streaming(install_cmd, "installing", install_lines):
+        if "_returncode" in event:
+            rc = event["_returncode"]
+        elif "output" in event:
+            if progress_callback:
+                progress_callback(event)
+            yield event
+
+    if rc != 0:
+        yield {
+            "stage": "error",
+            "exit_code": rc,
+            "error": f"apt-get install failed (exit code {rc}).",
+            "output": "\n".join(install_lines[-30:]),
+        }
+        return
+
+    # Step 3: ldconfig (register .so files — ephemeral, needs to run on every startup)
+    _run_ldconfig()
+
+    # Step 4: Update manifest
+    _record_install(dep, [], [])
+
+    yield {
+        "stage": "done",
+        "exit_code": 0,
+        "output": f"{dep.display_name} installed successfully to /usr/lib/libreoffice.",
+        "version": get_version(dep),
+    }
+
+
+async def _uninstall_system_direct(
+    dep: Dependency,
+    distro: str,
+) -> AsyncGenerator[dict, None]:
+    """Uninstall a system-direct dep.
+
+    Runs apt-get remove to clean up the dpkg database + dependency libraries,
+    THEN manually deletes /usr/lib/libreoffice from the volume (because after
+    a rebuild, apt doesn't know the package is installed, so apt-get remove
+    is a no-op — the files stay on the volume).
+
+    Also cleans cached .debs so it stays uninstalled after rebuild.
+    """
+    packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
+    if not packages:
+        yield {
+            "stage": "error",
+            "error": f"Cannot uninstall — no packages for {distro}.",
+        }
+        return
+
+    pkgs_str = " ".join(shlex.quote(p) for p in packages)
+
+    # Step 1: apt-get remove (cleans dpkg db + dependency libs if dpkg knows about it)
+    yield {"stage": "uninstalling", "output": f"Running apt-get remove {pkgs_str}..."}
+    remove_cmd = (
+        f"env DEBIAN_FRONTEND=noninteractive apt-get remove -y --auto-remove {pkgs_str}"
+    )
+    remove_lines: list[str] = []
+    rc = 0
+    async for event in _run_command_streaming(remove_cmd, "uninstalling", remove_lines):
+        if "_returncode" in event:
+            rc = event["_returncode"]
+        elif "output" in event:
+            yield event
+
+    # apt-get remove may return non-zero if the package isn't in the dpkg db
+    # (e.g. after a rebuild). That's OK — we'll delete the files manually.
+    if rc != 0:
+        yield {
+            "stage": "uninstalling",
+            "output": f"apt-get remove returned {rc} (package may not be in dpkg db — will delete files manually)",
+        }
+
+    # Step 2: Manually delete /usr/lib/libreoffice from the volume
+    # This is critical: after a rebuild, apt doesn't know about the package,
+    # so apt-get remove is a no-op. The files stay on the mounted volume.
+    # We must delete them directly.
+    lo_dir = Path("/usr/lib/libreoffice")
+    if lo_dir.exists():
+        yield {"stage": "uninstalling", "output": f"Deleting {lo_dir} from volume..."}
+        try:
+            shutil.rmtree(lo_dir)
+            yield {
+                "stage": "uninstalling",
+                "output": "Deleted /usr/lib/libreoffice from volume.",
+            }
+        except Exception as e:
+            yield {
+                "stage": "uninstalling",
+                "output": f"Warning: could not delete {lo_dir}: {e}",
+            }
+
+    # Also remove the /usr/bin/soffice symlink if it exists
+    soffice_link = Path("/usr/bin/soffice")
+    if soffice_link.is_symlink() or soffice_link.exists():
+        try:
+            soffice_link.unlink()
+        except Exception:
+            pass
+
+    # Step 3: Clean cached .debs so it stays uninstalled after rebuild
+    debs_removed = _remove_debs_from_cache_for_packages(packages)
+    if debs_removed > 0:
+        yield {
+            "stage": "uninstalling",
+            "output": f"Deleted {debs_removed} cached .deb file(s).",
+        }
+
+    # Step 4: Update manifest
+    _record_uninstall(dep)
+
+    yield {
+        "stage": "done",
+        "exit_code": 0,
+        "output": f"{dep.display_name} uninstalled successfully.",
+    }
+
+
+def _run_ldconfig() -> None:
+    """Run ldconfig to register shared libraries."""
+    try:
+        result = subprocess.run(["ldconfig"], capture_output=True, timeout=30)
+        if result.returncode == 0:
+            _log("ldconfig updated")
+        else:
+            _log("ldconfig returned %d", result.returncode)
+    except Exception as e:
+        _log("ldconfig failed: %s", e)
+
+
+def _ensure_soffice_symlink() -> None:
+    """Create /usr/bin/soffice symlink if it doesn't exist.
+
+    This is ephemeral (in the container filesystem, not a volume), so it
+    needs to be recreated on every startup. The target is the wrapper script
+    at /usr/lib/libreoffice/program/soffice (on the volume).
+    """
+    target = Path("/usr/lib/libreoffice/program/soffice")
+    link = Path("/usr/bin/soffice")
+
+    if not target.exists():
+        return  # LibreOffice not installed
+
+    if link.exists() or link.is_symlink():
+        return  # Already exists
+
+    try:
+        link.symlink_to(str(target))
+        _log("created /usr/bin/soffice symlink")
+    except (OSError, PermissionError) as e:
+        _log("warning: could not create /usr/bin/soffice symlink: %s", e)
+
+
+def _check_libreoffice_deps_missing() -> bool:
+    """Check if LibreOffice's runtime dependencies are missing.
+
+    After a container rebuild, LibreOffice's files survive on the volume
+    (/usr/lib/libreoffice), but its runtime dependencies (libxml2, libicu,
+    libX11, libcairo, etc.) are in the ephemeral container filesystem and
+    are lost. We detect this by checking for one key library.
+    """
+    # libxml2 is a core dependency that's always present in a full install.
+    # If it's missing, all the other deps are missing too.
+    key_libs = [
+        Path("/usr/lib/x86_64-linux-gnu/libxml2.so.2"),
+        Path("/usr/lib/x86_64-linux-gnu/libicuuc.so.76"),
+        Path("/usr/lib/x86_64-linux-gnu/libX11.so.6"),
+    ]
+    missing = [str(lib) for lib in key_libs if not lib.exists()]
+    if missing:
+        _log("missing key libraries: %s", missing)
+        return True
+    return False
+
+
+async def _reinstall_libreoffice_deps_from_cache() -> None:
+    """Reinstall LibreOffice and its dependencies from the apt cache.
+
+    After a container rebuild, the dpkg database is fresh and doesn't know
+    about LibreOffice. apt-get install will reinstall LibreOffice AND all
+    its dependencies from the cached .debs (no wifi needed — the apt cache
+    is mounted as a volume).
+
+    This is fast (~10-30 seconds) because it's just dpkg extraction, no
+    network. It restores the ~50 dependency libraries that were lost.
+    """
+    packages = _PKG_MAP.get("libreoffice", {}).get("debian", [])
+    if not packages:
+        return
+
+    pkgs_str = " ".join(shlex.quote(p) for p in packages)
+
+    # apt-get update first (needed even from cache to resolve deps)
+    _log("running apt-get update...")
+    try:
+        result = subprocess.run(
+            ["sh", "-c", "env DEBIAN_FRONTEND=noninteractive apt-get update -qq"],
+            capture_output=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            _log("apt-get update returned %d (continuing anyway)", result.returncode)
+    except subprocess.TimeoutExpired:
+        _log("apt-get update timed out (continuing anyway)")
+
+    # Install from cache (no download if all .debs are cached)
+    _log("reinstalling %s from cache...", pkgs_str)
+    try:
+        result = subprocess.run(
+            [
+                "sh",
+                "-c",
+                f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}",
+            ],
+            capture_output=True,
+            timeout=300,
+        )
+        if result.returncode == 0:
+            _log("LibreOffice dependencies reinstalled from cache")
+        else:
+            stderr = result.stderr.decode(errors="replace")[:500]
+            _log("apt-get install returned %d: %s", result.returncode, stderr)
+    except subprocess.TimeoutExpired:
+        _log("apt-get install timed out (300s)")
+    except Exception as e:
+        _log("apt-get install failed: %s", e)
+
+
+def _remove_debs_from_cache_for_packages(packages: list[str]) -> int:
+    """Delete .deb files from cache that match the given package names."""
+    removed = 0
+    if not APT_CACHE_DIR.exists():
+        return 0
+    for pkg in packages:
+        for deb in APT_CACHE_DIR.glob(f"{pkg}_*.deb"):
+            try:
+                deb.unlink()
+                removed += 1
+                _log("deleted cached .deb: %s", deb.name)
+            except OSError as e:
+                _log("warning: could not delete %s: %s", deb.name, e)
+    return removed
+
+
 async def install_dependency(
     dep: Dependency,
     progress_callback: Optional[Callable[[dict], None]] = None,
@@ -727,16 +1197,21 @@ async def install_dependency(
         }
         return
 
-    # ── Already in overlay? Skip everything. ──
-    if _is_in_overlay(dep):
-        _log("%s already in overlay — skipping install", dep.name)
-        _ensure_system_symlinks(dep)
+    # ── Already installed? Skip everything. ──
+    if is_installed(dep):
+        _log("%s already installed — skipping", dep.name)
         yield {
             "stage": "done",
             "exit_code": 0,
-            "output": f"{dep.display_name} is already installed in the overlay.",
+            "output": f"{dep.display_name} is already installed.",
             "version": get_version(dep),
         }
+        return
+
+    # ── system-direct: apt-get install to default location (mounted as volume) ──
+    if dep.kind == "system-direct":
+        async for event in _install_system_direct(dep, distro, progress_callback):
+            yield event
         return
 
     if dep.kind == "system":
@@ -878,18 +1353,24 @@ async def install_dependency(
 async def uninstall_dependency(
     dep: Dependency,
 ) -> AsyncGenerator[dict, None]:
-    """Uninstall a dependency — fully removes it from BOTH volumes.
+    """Uninstall a dependency.
 
-    Removes:
-      1. System symlinks (ephemeral, in container filesystem)
-      2. Extracted files from the overlay volume (/opt/optional)
-      3. Downloaded .deb files from the apt cache volume (/var/cache/apt)
-      4. Manifest entry
-
-    This ensures the dependency stays uninstalled even after a container
-    rebuild — there are no cached .debs to re-extract from, and no manifest
-    entry to trigger re-extraction.
+    For system-direct deps: apt-get remove + clean cached .debs.
+    For system (overlay) deps: remove overlay files + symlinks + cached .debs.
     """
+    # ── system-direct: use apt-get remove ──
+    if dep.kind == "system-direct":
+        if not is_installed(dep) and dep.name not in _read_manifest().get(
+            "installed", {}
+        ):
+            yield {"stage": "error", "error": f"{dep.display_name} is not installed."}
+            return
+        distro = _detect_distro()
+        async for event in _uninstall_system_direct(dep, distro):
+            yield event
+        return
+
+    # ── system (overlay): remove from overlay + cache ──
     manifest = _read_manifest()
     entry = manifest.get("installed", {}).get(dep.name)
 
@@ -1001,14 +1482,15 @@ async def uninstall_dependency(
 
 
 async def verify_overlay_on_startup() -> None:
-    """Verify the overlay volume and create system symlinks.
+    """Verify installed deps on startup.
 
-    Called on backend startup. This is FAST (sub-second) because:
-      - The overlay volume already has the extracted files
-      - We just need to create ephemeral symlinks in /usr/...
+    For system-direct deps (LibreOffice):
+      - The files are on the mounted volume at /usr/lib/libreoffice
+      - Just run ldconfig (ephemeral, needs to run on every startup)
+      - Create /usr/bin/soffice symlink if missing
 
-    If the overlay is missing but the cache survives, we re-extract
-    (fast, no download). If both are missing, we log a warning.
+    For system (overlay) deps:
+      - Check overlay volume, create symlinks, or re-extract from cache
     """
     manifest = _read_manifest()
     installed = manifest.get("installed", {})
@@ -1022,6 +1504,36 @@ async def verify_overlay_on_startup() -> None:
             _log("manifest references unknown dep '%s' — skipping", name)
             continue
 
+        # ── system-direct: check deps + run ldconfig + create symlink ──
+        if dep.kind == "system-direct":
+            if is_installed(dep):
+                _log("'%s' files OK (on volume) — checking dependencies...", name)
+
+                # After a container rebuild, the LibreOffice files survive on
+                # the volume, but the runtime dependencies (libxml2, libicu,
+                # libX11, etc.) are in the ephemeral container filesystem and
+                # are LOST. Detect this and reinstall deps from apt cache
+                # (no wifi needed — .debs are cached on the apt-cache volume).
+                if _check_libreoffice_deps_missing():
+                    _log(
+                        "'%s' dependencies missing (post-rebuild) — reinstalling from cache...",
+                        name,
+                    )
+                    await _reinstall_libreoffice_deps_from_cache()
+                else:
+                    _log("'%s' dependencies OK", name)
+
+                _run_ldconfig()
+                _ensure_soffice_symlink()
+            else:
+                _log(
+                    "WARNING: '%s' is in manifest but not found at /usr/lib/libreoffice.",
+                    name,
+                )
+                _log("User must re-install %s via the Dependencies UI.", name)
+            continue
+
+        # ── system (overlay): check overlay + create symlinks ──
         if _is_in_overlay(dep):
             # Overlay intact — just create symlinks (instant!)
             _log("overlay OK for '%s' — creating system symlinks", name)
