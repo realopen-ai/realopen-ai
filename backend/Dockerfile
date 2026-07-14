@@ -35,6 +35,8 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 RUN mkdir -p /opt/optional
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

@@ -27,6 +27,8 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
 RUN mkdir -p /opt/optional
 
 EXPOSE 8000
