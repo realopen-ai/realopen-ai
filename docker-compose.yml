@@ -86,7 +86,7 @@ services:
       - module-state:/app/state
       - ./data:/app/data
       - apt-cache:/var/cache/apt
-      - optional-deps:/opt/optional
+      - apt-lists:/var/lib/apt/lists
     restart: unless-stopped
     mem_limit: 512m
     cpus: 1.0
@@ -151,7 +151,7 @@ volumes:
   module-state:
   nginx-cache:
   apt-cache:
-  optional-deps:
+  apt-lists:
 
 networks:
   realopen-net:
