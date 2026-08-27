@@ -35,9 +35,9 @@ def _get_data_dir() -> Path:
 
 # MIME types for supported report formats
 _MIME_TYPES = {
-    "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "pdf": "application/pdf",
 }
 
 
@@ -115,7 +115,7 @@ async def get_report_thumbnail(report_id: str):
     # Step 2: Generate on-demand if PPTX exists + LibreOffice available
     if pptx_path.exists() and pptx_path.is_file():
         try:
-            from app.services import libreoffice
+            from app.services.integrations import libreoffice
 
             if not libreoffice.is_available():
                 # LibreOffice not installed — can't generate a thumbnail
@@ -156,4 +156,81 @@ async def get_report_thumbnail(report_id: str):
     raise HTTPException(
         status_code=404,
         detail=f"PPTX file not found for thumbnail: {safe_id}",
+    )
+
+
+@router.get("/reports/{report_id}/pdf")
+async def get_report_pdf(report_id: str):
+    """Get a PDF version of a generated presentation (PPTX) for in-browser viewing.
+
+    Converts the PPTX to PDF using LibreOffice, caches the PDF on disk, and
+    serves it inline (not as a download) so the frontend can display it in
+    an <iframe>.
+
+    Flow:
+      1. If a cached PDF exists on disk -> serve it immediately.
+      2. If not, but the PPTX exists and LibreOffice is available ->
+         convert on-demand, cache, and serve.
+      3. If LibreOffice is not available or the PPTX doesn't exist -> 404.
+
+    Returns PDF bytes with Content-Disposition: inline (for iframe viewing).
+    """
+    safe_id = os.path.basename(report_id)
+    reports_dir = _get_data_dir() / "reports"
+
+    pdf_path = reports_dir / f"{safe_id}.pdf"
+    pptx_path = reports_dir / f"{safe_id}.pptx"
+
+    # Step 1: Serve cached PDF if it exists
+    if pdf_path.exists() and pdf_path.is_file():
+        return FileResponse(
+            path=str(pdf_path),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": "inline",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
+    # Step 2: Convert on-demand if PPTX exists + LibreOffice available
+    if pptx_path.exists() and pptx_path.is_file():
+        try:
+            from app.services.integrations import libreoffice
+
+            if not libreoffice.is_available():
+                raise HTTPException(
+                    status_code=404,
+                    detail="PDF view unavailable — LibreOffice is not installed.",
+                )
+
+            # Convert PPTX → PDF (saves next to the PPTX as {report_id}.pdf)
+            result_path = await libreoffice.convert_pptx_to_pdf(pptx_path)
+
+            if result_path and result_path.exists():
+                return FileResponse(
+                    path=str(result_path),
+                    media_type="application/pdf",
+                    headers={
+                        "Content-Disposition": "inline",
+                        "Cache-Control": "private, max-age=3600",
+                    },
+                )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail="PDF conversion failed.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("PDF conversion error: %s", e)
+            raise HTTPException(
+                status_code=404,
+                detail=f"PDF conversion error: {e}",
+            )
+
+    # Step 3: No PPTX file found
+    raise HTTPException(
+        status_code=404,
+        detail=f"PPTX file not found: {safe_id}",
     )
