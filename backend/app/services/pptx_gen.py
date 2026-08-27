@@ -1,25 +1,53 @@
 """
-PowerPoint presentation generation service — LLM generates slide-structured
-Markdown, then we build a .pptx using a template.
+PowerPoint presentation generation service — THEME ENGINE (v3, full rewrite).
 
-Two generation strategies:
-  1. SLIDE DUPLICATION (preferred): If the template has pre-existing slides
-     (like SlidesCarnival templates), we deep-copy them — preserving all
-     images, shapes, and decorative elements — and replace only the text.
-     This gives natural layout variety and keeps background images.
-  2. LAYOUT-BASED (fallback): If the template has no slides (pure layout
-     templates like our corporate/modern/elegant), we use add_slide(layout)
-     and set text on placeholders. Dynamic layout scanning finds the best
-     layouts across all available ones.
+LLM generates slide-structured Markdown; we render a .pptx programmatically
+with a *theme* (palette + fonts + decorative style).
 
-Content-to-layout matching: when duplicating, we categorize template slides
-by their visual role (title, content-1-column, content-2-column, section,
-image-heavy) and match each generated slide to the best-fitting template
-slide. Content slides rotate through variants for visual variety.
+WHY A REWRITE — the previous two strategies both triggered PowerPoint's
+"repair" prompt:
 
-Asset replacement: images in duplicated slides named "REPLACEABLE_*" (or
-with alt-text starting with "REPLACEABLE_") are tagged for future
-replacement by user-uploaded assets or Google-fetched images.
+  * SLIDE DUPLICATION (deep-copying template slides) produced dangling
+    relationship ids / orphaned parts.
+  * LAYOUT-BASED generation inherited placeholders from the shipped
+    templates — including the two stock *vertical-text* layouts (the
+    90°-rotated-text bug) — and the templates themselves carried a
+    Windows printerSettings blob from the python-pptx default template.
+
+THE NEW APPROACH — "render from a pristine base, never inherit":
+
+  1. We ALWAYS start from python-pptx's bundled default presentation
+     (a minimal, guaranteed-valid package) and set 16:9.
+  2. Slides are added on the *Blank* layout and drawn entirely with
+     explicit textboxes / autoshapes via the high-level python-pptx API.
+     No placeholders are inherited → no vertical text, no geometry
+     surprises, no layout quirks. The 90°-rotation bug is impossible
+     by construction.
+  3. The three built-in themes (corporate / modern / elegant) are plain
+     Python data — no .pptx template files participate in generation,
+     so template-file corruption can never leak into a deck.
+  4. Custom uploaded templates are used AS A THEME: we extract their
+     colour palette + fonts (theme1.xml / master background) and feed
+     the same renderer. Their XML never enters the output.
+  5. Every string that touches XML passes through _sanitize_text(),
+     stripping all XML-invalid characters (the classic LLM-output
+     repair trigger).
+  6. After saving, a safe post-process pass (a) resyncs docProps/app.xml
+     counts in place — element order is preserved because we only ever
+     UPDATE existing elements in the pristine default's app.xml — and
+     (b) strips the Windows printerSettings part shipped inside the
+     python-pptx default template (a known repair trigger on
+     PowerPoint-for-Mac and Google Slides).
+
+LibreOffice is OPTIONAL: it is used only to render a thumbnail (and the
+reports API uses it for on-demand PDF preview). Generation itself is
+pure python-pptx and produces identical output with or without it.
+
+Public API (unchanged — the use_pptx_gen agent tool and the reports API
+depend on it):
+    generate_presentation(topic, outline, template) -> dict
+    AVAILABLE_TEMPLATES, DEFAULT_TEMPLATE
+    _get_available_templates_from_db(), _get_templates_with_descriptions()
 """
 
 from __future__ import annotations
@@ -29,11 +57,13 @@ import logging
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+from pptx.util import Emu, Inches, Pt
 
 from app.config import settings
 
@@ -46,6 +76,9 @@ def _log(msg: str, *args) -> None:
     except (TypeError, ValueError):
         formatted = f"{msg} {args}"
     print(f"[pptx_gen] {formatted}", flush=True)
+
+
+# ── Dirs / template registry (public surface preserved) ──────────────
 
 
 def _get_reports_dir() -> Path:
@@ -70,6 +103,9 @@ def _get_templates_dir() -> Path:
 
 AVAILABLE_TEMPLATES = ["corporate", "modern", "elegant"]
 DEFAULT_TEMPLATE = "corporate"
+
+# Hard cap so a runaway LLM cannot produce an unusable 60-slide deck.
+MAX_SLIDES = 25
 
 
 async def _get_available_templates_from_db() -> list[str]:
@@ -108,78 +144,374 @@ async def _get_templates_with_descriptions() -> list[tuple[str, str]]:
                 return [(r[0], r[1] or "") for r in rows]
     except Exception as e:
         _log("failed to query templates with descriptions from DB: %s", e)
-    return [(slug, "") for slug in AVAILABLE_TEMPLATES]
+    return [(slug, desc) for slug, desc in _builtin_theme_catalog()]
 
 
-def _resolve_template_path(template_name: Optional[str]) -> Path:
-    """Resolve a template name to its .pptx file path.
+# ── Text sanitization — the LLM-output repair killer ─────────────────
+#
+# XML 1.0 (which OOXML uses) only allows: #x9 | #xA | #xD | #x20-#xD7FF |
+# #xE000-#xFFFD | #x10000-#x10FFFF.  LLM output occasionally contains
+# control characters (vertical tab, form feed, C1 controls, lone
+# surrogates …).  python-pptx happily serializes some of them, and
+# PowerPoint then refuses the file → "repair" prompt.  We strip them all
+# before any string reaches the XML layer.
 
-    First checks the DB for the template slug, then falls back to the
-    filesystem. If the named template doesn't exist, falls back to the
-    default template.
-    """
-    templates_dir = _get_templates_dir()
-    name = (template_name or DEFAULT_TEMPLATE).lower().strip()
-    tpl_path = templates_dir / f"{name}.pptx"
-    if name not in AVAILABLE_TEMPLATES:
-        tpl_path = templates_dir / "custom" / f"{name}.pptx"
-    if not tpl_path.exists():
-        _log("template '%s' not found, falling back to '%s'", name, DEFAULT_TEMPLATE)
-        tpl_path = templates_dir / f"{DEFAULT_TEMPLATE}.pptx"
-    return tpl_path
+# Characters that are XML-valid but render unpredictably in text boxes
+# (zero-width joiners, bidi marks, line/paragraph separators, BOM, …).
+_WEIRD_WS_RE = re.compile(
+    "[\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a-\u202f" "\u205f-\u206f\ufeff]"
+)
+
+# Everything not allowed in presentation text. Stricter than the raw XML
+# Char production: we also drop #x7F-#x9F (DEL + C1 controls) and lone
+# surrogates — they are XML-tolerated but hostile to OOXML parsers.
+_XML_INVALID_RE = re.compile(
+    "[^\t\n\r\x20-\x7e\u00a0-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]"
+)
 
 
-# ── Theme color extraction from template ─────────────────────────────
+def _sanitize_text(text: Optional[str]) -> str:
+    """Return an XML-safe, presentation-safe version of *text*."""
+    if not text:
+        return ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\t", " ")
+    text = _WEIRD_WS_RE.sub(" ", text)
+    text = _XML_INVALID_RE.sub("", text)
+    # Collapse runs of spaces created by the substitutions above.
+    text = re.sub(r" {3,}", "  ", text)
+    return text.strip()
 
 
-def _extract_theme_colors(template_path: Path) -> dict:
-    """Extract color values from the template by inspecting its layout shapes.
+def _first_sentence(text: str, limit: int = 120) -> str:
+    """First sentence of *text*, hard-truncated to *limit* chars."""
+    text = _sanitize_text(text)
+    if not text:
+        return ""
+    for sep in (". ", "! ", "? "):
+        idx = text.find(sep)
+        if 0 < idx < limit:
+            return text[: idx + 1].strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if " " in cut[80:]:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip(",;:—-") + "…"
 
-    Returns a dict with keys: title_color, body_color, accent_color.
-    Falls back to sensible defaults if extraction fails.
-    """
+
+# ── Colour helpers ────────────────────────────────────────────────────
+
+
+def _hex(s: str) -> RGBColor:
+    s = s.lstrip("#")
+    return RGBColor(int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+
+
+def _to_int(c: RGBColor) -> int:
+    return (int(c[0]) << 16) | (int(c[1]) << 8) | int(c[2])
+
+
+def _luminance(c: RGBColor) -> float:
+    """Relative luminance in [0, 1] (ITU-R BT.601 approximation)."""
+    return (0.299 * int(c[0]) + 0.587 * int(c[1]) + 0.114 * int(c[2])) / 255.0
+
+
+def _blend(c1: RGBColor, c2: RGBColor, t: float) -> RGBColor:
+    """Blend *c1* over *c2* with ratio *t* ∈ [0,1] (t=0 → c2, t=1 → c1)."""
+    t = max(0.0, min(1.0, t))
+    return RGBColor(
+        int(round(int(c1[0]) * t + int(c2[0]) * (1 - t))),
+        int(round(int(c1[1]) * t + int(c2[1]) * (1 - t))),
+        int(round(int(c1[2]) * t + int(c2[2]) * (1 - t))),
+    )
+
+
+def _is_dark(c: RGBColor) -> bool:
+    return _luminance(c) < 0.45
+
+
+# ── Theme specification ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ThemeSpec:
+    """A rendering theme: palette + fonts + decorative style."""
+
+    name: str
+    display_name: str
+    bg: RGBColor  # slide background
+    title: RGBColor  # heading text on bg
+    body: RGBColor  # body text on bg
+    muted: RGBColor  # secondary text (footers, slide numbers)
+    accent: RGBColor  # primary accent
+    accent2: RGBColor  # secondary accent
+    on_accent: RGBColor  # text placed on accent surfaces
+    title_font: str
+    body_font: str
+    decor: str = "bars"  # "bars" | "circles" | "frame"
+    dark: bool = False  # background is dark
+
+    # Derived, blended lazily per render (kept out of __eq__ noise)
+    def soft_accent(self) -> RGBColor:
+        """Accent blended into the background — subtle decorative fills."""
+        return _blend(self.accent, self.bg, 0.22)
+
+    def soft_accent2(self) -> RGBColor:
+        return _blend(self.accent2, self.bg, 0.16)
+
+    def faint_accent(self) -> RGBColor:
+        """Very subtle — big background circles etc."""
+        return _blend(self.accent, self.bg, 0.12)
+
+    def on_accent_soft(self) -> RGBColor:
+        """Text on accent surfaces, slightly recessed (section numbers)."""
+        return _blend(self.on_accent, self.accent, 0.45)
+
+
+def _builtin_theme_catalog() -> list[tuple[str, str]]:
+    """(slug, description) list mirroring the DB seed metadata in main.py."""
+    return [
+        (t.name, t.display_name + " — " + _BUILTIN_DESCRIPTIONS[t.name])
+        for t in BUILTIN_THEMES.values()
+    ]
+
+
+_BUILTIN_DESCRIPTIONS = {
+    "corporate": "Navy blue professional theme",
+    "modern": "Teal and orange vibrant theme",
+    "elegant": "Dark purple and gold sophisticated theme",
+}
+
+
+BUILTIN_THEMES: dict[str, ThemeSpec] = {
+    # Deep navy + amber — boardroom classic.
+    "corporate": ThemeSpec(
+        name="corporate",
+        display_name="Corporate",
+        bg=_hex("0F2740"),
+        title=_hex("FFFFFF"),
+        body=_hex("C7D3E2"),
+        muted=_hex("7E93AC"),
+        accent=_hex("F2A33C"),
+        accent2=_hex("3E7CB1"),
+        on_accent=_hex("0F2740"),
+        title_font="Calibri",
+        body_font="Calibri",
+        decor="bars",
+        dark=True,
+    ),
+    # White + teal/orange — startup energy.
+    "modern": ThemeSpec(
+        name="modern",
+        display_name="Modern",
+        bg=_hex("FFFFFF"),
+        title=_hex("0E3A36"),
+        body=_hex("3C4A48"),
+        muted=_hex("8AA09C"),
+        accent=_hex("0D9488"),
+        accent2=_hex("F97316"),
+        on_accent=_hex("FFFFFF"),
+        title_font="Trebuchet MS",
+        body_font="Calibri",
+        decor="circles",
+        dark=False,
+    ),
+    # Aubergine + gold — evening keynote.
+    "elegant": ThemeSpec(
+        name="elegant",
+        display_name="Elegant",
+        bg=_hex("251B33"),
+        title=_hex("F3ECD9"),
+        body=_hex("CFC4DE"),
+        muted=_hex("9C8EB4"),
+        accent=_hex("D4AF37"),
+        accent2=_hex("8E7CC3"),
+        on_accent=_hex("251B33"),
+        title_font="Georgia",
+        body_font="Georgia",
+        decor="frame",
+        dark=True,
+    ),
+}
+
+
+# ── Custom-template theme extraction ──────────────────────────────────
+#
+# Uploaded templates are used AS A THEME: we read their theme palette
+# and fonts, then render with the same bullet-proof engine.  Their XML
+# never enters the generated file, so even a quirky upload cannot
+# corrupt a deck.
+
+_SYSCLR_MAP = {"windowText": "000000", "window": "FFFFFF", "none": "000000"}
+
+
+def _theme_from_template(template_path: Path) -> ThemeSpec:
+    """Extract a ThemeSpec from a .pptx template's theme1.xml + master."""
     from pptx import Presentation
-    from pptx.dml.color import RGBColor
 
-    defaults = {
-        "title_color": RGBColor(0xFF, 0xFF, 0xFF),
-        "body_color": RGBColor(0x33, 0x33, 0x33),
-        "accent_color": RGBColor(0x3D, 0x8B, 0xFD),
-        "title_bg_color": RGBColor(0x0F, 0x2A, 0x4A),
-    }
-
+    fallback = BUILTIN_THEMES[DEFAULT_TEMPLATE]
     try:
         prs = Presentation(str(template_path))
+        master = prs.slide_masters[0]
 
-        # Try extracting from existing slides first (for slide-duplication templates)
-        if len(prs.slides) > 0:
-            for slide in prs.slides:
-                for shape in slide.shapes:
-                    if shape.is_placeholder and shape.placeholder_format.idx == 0:
-                        p = shape.text_frame.paragraphs[0]
-                        if p.font.color and p.font.color.type:
-                            defaults["title_color"] = p.font.color.rgb
-                        break
-                break  # Only check first slide
+        # ── Locate the theme part through the master's relationships ──
+        theme_el = None
+        for rel in master.part.rels.values():
+            if rel.reltype.endswith("/theme"):
+                from lxml import etree
 
-        # Then check layouts (for layout-based templates)
-        for layout in prs.slide_layouts:
-            for ph in layout.placeholders:
-                if ph.placeholder_format.idx == 0:
-                    p = ph.text_frame.paragraphs[0]
-                    if p.font.color and p.font.color.type:
-                        defaults["title_color"] = p.font.color.rgb
-                elif ph.placeholder_format.idx == 1:
-                    p = ph.text_frame.paragraphs[0]
-                    if p.font.color and p.font.color.type:
-                        defaults["body_color"] = p.font.color.rgb
+                theme_el = etree.fromstring(rel.target_part.blob)
+                break
+        if theme_el is None:
+            return fallback
+
+        A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+        def _clr(tag: str) -> Optional[RGBColor]:
+            el = theme_el.find(f".//{{{A}}}clrScheme/{{{A}}}{tag}")
+            if el is None:
+                return None
+            srgb = el.find(f"{{{A}}}srgbClr")
+            if srgb is not None and re.fullmatch(
+                r"[0-9A-Fa-f]{6}", srgb.get("val", "")
+            ):
+                return _hex(srgb.get("val"))
+            sysc = el.find(f"{{{A}}}sysClr")
+            if sysc is not None:
+                val = sysc.get("lastClr") or _SYSCLR_MAP.get(sysc.get("val", ""), "")
+                if val and re.fullmatch(r"[0-9A-Fa-f]{6}", val):
+                    return _hex(val)
+            return None
+
+        # ── Fonts ──
+        major = minor = None
+        fs = theme_el.find(f".//{{{A}}}fontScheme")
+        if fs is not None:
+            mj = fs.find(f".//{{{A}}}majorFont/{{{A}}}latin")
+            mn = fs.find(f".//{{{A}}}minorFont/{{{A}}}latin")
+            major = mj.get("typeface") if mj is not None else None
+            minor = mn.get("typeface") if mn is not None else None
+        title_font = (major or "").strip() or "Calibri"
+        body_font = (minor or "").strip() or title_font
+
+        # ── Palette ──
+        dk1 = _clr("dk1") or _hex("1A1A1A")
+        lt1 = _clr("lt1") or _hex("FFFFFF")
+        dk2 = _clr("dk2") or dk1
+        lt2 = _clr("lt2") or lt1
+        accent = _clr("accent1") or _hex("3E7CB1")
+        accent2 = _clr("accent2") or accent
+
+        # ── Master background (explicit solid fill wins) ──
+        from pptx.oxml.ns import qn
+
+        bg: Optional[RGBColor] = None
+        cSld = master._element.find(qn("p:cSld"))
+        if cSld is not None:
+            bgPr = cSld.find(f"{qn('p:bg')}/{qn('p:bgPr')}")
+            if bgPr is not None:
+                srgb = bgPr.find(f"{qn('a:solidFill')}/{qn('a:srgbClr')}")
+                if srgb is not None and re.fullmatch(
+                    r"[0-9A-Fa-f]{6}", srgb.get("val", "")
+                ):
+                    bg = _hex(srgb.get("val"))
+
+        if bg is None:
+            # No explicit master background → light deck on lt1.
+            bg = lt1 if not _is_dark(lt1) else _blend(lt1, _hex("FFFFFF"), 0.6)
+        dark = _is_dark(bg)
+
+        # Contrast-aware text colours.
+        if dark:
+            title_c = lt1 if _luminance(lt1) > 0.5 else _hex("FFFFFF")
+            body_c = _blend(title_c, bg, 0.75)
+            muted_c = _blend(title_c, bg, 0.45)
+        else:
+            title_c = dk1 if _luminance(dk1) < 0.5 else _hex("1A1A1A")
+            body_c = _blend(title_c, bg, 0.82)
+            muted_c = _blend(title_c, bg, 0.5)
+
+        # Text on accent surfaces: maximise contrast against the accent.
+        on_accent = _hex("FFFFFF") if _luminance(accent) < 0.55 else _hex("111111")
+
+        # Decorative style: detect a full-width outline rect ("frame")
+        # on the title layout; otherwise bars on dark / circles on light.
+        decor = "bars" if dark else "circles"
+        try:
+            layout0 = prs.slide_layouts[0]
+            slide_w = int(prs.slide_width or 0)
+            for shape in layout0.shapes:
+                if shape.is_placeholder:
+                    continue
+                spPr = shape._element.find(qn("p:spPr"))
+                if spPr is None:
+                    continue
+                prst = spPr.find(qn("a:prstGeom"))
+                if prst is None or prst.get("prst") != "rect":
+                    continue
+                if spPr.find(qn("a:noFill")) is None or spPr.find(qn("a:ln")) is None:
+                    continue
+                ext = spPr.find(f"{qn('a:xfrm')}/{qn('a:ext')}")
+                if (
+                    ext is not None
+                    and slide_w
+                    and int(ext.get("cx", "0")) > 0.8 * slide_w
+                ):
+                    decor = "frame"
+                    break
+        except Exception:
+            pass
+
+        return ThemeSpec(
+            name=template_path.stem.lower(),
+            display_name=template_path.stem.replace("_", " ").title(),
+            bg=bg,
+            title=title_c,
+            body=body_c,
+            muted=muted_c,
+            accent=accent,
+            accent2=accent2,
+            on_accent=on_accent,
+            title_font=title_font,
+            body_font=body_font,
+            decor=decor,
+            dark=dark,
+        )
     except Exception as e:
-        _log("theme extraction failed, using defaults: %s", e)
+        _log(
+            "theme extraction failed for %s (%s) — using default", template_path.name, e
+        )
+        return fallback
 
-    return defaults
+
+def _resolve_theme(
+    template_name: Optional[str],
+) -> tuple[str, ThemeSpec]:
+    """Resolve a template slug to (slug, ThemeSpec).
+
+    Built-ins come from code. Anything else is looked up on disk
+    (templates dir, then custom/ subdir) and used AS A THEME. Unknown
+    slugs fall back to the default theme.
+    """
+    slug = (template_name or DEFAULT_TEMPLATE).lower().strip()
+    if slug in BUILTIN_THEMES:
+        return slug, BUILTIN_THEMES[slug]
+
+    templates_dir = _get_templates_dir()
+    for candidate in (
+        templates_dir / f"{slug}.pptx",
+        templates_dir / "custom" / f"{slug}.pptx",
+    ):
+        if candidate.exists():
+            _log("using custom template as theme: %s", candidate.name)
+            return slug, _theme_from_template(candidate)
+
+    _log("template '%s' not found — falling back to '%s'", slug, DEFAULT_TEMPLATE)
+    return DEFAULT_TEMPLATE, BUILTIN_THEMES[DEFAULT_TEMPLATE]
 
 
-# ── LLM prompt ───────────────────────────────────────────────────────
+# ── LLM prompt ────────────────────────────────────────────────────────
 
 PPTX_SYSTEM_PROMPT = """You are a professional presentation designer. Create a concise, visually-oriented slide deck in a simple Markdown-like format.
 
@@ -280,7 +612,7 @@ async def _generate_slide_markdown(topic: str, outline: Optional[str]) -> str:
     return content
 
 
-# ── Slide parsing ────────────────────────────────────────────────────
+# ── Slide parsing ─────────────────────────────────────────────────────
 
 
 class Slide:
@@ -335,10 +667,9 @@ def _parse_slides(markdown_content: str) -> list[Slide]:
                     if text:
                         slide.bullets.append(text)
 
-        # FIX: If a content slide has no bullets but has notes, extract
+        # If a content slide has no bullets but has notes, extract
         # a summary bullet from the notes so the slide isn't empty.
         if not slide.is_section and not slide.bullets and slide.notes:
-            # Take the first sentence of the notes as a bullet
             first_sentence = slide.notes.split(".")[0].strip()
             if first_sentence:
                 slide.bullets.append(first_sentence + ".")
@@ -349,605 +680,588 @@ def _parse_slides(markdown_content: str) -> list[Slide]:
     return slides
 
 
-# ── Slide duplication (deep copy with relationships) ─────────────────
+_CLOSING_RE = re.compile(
+    r"thank\s*you|questions\b|conclusion|key\s*takeaways?|summary|q&a",
+    re.IGNORECASE,
+)
 
 
-def _duplicate_slide(prs, source_slide):
-    """Deep-copy a slide including all its shapes, images, and relationships.
+def _is_closing_slide(slide: Slide, index: int, total: int) -> bool:
+    """True when the last slide is a classic 'thank you' style closer."""
+    if index != total - 1 or total < 3:
+        return False
+    return bool(_CLOSING_RE.search(slide.title or ""))
 
-    This is the core of the slide-duplication strategy. It:
-    1. Creates a new blank slide
-    2. Copies all shapes from the source slide (via XML deep-copy)
-    3. Re-creates image relationships so the new slide references the
-       same image parts — with proper rId remapping to avoid dangling refs
-    4. Copies the slide's background (with rId remapping)
-    5. Returns the new slide
 
-    Key correctness fixes (vs. naive deepcopy):
-    - Skips the notesSlide relationship to prevent orphaned source slides
-    - Builds an old_rId → new_rId mapping and rewrites all r:embed/r:link
-      attributes in the deepcopied XML, so shape references match the new
-      slide's relationship IDs
-    - Same rId remapping for background elements
+# ── The renderer ──────────────────────────────────────────────────────
+#
+# 16:9 canvas: 13.333in × 7.5in.  All geometry is explicit — nothing is
+# inherited from layouts — so every theme renders pixel-identically in
+# PowerPoint, Google Slides and LibreOffice.
 
-    The new slide inherits all decorative elements (background images,
-    shapes, colors) from the source — this is what makes it work with
-    templates like SlidesCarnival where the visual design lives on the
-    slide, not the layout.
-    """
-    from pptx.oxml.ns import qn
-    from copy import deepcopy
+_SLIDE_W = Emu(12192000)  # 13.333 in
+_SLIDE_H = Emu(6858000)  # 7.5 in
 
-    # Relationship type for notes slides — we skip this to prevent the
-    # new slide from pointing at the source slide's notes (which would
-    # keep the source slide reachable via notesSlide→slide back-ref,
-    # creating an orphaned part that triggers PowerPoint repair).
-    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+_MARGIN = Inches(0.7)
 
-    SKIP_RELTYPES = {RT.NOTES_SLIDE}
 
-    # Use the source slide's layout
-    source_layout = source_slide.slide_layout
-    new_slide = prs.slides.add_slide(source_layout)
+def _blank_layout(prs):
+    """The Blank layout of the pristine default template (no content placeholders)."""
+    for layout in prs.slide_layouts:
+        if layout.name and layout.name.lower() == "blank":
+            return layout
+    # Robust fallback: first layout with no title/body/object placeholders.
+    for layout in prs.slide_layouts:
+        content_types = {
+            "TITLE (1)",
+            "CENTER_TITLE (3)",
+            "OBJECT (7)",
+            "BODY (2)",
+            "SUBTITLE (4)",
+        }
+        if not any(
+            str(ph.placeholder_format.type) in content_types
+            for ph in layout.placeholders
+        ):
+            return layout
+    return prs.slide_layouts[6]
 
-    # Remove default placeholders that add_slide creates
-    for shape in list(new_slide.shapes):
-        sp = shape._element
-        sp.getparent().remove(sp)
 
-    # ── Step 1: Copy relationships and build rId mapping ──
-    # We need an old_rId → new_rId mapping because get_or_add() assigns
-    # new sequential rIds, but deepcopy preserves the source rId values
-    # in the XML. Without remapping, r:embed="rId4" might point to a
-    # non-existent relationship if the source had gaps in its rId sequence.
-    rid_map: dict[str, str] = {}
+def _set_bg(slide, color: RGBColor) -> None:
+    """Slide background via the supported high-level API (schema-safe)."""
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = color
 
-    for rel in source_slide.part.rels.values():
-        # Skip notesSlide — prevents orphaned source slides
-        if rel.reltype in SKIP_RELTYPES:
-            continue
 
-        if rel.is_external:
-            new_rId = new_slide.part.rels.get_or_add_ext_rel(
-                rel.reltype, rel.target_ref
+def _add_rect(
+    slide,
+    x,
+    y,
+    w,
+    h,
+    color: RGBColor,
+    *,
+    line: bool = False,
+    line_color: Optional[RGBColor] = None,
+    line_w: float = 1.25,
+):
+    """Add a flat rectangle. line=True → outline only, no fill."""
+    from pptx.enum.shapes import MSO_SHAPE
+
+    shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+    shape.shadow.inherit = False
+    if line:
+        shape.fill.background()
+        if line_color is not None:
+            shape.line.color.rgb = line_color
+        shape.line.width = Pt(line_w)
+    else:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = color
+        shape.line.fill.background()
+    return shape
+
+
+def _add_ellipse(slide, x, y, d, color: RGBColor):
+    from pptx.enum.shapes import MSO_SHAPE
+
+    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, x, y, d, d)
+    shape.shadow.inherit = False
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = color
+    shape.line.fill.background()
+    return shape
+
+
+def _add_text(
+    slide,
+    x,
+    y,
+    w,
+    h,
+    text: str,
+    *,
+    size: float,
+    color: RGBColor,
+    font: str,
+    bold: bool = False,
+    align: str = "left",
+    anchor: str = "top",
+    line_spacing: Optional[float] = None,
+    italic: bool = False,
+):
+    """Add a single-paragraph textbox. Returns the textbox shape."""
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+
+    box = slide.shapes.add_textbox(x, y, w, h)
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+    tf.vertical_anchor = {
+        "top": MSO_ANCHOR.TOP,
+        "middle": MSO_ANCHOR.MIDDLE,
+        "bottom": MSO_ANCHOR.BOTTOM,
+    }[anchor]
+
+    p = tf.paragraphs[0]
+    p.alignment = {
+        "left": PP_ALIGN.LEFT,
+        "center": PP_ALIGN.CENTER,
+        "right": PP_ALIGN.RIGHT,
+    }[align]
+    if line_spacing:
+        p.line_spacing = line_spacing
+
+    run = p.add_run()
+    run.text = text
+    f = run.font
+    f.size = Pt(size)
+    f.bold = bold
+    f.italic = italic
+    f.color.rgb = color
+    f.name = font
+    return box
+
+
+def _font_for(theme: ThemeSpec, *, title: bool = False) -> str:
+    return theme.title_font if title else theme.body_font
+
+
+# ── Slide renderers, one per visual role ──────────────────────────────
+
+
+def _draw_title_slide(
+    slide, sd: Slide, theme: ThemeSpec, topic: str, closing: bool = False
+) -> None:
+    """Title / closing slide: big statement + accent rule + subtitle."""
+    _set_bg(slide, theme.bg)
+
+    title = _sanitize_text(sd.title) or ("Thank You" if closing else topic)
+    subtitle = _first_sentence(sd.notes) or (
+        "" if closing else _first_sentence(topic, limit=90)
+    )
+
+    tsize = 48 if len(title) <= 40 else (42 if len(title) <= 55 else 36)
+
+    if theme.decor == "frame":
+        # Elegant: thin gold frame + centered composition.
+        _add_rect(
+            slide,
+            Inches(0.42),
+            Inches(0.42),
+            _SLIDE_W - Inches(0.84),
+            _SLIDE_H - Inches(0.84),
+            theme.accent,
+            line=True,
+            line_color=theme.accent,
+            line_w=1.25,
+        )
+        _add_rect(
+            slide,
+            _SLIDE_W / 2 - Inches(0.09),
+            Inches(1.55),
+            Inches(0.18),
+            Inches(0.18),
+            theme.accent,
+        )
+        _add_text(
+            slide,
+            Inches(1.2),
+            Inches(2.35),
+            _SLIDE_W - Inches(2.4),
+            Inches(1.7),
+            title,
+            size=tsize,
+            color=theme.title,
+            font=_font_for(theme, title=True),
+            bold=True,
+            align="center",
+            anchor="middle",
+        )
+        _add_rect(
+            slide,
+            _SLIDE_W / 2 - Inches(0.8),
+            Inches(4.25),
+            Inches(1.6),
+            Inches(0.045),
+            theme.accent,
+        )
+        if subtitle:
+            _add_text(
+                slide,
+                Inches(1.6),
+                Inches(4.55),
+                _SLIDE_W - Inches(3.2),
+                Inches(1.0),
+                subtitle,
+                size=16,
+                color=theme.muted,
+                font=_font_for(theme),
+                align="center",
+                italic=True,
+                line_spacing=1.15,
             )
-        else:
-            new_rId = new_slide.part.rels.get_or_add(rel.reltype, rel.target_part)
+        return
 
-        rid_map[rel.rId] = new_rId
+    if theme.decor == "circles":
+        # Modern: playful overlapping circles, left-aligned type.
+        _add_ellipse(
+            slide, Inches(9.7), Inches(-1.5), Inches(5.4), theme.faint_accent()
+        )
+        _add_ellipse(slide, Inches(11.15), Inches(0.65), Inches(1.15), theme.accent2)
+        _add_ellipse(slide, Inches(-0.9), Inches(5.6), Inches(2.4), theme.soft_accent())
+    else:
+        # Corporate: authoritative left bar + grounded base strip.
+        _add_rect(slide, 0, 0, Inches(0.28), _SLIDE_H, theme.accent)
+        _add_ellipse(slide, Inches(10.4), Inches(4.6), Inches(3.6), theme.soft_accent())
+        _add_ellipse(
+            slide, Inches(11.6), Inches(3.7), Inches(1.5), theme.soft_accent2()
+        )
 
-    _log("rId mapping for duplicated slide: %s", rid_map)
-
-    # ── Step 2: Rewrite r:embed and r:link attributes in deepcopied shapes ──
-    # Namespace for relationship references
-    R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    EMBED_ATTR = f"{{{R_NS}}}embed"
-    LINK_ATTR = f"{{{R_NS}}}link"
-
-    def _rewrite_rids(element):
-        """Recursively rewrite r:embed and r:link attributes in an XML element."""
-        # Check this element's attributes
-        for attr_name in (EMBED_ATTR, LINK_ATTR):
-            if attr_name in element.attrib:
-                old_rid = element.attrib[attr_name]
-                if old_rid in rid_map:
-                    element.attrib[attr_name] = rid_map[old_rid]
-                else:
-                    _log("WARNING: rId %s not found in mapping (dangling ref)", old_rid)
-        # Recurse into children
-        for child in element:
-            _rewrite_rids(child)
-
-    # ── Step 3: Copy all shapes from source to new slide (with rId rewriting) ──
-    for shape in source_slide.shapes:
-        el = shape._element
-        new_el = deepcopy(el)
-        _rewrite_rids(new_el)
-        new_slide.shapes._spTree.append(new_el)
-
-    # ── Step 4: Copy the slide's background (with rId rewriting) ──
-    source_cSld = source_slide._element.find(qn("p:cSld"))
-    if source_cSld is not None:
-        source_bg = source_cSld.find(qn("p:bg"))
-        if source_bg is not None:
-            new_cSld = new_slide._element.find(qn("p:cSld"))
-            if new_cSld is not None:
-                existing_bg = new_cSld.find(qn("p:bg"))
-                if existing_bg is not None:
-                    new_cSld.remove(existing_bg)
-                new_bg = deepcopy(source_bg)
-                _rewrite_rids(new_bg)
-                # Insert bg as first child of cSld
-                new_cSld.insert(0, new_bg)
-
-    return new_slide
+    _add_text(
+        slide,
+        Inches(1.05),
+        Inches(2.15),
+        Inches(9.6),
+        Inches(2.1),
+        title,
+        size=tsize,
+        color=theme.title,
+        font=_font_for(theme, title=True),
+        bold=True,
+        line_spacing=1.02,
+    )
+    _add_rect(
+        slide, Inches(1.08), Inches(4.45), Inches(1.35), Inches(0.06), theme.accent
+    )
+    if subtitle:
+        _add_text(
+            slide,
+            Inches(1.05),
+            Inches(4.75),
+            Inches(9.2),
+            Inches(1.1),
+            subtitle,
+            size=17,
+            color=theme.muted,
+            font=_font_for(theme),
+            line_spacing=1.2,
+        )
 
 
-# ── Template slide categorization ────────────────────────────────────
+def _draw_section_slide(slide, sd: Slide, theme: ThemeSpec, number: int) -> None:
+    """Section divider: full-bleed accent panel + oversized number."""
+    _set_bg(slide, theme.bg)
+
+    title = _sanitize_text(sd.title) or "Section"
+    tsize = 34 if len(title) <= 44 else 28
+    num = f"{number:02d}"
+
+    if theme.decor == "frame":
+        # Elegant: centered champagne title between gold rules.
+        _add_text(
+            slide,
+            Inches(1.0),
+            Inches(2.62),
+            _SLIDE_W - Inches(2.0),
+            Inches(0.5),
+            f"SECTION {num}",
+            size=13,
+            color=theme.accent,
+            font=_font_for(theme),
+            bold=True,
+            align="center",
+        )
+        _add_rect(
+            slide,
+            _SLIDE_W / 2 - Inches(1.3),
+            Inches(3.25),
+            Inches(2.6),
+            Inches(0.03),
+            theme.accent,
+        )
+        _add_text(
+            slide,
+            Inches(1.2),
+            Inches(3.55),
+            _SLIDE_W - Inches(2.4),
+            Inches(1.4),
+            title,
+            size=tsize,
+            color=theme.title,
+            font=_font_for(theme, title=True),
+            bold=True,
+            align="center",
+        )
+        _add_rect(
+            slide,
+            _SLIDE_W / 2 - Inches(1.3),
+            Inches(5.05),
+            Inches(2.6),
+            Inches(0.03),
+            theme.accent,
+        )
+        return
+
+    # bars / circles: accent panel on the left third.
+    panel_w = Inches(4.6)
+    _add_rect(slide, 0, 0, panel_w, _SLIDE_H, theme.accent)
+    _add_text(
+        slide,
+        Inches(0.75),
+        Inches(2.05),
+        Inches(3.4),
+        Inches(2.4),
+        num,
+        size=110,
+        color=theme.on_accent_soft(),
+        font=_font_for(theme, title=True),
+        bold=True,
+    )
+    _add_text(
+        slide,
+        panel_w + Inches(0.75),
+        Inches(2.9),
+        _SLIDE_W - panel_w - Inches(1.5),
+        Inches(1.9),
+        title,
+        size=tsize,
+        color=theme.title,
+        font=_font_for(theme, title=True),
+        bold=True,
+        anchor="middle",
+        line_spacing=1.05,
+    )
+    _add_rect(
+        slide,
+        panel_w + Inches(0.77),
+        Inches(2.62),
+        Inches(1.0),
+        Inches(0.05),
+        theme.accent,
+    )
 
 
-class TemplateSlideInfo:
-    """Metadata about a template slide for matching."""
-
-    def __init__(self, index: int):
-        self.index = index
-        self.role: str = "content"  # "title", "content", "section", "closing"
-        self.num_bullets: int = 0
-        self.has_title_ph: bool = False
-        self.has_content_ph: bool = False
-        self.has_images: bool = False
-        self.num_text_shapes: int = 0
-        self.is_first: bool = False
-        self.is_last: bool = False
-
-
-def _categorize_template_slides(prs) -> list[TemplateSlideInfo]:
-    """Categorize each slide in the template by its visual role.
-
-    Roles:
-    - "title": First slide, typically has a title + subtitle
-    - "content": Has title + content placeholders, bullet-like text
-    - "section": Mostly visual, minimal text (section divider)
-    - "closing": Last slide (thank you, key takeaways)
-    """
-    infos = []
-    total = len(prs.slides)
-
-    for i, slide in enumerate(prs.slides):
-        info = TemplateSlideInfo(i)
-        info.is_first = i == 0
-        info.is_last = i == total - 1
-
-        # Check placeholders
-        for ph in slide.placeholders:
-            if ph.placeholder_format.idx == 0:
-                info.has_title_ph = True
-            if ph.placeholder_format.idx == 1:
-                info.has_content_ph = True
-
-        # Count shapes
-        for shape in slide.shapes:
-            if shape.is_placeholder:
-                continue
-            if shape.shape_type == 13:  # PICTURE
-                info.has_images = True
-            if shape.has_text_frame:
-                info.num_text_shapes += 1
-
-        # Count bullet-like text in content placeholder
-        if info.has_content_ph:
-            for ph in slide.placeholders:
-                if ph.placeholder_format.idx == 1 and ph.has_text_frame:
-                    text = ph.text_frame.text
-                    info.num_bullets = text.count("\n") + 1 if text.strip() else 0
-
-        # Determine role
-        if info.is_first:
-            info.role = "title"
-        elif info.is_last:
-            info.role = "closing"
-        elif not info.has_content_ph and (info.has_images or info.num_text_shapes <= 1):
-            info.role = "section"
-        else:
-            info.role = "content"
-
-        infos.append(info)
-
-    return infos
+def _bullet_metrics(bullets: list[str]) -> tuple[float, float]:
+    """(font size pt, space-after pt) adapted to bullet count + length."""
+    n = len(bullets)
+    longest = max((len(b) for b in bullets), default=0)
+    if n <= 3:
+        size, space = 20.0, 16.0
+    elif n <= 5:
+        size, space = 18.0, 13.0
+    elif n <= 7:
+        size, space = 16.0, 10.0
+    else:
+        size, space = 14.5, 8.0
+    if longest > 105:
+        size = max(12.0, size - 2.0)
+    elif longest > 78:
+        size = max(13.0, size - 1.0)
+    return size, space
 
 
-def _find_best_template_slide(
-    slide_data: Slide,
-    slide_index: int,
-    template_infos: list[TemplateSlideInfo],
-    used_indices: set,
-) -> Optional[TemplateSlideInfo]:
-    """Find the best matching template slide for a generated slide.
-
-    Matching logic:
-    - First generated slide → title template slide
-    - Section dividers (is_section=True) → section template slides
-    - Last generated slide → closing template slide
-    - Content slides → content template slides, rotated for variety,
-      with preference for slides that have a similar number of bullet
-      placeholders
-    """
-    # total_generated = len(template_infos)
-    is_first = slide_index == 0
-    is_last = slide_index == -1  # caller should set this; we use -1 as sentinel
-
-    # Title slide
-    if is_first:
-        for info in template_infos:
-            if info.role == "title" and info.index not in used_indices:
-                return info
-        # Fallback: first available
-        for info in template_infos:
-            if info.index not in used_indices:
-                return info
-
-    # Section divider
-    if slide_data.is_section:
-        for info in template_infos:
-            if info.role == "section" and info.index not in used_indices:
-                return info
-        # Fallback: any content slide
-        for info in template_infos:
-            if info.role == "content" and info.index not in used_indices:
-                return info
-
-    # Closing slide
-    if is_last:
-        for info in template_infos:
-            if info.role == "closing" and info.index not in used_indices:
-                return info
-
-    # Content slide — match by bullet count, rotate for variety
-    content_candidates = [
-        info
-        for info in template_infos
-        if info.role == "content" and info.index not in used_indices
-    ]
-    if not content_candidates:
-        # All used — reset and reuse (rotation)
-        content_candidates = [info for info in template_infos if info.role == "content"]
-
-    if not content_candidates:
-        # No content slides — use any available
-        for info in template_infos:
-            if info.index not in used_indices:
-                return info
-        return template_infos[0] if template_infos else None
-
-    # Match: prefer slides whose bullet count is closest to ours
-    num_bullets = len(slide_data.bullets)
-    best = min(content_candidates, key=lambda info: abs(info.num_bullets - num_bullets))
-    return best
+_BULLET_MARKER = {"bars": "▪", "circles": "▪", "frame": "•"}
 
 
-# ── Text replacement on duplicated slides ────────────────────────────
+def _draw_content_slide(slide, sd: Slide, theme: ThemeSpec) -> None:
+    """Standard content slide: title + accent underline + bullet stack."""
+    _set_bg(slide, theme.bg)
 
+    title = _sanitize_text(sd.title) or ""
+    bullets = [_sanitize_text(b) for b in sd.bullets]
+    bullets = [b for b in bullets if b]
 
-def _replace_text_on_slide(slide, slide_data: Slide, slide_index: int, theme: dict):
-    """Replace text content on a duplicated slide.
+    tsize = 30 if len(title) <= 46 else 26
+    _add_text(
+        slide,
+        _MARGIN,
+        Inches(0.48),
+        _SLIDE_W - 2 * _MARGIN,
+        Inches(0.85),
+        title,
+        size=tsize,
+        color=theme.title,
+        font=_font_for(theme, title=True),
+        bold=True,
+    )
+    _add_rect(
+        slide,
+        _MARGIN + Inches(0.02),
+        Inches(1.32),
+        Inches(1.0),
+        Inches(0.05),
+        theme.accent,
+    )
 
-    Finds title and content placeholders and replaces their text with
-    the generated content. Preserves all shapes, images, and formatting.
+    if not bullets:
+        return
 
-    For templates that use freeform shapes instead of placeholders (like
-    SlidesCarnival), we identify "title-like" and "content-like" text
-    shapes by their position and size on the slide:
-    - Title: the largest text shape in the upper portion of the slide
-    - Content: the largest text shape in the lower portion
-    All other non-placeholder text shapes are cleared (they contain
-    template example text that shouldn't appear in the output).
-    """
-    from pptx.enum.text import PP_ALIGN
-    from pptx.util import Pt
+    size, space = _bullet_metrics(bullets)
+    marker = _BULLET_MARKER.get(theme.decor, "▪")
 
-    # ── Strategy: try placeholders first, then fall back to text shapes ──
+    box = slide.shapes.add_textbox(
+        _MARGIN + Inches(0.2),
+        Inches(1.75),
+        _SLIDE_W - 2 * _MARGIN - Inches(0.2),
+        _SLIDE_H - Inches(2.55),
+    )
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
 
-    title_replaced = False
-    content_replaced = False
-
-    # Try placeholder-based replacement first
-    if slide_data.title:
-        title_ph = None
-        for ph in slide.placeholders:
-            if ph.placeholder_format.idx == 0:
-                title_ph = ph
-                break
-
-        if title_ph:
-            title_ph.text = slide_data.title
-            tf = title_ph.text_frame
-            tf.word_wrap = True
-            for para in tf.paragraphs:
-                para.alignment = PP_ALIGN.LEFT
-                for run in para.runs:
-                    run.font.size = Pt(44 if slide_index == 0 else 28)
-                    run.font.bold = True
-                    run.font.color.rgb = theme["title_color"]
-                    run.font.name = "Calibri"
-            title_replaced = True
-
-    if slide_data.bullets and not slide_data.is_section:
-        content_ph = None
-        for ph in slide.placeholders:
-            if ph.placeholder_format.idx == 1:
-                content_ph = ph
-                break
-
-        if content_ph:
-            tf = content_ph.text_frame
-            tf.word_wrap = True
-            tf.clear()
-            for j, bullet in enumerate(slide_data.bullets):
-                if j == 0:
-                    p = tf.paragraphs[0]
-                else:
-                    p = tf.add_paragraph()
-                p.text = bullet
-                p.level = 0
-                for run in p.runs:
-                    run.font.size = Pt(18)
-                    run.font.color.rgb = theme["body_color"]
-                    run.font.name = "Calibri"
-                p.space_after = Pt(12)
-            content_replaced = True
-
-    # If placeholders didn't work, use text-shape-based replacement
-    # (for SlidesCarnival-style templates with freeform shapes)
-    if not title_replaced or not content_replaced:
-        # Collect all non-placeholder text shapes with their positions
-        text_shapes = []
-        for shape in slide.shapes:
-            if shape.is_placeholder:
-                continue
-            if not shape.has_text_frame:
-                continue
-            text = shape.text_frame.text.strip()
-            if not text:
-                continue
-            # Calculate area as a measure of importance
-            area = (shape.width or 0) * (shape.height or 0)
-            text_shapes.append(
-                {
-                    "shape": shape,
-                    "top": shape.top or 0,
-                    "left": shape.left or 0,
-                    "width": shape.width or 0,
-                    "height": shape.height or 0,
-                    "area": area,
-                    "text": text,
-                    "text_len": len(text),
-                }
-            )
-
-        if text_shapes:
-            # Get slide height from the presentation
-            try:
-                slide_height = (
-                    slide.part.package.presentation_part.presentation.slide_height
-                )
-            except Exception:
-                slide_height = 6858000  # default 7.5" in EMU
-
-            # Title: largest text shape in the upper 60% of the slide
-            if not title_replaced and slide_data.title:
-                upper_shapes = [s for s in text_shapes if s["top"] < slide_height * 0.6]
-                if upper_shapes:
-                    # Prefer shapes with larger text content (likely the title)
-                    best_title = max(upper_shapes, key=lambda s: s["text_len"])
-                    shape = best_title["shape"]
-                    tf = shape.text_frame
-                    # Preserve font formatting from first run
-                    first_run_font = None
-                    if tf.paragraphs and tf.paragraphs[0].runs:
-                        first_run_font = tf.paragraphs[0].runs[0].font
-                    tf.clear()
-                    p = tf.paragraphs[0]
-                    p.text = slide_data.title
-                    if first_run_font:
-                        for run in p.runs:
-                            run.font.size = first_run_font.size or Pt(44)
-                            run.font.bold = True
-                            run.font.color.rgb = theme["title_color"]
-                            run.font.name = first_run_font.name or "Calibri"
-                    else:
-                        p.font.size = Pt(44 if slide_index == 0 else 28)
-                        p.font.bold = True
-                        p.font.color.rgb = theme["title_color"]
-                        p.font.name = "Calibri"
-                    title_replaced = True
-                    # Remove this shape from the pool
-                    text_shapes = [s for s in text_shapes if s["shape"] is not shape]
-
-            # Content: largest text shape in the lower 50% or remaining largest
-            if (
-                not content_replaced
-                and slide_data.bullets
-                and not slide_data.is_section
-            ):
-                lower_shapes = [
-                    s for s in text_shapes if s["top"] >= slide_height * 0.3
-                ]
-                candidates = lower_shapes if lower_shapes else text_shapes
-                if candidates:
-                    best_content = max(candidates, key=lambda s: s["area"])
-                    shape = best_content["shape"]
-                    tf = shape.text_frame
-                    # Preserve font formatting
-                    first_run_font = None
-                    if tf.paragraphs and tf.paragraphs[0].runs:
-                        first_run_font = tf.paragraphs[0].runs[0].font
-                    tf.clear()
-                    for j, bullet in enumerate(slide_data.bullets):
-                        if j == 0:
-                            p = tf.paragraphs[0]
-                        else:
-                            p = tf.add_paragraph()
-                        p.text = bullet
-                        p.level = 0
-                        for run in p.runs:
-                            run.font.size = (
-                                first_run_font.size
-                                if first_run_font and first_run_font.size
-                                else Pt(18)
-                            )
-                            run.font.color.rgb = theme["body_color"]
-                            run.font.name = (
-                                first_run_font.name
-                                if first_run_font and first_run_font.name
-                                else "Calibri"
-                            )
-                        p.space_after = Pt(12)
-                    content_replaced = True
-                    text_shapes = [s for s in text_shapes if s["shape"] is not shape]
-
-            # Clear remaining text shapes (template example text)
-            for s in text_shapes:
-                shape = s["shape"]
-                if shape.has_text_frame:
-                    shape.text_frame.clear()
-
-    # Set speaker notes
-    if slide_data.notes:
-        notes_slide = slide.notes_slide
-        notes_tf = notes_slide.notes_text_frame
-        notes_tf.text = slide_data.notes
-        for para in notes_tf.paragraphs:
-            for run in para.runs:
-                run.font.size = Pt(14)
-                run.font.name = "Calibri"
-
-
-def _replace_text_in_first_textbox(slide, text: str, size, color):
-    """Replace text in the first non-placeholder text shape on a slide."""
     from pptx.enum.text import PP_ALIGN
 
-    for shape in slide.shapes:
-        if shape.is_placeholder:
-            continue
-        if shape.has_text_frame:
-            tf = shape.text_frame
-            tf.clear()
-            p = tf.paragraphs[0]
-            p.text = text
-            p.font.size = size
-            p.font.bold = True
-            p.font.color.rgb = color
-            p.font.name = "Calibri"
-            p.alignment = PP_ALIGN.LEFT
-            tf.word_wrap = True
-            return  # Only replace the first one
+    for i, bullet in enumerate(bullets):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = PP_ALIGN.LEFT
+        p.space_after = Pt(space)
+        p.line_spacing = 1.06
+
+        m = p.add_run()
+        m.text = marker + "  "
+        m.font.size = Pt(size)
+        m.font.bold = True
+        m.font.color.rgb = theme.accent
+        m.font.name = _font_for(theme)
+
+        r = p.add_run()
+        r.text = bullet
+        r.font.size = Pt(size)
+        r.font.color.rgb = theme.body
+        r.font.name = _font_for(theme)
+
+    # Decorative corner accent (kept clear of the text column).
+    if theme.decor == "circles":
+        _add_ellipse(
+            slide, Inches(11.75), Inches(-1.05), Inches(2.6), theme.faint_accent()
+        )
+    elif theme.decor == "bars":
+        _add_rect(slide, 0, 0, _SLIDE_W, Inches(0.075), theme.accent)
+    else:  # frame
+        _add_rect(
+            slide,
+            _SLIDE_W - Inches(1.15),
+            Inches(0.52),
+            Inches(0.45),
+            Inches(0.45),
+            theme.accent,
+        )
 
 
-def _replace_bullets_in_textbox(slide, bullets: list[str], theme: dict):
-    """Replace text in the second non-placeholder text shape with bullets."""
-    from pptx.util import Pt
-
-    found_first = False
-    for shape in slide.shapes:
-        if shape.is_placeholder:
-            continue
-        if shape.has_text_frame:
-            if not found_first:
-                found_first = True
-                continue  # Skip the first text box (title)
-            tf = shape.text_frame
-            tf.word_wrap = True
-            tf.clear()
-            for j, bullet in enumerate(bullets):
-                if j == 0:
-                    p = tf.paragraphs[0]
-                else:
-                    p = tf.add_paragraph()
-                p.text = bullet
-                p.level = 0
-                for run in p.runs:
-                    run.font.size = Pt(18)
-                    run.font.color.rgb = theme["body_color"]
-                    run.font.name = "Calibri"
-                p.space_after = Pt(12)
-            return
-
-
-# ── Tag replaceable images ───────────────────────────────────────────
+def _draw_footer(slide, theme: ThemeSpec, topic: str, page: int, total: int) -> None:
+    """Small footer: topic label left, page x/y right (muted)."""
+    label = _sanitize_text(topic).upper()
+    if len(label) > 42:
+        label = label[:41].rstrip() + "…"
+    if label:
+        _add_text(
+            slide,
+            _MARGIN,
+            _SLIDE_H - Inches(0.42),
+            Inches(8.0),
+            Inches(0.3),
+            label,
+            size=9,
+            color=theme.muted,
+            font=_font_for(theme),
+        )
+    _add_text(
+        slide,
+        _SLIDE_W - _MARGIN - Inches(2.0),
+        _SLIDE_H - Inches(0.42),
+        Inches(2.0),
+        Inches(0.3),
+        f"{page} / {total}",
+        size=10,
+        color=theme.muted,
+        font=_font_for(theme),
+        align="right",
+    )
 
 
-def _tag_replaceable_images(slide):
-    """Tag images on the slide for future asset replacement.
-
-    Images whose name or alt-text starts with "REPLACEABLE_" are
-    considered replaceable. We set a custom attribute on the shape's
-    XML element so the future asset-replacement feature can find them.
-
-    For now, we tag ALL non-placeholder pictures as potentially
-    replaceable. The user can later name specific images
-    "REPLACEABLE_logo", "REPLACEABLE_hero", etc. in PowerPoint to
-    control which ones get replaced.
-    """
-    from pptx.enum.shapes import MSO_SHAPE_TYPE
-
-    for shape in slide.shapes:
-        if shape.is_placeholder:
-            continue
-        try:
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                # Check if already tagged via name
-                name = shape.name or ""
-                if name.startswith("REPLACEABLE_"):
-                    # Already explicitly tagged — mark it
-                    _mark_replaceable(shape)
-                else:
-                    # Auto-tag: mark as "auto_replaceable" so the future
-                    # feature can optionally replace it
-                    _mark_auto_replaceable(shape)
-        except Exception:
-            pass
+def _set_notes(slide, notes: str) -> None:
+    """Speaker notes via the supported high-level API."""
+    notes = _sanitize_text(notes)
+    if not notes:
+        return
+    tf = slide.notes_slide.notes_text_frame
+    tf.text = notes
+    for para in tf.paragraphs:
+        for run in para.runs:
+            run.font.size = Pt(12)
+            run.font.name = "Calibri"
 
 
-def _mark_replaceable(shape):
-    """Mark a shape as explicitly replaceable (user-named REPLACEABLE_*).
+def _render_deck(
+    slides: list[Slide], theme: ThemeSpec, topic: str, output_path: Path
+) -> None:
+    """Render the whole deck from the pristine python-pptx default."""
+    from pptx import Presentation
 
-    Uses the 'descr' attribute on cNvPr (which is schema-legal for pictures)
-    to store a REPLACEABLE_ marker. We don't use custom XML attributes
-    because they're not in the OOXML schema and would trigger PowerPoint
-    repair. The 'descr' attribute is the standard way to add alt-text /
-    metadata to pictures.
-    """
-    from pptx.oxml.ns import qn
+    prs = Presentation()
+    prs.slide_width = _SLIDE_W
+    prs.slide_height = _SLIDE_H
 
-    # Pictures use <p:nvPicPr>, not <p:nvSpPr> (which is for shapes/autoshapes)
-    for tag in ("p:nvPicPr", "p:nvSpPr", "p:nvGrpSpPr", "p:nvCxnSpPr"):
-        nvPr = shape._element.find(qn(tag))
-        if nvPr is not None:
-            cNvPr = nvPr.find(qn("p:cNvPr"))
-            if cNvPr is not None:
-                # Use descr (alt-text) to store the marker — schema-legal
-                cNvPr.set("descr", "REPLACEABLE_EXPLICIT")
-                return
+    blank = _blank_layout(prs)
+    total = len(slides)
+    section_no = 0
 
+    for i, sd in enumerate(slides):
+        slide = prs.slides.add_slide(blank)
 
-def _mark_auto_replaceable(shape):
-    """Mark a shape as auto-replaceable (future feature may replace it).
+        if i == 0:
+            _draw_title_slide(slide, sd, theme, topic)
+        elif sd.is_section:
+            section_no += 1
+            _draw_section_slide(slide, sd, theme, section_no)
+        elif _is_closing_slide(sd, i, total):
+            _draw_title_slide(slide, sd, theme, topic, closing=True)
+        else:
+            _draw_content_slide(slide, sd, theme)
 
-    Uses the 'descr' attribute — same approach as _mark_replaceable.
-    """
-    from pptx.oxml.ns import qn
+        if i != 0:
+            _draw_footer(slide, theme, topic, i + 1, total)
+        if sd.notes:
+            _set_notes(slide, sd.notes)
 
-    for tag in ("p:nvPicPr", "p:nvSpPr", "p:nvGrpSpPr", "p:nvCxnSpPr"):
-        nvPr = shape._element.find(qn(tag))
-        if nvPr is not None:
-            cNvPr = nvPr.find(qn("p:cNvPr"))
-            if cNvPr is not None:
-                cNvPr.set("descr", "REPLACEABLE_AUTO")
-                return
-
-
-# ── Post-processing (repair-prompt fix) ──────────────────────────────
+    # Atomic-ish save: write to a sibling temp file, then move over.
+    tmp = output_path.with_suffix(output_path.suffix + ".tmp")
+    prs.save(str(tmp))
+    tmp.replace(output_path)
 
 
-# Namespace map for the OOXML XML we rewrite below.
+# ── Post-processing: app.xml resync + printerSettings strip ───────────
+#
+# The ONLY two things we touch after python-pptx saves:
+#   1. docProps/app.xml — python-pptx never updates it. We resync the
+#      slide/word/paragraph counts and the TitlesOfParts vector, updating
+#      EXISTING elements only (the pristine default contains them all in
+#      schema order), so element order — and therefore schema validity —
+#      is preserved.
+#   2. printerSettings*.bin — the python-pptx default template ships
+#      this Windows-only blob; it triggers repair prompts in
+#      PowerPoint-for-Mac and Google Slides. We drop the part, its
+#      relationship, and the <Default Extension="bin"> content type.
+
 _NS = {
     "ct": "http://schemas.openxmlformats.org/package/2006/content-types",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "ep": "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties",
     "vt": "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes",
-    "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 }
 
-# Relationship type URI for printerSettings — a Windows-only binary blob
-# that ships inside templates created by PowerPoint-on-Windows. Opening
-# such a file on macOS PowerPoint or Google Slides can trigger a repair
-# prompt, so we strip the part and its relationship.
 _PRINTER_SETTINGS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings"
 
 
 def _count_words(slides: list[Slide]) -> int:
-    """Rough word count across every slide's title + bullets + notes."""
     total = 0
     for s in slides:
         if s.title:
@@ -960,7 +1274,6 @@ def _count_words(slides: list[Slide]) -> int:
 
 
 def _count_paragraphs(slides: list[Slide]) -> int:
-    """Rough paragraph count (one per bullet + one per title)."""
     total = 0
     for s in slides:
         total += 1 if s.title else 0
@@ -968,118 +1281,72 @@ def _count_paragraphs(slides: list[Slide]) -> int:
     return total
 
 
-def _build_app_xml_titles_vector(slides: list[Slide]) -> tuple[list[str], int]:
-    """Build the <vt:vector> contents for <TitlesOfParts>.
-
-    PowerPoint expects the first entry to be the theme name, followed by
-    one entry per slide (the slide title, or "" for untitled slides).
-    Returns (list_of_lpstr_values, total_size).
-    """
-    titles = ["Office Theme"]
-    for s in slides:
-        titles.append(s.title or "")
-    return titles, len(titles)
-
-
-def _fix_app_xml(data: bytes, slides: list[Slide]) -> bytes:
-    """Rewrite docProps/app.xml so its counts match the actual file content.
-
-    python-pptx does NOT touch docProps/app.xml when slides are added. A
-    template ships with <Slides>0</Slides> and a 1-element <TitlesOfParts>,
-    so a generated deck ends up advertising 0 slides while presentation.xml
-    lists N. PowerPoint detects this inconsistency and offers to "repair"
-    the file — which deletes components and breaks the theme/layout.
-
-    We resync <Slides>, <Notes>, <Paragraphs>, <Words>, the HeadingPairs
-    "Slide Titles" count, and the TitlesOfParts vector. The Application
-    string is also bumped so it doesn't claim to be a stale PowerPoint build.
-    """
+def _fix_app_xml(data: bytes, slides: list[Slide], theme_name: str) -> bytes:
+    """Resync docProps/app.xml counts IN PLACE (schema order preserved)."""
     from lxml import etree
 
     tree = etree.fromstring(data)
-    ep_ns = _NS["ep"]
-    vt_ns = _NS["vt"]
+    ep = _NS["ep"]
+    vt = _NS["vt"]
 
     slide_count = len(slides)
     notes_count = sum(1 for s in slides if s.notes)
 
-    def _set_text(tag_local: str, value: str) -> None:
-        el = tree.find(f"{{{ep_ns}}}{tag_local}")
-        if el is None:
-            el = etree.SubElement(tree, f"{{{ep_ns}}}{tag_local}")
-        el.text = value
+    def _set_existing(tag_local: str, value: str) -> None:
+        el = tree.find(f"{{{ep}}}{tag_local}")
+        if el is not None:
+            el.text = value
 
-    _set_text("Slides", str(slide_count))
-    _set_text("Notes", str(notes_count))
-    _set_text("HiddenSlides", "0")
-    _set_text("Words", str(_count_words(slides)))
-    _set_text("Paragraphs", str(_count_paragraphs(slides)))
-    _set_text("MMClips", "0")
-    _set_text("ScaleCrop", "false")
-    _set_text("LinksUpToDate", "false")
-    _set_text("SharedDoc", "false")
-    _set_text("HyperlinksChanged", "false")
-    # Application stays as-is (it records the originating app), but we do
-    # not strip it — some viewers sanity-check that it's present.
+    # Update ONLY elements that already exist (the pristine default's
+    # app.xml has all of them) — no SubElement appends that could break
+    # the CT_ExtendedProperties element sequence.
+    _set_existing("Slides", str(slide_count))
+    _set_existing("Notes", str(notes_count))
+    _set_existing("Words", str(_count_words(slides)))
+    _set_existing("Paragraphs", str(_count_paragraphs(slides)))
+    _set_existing("HiddenSlides", "0")
+    _set_existing("MMClips", "0")
 
-    # ── HeadingPairs: (Theme, 1), (Slide Titles, N) ──
-    titles, total_size = _build_app_xml_titles_vector(slides)
-    heading_pairs = tree.find(f"{{{ep_ns}}}HeadingPairs")
-    if heading_pairs is not None:
-        vector = heading_pairs.find(f"{{{vt_ns}}}vector")
+    # HeadingPairs: [Theme, 1, Slide Titles, N] — update the count variant.
+    hp = tree.find(f"{{{ep}}}HeadingPairs")
+    if hp is not None:
+        vector = hp.find(f"{{{vt}}}vector")
         if vector is not None:
-            # Expected layout: [lpstr "Theme", i4 1, lpstr "Slide Titles", i4 N]
-            variants = vector.findall(f"{{{vt_ns}}}variant")
-            # Update the 4th variant (the slide-titles count)
+            variants = vector.findall(f"{{{vt}}}variant")
             if len(variants) >= 4:
-                i4 = variants[3].find(f"{{{vt_ns}}}i4")
+                i4 = variants[3].find(f"{{{vt}}}i4")
                 if i4 is not None:
                     i4.text = str(slide_count)
-            vector.set("size", "4")
 
-    # ── TitlesOfParts: theme name + one entry per slide ──
-    titles_of_parts = tree.find(f"{{{ep_ns}}}TitlesOfParts")
-    if titles_of_parts is not None:
-        vector = titles_of_parts.find(f"{{{vt_ns}}}vector")
+    # TitlesOfParts: theme display name + one entry per slide title.
+    top = tree.find(f"{{{ep}}}TitlesOfParts")
+    if top is not None:
+        vector = top.find(f"{{{vt}}}vector")
         if vector is not None:
-            # Clear existing lpstr children and rebuild.
             for child in list(vector):
                 vector.remove(child)
-            for title in titles:
-                lpstr = etree.SubElement(vector, f"{{{vt_ns}}}lpstr")
-                lpstr.text = title
-            vector.set("size", str(total_size))
+            titles = [theme_name] + [_sanitize_text(s.title) or "" for s in slides]
+            for t in titles:
+                lpstr = etree.SubElement(vector, f"{{{vt}}}lpstr")
+                lpstr.text = t
+            vector.set("size", str(len(titles)))
             vector.set("baseType", "lpstr")
 
     return etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
 def _strip_printer_settings_rels(data: bytes) -> bytes:
-    """Drop printerSettings <Relationship> entries from a .rels file.
-
-    Returns the rewritten XML. If no printerSettings rel is present the
-    input is returned unchanged (modulo re-serialization).
-    """
     from lxml import etree
 
     tree = etree.fromstring(data)
     rel_ns = _NS["rel"]
-    removed = 0
     for rel in list(tree.findall(f"{{{rel_ns}}}Relationship")):
         if rel.get("Type") == _PRINTER_SETTINGS_REL_TYPE:
             tree.remove(rel)
-            removed += 1
-    if removed:
-        _log("stripped %d printerSettings relationship(s)", removed)
     return etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def _strip_printer_settings_content_type(data: bytes) -> bytes:
-    """Drop the printerSettings <Default> entry from [Content_Types].xml.
-
-    Leaving a Default for an extension with no matching parts is harmless,
-    but we strip it for cleanliness so the package looks minimal.
-    """
+def _strip_bin_content_type(data: bytes) -> bytes:
     from lxml import etree
 
     tree = etree.fromstring(data)
@@ -1087,29 +1354,12 @@ def _strip_printer_settings_content_type(data: bytes) -> bytes:
     for default in list(tree.findall(f"{{{ct_ns}}}Default")):
         if default.get("Extension") == "bin":
             tree.remove(default)
-            _log(
-                "stripped printerSettings <Default Extension=bin> from [Content_Types].xml"
-            )
             break
     return etree.tostring(tree, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def _post_process_pptx(output_path: Path, slides: list[Slide]) -> None:
-    """Rewrite a saved .pptx in place so it opens without a repair prompt.
-
-    Two fixes:
-      1. docProps/app.xml — resync <Slides>/<Notes>/<TitlesOfParts>/... to
-         the actual slide content. This is the primary repair trigger: the
-         template ships with 0 slides, python-pptx adds N but never touches
-         app.xml, so PowerPoint sees "advertised 0, actual N" and offers to
-         repair (deleting components in the process).
-      2. printerSettings*.bin — strip these Windows-only binary blobs and
-         their relationship references. Non-Windows PowerPoint and Google
-         Slides can choke on them.
-
-    The rewrite is atomic: we write to a sibling .tmp file, then move it
-    over the original so a crash never leaves a half-written deck.
-    """
+def _post_process_pptx(output_path: Path, slides: list[Slide], theme_name: str) -> None:
+    """Rewrite the saved .pptx so it opens without a repair prompt."""
     import shutil
     import zipfile
 
@@ -1122,399 +1372,56 @@ def _post_process_pptx(output_path: Path, slides: list[Slide]) -> None:
             for item in zin.infolist():
                 name = item.filename
 
-                # Skip Windows-only printerSettings binaries entirely.
+                # Drop Windows-only printerSettings parts entirely.
                 if "printerSettings" in name:
                     continue
 
                 data = zin.read(name)
 
                 if name == "docProps/app.xml":
-                    data = _fix_app_xml(data, slides)
+                    data = _fix_app_xml(data, slides, theme_name)
                 elif name == "ppt/_rels/presentation.xml.rels":
                     data = _strip_printer_settings_rels(data)
                 elif name == "[Content_Types].xml":
-                    data = _strip_printer_settings_content_type(data)
+                    data = _strip_bin_content_type(data)
 
-                # Preserve the original ZipInfo so flags (e.g. compression
-                # type, date) stay consistent across the rewritten package.
                 zout.writestr(item, data)
 
     shutil.move(str(tmp_path), str(output_path))
     _log(
-        "post-processed %s: app.xml resynced (%d slides, %d notes), printerSettings stripped",
+        "post-processed %s: app.xml resynced (%d slides), printerSettings stripped",
         output_path.name,
         len(slides),
-        sum(1 for s in slides if s.notes),
     )
 
 
-# ── Main PPTX builder ────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────
 
 
-def _build_pptx(slides: list[Slide], template_path: Path, output_path: Path) -> None:
-    """Build a .pptx from parsed slides using a template.
+def _build_pptx(
+    slides: list[Slide], theme: ThemeSpec, topic: str, output_path: Path
+) -> None:
+    """Build the .pptx: render → save → safe post-process → verify."""
+    _render_deck(slides, theme, topic, output_path)
 
-    Strategy:
-    1. If the template has pre-existing slides → use SLIDE DUPLICATION:
-       deep-copy template slides and replace their text. This preserves
-       all images, shapes, and decorative elements.
-    2. If the template has no slides (pure layout templates) → use
-       LAYOUT-BASED creation: add_slide(layout) and set text on
-       placeholders.
-
-    After python-pptx saves, we run _post_process_pptx() to fix the
-    OOXML inconsistencies that make PowerPoint/Google Slides prompt
-    for repair (stale docProps/app.xml counts + Windows printerSettings).
-    """
-    from pptx import Presentation
-
-    prs = Presentation(str(template_path))
-    theme = _extract_theme_colors(template_path)
-
-    has_template_slides = len(prs.slides) > 0
-
-    if has_template_slides:
-        _build_pptx_slide_duplication(prs, slides, theme)
-    else:
-        _build_pptx_layout_based(prs, slides, theme)
-
-    prs.save(str(output_path))
-
-    # Repair-bug fix: rewrite stale metadata + strip Windows-only parts so
-    # PowerPoint and Google Slides open the file without a repair prompt.
     try:
-        _post_process_pptx(output_path, slides)
+        _post_process_pptx(output_path, slides, theme.display_name)
     except Exception as e:
         _log("post-process warning (non-fatal): %s", e)
 
+    # Defense in depth: reopen with python-pptx and sanity-check.
+    try:
+        from pptx import Presentation as _P
 
-def _build_pptx_slide_duplication(prs, slides: list[Slide], theme: dict):
-    """Build PPTX by duplicating existing template slides.
-
-    1. Categorize template slides by role (title, content, section, closing)
-    2. For each generated slide, find the best matching template slide
-    3. Deep-copy it (preserving images/shapes/decorations)
-    4. Replace text content
-    5. Tag replaceable images
-    6. Remove all original template slides
-    """
-    from pptx.oxml.ns import qn
-
-    # Categorize template slides
-    template_infos = _categorize_template_slides(prs)
-    _log("template slides categorized: %s", [(i.role, i.index) for i in template_infos])
-
-    # Track which template slides we've used (for rotation)
-    used_indices: set = set()
-    new_slides = []
-
-    total_generated = len(slides)
-
-    for idx, slide_data in enumerate(slides):
-        is_last = idx == total_generated - 1
-
-        # Find the best template slide to duplicate
-        # Pass is_last info by temporarily setting it on slide_data
-        best_info = _find_best_template_slide(
-            slide_data, idx, template_infos, used_indices
-        )
-
-        if best_info is None:
-            _log("no template slide found for generated slide %d — skipping", idx)
-            continue
-
-        # If this is the last slide and the best is a content slide,
-        # try to find a closing slide instead
-        if is_last:
-            for info in template_infos:
-                if info.role == "closing" and info.index not in used_indices:
-                    best_info = info
-                    break
-
-        source_slide = prs.slides[best_info.index]
-        used_indices.add(best_info.index)
-
-        # Deep-copy the template slide
-        new_slide = _duplicate_slide(prs, source_slide)
-        new_slides.append(new_slide)
-
-        # Replace text content
-        _replace_text_on_slide(new_slide, slide_data, idx, theme)
-
-        # Tag replaceable images
-        _tag_replaceable_images(new_slide)
-
-    # Remove all original template slides (keep only our duplicates)
-    # The new slides were appended after the originals, so we remove
-    # the first len(template_infos) slides.
-    sldIdLst = prs.slides._sldIdLst
-    original_count = len(template_infos)
-    sldId_elements = list(sldIdLst)
-    rIds_to_drop = []
-
-    for i in range(original_count):
-        if i < len(sldId_elements):
-            sldId = sldId_elements[i]
-            rId = sldId.get(qn("r:id"))
-            if rId:
-                rIds_to_drop.append(rId)
-            sldIdLst.remove(sldId)
-
-    for rId in rIds_to_drop:
-        try:
-            prs.part.drop_rel(rId)
-        except Exception:
-            pass
-
-    _log(
-        "slide duplication complete: %d new slides, %d originals removed",
-        len(new_slides),
-        original_count,
-    )
-
-
-# OOXML vertical-text values for <a:bodyPr vert="...">. PowerPoint renders
-# any of these as vertical (rotated) text. "horz" is the normal horizontal
-# default; anything else here means the placeholder flows text vertically.
-_VERTICAL_VERT_VALUES = frozenset(
-    {"eaVert", "vert", "vert270", "wordArtVert", "wordArtVertRtl", "mongolianVert"}
-)
-
-
-def _layout_has_vertical_text(layout) -> bool:
-    """Return True if any placeholder in the layout flows text vertically.
-
-    A placeholder is vertical if EITHER:
-      - its <p:ph> element carries orient="vert" (the standard marker that
-        PowerPoint's "Title and Vertical Text" / "Vertical Title and Text"
-        layouts ship with), OR
-      - its <a:bodyPr> element carries a vert attribute set to one of the
-        vertical values (eaVert/vert/vert270/wordArtVert/...). The built-in
-        vertical layouts set BOTH, but we check each independently so we
-        also catch hand-rolled templates that only set one.
-
-    This is the root-cause guard for the "text rotated 90 degrees" bug:
-    the previous code rotated through every layout that had a title (idx=0)
-    + body (idx=1) placeholder, which included the two vertical layouts that
-    ship with every stock template — so ~1 in 5 slides ended up vertical.
-    """
-    from pptx.oxml.ns import qn
-
-    for ph in layout.placeholders:
-        ph_el = ph._element
-        # <p:ph orient="vert"/> lives inside <p:nvSpPr><p:nvPr>...
-        for p_ph in ph_el.iter(qn("p:ph")):
-            if p_ph.get("orient") == "vert":
-                return True
-        # <a:bodyPr vert="eaVert"/> lives inside <p:txBody>...
-        for body_pr in ph_el.iter(qn("a:bodyPr")):
-            vert = body_pr.get("vert")
-            if vert and vert in _VERTICAL_VERT_VALUES:
-                return True
-    return False
-
-
-def _build_pptx_layout_based(prs, slides: list[Slide], theme: dict):
-    """Build PPTX using add_slide(layout) for templates without pre-existing slides.
-
-    This is the fallback for pure layout templates (corporate/modern/elegant).
-    Vertical-text layouts (e.g. "Title and Vertical Text", "Vertical Title
-    and Text") are explicitly excluded from the rotation pool so generated
-    slides never render text sideways.
-    """
-    from pptx.dml.color import RGBColor
-    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
-
-    # Dynamically find the best layout indices. Defaults point at the two
-    # standard stock layouts ("Title Slide" #0 and "Title and Content" #1)
-    # which are guaranteed horizontal.
-    title_layout_idx = 0
-    content_layout_idx = 1
-    blank_layout_idx = None
-
-    # Collect every HORIZONTAL content layout for variety. Vertical layouts
-    # are skipped — see _layout_has_vertical_text() above.
-    content_layout_indices = []
-
-    for li, layout in enumerate(prs.slide_layouts):
-        if _layout_has_vertical_text(layout):
-            _log("skipping vertical-text layout %d ('%s')", li, layout.name)
-            continue
-
-        has_title_ph = any(ph.placeholder_format.idx == 0 for ph in layout.placeholders)
-        has_content_ph = any(
-            ph.placeholder_format.idx == 1 for ph in layout.placeholders
-        )
-        has_no_ph = not list(layout.placeholders)
-
-        if has_title_ph and has_content_ph:
-            # Remember the first valid content layout as the fallback.
-            if content_layout_idx is None:
-                content_layout_idx = li
-            content_layout_indices.append(li)
-        if has_title_ph and not has_content_ph and title_layout_idx is None:
-            title_layout_idx = li
-        if has_no_ph and blank_layout_idx is None:
-            blank_layout_idx = li
-
-    if not content_layout_indices:
-        content_layout_indices = [content_layout_idx]
-    if blank_layout_idx is None:
-        # Fall back to the last layout — but never a vertical one.
-        blank_layout_idx = len(prs.slide_layouts) - 1
-        if _layout_has_vertical_text(prs.slide_layouts[blank_layout_idx]):
-            blank_layout_idx = 6 if len(prs.slide_layouts) > 6 else content_layout_idx
-
-    content_rotation = 0
-
-    for i, slide_data in enumerate(slides):
-        if i == 0:
-            layout_idx = title_layout_idx
-        elif slide_data.is_section:
-            layout_idx = blank_layout_idx
-        else:
-            # Rotate through content layouts for variety
-            layout_idx = content_layout_indices[
-                content_rotation % len(content_layout_indices)
-            ]
-            content_rotation += 1
-
-        if layout_idx >= len(prs.slide_layouts):
-            layout_idx = content_layout_idx
-
-        layout = prs.slide_layouts[layout_idx]
-        slide = prs.slides.add_slide(layout)
-
-        layout_has_title_ph = any(
-            ph.placeholder_format.idx == 0 for ph in layout.placeholders
-        )
-
-        # Set title
-        if slide_data.title:
-            if not layout_has_title_ph:
-                left = Inches(0.8)
-                top = Inches(2.5)
-                width = Inches(11.5)
-                height = Inches(2.0)
-                txBox = slide.shapes.add_textbox(left, top, width, height)
-                tf = txBox.text_frame
-                tf.word_wrap = True
-                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-                tf.vertical_anchor = MSO_ANCHOR.MIDDLE
-                p = tf.paragraphs[0]
-                p.text = slide_data.title
-                p.font.size = Pt(40)
-                p.font.bold = True
-                p.font.color.rgb = theme["title_color"]
-                p.font.name = "Calibri"
-                p.alignment = PP_ALIGN.LEFT
-            else:
-                title_ph = None
-                for ph in slide.placeholders:
-                    if ph.placeholder_format.idx == 0:
-                        title_ph = ph
-                        break
-
-                if title_ph:
-                    title_ph.text = slide_data.title
-                    tf = title_ph.text_frame
-                    tf.word_wrap = True
-                    for para in tf.paragraphs:
-                        para.alignment = PP_ALIGN.LEFT
-                        for run in para.runs:
-                            run.font.size = Pt(44 if i == 0 else 28)
-                            run.font.bold = True
-                            run.font.color.rgb = theme["title_color"]
-                            run.font.name = "Calibri"
-                else:
-                    left = Inches(0.5)
-                    top = Inches(0.15)
-                    width = Inches(11.5)
-                    height = Inches(0.9)
-                    txBox = slide.shapes.add_textbox(left, top, width, height)
-                    tf = txBox.text_frame
-                    tf.word_wrap = True
-                    p = tf.paragraphs[0]
-                    p.text = slide_data.title
-                    p.font.size = Pt(28)
-                    p.font.bold = True
-                    p.font.color.rgb = theme["title_color"]
-                    p.font.name = "Calibri"
-
-        # Set subtitle on title slide
-        if i == 0 and not slide_data.bullets:
-            for ph in slide.placeholders:
-                if ph.placeholder_format.idx == 1:
-                    if slide_data.notes:
-                        ph.text = slide_data.notes
-                        tf = ph.text_frame
-                        tf.word_wrap = True
-                        for para in tf.paragraphs:
-                            for run in para.runs:
-                                run.font.size = Pt(20)
-                                run.font.color.rgb = theme.get(
-                                    "subtitle", RGBColor(0x88, 0x99, 0xBB)
-                                )
-                                run.font.name = "Calibri"
-                    break
-
-        # Set bullets
-        if slide_data.bullets and not slide_data.is_section:
-            content_ph = None
-            for ph in slide.placeholders:
-                if ph.placeholder_format.idx == 1:
-                    content_ph = ph
-                    break
-
-            if content_ph:
-                tf = content_ph.text_frame
-                tf.word_wrap = True
-                tf.clear()
-                for j, bullet in enumerate(slide_data.bullets):
-                    if j == 0:
-                        p = tf.paragraphs[0]
-                    else:
-                        p = tf.add_paragraph()
-                    p.text = bullet
-                    p.level = 0
-                    for run in p.runs:
-                        run.font.size = Pt(18)
-                        run.font.color.rgb = theme["body_color"]
-                        run.font.name = "Calibri"
-                    p.space_after = Pt(12)
-            else:
-                left = Inches(0.8)
-                top = Inches(1.5)
-                width = Inches(11.5)
-                height = Inches(5.5)
-                txBox = slide.shapes.add_textbox(left, top, width, height)
-                tf = txBox.text_frame
-                tf.word_wrap = True
-                for j, bullet in enumerate(slide_data.bullets):
-                    if j == 0:
-                        p = tf.paragraphs[0]
-                    else:
-                        p = tf.add_paragraph()
-                    p.text = f"• {bullet}"
-                    p.font.size = Pt(18)
-                    p.font.color.rgb = theme["body_color"]
-                    p.font.name = "Calibri"
-                    p.space_after = Pt(12)
-
-        # Speaker notes
-        if slide_data.notes:
-            notes_slide = slide.notes_slide
-            notes_tf = notes_slide.notes_text_frame
-            notes_tf.text = slide_data.notes
-            for para in notes_tf.paragraphs:
-                for run in para.runs:
-                    run.font.size = Pt(14)
-                    run.font.name = "Calibri"
-
-    _log("layout-based build complete: %d slides", len(slides))
-
-
-# ── Public API ───────────────────────────────────────────────────────
+        check = _P(str(output_path))
+        if len(check.slides) != len(slides):
+            _log(
+                "WARNING: slide count mismatch after save (%d on disk vs %d expected)",
+                len(check.slides),
+                len(slides),
+            )
+    except Exception as e:
+        _log("WARNING: generated file failed reopen check: %s", e)
 
 
 async def generate_presentation(
@@ -1524,16 +1431,19 @@ async def generate_presentation(
 ) -> dict:
     report_id = str(uuid.uuid4())
     reports_dir = _get_reports_dir()
-    template_path = _resolve_template_path(template)
+    slug, theme = _resolve_theme(template)
 
     markdown_content = await _generate_slide_markdown(topic, outline)
     slides = _parse_slides(markdown_content)
     if not slides:
         raise RuntimeError("No slides parsed from LLM output")
-    _log("parsed %d slides from markdown", len(slides))
+    if len(slides) > MAX_SLIDES:
+        _log("capping deck at %d slides (LLM produced %d)", MAX_SLIDES, len(slides))
+        slides = slides[:MAX_SLIDES]
+    _log("parsed %d slides from markdown (theme=%s)", len(slides), slug)
 
     output_path = reports_dir / f"{report_id}.pptx"
-    await asyncio.to_thread(_build_pptx, slides, template_path, output_path)
+    await asyncio.to_thread(_build_pptx, slides, theme, topic, output_path)
 
     if not output_path.exists():
         raise RuntimeError(f"PPTX file was not created: {output_path}")
@@ -1546,12 +1456,7 @@ async def generate_presentation(
         len(slides),
     )
 
-    # Note: No LibreOffice cleaning step needed — the _duplicate_slide
-    # function now properly handles rId remapping and skips the notesSlide
-    # relationship, producing PowerPoint-compatible files directly from
-    # python-pptx. This works even without LibreOffice installed.
-
-    # ── Generate thumbnail via LibreOffice (if available) ──
+    # ── Optional LibreOffice thumbnail (works fine without it) ──
     # The thumbnail URL is always exposed; the endpoint generates on-demand
     # if the cached file is missing (e.g. LibreOffice was installed after
     # the presentation was created, or generation failed at the time).
@@ -1589,5 +1494,5 @@ async def generate_presentation(
         "report_id": report_id,
         "created_at": int(time.time()),
         "slide_count": len(slides),
-        "template": template_path.stem,
+        "template": slug,
     }
