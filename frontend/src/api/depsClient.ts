@@ -50,6 +50,33 @@ export async function fetchDependencies(): Promise<DependencyInfo[]> {
   return [];
 }
 
+/** Check if LibreOffice is installed.
+ *  Used to gate the "View PPTX" feature (PPTX→PDF conversion requires LibreOffice).
+ *  Uses a simple in-memory cache to avoid repeated API calls.
+ */
+let _libreOfficeCache: boolean | null = null;
+
+export async function isLibreOfficeInstalled(): Promise<boolean> {
+  if (_libreOfficeCache !== null) return _libreOfficeCache;
+  try {
+    const res = await fetch("/api/deps/libreoffice/status");
+    if (res.ok) {
+      const data = await res.json();
+      _libreOfficeCache = data.installed === true;
+      return _libreOfficeCache;
+    }
+  } catch {
+    /* ignore */
+  }
+  _libreOfficeCache = false;
+  return false;
+}
+
+/** Reset the LibreOffice installed cache (e.g. after installing/uninstalling). */
+export function resetLibreOfficeCache(): void {
+  _libreOfficeCache = null;
+}
+
 /** Install a dependency via SSE stream.
  *  Calls onEvent for each progress event. Returns the final event.
  */
