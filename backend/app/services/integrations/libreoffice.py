@@ -319,3 +319,68 @@ async def generate_and_cache_thumbnail(
     except Exception as e:
         _log("failed to cache thumbnail: %s", e)
         return None
+
+
+async def clean_pptx_with_libreoffice(pptx_path: Path) -> bool:
+    """Clean/repair a PPTX file by opening it in LibreOffice and re-saving.
+
+    python-pptx generates valid OOXML, but when using slide duplication
+    (deep-copying template slides), the result can have issues that
+    PowerPoint flags as "needs repair": duplicate shape IDsd, dangling
+    relationship references, malformed XML elements, etc.
+
+    LibreOffice's OOXML writer validates everything and produces a clean,
+    PowerPoint-compatible file. This function:
+      1. Opens the PPTX in LibreOffice headless
+      2. Saves it as PPTX to a temp directory
+      3. Replaces the original file with the cleaned version
+
+    Returns True if the file was cleaned successfully, False otherwise.
+    The original file is preserved if cleaning fails.
+    """
+    if not is_available():
+        _log("LibreOffice not available — skipping PPTX cleaning")
+        return False
+
+    if not pptx_path.exists():
+        _log("PPTX file not found: %s", pptx_path)
+        return False
+
+    async with _so_lock:
+        out_dir = Path(tempfile.mkdtemp(prefix="lo_clean_"))
+        try:
+            # Convert PPTX → PPTX (LibreOffice opens, validates, re-saves)
+            rc, stdout, stderr = await _run_soffice(
+                ["--convert-to", "pptx", "--outdir", str(out_dir), str(pptx_path)]
+            )
+
+            if rc != 0:
+                _log("PPTX cleaning failed (rc=%d): %s", rc, stderr.strip()[:300])
+                return False
+
+            # Find the cleaned output
+            cleaned_path = out_dir / f"{pptx_path.stem}.pptx"
+            if not cleaned_path.exists():
+                _log("cleaned PPTX not found in %s", out_dir)
+                return False
+
+            # Replace the original with the cleaned version
+            original_size = pptx_path.stat().st_size
+            cleaned_size = cleaned_path.stat().st_size
+            shutil.move(str(cleaned_path), str(pptx_path))
+
+            _log(
+                "PPTX cleaned: %s (%d → %d bytes, %s diff)",
+                pptx_path.name,
+                original_size,
+                cleaned_size,
+                (
+                    f"+{cleaned_size - original_size}"
+                    if cleaned_size > original_size
+                    else f"{cleaned_size - original_size}"
+                ),
+            )
+            return True
+
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
