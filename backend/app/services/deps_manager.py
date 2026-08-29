@@ -96,16 +96,14 @@ CATALOG: list[Dependency] = [
     Dependency(
         name="libreoffice",
         display_name="LibreOffice",
-        description="Headless document conversion and rendering. Required for high-quality PPTX template thumbnails, PPTX→PDF conversion, and PPTX cleaning/repair.",
+        description="Headless document conversion and rendering.",
         category="System",
         kind="system-direct",
         binary_name="soffice",
-        install_size="~500 MB",
+        install_size="~600 MB",
         enables=[
             "High-quality template thumbnails",
-            "PPTX → PDF conversion",
-            "PPTX cleaning (PowerPoint-compatible output)",
-            "DOCX → PDF conversion",
+            "MS-formats conversions",
         ],
     ),
 ]
@@ -116,8 +114,8 @@ CATALOG: list[Dependency] = [
 
 _PKG_MAP: dict[str, dict[str, list[str]]] = {
     "libreoffice": {
-        "debian": ["libreoffice-core", "libreoffice-impress"],
-        "fedora": ["libreoffice-core", "libreoffice-impress"],
+        "debian": ["libreoffice-core", "libreoffice-impress", "libreoffice-writer"],
+        "fedora": ["libreoffice-core", "libreoffice-impress", "libreoffice-writer"],
         "arch": ["libreoffice-fresh"],
         "suse": ["libreoffice"],
         "alpine": [],
