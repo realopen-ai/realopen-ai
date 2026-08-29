@@ -5,6 +5,11 @@ This module wraps the `soffice` wrapper script (at /usr/lib/libreoffice/program/
 to provide PPTX → PNG thumbnail rendering, PPTX → PDF conversion, and
 PPTX → per-slide JPEG rendering (for the in-app slide viewer).
 
+The slide/page viewer pipeline is format-generic:
+    PPTX --soffice --> PDF --fitz/pdftoppm      --> slide_NNN.jpg (+ _t thumb)
+    DOCX --soffice --> PDF (into the cache dir) --> page JPEGs
+    PDF  (already a PDF — no soffice needed)    --> page JPEGs
+
 LibreOffice is installed to its DEFAULT system location (/usr/lib/libreoffice)
 via apt-get install, and that path is mounted as a Docker volume. This means:
   - All hardcoded paths in fundamentalrc are correct by default
@@ -797,6 +802,206 @@ async def convert_pptx_to_slide_images(
     _log(
         "slide images rendered: %s → %d slides in %s",
         pptx_path.name,
+        manifest["count"],
+        cache_dir.name,
+    )
+    return manifest
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Generic document → per-page JPEG rendering (PDF / DOCX viewer)
+# ══════════════════════════════════════════════════════════════════════
+#
+# The PPTX pipeline above is specialized (speaker notes, cached PDF next
+# to the source for the /pdf endpoint). The functions below reuse the
+# same cache layout + manifest format for the other deliverable formats:
+#
+#   PDF  — the file IS a PDF, so pages are rasterized directly with
+#          PyMuPDF (pdftoppm fallback). LibreOffice is NOT required.
+#   DOCX — soffice converts DOCX → PDF *into the cache dir* (never next
+#          to the source, so a stray {id}.pdf can never hijack the
+#          download endpoint), then pages are rasterized like a PDF.
+#          LibreOffice IS required.
+
+# Formats the generic viewer pipeline understands.
+VIEWER_SUPPORTED_FORMATS = ("pptx", "pdf", "docx")
+
+
+def can_rasterize_pdf() -> bool:
+    """True when at least one PDF rasterizer is available.
+
+    PyMuPDF (fitz) is a bundled pip dependency (preferred); poppler's
+    pdftoppm CLI is the fallback. Used to give a friendly 404 detail
+    when neither is importable — no LibreOffice involvement.
+    """
+    try:
+        import fitz  # noqa: F401
+
+        return True
+    except ImportError:
+        return shutil.which("pdftoppm") is not None
+
+
+def viewer_format_of(source_path: Path) -> Optional[str]:
+    """Normalized viewer format for a source file ("pptx"/"pdf"/"docx")."""
+    suffix = source_path.suffix.lower().lstrip(".")
+    return suffix if suffix in VIEWER_SUPPORTED_FORMATS else None
+
+
+def viewer_cache_dir(source_path: Path) -> Path:
+    """Directory where per-page renders for any viewer file are cached.
+
+    Same convention as the PPTX pipeline: {stem}_slides next to the file
+    (e.g. data/reports/abc.pdf → data/reports/abc_slides/).
+    """
+    return slides_cache_dir(source_path)
+
+
+async def _convert_docx_to_pdf_in_cache(
+    docx_path: Path, cache_dir: Path
+) -> Optional[Path]:
+    """Convert DOCX → PDF *inside the cache dir* using LibreOffice.
+
+    The output lands at {cache_dir}/{stem}.pdf — deliberately NOT next
+    to the source file. data/reports/ is probed by extension by the
+    download endpoint, so writing {id}.pdf next to {id}.docx would make
+    downloads serve the PDF conversion instead of the original DOCX.
+    (The cache dir is wiped whenever the source changes, so the embedded
+    PDF can never go stale either.)
+    """
+    if not is_available():
+        _log("LibreOffice not available — cannot convert DOCX to PDF")
+        return None
+
+    async with _so_lock:
+        rc, _, stderr = await _run_soffice(
+            ["--convert-to", "pdf", "--outdir", str(cache_dir), str(docx_path)]
+        )
+
+        if rc != 0:
+            _log("soffice DOCX→PDF failed (rc=%d): %s", rc, stderr[:200])
+            return None
+
+        pdf_path = cache_dir / f"{docx_path.stem}.pdf"
+        if not pdf_path.exists():
+            _log("DOCX→PDF output not found: %s", pdf_path)
+            return None
+
+        _log(
+            "DOCX→PDF converted into cache: %s (%d bytes)",
+            pdf_path.name,
+            pdf_path.stat().st_size,
+        )
+        return pdf_path
+
+
+async def _rasterize_pdf_into_cache(
+    pdf_path: Path,
+    source_path: Path,
+    cache_dir: Path,
+    max_width: int,
+    thumb_width: int,
+) -> Optional[dict]:
+    """Shared render core: PDF → per-page JPEGs + manifest in cache_dir.
+
+    Used by both the PDF and DOCX paths of the generic viewer. Speaker
+    notes are PPTX-only, so the manifest's notes list is all "".
+    Returns the manifest dict, or None when no rasterizer worked.
+    """
+    pages = await asyncio.to_thread(
+        _render_pdf_pages_with_fitz, pdf_path, cache_dir, max_width, thumb_width
+    )
+    if pages is None:
+        _log("fitz renderer failed — falling back to pdftoppm")
+        pages = await asyncio.to_thread(
+            _render_pdf_pages_with_pdftoppm,
+            pdf_path,
+            cache_dir,
+            max_width,
+            thumb_width,
+        )
+    if not pages:
+        _log("no page images rendered for %s", source_path.name)
+        return None
+
+    manifest = await asyncio.to_thread(
+        _write_slides_manifest, cache_dir, source_path, pages, None
+    )
+    return manifest
+
+
+async def convert_document_to_page_images(
+    source_path: Path,
+    cache_dir: Optional[Path] = None,
+    max_width: int = SLIDE_MAX_WIDTH,
+    thumb_width: int = SLIDE_THUMB_WIDTH,
+    force: bool = False,
+) -> Optional[dict]:
+    """Render every page of a PDF/DOCX/PPTX as JPEG images (full + thumb).
+
+    Format-generic entry point for the in-app document viewer. Dispatches
+    on the file extension:
+
+      - .pptx → the dedicated PPTX pipeline (soffice → PDF next to the
+        source, per-slide speaker notes in the manifest).
+      - .pdf  → rasterize directly (PyMuPDF / pdftoppm). No LibreOffice.
+      - .docx → soffice converts to PDF *inside the cache dir*, then
+        rasterizes. Requires LibreOffice.
+
+    Cache layout + manifest format are identical to the PPTX pipeline
+    ({stem}_slides/ with slide_NNN.jpg + slide_NNN_t.jpg + manifest.json),
+    invalidated automatically when the source file's mtime/size changes.
+
+    Returns the manifest dict on success, or None on failure (missing
+    source, unsupported format, unavailable converter/rasterizer, or a
+    conversion/render error).
+    """
+    if not source_path.exists():
+        _log("source file not found: %s", source_path)
+        return None
+
+    fmt = viewer_format_of(source_path)
+    if fmt is None:
+        _log("unsupported viewer format: %s", source_path.name)
+        return None
+
+    # PPTX keeps its specialized pipeline (speaker notes + cached PDF
+    # next to the source for the /pdf endpoint). Call it exactly like
+    # the old endpoint did (max_width/thumb_width/force stay defaulted).
+    if fmt == "pptx":
+        return await convert_pptx_to_slide_images(source_path, cache_dir)
+
+    cache_dir = cache_dir or viewer_cache_dir(source_path)
+
+    # Serve from cache when still fresh (unless forced).
+    if not force and is_slide_cache_valid(source_path, cache_dir):
+        manifest = read_slides_manifest(cache_dir)
+        if manifest is not None:
+            return manifest
+
+    # Fresh generation — start from an empty cache dir. (For DOCX this
+    # also drops the previous embedded {id}.pdf conversion.)
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if fmt == "pdf":
+        pdf_path = source_path
+    else:  # docx
+        pdf_path = await _convert_docx_to_pdf_in_cache(source_path, cache_dir)
+        if pdf_path is None:
+            _log("DOCX→PDF failed — cannot render pages")
+            return None
+
+    manifest = await _rasterize_pdf_into_cache(
+        pdf_path, source_path, cache_dir, max_width, thumb_width
+    )
+    if manifest is None:
+        return None
+
+    _log(
+        "page images rendered: %s → %d pages in %s",
+        source_path.name,
         manifest["count"],
         cache_dir.name,
     )
