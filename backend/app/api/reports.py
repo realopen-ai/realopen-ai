@@ -4,7 +4,8 @@ Reports API — download endpoint for generated report files.
 Serves files from the data/reports/ directory with the correct
 Content-Type and Content-Disposition headers so the browser triggers
 a download. Also provides thumbnail endpoints for presentations and
-per-slide image endpoints for the in-app PPTX viewer.
+per-page image endpoints for the in-app document viewer
+(PPTX / PDF / DOCX).
 """
 
 import asyncio
@@ -53,8 +54,15 @@ async def download_report(report_id: str):
     """Download a generated report file by its ID.
 
     The report_id is a UUID (without extension). The endpoint looks for
-    a file named {report_id}.pdf or {report_id}.docx in the data/reports/
+    a file named {report_id}.pptx / .docx / .pdf in the data/reports/
     directory and streams it with the correct Content-Type.
+
+    Probe order matters: PPTX and DOCX first, PDF last. The slide
+    viewer caches a converted PDF *next to* a previewed PPTX report
+    ({id}.pdf beside {id}.pptx), so probing .pdf first would make the
+    download button serve the conversion artifact instead of the
+    original presentation. A bare .pptx/.docx file is always the
+    original deliverable.
     """
     # Validate report_id — must be a safe filename (UUID-like)
     # Strip any path separators to prevent directory traversal
@@ -62,8 +70,10 @@ async def download_report(report_id: str):
 
     reports_dir = _get_data_dir() / "reports"
 
-    # Try each supported extension
-    for ext, mime_type in _MIME_TYPES.items():
+    # Originals first (.pdf can be a conversion artifact of a previewed
+    # PPTX report) — see the docstring above.
+    for ext in ("pptx", "docx", "pdf"):
+        mime_type = _MIME_TYPES[ext]
         file_path = reports_dir / f"{safe_id}.{ext}"
         if file_path.exists() and file_path.is_file():
             # Build a user-friendly download filename
@@ -180,10 +190,13 @@ def _get_slide_gen_lock(report_id: str) -> asyncio.Lock:
 
 
 @router.get("/reports/{report_id}/slides")
-async def get_report_slides(report_id: str):
-    """Slide manifest for the in-app PPTX viewer.
+async def get_report_slides(
+    report_id: str,
+    format: str = Query(default="pptx", pattern="^(pptx|pdf|docx)$"),
+):
+    """Page manifest for the in-app document viewer (PPTX / PDF / DOCX).
 
-    Renders every slide of the presentation as JPEG images (full-size +
+    Renders every page of the document as JPEG images (full-size +
     thumbnail) on first request, caches them under
     data/reports/{report_id}_slides/, and returns a JSON manifest:
 
@@ -200,49 +213,73 @@ async def get_report_slides(report_id: str):
           ]
         }
 
-    The `?v=` cache-buster is the PPTX mtime, so a regenerated deck gets
-    fresh URLs and stale browser cache entries are bypassed automatically.
+    The `?format=` query parameter selects the deliverable to render
+    ("pptx" default, "pdf", or "docx") — a report_id maps to exactly
+    one file, and the PDF preview of a PPTX report is cached as
+    {id}.pdf, so the format must be explicit to pick the ORIGINAL file.
+
+    Availability per format:
+      - pptx / docx — LibreOffice required (document → PDF conversion)
+      - pdf         — no LibreOffice needed (rasterized directly with
+                      PyMuPDF / poppler)
+
+    The `?v=` cache-buster is the source file's mtime, so a regenerated
+    document gets fresh URLs and stale browser cache entries are
+    bypassed automatically.
 
     Errors:
-      - 404 — PPTX not found
-      - 404 — LibreOffice not installed (needed for PPTX→PDF)
+      - 404 — file not found for the requested format
+      - 404 — LibreOffice not installed (pptx/docx)
+      - 404 — no PDF rasterizer available (pdf)
       - 404 — conversion/rendering failed
     """
     safe_id = os.path.basename(report_id)
     reports_dir = _get_data_dir() / "reports"
 
-    pptx_path = reports_dir / f"{safe_id}.pptx"
-    if not (pptx_path.exists() and pptx_path.is_file()):
-        raise HTTPException(status_code=404, detail=f"PPTX file not found: {safe_id}")
+    source_path = reports_dir / f"{safe_id}.{format}"
+    if not (source_path.exists() and source_path.is_file()):
+        raise HTTPException(
+            status_code=404,
+            detail=f"{format.upper()} file not found: {safe_id}",
+        )
 
     from app.services.integrations import libreoffice
 
-    cache_dir = libreoffice.slides_cache_dir(pptx_path)
+    cache_dir = libreoffice.viewer_cache_dir(source_path)
 
     async with _get_slide_gen_lock(safe_id):
-        if libreoffice.is_slide_cache_valid(pptx_path, cache_dir):
+        if libreoffice.is_slide_cache_valid(source_path, cache_dir):
             manifest = libreoffice.read_slides_manifest(cache_dir)
         else:
-            if not libreoffice.is_available():
+            if format in ("pptx", "docx") and not libreoffice.is_available():
                 raise HTTPException(
                     status_code=404,
                     detail=(
-                        "Slide preview unavailable — LibreOffice is not "
-                        "installed. You can still download the .pptx file."
+                        "Document preview unavailable — LibreOffice is not "
+                        f"installed. You can still download the .{format} file."
                     ),
                 )
-            manifest = await libreoffice.convert_pptx_to_slide_images(
-                pptx_path, cache_dir
+            if format == "pdf" and not libreoffice.can_rasterize_pdf():
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "PDF preview unavailable — no PDF renderer "
+                        "(PyMuPDF/poppler) is available on the server. "
+                        "You can still download the .pdf file."
+                    ),
+                )
+            manifest = await libreoffice.convert_document_to_page_images(
+                source_path, cache_dir
             )
 
     if not manifest:
         raise HTTPException(
             status_code=404,
-            detail="Slide rendering failed. Please try again or download the file.",
+            detail="Page rendering failed. Please try again or download the file.",
         )
 
     try:
-        version = int(pptx_path.stat().st_mtime)
+        version = int(source_path.stat().st_mtime)
     except OSError:
         version = 0
 
@@ -253,6 +290,8 @@ async def get_report_slides(report_id: str):
             "index": i,
             "url": f"/api/reports/{safe_id}/slides/{i}?v={version}",
             "thumb_url": f"/api/reports/{safe_id}/slides/{i}?v={version}&variant=thumb",
+            # Per-slide speaker notes ("" when absent) — defensive against
+            # manifests that predate the notes field.
             "notes": str(notes[i - 1]) if i - 1 < len(notes) else "",
         }
         for i in range(1, count + 1)
@@ -277,7 +316,8 @@ async def get_report_slide_image(
 
     slide_number is 1-based. Use ?variant=thumb for the small filmstrip
     variant. The manifest endpoint must have been called first (it creates
-    the cache); otherwise this returns 404.
+    the cache); otherwise this returns 404. Works for every viewer format
+    (pptx/pdf/docx) — they all share the {report_id}_slides cache layout.
     """
     safe_id = os.path.basename(report_id)
     reports_dir = _get_data_dir() / "reports"

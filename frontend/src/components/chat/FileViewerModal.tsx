@@ -16,20 +16,23 @@ import {
   X,
 } from "lucide-react";
 
+/** Formats the in-app document viewer supports. */
+export type ViewerFormat = "pptx" | "pdf" | "docx";
+
 /**
- * Modal for viewing PPTX presentations as slide images.
+ * Modal for viewing documents (PPTX / PDF / DOCX) as page images.
  *
- * The backend renders each slide as a JPEG (via LibreOffice + PyMuPDF,
- * cached server-side) and exposes:
- *   GET /api/reports/{reportId}/slides          → manifest {count, slides[]}
- *   GET /api/reports/{reportId}/slides/{n}      → full-size slide JPEG
- *   GET /api/reports/{reportId}/slides/{n}?variant=thumb → thumbnail
+ * The backend renders every page as a JPEG (PPTX/DOCX via LibreOffice,
+ * PDF directly via PyMuPDF — all cached server-side) and exposes:
+ *   GET /api/reports/{reportId}/slides?format=pptx|pdf|docx → manifest
+ *   GET /api/reports/{reportId}/slides/{n}                 → page JPEG
+ *   GET /api/reports/{reportId}/slides/{n}?variant=thumb   → thumbnail
  *
- * This component fetches the manifest on open and presents the deck with
- * prev/next controls, a page indicator, a collapsible thumbnail filmstrip,
- * a speaker-notes panel (when the deck carries notes), keyboard navigation
- * (←/→, Home/End, Esc, N for notes), touch swipe, and adjacent-slide
- * preloading.
+ * This component fetches the manifest on open and presents the document
+ * with prev/next controls, a page indicator, a collapsible thumbnail
+ * filmstrip, a speaker-notes panel (PPTX decks that carry notes only),
+ * keyboard navigation (←/→, Home/End, Esc, N for notes), touch swipe,
+ * and adjacent-page preloading.
  */
 
 type SlideInfo = {
@@ -48,15 +51,18 @@ type SlidesManifest = {
   slides: SlideInfo[];
 };
 
-export function PptxViewerModal({
+export function FileViewerModal({
   reportId,
   filename,
   downloadUrl,
+  format = "pptx",
   onClose,
 }: {
   reportId: string;
   filename: string;
   downloadUrl: string;
+  /** Deliverable format — selects the backend rendering pipeline. */
+  format?: ViewerFormat;
   onClose: () => void;
 }) {
   const [manifest, setManifest] = useState<SlidesManifest | null>(null);
@@ -74,6 +80,10 @@ export function PptxViewerModal({
   const count = manifest?.count ?? 0;
   const hasAnyNotes =
     manifest?.slides.some((s) => (s.notes ?? "").trim().length > 0) ?? false;
+  // PPTX decks have "slides"; PDF/DOCX documents have "pages".
+  const pageWord = format === "pptx" ? "slide" : "page";
+  const isPresentation = format === "pptx";
+  const documentLabel = isPresentation ? "presentation" : "document";
 
   // ── Fetch the slide manifest ────────────────────────────────────────
   useEffect(() => {
@@ -84,7 +94,7 @@ export function PptxViewerModal({
     setManifest(null);
     setCurrent(1);
 
-    fetch(`/api/reports/${reportId}/slides`)
+    fetch(`/api/reports/${reportId}/slides?format=${format}`)
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json().catch(() => null);
@@ -100,14 +110,14 @@ export function PptxViewerModal({
       })
       .catch((e: Error) => {
         if (cancelled) return;
-        setError(e.message || "Failed to load slides");
+        setError(e.message || `Failed to load ${documentLabel}`);
         setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [reportId, retryCount]);
+  }, [reportId, format, retryCount]);
 
   // ── Navigation ──────────────────────────────────────────────────────
   const goTo = useCallback(
@@ -234,7 +244,7 @@ export function PptxViewerModal({
           {manifest && hasAnyNotes && (
             <button
               onClick={() => setShowNotes((s) => !s)}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0 ${
                 showNotes
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent"
@@ -243,6 +253,7 @@ export function PptxViewerModal({
                 showNotes ? "Hide speaker notes (N)" : "Show speaker notes (N)"
               }
               aria-pressed={showNotes}
+              aria-label="Toggle speaker notes"
             >
               <StickyNote className="w-4 h-4" />
             </button>
@@ -257,7 +268,11 @@ export function PptxViewerModal({
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent"
               }`}
-              title={showThumbs ? "Hide slide overview" : "Show slide overview"}
+              title={
+                showThumbs
+                  ? `Hide ${pageWord} overview`
+                  : `Show ${pageWord} overview`
+              }
             >
               <LayoutGrid className="w-4 h-4" />
             </button>
@@ -268,7 +283,7 @@ export function PptxViewerModal({
             href={downloadUrl}
             download={filename}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            title="Download PPTX"
+            title={`Download ${format.toUpperCase()}`}
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Download</span>
@@ -295,10 +310,10 @@ export function PptxViewerModal({
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 px-8 text-center">
               <Loader2 className="w-6 h-6 text-primary animate-spin" />
               <p className="text-[13px] text-muted-foreground">
-                Rendering slides...
+                Rendering {isPresentation ? "slides" : "pages"}...
               </p>
               <p className="text-[11px] text-muted-foreground/60">
-                This happens once per presentation, then it&apos;s cached.
+                This happens once per {documentLabel}, then it&apos;s cached.
               </p>
             </div>
           )}
@@ -308,7 +323,7 @@ export function PptxViewerModal({
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 px-8 text-center">
               <AlertCircle className="w-8 h-8 text-red-400" />
               <p className="text-[13px] text-foreground font-medium">
-                Failed to load presentation
+                Failed to load {documentLabel}
               </p>
               <p className="text-[12px] text-muted-foreground/70 max-w-md">
                 {error}
@@ -342,7 +357,7 @@ export function PptxViewerModal({
               <button
                 onClick={prev}
                 disabled={atFirst}
-                aria-label="Previous slide"
+                aria-label={`Previous ${pageWord}`}
                 className={`absolute left-2 sm:left-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-background/80 border border-border shadow-sm backdrop-blur transition-all ${
                   atFirst
                     ? "opacity-30 cursor-not-allowed"
@@ -356,7 +371,7 @@ export function PptxViewerModal({
               <button
                 onClick={next}
                 disabled={atLast}
-                aria-label="Next slide"
+                aria-label={`Next ${pageWord}`}
                 className={`absolute right-2 sm:right-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-background/80 border border-border shadow-sm backdrop-blur transition-all ${
                   atLast
                     ? "opacity-30 cursor-not-allowed"
@@ -373,17 +388,17 @@ export function PptxViewerModal({
                 </div>
               )}
 
-              {/* The slide */}
+              {/* The page */}
               <img
                 key={currentSlide.url}
                 src={currentSlide.url}
-                alt={`Slide ${current} of ${count}`}
+                alt={`${pageWord === "slide" ? "Slide" : "Page"} ${current} of ${count}`}
                 draggable={false}
                 onLoad={() => setSlideLoaded(true)}
                 onError={() => {
                   // Image missing — offer a retry (re-fetches the manifest).
                   setError(
-                    `Slide ${current} failed to load. The cache may be incomplete.`,
+                    `${pageWord === "slide" ? "Slide" : "Page"} ${current} failed to load. The cache may be incomplete.`,
                   );
                 }}
                 className={`max-w-full max-h-full object-contain select-none transition-opacity duration-150 px-12 sm:px-14 ${
@@ -405,12 +420,12 @@ export function PptxViewerModal({
           <div
             className="shrink-0 border-t border-border bg-card/80 px-4 py-3"
             role="region"
-            aria-label={`Speaker notes for slide ${current}`}
+            aria-label={`Speaker notes for ${pageWord} ${current}`}
           >
             <div className="flex items-center gap-1.5 mb-1.5">
               <StickyNote className="w-3.5 h-3.5 text-primary shrink-0" />
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Speaker notes — slide {current} of {count}
+                Speaker notes — {pageWord} {current} of {count}
               </p>
             </div>
             <div
@@ -445,7 +460,7 @@ export function PptxViewerModal({
                   data-slide-thumb={s.index}
                   role="tab"
                   aria-selected={active}
-                  aria-label={`Go to slide ${s.index}`}
+                  aria-label={`Go to ${pageWord} ${s.index}`}
                   onClick={() => goTo(s.index)}
                   className={`relative shrink-0 w-28 aspect-video rounded-md overflow-hidden border transition-all ${
                     active

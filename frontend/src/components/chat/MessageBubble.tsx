@@ -27,7 +27,10 @@ import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
-import { PptxViewerModal } from "@/components/chat/PptxViewerModal";
+import {
+  FileViewerModal,
+  type ViewerFormat,
+} from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
@@ -357,7 +360,12 @@ function ToolCallBlockView({
   block: MessageBlock;
   isStreaming: boolean;
   canViewPptx: boolean;
-  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+  onViewPptx: (
+    reportId: string,
+    filename: string,
+    downloadUrl: string,
+    format: ViewerFormat,
+  ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
@@ -544,7 +552,12 @@ function ToolCallDetail({
 }: {
   tc: ToolCallResult;
   canViewPptx: boolean;
-  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+  onViewPptx: (
+    reportId: string,
+    filename: string,
+    downloadUrl: string,
+    format: ViewerFormat,
+  ) => void;
 }) {
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
@@ -781,7 +794,8 @@ function ReportDeliverableBadge({
   const displayLabel = label ?? (isPptx ? "Presentation" : "Report");
 
   const showThumb = isPptx && thumbnailUrl && !thumbError;
-  const canView = isPptx && onView;
+  const canView = Boolean(onView);
+  const viewTitle = isPptx ? "View presentation" : "View document";
 
   return (
     <div className="flex items-center rounded-lg border border-border bg-card overflow-hidden hover:bg-accent/50 transition-colors group">
@@ -829,7 +843,7 @@ function ReportDeliverableBadge({
           <button
             onClick={onView}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-            title="View presentation"
+            title={viewTitle}
           >
             <Eye className="w-4 h-4" />
           </button>
@@ -854,7 +868,12 @@ function ReportGenDetail({
 }: {
   tc: ToolCallResult;
   canViewPptx: boolean;
-  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+  onViewPptx: (
+    reportId: string,
+    filename: string,
+    downloadUrl: string,
+    format: ViewerFormat,
+  ) => void;
 }) {
   const deliverableResults =
     tc.genResults?.filter(
@@ -878,26 +897,33 @@ function ReportGenDetail({
       )}
       {deliverableResults.length > 0 && (
         <div className="space-y-1.5">
-          {deliverableResults.map((r, i) => (
-            <ReportDeliverableBadge
-              key={i}
-              filename={r.filename ?? "report"}
-              format={r.format ?? "pdf"}
-              downloadUrl={r.download_url ?? "#"}
-              thumbnailUrl={r.thumbnail_url}
-              label={r.type === "presentation" ? "Presentation" : "Report"}
-              onView={
-                canViewPptx && r.report_id && r.format === "pptx"
-                  ? () =>
-                      onViewPptx(
-                        r.report_id!,
-                        r.filename ?? "presentation.pptx",
-                        r.download_url ?? "#",
-                      )
-                  : undefined
-              }
-            />
-          ))}
+          {deliverableResults.map((r, i) => {
+            const fmt = (r.format as ViewerFormat) ?? "pptx";
+            // PDFs are rasterized server-side without LibreOffice, so the
+            // eye button is always offered; PPTX/DOCX need LibreOffice.
+            const viewable = !!r.report_id && (fmt === "pdf" || canViewPptx);
+            return (
+              <ReportDeliverableBadge
+                key={i}
+                filename={r.filename ?? "report"}
+                format={r.format ?? "pdf"}
+                downloadUrl={r.download_url ?? "#"}
+                thumbnailUrl={r.thumbnail_url}
+                label={r.type === "presentation" ? "Presentation" : "Report"}
+                onView={
+                  viewable
+                    ? () =>
+                        onViewPptx(
+                          r.report_id!,
+                          r.filename ?? `report.${fmt}`,
+                          r.download_url ?? "#",
+                          fmt,
+                        )
+                    : undefined
+                }
+              />
+            );
+          })}
         </div>
       )}
       {tc.error && (
@@ -930,7 +956,12 @@ function BlockView({
   block: MessageBlock;
   isStreaming: boolean;
   canViewPptx: boolean;
-  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+  onViewPptx: (
+    reportId: string,
+    filename: string,
+    downloadUrl: string,
+    format: ViewerFormat,
+  ) => void;
 }) {
   switch (block.type) {
     case "thinking":
@@ -984,6 +1015,7 @@ export function MessageBubble({
     reportId: string;
     filename: string;
     downloadUrl: string;
+    format: ViewerFormat;
   } | null>(null);
 
   // Check if LibreOffice is installed (cached in depsClient)
@@ -1147,8 +1179,8 @@ export function MessageBubble({
           block={block}
           isStreaming={message.isStreaming}
           canViewPptx={libreOfficeAvailable}
-          onViewPptx={(reportId, filename, downloadUrl) =>
-            setViewingPptx({ reportId, filename, downloadUrl })
+          onViewPptx={(reportId, filename, downloadUrl, format) =>
+            setViewingPptx({ reportId, filename, downloadUrl, format })
           }
         />
       ))}
@@ -1191,12 +1223,15 @@ export function MessageBubble({
               downloadUrl={d.download_url}
               thumbnailUrl={d.thumbnail_url}
               onView={
-                libreOfficeAvailable && d.report_id && d.format === "pptx"
+                d.report_id &&
+                ["pdf", "docx", "pptx"].includes(d.format) &&
+                (d.format === "pdf" || libreOfficeAvailable)
                   ? () =>
                       setViewingPptx({
                         reportId: d.report_id!,
                         filename: d.filename,
                         downloadUrl: d.download_url,
+                        format: (d.format as ViewerFormat) || "pptx",
                       })
                   : undefined
               }
@@ -1246,12 +1281,13 @@ export function MessageBubble({
         </div>
       )}
 
-      {/* PPTX Viewer Modal */}
+      {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
       {viewingPptx && (
-        <PptxViewerModal
+        <FileViewerModal
           reportId={viewingPptx.reportId}
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}
+          format={viewingPptx.format}
           onClose={() => setViewingPptx(null)}
         />
       )}
