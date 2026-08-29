@@ -79,11 +79,12 @@ class DebugLoggingMiddleware:
             except Exception:
                 body_str = "<could not read body>"
 
-        print(
-            f"[middleware] 🔵 REQUEST  {method} {path}  query={query}  "
-            f"body={_truncate(body_str, MAX_BODY_LOG)}",
-            flush=True,
-        )
+        if path != "/api/health":
+            print(
+                f"[middleware] 🔵 REQUEST  {method} {path}  query={query}  "
+                f"body={_truncate(body_str, MAX_BODY_LOG)}",
+                flush=True,
+            )
 
         start = time.perf_counter()
         status_code = None
@@ -107,10 +108,11 @@ class DebugLoggingMiddleware:
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        print(
-            f"[middleware] ⬅️  RESPONSE {method} {path}  status={status_code}  ({elapsed_ms:.1f} ms)",
-            flush=True,
-        )
+        if path != "/api/health":
+            print(
+                f"[middleware] ⬅️  RESPONSE {method} {path}  status={status_code}  ({elapsed_ms:.1f} ms)",
+                flush=True,
+            )
 
 
 def _make_body_replay(body: bytes, original_receive: Receive) -> Receive:
