@@ -3,19 +3,26 @@ Reports API — download endpoint for generated report files.
 
 Serves files from the data/reports/ directory with the correct
 Content-Type and Content-Disposition headers so the browser triggers
-a download. Also provides thumbnail endpoints for presentations.
+a download. Also provides thumbnail endpoints for presentations and
+per-slide image endpoints for the in-app PPTX viewer.
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Per-report locks so two simultaneous viewer opens never run the
+# (expensive, serialized) slide generation twice for the same deck.
+_slide_gen_locks: dict[str, asyncio.Lock] = {}
+_SLIDE_LOCKS_MAX = 128
 
 
 def _get_data_dir() -> Path:
@@ -156,6 +163,152 @@ async def get_report_thumbnail(report_id: str):
     raise HTTPException(
         status_code=404,
         detail=f"PPTX file not found for thumbnail: {safe_id}",
+    )
+
+
+def _get_slide_gen_lock(report_id: str) -> asyncio.Lock:
+    """Get (or create) the generation lock for a report."""
+    lock = _slide_gen_locks.get(report_id)
+    if lock is None:
+        # Bound the dict so long-running servers don't accumulate locks
+        # for every report ever viewed.
+        if len(_slide_gen_locks) >= _SLIDE_LOCKS_MAX:
+            _slide_gen_locks.clear()
+        lock = asyncio.Lock()
+        _slide_gen_locks[report_id] = lock
+    return lock
+
+
+@router.get("/reports/{report_id}/slides")
+async def get_report_slides(report_id: str):
+    """Slide manifest for the in-app PPTX viewer.
+
+    Renders every slide of the presentation as JPEG images (full-size +
+    thumbnail) on first request, caches them under
+    data/reports/{report_id}_slides/, and returns a JSON manifest:
+
+        {
+          "report_id": "...",
+          "count": 10,
+          "width": 1600,
+          "height": 900,
+          "slides": [
+            {"index": 1, "url": "/api/reports/{id}/slides/1?v=...",
+             "thumb_url": "/api/reports/{id}/slides/1?v=...&variant=thumb"},
+            ...
+          ]
+        }
+
+    The `?v=` cache-buster is the PPTX mtime, so a regenerated deck gets
+    fresh URLs and stale browser cache entries are bypassed automatically.
+
+    Errors:
+      - 404 — PPTX not found
+      - 404 — LibreOffice not installed (needed for PPTX→PDF)
+      - 404 — conversion/rendering failed
+    """
+    safe_id = os.path.basename(report_id)
+    reports_dir = _get_data_dir() / "reports"
+
+    pptx_path = reports_dir / f"{safe_id}.pptx"
+    if not (pptx_path.exists() and pptx_path.is_file()):
+        raise HTTPException(status_code=404, detail=f"PPTX file not found: {safe_id}")
+
+    from app.services.integrations import libreoffice
+
+    cache_dir = libreoffice.slides_cache_dir(pptx_path)
+
+    async with _get_slide_gen_lock(safe_id):
+        if libreoffice.is_slide_cache_valid(pptx_path, cache_dir):
+            manifest = libreoffice.read_slides_manifest(cache_dir)
+        else:
+            if not libreoffice.is_available():
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "Slide preview unavailable — LibreOffice is not "
+                        "installed. You can still download the .pptx file."
+                    ),
+                )
+            manifest = await libreoffice.convert_pptx_to_slide_images(
+                pptx_path, cache_dir
+            )
+
+    if not manifest:
+        raise HTTPException(
+            status_code=404,
+            detail="Slide rendering failed. Please try again or download the file.",
+        )
+
+    try:
+        version = int(pptx_path.stat().st_mtime)
+    except OSError:
+        version = 0
+
+    count = manifest["count"]
+    slides = [
+        {
+            "index": i,
+            "url": f"/api/reports/{safe_id}/slides/{i}?v={version}",
+            "thumb_url": f"/api/reports/{safe_id}/slides/{i}?v={version}&variant=thumb",
+        }
+        for i in range(1, count + 1)
+    ]
+
+    return {
+        "report_id": safe_id,
+        "count": count,
+        "width": manifest.get("width", 0),
+        "height": manifest.get("height", 0),
+        "slides": slides,
+    }
+
+
+@router.get("/reports/{report_id}/slides/{slide_number}")
+async def get_report_slide_image(
+    report_id: str,
+    slide_number: int,
+    variant: str = Query(default="full", pattern="^(full|thumb)$"),
+):
+    """Serve a single rendered slide image (JPEG).
+
+    slide_number is 1-based. Use ?variant=thumb for the small filmstrip
+    variant. The manifest endpoint must have been called first (it creates
+    the cache); otherwise this returns 404.
+    """
+    safe_id = os.path.basename(report_id)
+    reports_dir = _get_data_dir() / "reports"
+
+    cache_dir = reports_dir / f"{safe_id}_slides"
+
+    from app.services.integrations import libreoffice
+
+    manifest = libreoffice.read_slides_manifest(cache_dir)
+    if manifest is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Slides not rendered yet — request /slides first.",
+        )
+
+    if slide_number < 1 or slide_number > manifest["count"]:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Slide {slide_number} out of range (1..{manifest['count']}).",
+        )
+
+    image_path = cache_dir / libreoffice.slide_image_name(
+        slide_number, thumb=(variant == "thumb")
+    )
+    if not (image_path.exists() and image_path.is_file()):
+        raise HTTPException(status_code=404, detail="Slide image missing on disk.")
+
+    return FileResponse(
+        path=str(image_path),
+        media_type="image/jpeg",
+        headers={
+            # The ?v= cache-buster makes these safely cacheable long-term.
+            "Cache-Control": "private, max-age=604800",  # 7 days
+        },
     )
 
 
