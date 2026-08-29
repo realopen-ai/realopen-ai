@@ -194,7 +194,8 @@ async def get_report_slides(report_id: str):
           "height": 900,
           "slides": [
             {"index": 1, "url": "/api/reports/{id}/slides/1?v=...",
-             "thumb_url": "/api/reports/{id}/slides/1?v=...&variant=thumb"},
+             "thumb_url": "/api/reports/{id}/slides/1?v=...&variant=thumb",
+             "notes": "Speaker notes text for slide 1 (\"\" when none)"},
             ...
           ]
         }
@@ -246,11 +247,13 @@ async def get_report_slides(report_id: str):
         version = 0
 
     count = manifest["count"]
+    notes = manifest.get("notes") or []
     slides = [
         {
             "index": i,
             "url": f"/api/reports/{safe_id}/slides/{i}?v={version}",
             "thumb_url": f"/api/reports/{safe_id}/slides/{i}?v={version}&variant=thumb",
+            "notes": str(notes[i - 1]) if i - 1 < len(notes) else "",
         }
         for i in range(1, count + 1)
     ]
