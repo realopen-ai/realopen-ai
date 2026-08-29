@@ -10,7 +10,10 @@ import {
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
-import { PptxViewerModal } from "@/components/chat/PptxViewerModal";
+import {
+  PptxViewerModal,
+  type ViewerFormat,
+} from "@/components/chat/PptxViewerModal";
 import { cn } from "@/lib/utils";
 
 interface GeneratedFile {
@@ -141,6 +144,7 @@ export function GeneratedFilesSection({
     reportId: string;
     filename: string;
     downloadUrl: string;
+    format: ViewerFormat;
   } | null>(null);
 
   // Check if LibreOffice is installed (for PPTX view feature)
@@ -272,19 +276,24 @@ export function GeneratedFilesSection({
                           <ExternalLink className="w-4 h-4" />
                         </button>
                       )}
-                      {libreOfficeAvailable &&
-                        file.file_type === "pptx" &&
-                        file.report_id && (
+                      {file.report_id &&
+                        (file.file_type === "pdf" || libreOfficeAvailable) &&
+                        ["pdf", "docx", "pptx"].includes(file.file_type) && (
                           <button
                             onClick={() =>
                               setViewingPptx({
                                 reportId: file.report_id!,
                                 filename: file.filename,
                                 downloadUrl: file.download_url,
+                                format: file.file_type as ViewerFormat,
                               })
                             }
                             className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-                            title="View presentation"
+                            title={
+                              file.file_type === "pptx"
+                                ? "View presentation"
+                                : "View document"
+                            }
                           >
                             <Eye className="w-4 h-4" />
                           </button>
@@ -306,12 +315,13 @@ export function GeneratedFilesSection({
         </div>
       </ScrollArea>
 
-      {/* PPTX Viewer Modal */}
+      {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
       {viewingPptx && (
         <PptxViewerModal
           reportId={viewingPptx.reportId}
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}
+          format={viewingPptx.format}
           onClose={() => setViewingPptx(null)}
         />
       )}
