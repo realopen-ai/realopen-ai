@@ -51,7 +51,7 @@ type SlidesManifest = {
   slides: SlideInfo[];
 };
 
-export function PptxViewerModal({
+export function FileViewerModal({
   reportId,
   filename,
   downloadUrl,

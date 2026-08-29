@@ -11,9 +11,9 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
 import {
-  PptxViewerModal,
+  FileViewerModal,
   type ViewerFormat,
-} from "@/components/chat/PptxViewerModal";
+} from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
 
 interface GeneratedFile {
@@ -317,7 +317,7 @@ export function GeneratedFilesSection({
 
       {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
       {viewingPptx && (
-        <PptxViewerModal
+        <FileViewerModal
           reportId={viewingPptx.reportId}
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}

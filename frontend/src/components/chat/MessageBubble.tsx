@@ -28,9 +28,9 @@ import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
 import {
-  PptxViewerModal,
+  FileViewerModal,
   type ViewerFormat,
-} from "@/components/chat/PptxViewerModal";
+} from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
@@ -1283,7 +1283,7 @@ export function MessageBubble({
 
       {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
       {viewingPptx && (
-        <PptxViewerModal
+        <FileViewerModal
           reportId={viewingPptx.reportId}
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}
