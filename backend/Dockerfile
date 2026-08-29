@@ -21,6 +21,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl \
     libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
+    fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -34,14 +35,9 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
-# Copy profiles.yml (from project root - Docker context is ./backend)
-# NOTE: The docker-compose.yml build context is ./backend,
-# so we mount profiles.yml via volume in docker-compose instead.
-# See docker-compose.yml volumes for the backend service.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
 
-# Non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-USER appuser
+RUN mkdir -p /opt/optional
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1

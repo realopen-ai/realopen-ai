@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Search,
   Code2,
@@ -26,6 +26,8 @@ import remarkGfm from "remark-gfm";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
+import { isLibreOfficeInstalled } from "@/api/depsClient";
+import { PptxViewerModal } from "@/components/chat/PptxViewerModal";
 import { cn } from "@/lib/utils";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
@@ -349,9 +351,13 @@ function StatusDot({ status }: { status: string }) {
 
 function ToolCallBlockView({
   block,
+  canViewPptx,
+  onViewPptx,
 }: {
   block: MessageBlock;
   isStreaming: boolean;
+  canViewPptx: boolean;
+  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
@@ -515,7 +521,11 @@ function ToolCallBlockView({
       {isExpanded && (
         <div className="px-3 pb-3 max-h-96 overflow-y-auto border-t border-sandbox-border/50">
           <div className="pt-3 space-y-2">
-            <ToolCallDetail tc={tc} />
+            <ToolCallDetail
+              tc={tc}
+              canViewPptx={canViewPptx}
+              onViewPptx={onViewPptx}
+            />
             {/* RAG sources inside the tool call block */}
             {tc.sources && tc.sources.length > 0 && (
               <SourceCards sources={tc.sources} />
@@ -527,7 +537,15 @@ function ToolCallBlockView({
   );
 }
 
-function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
+function ToolCallDetail({
+  tc,
+  canViewPptx,
+  onViewPptx,
+}: {
+  tc: ToolCallResult;
+  canViewPptx: boolean;
+  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+}) {
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
@@ -543,7 +561,13 @@ function ToolCallDetail({ tc }: { tc: ToolCallResult }) {
       (tc.status === "running" &&
         (titleLower.includes("report") || titleLower.includes("pptx")));
     if (isReportOrPptx) {
-      return <ReportGenDetail tc={tc} />;
+      return (
+        <ReportGenDetail
+          tc={tc}
+          canViewPptx={canViewPptx}
+          onViewPptx={onViewPptx}
+        />
+      );
     }
     return <ImageGenDetail tc={tc} />;
   }
@@ -725,13 +749,18 @@ function ReportDeliverableBadge({
   filename,
   format,
   downloadUrl,
+  thumbnailUrl,
   label,
+  onView,
 }: {
   filename: string;
   format: string;
   downloadUrl: string;
+  thumbnailUrl?: string;
   label?: string;
+  onView?: () => void;
 }) {
+  const [thumbError, setThumbError] = useState(false);
   const isPdf = format === "pdf";
   const isPptx = format === "pptx";
   const iconBg = isPdf
@@ -751,34 +780,82 @@ function ReportDeliverableBadge({
       : "text-blue-400/70";
   const displayLabel = label ?? (isPptx ? "Presentation" : "Report");
 
+  const showThumb = isPptx && thumbnailUrl && !thumbError;
+  const canView = isPptx && onView;
+
   return (
-    <a
-      href={downloadUrl}
-      download={filename}
-      className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 hover:bg-accent transition-colors cursor-pointer group"
-    >
-      <div
-        className={cn(
-          "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-          iconBg,
-        )}
+    <div className="flex items-center rounded-lg border border-border bg-card overflow-hidden hover:bg-accent/50 transition-colors group">
+      {/* Clickable area: thumbnail/icon + filename → downloads */}
+      <a
+        href={downloadUrl}
+        download={filename}
+        className="flex items-center gap-3 flex-1 min-w-0 pl-2.5 pr-2 py-2 cursor-pointer"
+        title={`Download ${filename}`}
       >
-        <FileType className={cn("w-4 h-4", iconColor)} />
+        {/* Thumbnail / Icon area */}
+        {showThumb ? (
+          <div className="w-20 h-14 shrink-0 relative bg-secondary/50 overflow-hidden rounded-md">
+            <img
+              src={thumbnailUrl}
+              alt={filename}
+              onError={() => setThumbError(true)}
+              className="w-full h-full object-cover"
+              loading="lazy"
+            />
+          </div>
+        ) : (
+          <div
+            className={cn(
+              "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
+              iconBg,
+            )}
+          >
+            <FileType className={cn("w-4 h-4", iconColor)} />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-[12px] font-medium text-foreground truncate">
+            {filename}
+          </p>
+          <p className={cn("text-[10px] font-medium uppercase", labelColor)}>
+            {format} {displayLabel}
+          </p>
+        </div>
+      </a>
+
+      {/* Action buttons — separate from download link */}
+      <div className="flex items-center gap-0.5 pr-1.5 shrink-0">
+        {canView && (
+          <button
+            onClick={onView}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+            title="View presentation"
+          >
+            <Eye className="w-4 h-4" />
+          </button>
+        )}
+        <a
+          href={downloadUrl}
+          download={filename}
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          title="Download"
+        >
+          <Download className="w-4 h-4" />
+        </a>
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-[12px] font-medium text-foreground truncate">
-          {filename}
-        </p>
-        <p className={cn("text-[10px] font-medium uppercase", labelColor)}>
-          {format} {displayLabel}
-        </p>
-      </div>
-      <Download className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-    </a>
+    </div>
   );
 }
 
-function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
+function ReportGenDetail({
+  tc,
+  canViewPptx,
+  onViewPptx,
+}: {
+  tc: ToolCallResult;
+  canViewPptx: boolean;
+  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
+}) {
   const deliverableResults =
     tc.genResults?.filter(
       (r) => r.type === "report" || r.type === "presentation",
@@ -807,7 +884,18 @@ function ReportGenDetail({ tc }: { tc: ToolCallResult }) {
               filename={r.filename ?? "report"}
               format={r.format ?? "pdf"}
               downloadUrl={r.download_url ?? "#"}
+              thumbnailUrl={r.thumbnail_url}
               label={r.type === "presentation" ? "Presentation" : "Report"}
+              onView={
+                canViewPptx && r.report_id && r.format === "pptx"
+                  ? () =>
+                      onViewPptx(
+                        r.report_id!,
+                        r.filename ?? "presentation.pptx",
+                        r.download_url ?? "#",
+                      )
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -836,9 +924,13 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
 function BlockView({
   block,
   isStreaming,
+  canViewPptx,
+  onViewPptx,
 }: {
   block: MessageBlock;
   isStreaming: boolean;
+  canViewPptx: boolean;
+  onViewPptx: (reportId: string, filename: string, downloadUrl: string) => void;
 }) {
   switch (block.type) {
     case "thinking":
@@ -846,7 +938,14 @@ function BlockView({
     case "text":
       return <TextBlockView block={block} isStreaming={isStreaming} />;
     case "tool_call":
-      return <ToolCallBlockView block={block} isStreaming={isStreaming} />;
+      return (
+        <ToolCallBlockView
+          block={block}
+          isStreaming={isStreaming}
+          canViewPptx={canViewPptx}
+          onViewPptx={onViewPptx}
+        />
+      );
     case "error":
       return <ErrorBlockView block={block} />;
     default:
@@ -878,6 +977,19 @@ export function MessageBubble({
   const [isReading, setIsReading] = useState(false);
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const isAssistant = message.role === "assistant";
+
+  // PPTX viewer modal state
+  const [libreOfficeAvailable, setLibreOfficeAvailable] = useState(false);
+  const [viewingPptx, setViewingPptx] = useState<{
+    reportId: string;
+    filename: string;
+    downloadUrl: string;
+  } | null>(null);
+
+  // Check if LibreOffice is installed (cached in depsClient)
+  useEffect(() => {
+    isLibreOfficeInstalled().then(setLibreOfficeAvailable);
+  }, []);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -1034,6 +1146,10 @@ export function MessageBubble({
           key={block.id}
           block={block}
           isStreaming={message.isStreaming}
+          canViewPptx={libreOfficeAvailable}
+          onViewPptx={(reportId, filename, downloadUrl) =>
+            setViewingPptx({ reportId, filename, downloadUrl })
+          }
         />
       ))}
 
@@ -1073,6 +1189,17 @@ export function MessageBubble({
               filename={d.filename}
               format={d.format}
               downloadUrl={d.download_url}
+              thumbnailUrl={d.thumbnail_url}
+              onView={
+                libreOfficeAvailable && d.report_id && d.format === "pptx"
+                  ? () =>
+                      setViewingPptx({
+                        reportId: d.report_id!,
+                        filename: d.filename,
+                        downloadUrl: d.download_url,
+                      })
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -1117,6 +1244,16 @@ export function MessageBubble({
             </span>
           )}
         </div>
+      )}
+
+      {/* PPTX Viewer Modal */}
+      {viewingPptx && (
+        <PptxViewerModal
+          reportId={viewingPptx.reportId}
+          filename={viewingPptx.filename}
+          downloadUrl={viewingPptx.downloadUrl}
+          onClose={() => setViewingPptx(null)}
+        />
       )}
     </div>
   );

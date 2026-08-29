@@ -6,8 +6,11 @@ import {
   Download,
   ExternalLink,
   Loader2,
+  Eye,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { isLibreOfficeInstalled } from "@/api/depsClient";
+import { PptxViewerModal } from "@/components/chat/PptxViewerModal";
 import { cn } from "@/lib/utils";
 
 interface GeneratedFile {
@@ -22,6 +25,7 @@ interface GeneratedFile {
   conversation_title: string | null;
   file_size: number | null;
   original_prompt: string | null;
+  thumbnail_url: string | null;
 }
 
 const fileTypeConfig: Record<
@@ -84,6 +88,46 @@ function getToolName(deliverableType: string): string {
   return deliverableType;
 }
 
+/** Thumbnail with onError fallback to a file-type icon.
+ */
+function FileThumbnail({
+  fileType,
+  thumbnailUrl,
+}: {
+  fileType: string;
+  thumbnailUrl: string | null;
+}) {
+  const [thumbError, setThumbError] = useState(false);
+  const cfg = fileTypeConfig[fileType] ?? fileTypeConfig.image;
+  const Icon = cfg.icon;
+  const showThumb = thumbnailUrl && !thumbError;
+
+  if (showThumb) {
+    return (
+      <div className="w-14 h-10 rounded-lg shrink-0 overflow-hidden bg-secondary/50 ring-1 ring-border">
+        <img
+          src={thumbnailUrl!}
+          alt="thumbnail"
+          onError={() => setThumbError(true)}
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
+        cfg.bg,
+      )}
+    >
+      <Icon className={cn("w-5 h-5", cfg.color)} />
+    </div>
+  );
+}
+
 export function GeneratedFilesSection({
   onOpenConversation,
 }: {
@@ -92,6 +136,17 @@ export function GeneratedFilesSection({
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
+  const [libreOfficeAvailable, setLibreOfficeAvailable] = useState(false);
+  const [viewingPptx, setViewingPptx] = useState<{
+    reportId: string;
+    filename: string;
+    downloadUrl: string;
+  } | null>(null);
+
+  // Check if LibreOffice is installed (for PPTX view feature)
+  useEffect(() => {
+    isLibreOfficeInstalled().then(setLibreOfficeAvailable);
+  }, []);
 
   const loadFiles = useCallback(async () => {
     setIsLoading(true);
@@ -169,24 +224,16 @@ export function GeneratedFilesSection({
           ) : (
             <div className="space-y-1.5">
               {files.map((file, i) => {
-                const cfg =
-                  fileTypeConfig[file.file_type] ?? fileTypeConfig.image;
-                const Icon = cfg.icon;
                 const { date, time } = formatDate(file.created_at);
                 return (
                   <div
                     key={i}
                     className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-accent/20 transition-colors"
                   >
-                    {/* File icon */}
-                    <div
-                      className={cn(
-                        "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-                        cfg.bg,
-                      )}
-                    >
-                      <Icon className={cn("w-5 h-5", cfg.color)} />
-                    </div>
+                    <FileThumbnail
+                      fileType={file.file_type}
+                      thumbnailUrl={file.thumbnail_url}
+                    />
 
                     {/* File info */}
                     <div className="flex-1 min-w-0">
@@ -225,6 +272,23 @@ export function GeneratedFilesSection({
                           <ExternalLink className="w-4 h-4" />
                         </button>
                       )}
+                      {libreOfficeAvailable &&
+                        file.file_type === "pptx" &&
+                        file.report_id && (
+                          <button
+                            onClick={() =>
+                              setViewingPptx({
+                                reportId: file.report_id!,
+                                filename: file.filename,
+                                downloadUrl: file.download_url,
+                              })
+                            }
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                            title="View presentation"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        )}
                       <a
                         href={file.download_url}
                         download={file.filename}
@@ -241,6 +305,16 @@ export function GeneratedFilesSection({
           )}
         </div>
       </ScrollArea>
+
+      {/* PPTX Viewer Modal */}
+      {viewingPptx && (
+        <PptxViewerModal
+          reportId={viewingPptx.reportId}
+          filename={viewingPptx.filename}
+          downloadUrl={viewingPptx.downloadUrl}
+          onClose={() => setViewingPptx(null)}
+        />
+      )}
     </div>
   );
 }

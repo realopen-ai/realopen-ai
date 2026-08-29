@@ -97,6 +97,7 @@ class GeneratedFileItem(BaseModel):
     message_id: Optional[str] = None
     file_size: Optional[int] = None
     original_prompt: Optional[str] = None
+    thumbnail_url: Optional[str] = None
 
 
 # ─── Template serialization ──────────────────────────────────────────
@@ -517,6 +518,11 @@ async def list_generated_files(
                 "conversation_title": row[8] or "Untitled",
                 "file_size": file_size,
                 "original_prompt": original_prompt,
+                "thumbnail_url": (
+                    f"/api/reports/{report_id}/thumbnail"
+                    if report_id and ftype == "pptx"
+                    else None
+                ),
             }
         )
 

@@ -50,6 +50,3 @@ backend/app/templates/pptx/custom/
 
 # Data directory
 data/
-
-# Poetry
-backend/poetry.lock
