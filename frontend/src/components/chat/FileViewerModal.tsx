@@ -71,7 +71,7 @@ export function FileViewerModal({
   const [current, setCurrent] = useState(1); // 1-based
   const [slideLoaded, setSlideLoaded] = useState(false);
   const [showThumbs, setShowThumbs] = useState(true);
-  const [showNotes, setShowNotes] = useState(false);
+  const [showNotes, setShowNotes] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
 
   const filmstripRef = useRef<HTMLDivElement>(null);
