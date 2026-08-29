@@ -2,8 +2,8 @@
 LibreOffice helper — headless document conversion and thumbnail rendering.
 
 This module wraps the `soffice` wrapper script (at /usr/lib/libreoffice/program/soffice)
-to provide PPTX -> PNG thumbnail rendering, PPTX -> PDF conversion, and
-PPTX -> per-slide JPEG rendering (for the in-app slide viewer).
+to provide PPTX → PNG thumbnail rendering, PPTX → PDF conversion, and
+PPTX → per-slide JPEG rendering (for the in-app slide viewer).
 
 LibreOffice is installed to its DEFAULT system location (/usr/lib/libreoffice)
 via apt-get install, and that path is mounted as a Docker volume. This means:
@@ -396,7 +396,7 @@ async def clean_pptx_with_libreoffice(pptx_path: Path) -> bool:
 #
 # Results are cached in a directory next to the PPTX:
 #     data/reports/{report_id}_slides/
-#         manifest.json          — count + dims + source mtime/size
+#         manifest.json          — count + dims + notes + source mtime/size
 #         slide_001.jpg          — full-size render (≤ 1600px wide)
 #         slide_001_t.jpg        — thumbnail (≤ 360px wide)
 #         ...
@@ -405,7 +405,8 @@ async def clean_pptx_with_libreoffice(pptx_path: Path) -> bool:
 # (mtime or size mismatch against the manifest).
 
 # Manifest format version — bump when the layout/naming changes.
-SLIDES_MANIFEST_VERSION = 1
+# v2: adds the per-slide speaker-notes list ("notes": [str, ...]).
+SLIDES_MANIFEST_VERSION = 2
 
 # Full render max width (px). 16:9 @1600px is crisp on retina yet ~150-300KB.
 SLIDE_MAX_WIDTH = 1600
@@ -489,6 +490,49 @@ def is_slide_cache_valid(pptx_path: Path, cache_dir: Optional[Path] = None) -> b
     return True
 
 
+def extract_pptx_speaker_notes(
+    pptx_path: Path,
+    expected_count: Optional[int] = None,
+) -> list[str]:
+    """Extract per-slide speaker-notes text from a PPTX.
+
+    Returns one string per slide, in slide order — ``""`` for slides that
+    carry no notes. Uses python-pptx (the same library the pptx_gen service
+    already depends on) with a lazy import, and NEVER raises: on any failure
+    (missing library, unreadable/corrupt file) it returns ``[]`` so the
+    slide viewer simply degrades to "no notes available".
+
+    If ``expected_count`` is given (e.g. the number of rendered PDF pages),
+    the list is padded with "" / truncated so it always aligns 1:1 with the
+    rendered slides.
+    """
+    try:
+        from pptx import Presentation
+    except ImportError as e:
+        _log("python-pptx unavailable for notes extraction: %s", e)
+        return []
+
+    notes: list[str] = []
+    try:
+        prs = Presentation(str(pptx_path))
+        for slide in prs.slides:
+            text = ""
+            if slide.has_notes_slide:
+                # notes_text_frame.text joins paragraphs with \n already.
+                text = (slide.notes_slide.notes_text_frame.text or "").strip()
+            notes.append(text)
+    except Exception as e:
+        _log("speaker-notes extraction failed (%s): %s", pptx_path.name, e)
+        return []
+
+    if expected_count is not None:
+        if len(notes) < expected_count:
+            notes.extend([""] * (expected_count - len(notes)))
+        elif len(notes) > expected_count:
+            notes = notes[:expected_count]
+    return notes
+
+
 def _pil_to_jpeg_bytes(img, max_width: int, quality: int) -> tuple[bytes, int, int]:
     """Flatten to RGB, downscale to max_width, encode as JPEG.
 
@@ -528,7 +572,7 @@ def _render_pdf_pages_with_fitz(
     Runs synchronously — call via asyncio.to_thread().
     """
     try:
-        import fitz
+        import fitz  # PyMuPDF
         from PIL import Image
     except ImportError as e:
         _log("PyMuPDF/Pillow unavailable for rendering: %s", e)
@@ -642,18 +686,29 @@ def _write_slides_manifest(
     cache_dir: Path,
     pptx_path: Path,
     pages: list[dict],
+    notes: Optional[list[str]] = None,
 ) -> dict:
-    """Persist manifest.json describing a fresh slide render cache."""
+    """Persist manifest.json describing a fresh slide render cache.
+
+    ``notes`` (per-slide speaker notes, aligned with ``pages``) is padded or
+    truncated to ``len(pages)`` so it always aligns 1:1 with the renders.
+    """
     import json
     import time
 
     src_stat = pptx_path.stat()
     first = pages[0]
+    slide_notes = list(notes or [])
+    if len(slide_notes) < len(pages):
+        slide_notes.extend([""] * (len(pages) - len(slide_notes)))
+    elif len(slide_notes) > len(pages):
+        slide_notes = slide_notes[: len(pages)]
     manifest = {
         "version": SLIDES_MANIFEST_VERSION,
         "count": len(pages),
         "width": first.get("width") or 0,
         "height": first.get("height") or 0,
+        "notes": slide_notes,
         "source_mtime": src_stat.st_mtime,
         "source_size": src_stat.st_size,
         "generated_at": time.time(),
@@ -672,7 +727,8 @@ async def convert_pptx_to_slide_images(
     """Render every slide of a PPTX as JPEG images (full + thumbnail).
 
     Pipeline: PPTX → PDF (LibreOffice, cached next to the PPTX) → per-page
-    JPEGs (PyMuPDF primary, pdftoppm fallback) → manifest.json.
+    JPEGs (PyMuPDF primary, pdftoppm fallback) → manifest.json (which also
+    embeds the per-slide speaker notes extracted from the PPTX).
 
     A fresh cache is written to {cache_dir}; any previous partial cache is
     wiped first so the directory never mixes generations.
@@ -731,8 +787,12 @@ async def convert_pptx_to_slide_images(
         _log("no slide images rendered for %s", pptx_path.name)
         return None
 
+    # Step 3: extract per-slide speaker notes from the PPTX itself (cheap,
+    # python-pptx only) so the manifest carries the full viewing payload.
+    notes = await asyncio.to_thread(extract_pptx_speaker_notes, pptx_path, len(pages))
+
     manifest = await asyncio.to_thread(
-        _write_slides_manifest, cache_dir, pptx_path, pages
+        _write_slides_manifest, cache_dir, pptx_path, pages, notes
     )
     _log(
         "slide images rendered: %s → %d slides in %s",
