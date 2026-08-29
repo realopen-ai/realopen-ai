@@ -12,6 +12,7 @@ import {
   Download,
   LayoutGrid,
   Loader2,
+  StickyNote,
   X,
 } from "lucide-react";
 
@@ -26,7 +27,8 @@ import {
  *
  * This component fetches the manifest on open and presents the deck with
  * prev/next controls, a page indicator, a collapsible thumbnail filmstrip,
- * keyboard navigation (←/→, Home/End, Esc), touch swipe, and adjacent-slide
+ * a speaker-notes panel (when the deck carries notes), keyboard navigation
+ * (←/→, Home/End, Esc, N for notes), touch swipe, and adjacent-slide
  * preloading.
  */
 
@@ -34,6 +36,8 @@ type SlideInfo = {
   index: number;
   url: string;
   thumb_url: string;
+  /** Per-slide speaker notes ("" when the slide has none). */
+  notes?: string;
 };
 
 type SlidesManifest = {
@@ -61,12 +65,15 @@ export function PptxViewerModal({
   const [current, setCurrent] = useState(1); // 1-based
   const [slideLoaded, setSlideLoaded] = useState(false);
   const [showThumbs, setShowThumbs] = useState(true);
+  const [showNotes, setShowNotes] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
 
   const filmstripRef = useRef<HTMLDivElement>(null);
   const touchStartX = useRef<number | null>(null);
 
   const count = manifest?.count ?? 0;
+  const hasAnyNotes =
+    manifest?.slides.some((s) => (s.notes ?? "").trim().length > 0) ?? false;
 
   // ── Fetch the slide manifest ────────────────────────────────────────
   useEffect(() => {
@@ -149,6 +156,13 @@ export function PptxViewerModal({
         goTo(1);
       } else if (e.key === "End") {
         goTo(count);
+      } else if (
+        (e.key === "n" || e.key === "N") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        setShowNotes((s) => !s);
       }
     };
     window.addEventListener("keydown", handleKey);
@@ -184,6 +198,7 @@ export function PptxViewerModal({
   };
 
   const currentSlide = manifest?.slides[current - 1] ?? null;
+  const currentNotes = (currentSlide?.notes ?? "").trim();
   const atFirst = current <= 1;
   const atLast = current >= count;
 
@@ -213,6 +228,24 @@ export function PptxViewerModal({
               <span>/</span>
               <span>{count}</span>
             </div>
+          )}
+
+          {/* Speaker-notes toggle */}
+          {manifest && hasAnyNotes && (
+            <button
+              onClick={() => setShowNotes((s) => !s)}
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                showNotes
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              }`}
+              title={
+                showNotes ? "Hide speaker notes (N)" : "Show speaker notes (N)"
+              }
+              aria-pressed={showNotes}
+            >
+              <StickyNote className="w-4 h-4" />
+            </button>
           )}
 
           {/* Filmstrip toggle */}
@@ -367,6 +400,34 @@ export function PptxViewerModal({
           )}
         </div>
 
+        {/* Speaker notes — current slide */}
+        {manifest && showNotes && hasAnyNotes && (
+          <div
+            className="shrink-0 border-t border-border bg-card/80 px-4 py-3"
+            role="region"
+            aria-label={`Speaker notes for slide ${current}`}
+          >
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <StickyNote className="w-3.5 h-3.5 text-primary shrink-0" />
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Speaker notes — slide {current} of {count}
+              </p>
+            </div>
+            <div
+              className="max-h-24 sm:max-h-32 overflow-y-auto pr-1 text-[13px] leading-relaxed text-foreground/90 whitespace-pre-wrap"
+              style={{ scrollbarWidth: "thin" }}
+            >
+              {currentNotes ? (
+                currentNotes
+              ) : (
+                <span className="italic text-muted-foreground/60">
+                  No notes for this slide.
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Filmstrip — slide overview */}
         {manifest && count > 1 && showThumbs && (
           <div
@@ -399,6 +460,15 @@ export function PptxViewerModal({
                     draggable={false}
                     className="w-full h-full object-cover"
                   />
+                  {(s.notes ?? "").trim().length > 0 && (
+                    <span
+                      className="absolute top-0.5 left-0.5 p-0.5 rounded bg-black/70 text-amber-300"
+                      title="Has speaker notes"
+                      aria-hidden="true"
+                    >
+                      <StickyNote className="w-2.5 h-2.5" />
+                    </span>
+                  )}
                   <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/70 text-[9px] font-medium tabular-nums text-white">
                     {s.index}
                   </span>
