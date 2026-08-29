@@ -6,8 +6,11 @@ import {
   Download,
   ExternalLink,
   Loader2,
+  Eye,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { isLibreOfficeInstalled } from "@/api/depsClient";
+import { PptxViewerModal } from "@/components/chat/PptxViewerModal";
 import { cn } from "@/lib/utils";
 
 interface GeneratedFile {
@@ -133,6 +136,17 @@ export function GeneratedFilesSection({
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
+  const [libreOfficeAvailable, setLibreOfficeAvailable] = useState(false);
+  const [viewingPptx, setViewingPptx] = useState<{
+    reportId: string;
+    filename: string;
+    downloadUrl: string;
+  } | null>(null);
+
+  // Check if LibreOffice is installed (for PPTX view feature)
+  useEffect(() => {
+    isLibreOfficeInstalled().then(setLibreOfficeAvailable);
+  }, []);
 
   const loadFiles = useCallback(async () => {
     setIsLoading(true);
@@ -258,6 +272,23 @@ export function GeneratedFilesSection({
                           <ExternalLink className="w-4 h-4" />
                         </button>
                       )}
+                      {libreOfficeAvailable &&
+                        file.file_type === "pptx" &&
+                        file.report_id && (
+                          <button
+                            onClick={() =>
+                              setViewingPptx({
+                                reportId: file.report_id!,
+                                filename: file.filename,
+                                downloadUrl: file.download_url,
+                              })
+                            }
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                            title="View presentation"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        )}
                       <a
                         href={file.download_url}
                         download={file.filename}
@@ -274,6 +305,16 @@ export function GeneratedFilesSection({
           )}
         </div>
       </ScrollArea>
+
+      {/* PPTX Viewer Modal */}
+      {viewingPptx && (
+        <PptxViewerModal
+          reportId={viewingPptx.reportId}
+          filename={viewingPptx.filename}
+          downloadUrl={viewingPptx.downloadUrl}
+          onClose={() => setViewingPptx(null)}
+        />
+      )}
     </div>
   );
 }
