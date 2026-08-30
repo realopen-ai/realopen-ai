@@ -206,6 +206,7 @@ interface ChatState {
     messageId: string,
     streaming: boolean,
   ) => void;
+  setConversationTitle: (conversationId: string, title: string) => void;
   setModels: (models: ModelOption[]) => void;
   setProfileName: (name: string) => void;
   setProfileLabel: (label: string) => void;
@@ -545,6 +546,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               ),
             }
           : c,
+      ),
+    }));
+  },
+
+  setConversationTitle: (conversationId, title) => {
+    const clean = (title ?? "").trim();
+    if (!clean) return;
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId ? { ...c, title: clean } : c,
       ),
     }));
   },
