@@ -201,6 +201,11 @@ export interface ConversationDTO {
   model: string | null;
   createdAt: number;
   updatedAt: number;
+  // Sidebar organization flags (three-dots menu).
+  pinned?: boolean;
+  archived?: boolean;
+  pinnedAt?: number | null;
+  archivedAt?: number | null;
   // Cross-session context visibility — lets the Brain page show which
   // conversations have been summarized and what the summary is.
   summary?: string | null;
@@ -241,15 +246,31 @@ export interface BackendDeliverable {
   created_at?: number;
 }
 
+/**
+ * Fetch the conversation list.
+ *
+ * `archived` filters the result: omitted = all conversations,
+ * false = only active (sidebar main list), true = only archived
+ * (sidebar "Archived" section). The backend orders pinned conversations
+ * first, then most-recently-updated.
+ */
 export async function fetchConversations(
   limit = 50,
   offset = 0,
+  archived?: boolean,
 ): Promise<ConversationDTO[]> {
-  log(`➡️  fetchConversations  limit=${limit}  offset=${offset}`);
+  log(
+    `➡️  fetchConversations  limit=${limit}  offset=${offset}  archived=${archived}`,
+  );
   try {
-    const res = await fetch(
-      `/api/conversations?limit=${limit}&offset=${offset}`,
-    );
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (archived !== undefined) {
+      params.set("archived", String(archived));
+    }
+    const res = await fetch(`/api/conversations?${params.toString()}`);
     log(`   response  status=${res.status}  ok=${res.ok}`);
     if (res.ok) {
       const data = await res.json();
@@ -320,6 +341,38 @@ export async function updateConversationTitle(
     );
     return res.ok;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * Update a conversation's pinned / archived flags (three-dots menu).
+ * Only the flags present in `flags` are sent; the backend leaves the
+ * others unchanged. Returns true when the request succeeded.
+ */
+export async function updateConversationFlags(
+  conversationId: string,
+  flags: { pinned?: boolean; archived?: boolean },
+): Promise<boolean> {
+  log(
+    `➡️  updateConversationFlags  convId=${conversationId}  flags=${JSON.stringify(flags)}`,
+  );
+  try {
+    const params = new URLSearchParams();
+    if (flags.pinned !== undefined) {
+      params.set("pinned", String(flags.pinned));
+    }
+    if (flags.archived !== undefined) {
+      params.set("archived", String(flags.archived));
+    }
+    const res = await fetch(
+      `/api/conversations/${conversationId}?${params.toString()}`,
+      { method: "PATCH" },
+    );
+    log(`   response  status=${res.status}  ok=${res.ok}`);
+    return res.ok;
+  } catch (err) {
+    dbgError(`   ❌ updateConversationFlags error: ${err}`);
     return false;
   }
 }
