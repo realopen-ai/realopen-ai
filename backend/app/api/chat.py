@@ -29,6 +29,8 @@ from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import rag as rag_service
+from app.services.title_generator import maybe_generate_and_save_title
+from app.services.conversations import DEFAULT_TITLE
 from app.services.memory_extractor import (
     get_messages_since_watermark,
     update_watermark,
@@ -170,6 +172,19 @@ async def chat(
                         db, conv_id, "assistant", content, model=resolved_model
                     )
                     dbg("   saved assistant message to DB (conv_id=%s)", conv_id)
+
+                    # Auto-title the conversation from the first user
+                    # message (LLM via default_utility; no-op on later turns
+                    # and when the title is no longer the default).
+                    try:
+                        new_title = await maybe_generate_and_save_title(
+                            conv_id,
+                            request.messages[-1].content if request.messages else "",
+                        )
+                        if new_title:
+                            dbg("   🏷️  conversation auto-titled: %r", new_title)
+                    except Exception as e:
+                        dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
 
                 return ChatResponse(
                     model=resolved_model,
@@ -512,6 +527,10 @@ async def chat_stream(request: ChatRequest):
     # after this function has already returned
     _conv_id = conv_id
     _resolved_model = resolved_model
+    # The user's message — captured BEFORE generate() runs so the auto-
+    # titler always sees the original text (not anything the agent loop
+    # may have appended to the messages list).
+    _user_msg_for_title = messages[-1]["content"] if messages else ""
 
     async def generate():
         _log("   🔄 generate() started — entering agent loop")
@@ -667,6 +686,25 @@ async def chat_stream(request: ChatRequest):
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
 
+        # ── Auto-title from the first user message (LLM via ──
+        # default_utility). Runs at most once per conversation: the service
+        # skips unless the title is still the default and this is the first
+        # turn. The SSE event updates the sidebar live; the DB write inside
+        # the service makes the title survive reloads.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled: %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
+
         # ── Record metrics for the chat request ──
         if request_start:
             elapsed = time.time() - request_start
@@ -801,6 +839,10 @@ async def chat_stream_multipart(
     # Capture for closure
     _conv_id = conv_id
     _resolved_model = resolved_model
+    # The user's message — captured BEFORE generate() runs, because the
+    # document-digestion step appends a system hint to parsed_messages
+    # inside the generator (which would otherwise become the last message).
+    _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — entering agent loop")
@@ -1079,6 +1121,22 @@ async def chat_stream_multipart(
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
 
+        # ── Auto-title from the first user message (LLM via ──
+        # default_utility). Same guard + SSE event as /chat/stream.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled (multipart): %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
+
         # ── Record metrics for the multipart chat request ──
         if request_start:
             elapsed = time.time() - request_start
@@ -1128,7 +1186,7 @@ async def list_conversations(
 
 @router.post("/conversations")
 async def create_conversation(
-    title: str = "New Chat",
+    title: str = DEFAULT_TITLE,
     model: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
