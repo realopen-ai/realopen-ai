@@ -1173,11 +1173,28 @@ async def chat_stream_multipart(
 async def list_conversations(
     limit: int = 50,
     offset: int = 0,
+    archived: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all conversations."""
-    dbg("🔵 GET /conversations  limit=%d  offset=%d", limit, offset)
-    convs = await conv_service.list_conversations(db, limit=limit, offset=offset)
+    """List conversations.
+
+    Ordering: pinned conversations first (most recently pinned at the top),
+    then by most recently updated.
+
+    ``archived`` query param filters the result:
+      * omitted — all conversations
+      * ``false`` — only active conversations (sidebar main list)
+      * ``true``  — only archived conversations (sidebar "Archived" section)
+    """
+    dbg(
+        "🔵 GET /conversations  limit=%d  offset=%d  archived=%s",
+        limit,
+        offset,
+        archived,
+    )
+    convs = await conv_service.list_conversations(
+        db, limit=limit, offset=offset, archived=archived
+    )
     dbg("   returning %d conversations", len(convs))
     return {
         "conversations": [await conv_service.conversation_to_dict(c) for c in convs]
@@ -1236,15 +1253,45 @@ async def delete_conversation(
 async def update_conversation(
     conversation_id: str,
     title: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a conversation (e.g. rename)."""
-    dbg("🔵 PATCH /conversations/%s  title=%s", conversation_id, title)
+    """Update a conversation.
+
+    Supports rename (``title``), pin/unpin (``pinned``) and
+    archive/unarchive (``archived``) — all as optional query params; only
+    the params that are passed are applied. Powers the sidebar's
+    per-conversation three-dots menu.
+    """
+    dbg(
+        "🔵 PATCH /conversations/%s  title=%s  pinned=%s  archived=%s",
+        conversation_id,
+        title,
+        pinned,
+        archived,
+    )
     conv_id = _parse_uuid(conversation_id)
+
     if title:
         await conv_service.update_conversation_title(db, conv_id, title)
+
+    if pinned is not None or archived is not None:
+        found = await conv_service.set_conversation_flags(
+            db, conv_id, pinned=pinned, archived=archived
+        )
+        if not found:
+            dbg("   ⚠️  conversation not found: %s", conversation_id)
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await conv_service.get_conversation(db, conv_id)
     dbg("   updated conversation %s", conversation_id)
-    return {"status": "updated"}
+    return {
+        "status": "updated",
+        "conversation": (
+            await conv_service.conversation_to_dict(conv) if conv else None
+        ),
+    }
 
 
 # ─── Past-conversation search ────────────────────────────────────────
