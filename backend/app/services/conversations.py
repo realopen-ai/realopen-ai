@@ -14,10 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message, Document
 
+# Default title applied to freshly created conversations. The auto-titling
+# service (services/title_generator.py) replaces it with a short LLM-
+# generated title after the first user message.
+DEFAULT_TITLE = "New Chat"
+
 
 async def create_conversation(
     db: AsyncSession,
-    title: str = "New Chat",
+    title: str = DEFAULT_TITLE,
     model: Optional[str] = None,
 ) -> Conversation:
     """Create a new conversation."""
