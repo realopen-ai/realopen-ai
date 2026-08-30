@@ -20,6 +20,16 @@ class Conversation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Sidebar organization flags. Pinned conversations float to the top of
+    # the sidebar (most recently pinned first); archived conversations are
+    # hidden from the main list and shown under a collapsible "Archived"
+    # section. Both are toggled from the per-conversation three-dots menu.
+    # See migration: b5d1e4f7a8c2.
+    pinned = Column(Boolean, nullable=False, default=False, server_default="false")
+    pinned_at = Column(DateTime, nullable=True)
+    archived = Column(Boolean, nullable=False, default=False, server_default="false")
+    archived_at = Column(DateTime, nullable=True)
+
     # Watermark for memory extraction: the ID of the last message that has
     # been processed by the memory extractor. NULL means "never extracted" —
     # all messages in this conversation are considered new.

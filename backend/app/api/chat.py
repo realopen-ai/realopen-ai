@@ -29,6 +29,8 @@ from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import rag as rag_service
+from app.services.title_generator import maybe_generate_and_save_title
+from app.services.conversations import DEFAULT_TITLE
 from app.services.memory_extractor import (
     get_messages_since_watermark,
     update_watermark,
@@ -170,6 +172,19 @@ async def chat(
                         db, conv_id, "assistant", content, model=resolved_model
                     )
                     dbg("   saved assistant message to DB (conv_id=%s)", conv_id)
+
+                    # Auto-title the conversation from the first user
+                    # message (LLM via default_utility; no-op on later turns
+                    # and when the title is no longer the default).
+                    try:
+                        new_title = await maybe_generate_and_save_title(
+                            conv_id,
+                            request.messages[-1].content if request.messages else "",
+                        )
+                        if new_title:
+                            dbg("   🏷️  conversation auto-titled: %r", new_title)
+                    except Exception as e:
+                        dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
 
                 return ChatResponse(
                     model=resolved_model,
@@ -512,6 +527,10 @@ async def chat_stream(request: ChatRequest):
     # after this function has already returned
     _conv_id = conv_id
     _resolved_model = resolved_model
+    # The user's message — captured BEFORE generate() runs so the auto-
+    # titler always sees the original text (not anything the agent loop
+    # may have appended to the messages list).
+    _user_msg_for_title = messages[-1]["content"] if messages else ""
 
     async def generate():
         _log("   🔄 generate() started — entering agent loop")
@@ -667,6 +686,25 @@ async def chat_stream(request: ChatRequest):
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
 
+        # ── Auto-title from the first user message (LLM via ──
+        # default_utility). Runs at most once per conversation: the service
+        # skips unless the title is still the default and this is the first
+        # turn. The SSE event updates the sidebar live; the DB write inside
+        # the service makes the title survive reloads.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled: %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
+
         # ── Record metrics for the chat request ──
         if request_start:
             elapsed = time.time() - request_start
@@ -801,6 +839,10 @@ async def chat_stream_multipart(
     # Capture for closure
     _conv_id = conv_id
     _resolved_model = resolved_model
+    # The user's message — captured BEFORE generate() runs, because the
+    # document-digestion step appends a system hint to parsed_messages
+    # inside the generator (which would otherwise become the last message).
+    _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — entering agent loop")
@@ -1079,6 +1121,22 @@ async def chat_stream_multipart(
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
 
+        # ── Auto-title from the first user message (LLM via ──
+        # default_utility). Same guard + SSE event as /chat/stream.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled (multipart): %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
+
         # ── Record metrics for the multipart chat request ──
         if request_start:
             elapsed = time.time() - request_start
@@ -1115,11 +1173,28 @@ async def chat_stream_multipart(
 async def list_conversations(
     limit: int = 50,
     offset: int = 0,
+    archived: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all conversations."""
-    dbg("🔵 GET /conversations  limit=%d  offset=%d", limit, offset)
-    convs = await conv_service.list_conversations(db, limit=limit, offset=offset)
+    """List conversations.
+
+    Ordering: pinned conversations first (most recently pinned at the top),
+    then by most recently updated.
+
+    ``archived`` query param filters the result:
+      * omitted — all conversations
+      * ``false`` — only active conversations (sidebar main list)
+      * ``true``  — only archived conversations (sidebar "Archived" section)
+    """
+    dbg(
+        "🔵 GET /conversations  limit=%d  offset=%d  archived=%s",
+        limit,
+        offset,
+        archived,
+    )
+    convs = await conv_service.list_conversations(
+        db, limit=limit, offset=offset, archived=archived
+    )
     dbg("   returning %d conversations", len(convs))
     return {
         "conversations": [await conv_service.conversation_to_dict(c) for c in convs]
@@ -1128,7 +1203,7 @@ async def list_conversations(
 
 @router.post("/conversations")
 async def create_conversation(
-    title: str = "New Chat",
+    title: str = DEFAULT_TITLE,
     model: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -1178,15 +1253,45 @@ async def delete_conversation(
 async def update_conversation(
     conversation_id: str,
     title: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a conversation (e.g. rename)."""
-    dbg("🔵 PATCH /conversations/%s  title=%s", conversation_id, title)
+    """Update a conversation.
+
+    Supports rename (``title``), pin/unpin (``pinned``) and
+    archive/unarchive (``archived``) — all as optional query params; only
+    the params that are passed are applied. Powers the sidebar's
+    per-conversation three-dots menu.
+    """
+    dbg(
+        "🔵 PATCH /conversations/%s  title=%s  pinned=%s  archived=%s",
+        conversation_id,
+        title,
+        pinned,
+        archived,
+    )
     conv_id = _parse_uuid(conversation_id)
+
     if title:
         await conv_service.update_conversation_title(db, conv_id, title)
+
+    if pinned is not None or archived is not None:
+        found = await conv_service.set_conversation_flags(
+            db, conv_id, pinned=pinned, archived=archived
+        )
+        if not found:
+            dbg("   ⚠️  conversation not found: %s", conversation_id)
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await conv_service.get_conversation(db, conv_id)
     dbg("   updated conversation %s", conversation_id)
-    return {"status": "updated"}
+    return {
+        "status": "updated",
+        "conversation": (
+            await conv_service.conversation_to_dict(conv) if conv else None
+        ),
+    }
 
 
 # ─── Past-conversation search ────────────────────────────────────────

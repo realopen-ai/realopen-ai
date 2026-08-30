@@ -184,11 +184,18 @@ export function ChatArea() {
       });
       store.setStreaming(convId, assistantMsgId, true);
 
-      // Auto-title the conversation based on first user message
+      // Optimistic preview title from the first user message — shows
+      // instantly in the sidebar while the backend generates the real LLM
+      // title (the `conversation_title` SSE event replaces this preview
+      // once it arrives).
       const currentConv = useChatStore
         .getState()
         .conversations.find((c) => c.id === convId);
-      if (currentConv && currentConv.messages.length <= 2) {
+      if (
+        currentConv &&
+        currentConv.messages.length <= 2 &&
+        (!currentConv.title || currentConv.title === "New Chat")
+      ) {
         const title =
           content.length > 40 ? content.slice(0, 40) + "..." : content;
         useChatStore.setState((s) => ({
@@ -244,6 +251,12 @@ export function ChatArea() {
         },
         onMemoryExtractionStart: () => {
           useMemoryStore.getState().setExtracting(true);
+        },
+        // Auto-title — the backend generated an LLM title from the first
+        // user message (default_utility model) and already persisted it;
+        // update the sidebar live. Replaces the optimistic preview above.
+        onConversationTitle: (title: string) => {
+          useChatStore.getState().setConversationTitle(capturedConvId, title);
         },
         onMemoryExtractionDone: ({
           count,

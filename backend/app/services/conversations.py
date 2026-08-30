@@ -14,10 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message, Document
 
+# Default title applied to freshly created conversations. The auto-titling
+# service (services/title_generator.py) replaces it with a short LLM-
+# generated title after the first user message.
+DEFAULT_TITLE = "New Chat"
+
 
 async def create_conversation(
     db: AsyncSession,
-    title: str = "New Chat",
+    title: str = DEFAULT_TITLE,
     model: Optional[str] = None,
 ) -> Conversation:
     """Create a new conversation."""
@@ -44,15 +49,30 @@ async def get_conversation(
 
 
 async def list_conversations(
-    db: AsyncSession, limit: int = 50, offset: int = 0
+    db: AsyncSession,
+    limit: int = 50,
+    offset: int = 0,
+    archived: Optional[bool] = None,
 ) -> List[Conversation]:
-    """List conversations, most recently updated first."""
-    result = await db.execute(
-        select(Conversation)
-        .order_by(Conversation.updated_at.desc())
-        .limit(limit)
-        .offset(offset)
+    """List conversations.
+
+    Ordering: pinned conversations first (most recently pinned at the top),
+    then everything else by most recently updated.
+
+    ``archived`` filters the result:
+      * ``None``  — all conversations (pinned-first ordering still applies)
+      * ``False`` — only active conversations (sidebar main list)
+      * ``True``  — only archived conversations (sidebar "Archived" section)
+    """
+    stmt = select(Conversation)
+    if archived is not None:
+        stmt = stmt.where(Conversation.archived.is_(archived))
+    stmt = stmt.order_by(
+        Conversation.pinned.desc(),
+        Conversation.pinned_at.desc(),
+        Conversation.updated_at.desc(),
     )
+    result = await db.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 
 
@@ -66,6 +86,57 @@ async def update_conversation_title(
         .values(title=title, updated_at=datetime.utcnow())
     )
     await db.flush()
+
+
+async def set_conversation_flags(
+    db: AsyncSession,
+    conversation_id: uuid.UUID,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
+) -> bool:
+    """Set a conversation's pinned / archived flags.
+
+    Only flags explicitly passed as ``True`` / ``False`` are changed
+    (``None`` = leave unchanged). Returns ``True`` if the conversation
+    exists, ``False`` if it was not found.
+
+    Pinning an archived conversation also unarchives it — a pinned chat
+    would otherwise be invisible in the main sidebar list.
+    """
+    conv = await get_conversation(db, conversation_id)
+    if not conv:
+        return False
+
+    now = datetime.utcnow()
+    values: dict = {}
+
+    if pinned is not None:
+        values["pinned"] = pinned
+        values["pinned_at"] = now if pinned else None
+        # A pinned chat must be visible: pin implies unarchive.
+        if pinned and conv.archived:
+            values["archived"] = False
+            values["archived_at"] = None
+
+    if archived is not None:
+        # Don't clobber the unarchive triggered by pinning above.
+        if "archived" not in values:
+            values["archived"] = archived
+            values["archived_at"] = now if archived else None
+        # Archiving unpins — an archived chat can't float on top of the
+        # main list it no longer appears in.
+        if archived and conv.pinned:
+            values["pinned"] = False
+            values["pinned_at"] = None
+
+    if values:
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(**values)
+        )
+        await db.flush()
+    return True
 
 
 async def delete_conversation(db: AsyncSession, conversation_id: uuid.UUID) -> None:
@@ -172,6 +243,19 @@ async def conversation_to_dict(conv: Conversation) -> dict:
         "model": conv.model,
         "createdAt": int(conv.created_at.timestamp() * 1000) if conv.created_at else 0,
         "updatedAt": int(conv.updated_at.timestamp() * 1000) if conv.updated_at else 0,
+        # Sidebar organization flags (three-dots menu)
+        "pinned": bool(conv.pinned),
+        "archived": bool(conv.archived),
+        "pinnedAt": (
+            int(conv.pinned_at.timestamp() * 1000)
+            if getattr(conv, "pinned_at", None)
+            else None
+        ),
+        "archivedAt": (
+            int(conv.archived_at.timestamp() * 1000)
+            if getattr(conv, "archived_at", None)
+            else None
+        ),
         # Cross-session context visibility — lets the Brain page show
         # which conversations have been summarized and what the summary is.
         "summary": conv.summary if hasattr(conv, "summary") else None,

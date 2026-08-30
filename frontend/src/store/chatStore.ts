@@ -3,6 +3,8 @@ import {
   fetchConversations,
   createConversation as apiCreateConversation,
   deleteConversation as apiDeleteConversation,
+  updateConversationTitle as apiUpdateConversationTitle,
+  updateConversationFlags as apiUpdateConversationFlags,
   fetchConversationMessages,
   fetchConversationDetail,
   fetchModules as apiFetchModules,
@@ -157,6 +159,10 @@ export interface Conversation {
   model: string;
   createdAt: number;
   updatedAt: number;
+  pinned: boolean;
+  archived: boolean;
+  pinnedAt: number | null;
+  archivedAt: number | null;
 }
 
 export interface ModelOption {
@@ -206,6 +212,10 @@ interface ChatState {
     messageId: string,
     streaming: boolean,
   ) => void;
+  renameConversation: (id: string, title: string) => Promise<void>;
+  togglePinConversation: (id: string) => Promise<void>;
+  toggleArchiveConversation: (id: string) => Promise<void>;
+  setConversationTitle: (conversationId: string, title: string) => void;
   setModels: (models: ModelOption[]) => void;
   setProfileName: (name: string) => void;
   setProfileLabel: (label: string) => void;
@@ -300,6 +310,10 @@ function dtoToConversation(dto: ConversationDTO): Conversation {
     model: dto.model ?? "default",
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
+    pinned: dto.pinned ?? false,
+    archived: dto.archived ?? false,
+    pinnedAt: dto.pinnedAt ?? null,
+    archivedAt: dto.archivedAt ?? null,
   };
 }
 
@@ -385,7 +399,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadConversations: async () => {
     set({ isLoadingConversations: true });
     try {
-      const dtos = await fetchConversations();
+      // Fetch active + archived conversations in parallel (the sidebar
+      // shows active ones in the main list and archived ones under a
+      // collapsible "Archived" section).
+      const [activeDtos, archivedDtos] = await Promise.all([
+        fetchConversations(50, 0, false),
+        fetchConversations(100, 0, true),
+      ]);
+      const dtos = [...activeDtos, ...archivedDtos];
       const newConvs = dtos.map(dtoToConversation);
       set((s) => ({
         conversations: newConvs.map((newConv) => {
@@ -427,6 +448,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       model: get().selectedModel,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      pinned: false,
+      archived: false,
+      pinnedAt: null,
+      archivedAt: null,
     };
     set((s) => ({
       conversations: [conv, ...s.conversations],
@@ -547,6 +572,108 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : c,
       ),
     }));
+  },
+
+  setConversationTitle: (conversationId, title) => {
+    const clean = (title ?? "").trim();
+    if (!clean) return;
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId ? { ...c, title: clean } : c,
+      ),
+    }));
+  },
+
+  renameConversation: async (id, title) => {
+    const clean = (title ?? "").trim();
+    if (!clean) return;
+    const conv = get().conversations.find((c) => c.id === id);
+    if (!conv || conv.title === clean) return;
+    // Optimistic local update
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, title: clean } : c,
+      ),
+    }));
+    const ok = await apiUpdateConversationTitle(id, clean);
+    if (!ok) {
+      // Revert on failure
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id ? { ...c, title: conv.title } : c,
+        ),
+      }));
+    }
+  },
+
+  togglePinConversation: async (id) => {
+    const conv = get().conversations.find((c) => c.id === id);
+    if (!conv) return;
+    const next = !conv.pinned;
+    const prev = {
+      pinned: conv.pinned,
+      pinnedAt: conv.pinnedAt,
+      archived: conv.archived,
+      archivedAt: conv.archivedAt,
+    };
+    // Optimistic local update (pin implies unarchive — mirrors the backend)
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              pinned: next,
+              pinnedAt: next ? Date.now() : null,
+              archived: next ? false : c.archived,
+              archivedAt: next ? null : c.archivedAt,
+            }
+          : c,
+      ),
+    }));
+    const ok = await apiUpdateConversationFlags(id, { pinned: next });
+    if (!ok) {
+      // Revert on failure
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id ? { ...c, ...prev } : c,
+        ),
+      }));
+    }
+  },
+
+  toggleArchiveConversation: async (id) => {
+    const conv = get().conversations.find((c) => c.id === id);
+    if (!conv) return;
+    const next = !conv.archived;
+    const prev = {
+      pinned: conv.pinned,
+      pinnedAt: conv.pinnedAt,
+      archived: conv.archived,
+      archivedAt: conv.archivedAt,
+    };
+    // Optimistic local update (archive implies unpin — mirrors the backend)
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              archived: next,
+              archivedAt: next ? Date.now() : null,
+              pinned: next ? false : c.pinned,
+              pinnedAt: next ? null : c.pinnedAt,
+            }
+          : c,
+      ),
+    }));
+    const ok = await apiUpdateConversationFlags(id, { archived: next });
+    if (!ok) {
+      // Revert on failure
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id ? { ...c, ...prev } : c,
+        ),
+      }));
+    }
   },
 
   // ── Block-based actions ───────────────────────────────────────────

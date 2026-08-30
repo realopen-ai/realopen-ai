@@ -24,6 +24,10 @@ export interface StreamCallbacks {
     ran: boolean;
     pending?: boolean;
   }) => void;
+  /** Auto-title — fired when the backend generates an LLM title for the
+   * conversation from the first user message (`default_utility` model).
+   * The backend persists it; the frontend just updates the store. */
+  onConversationTitle?: (title: string) => void;
   /** RAG sources — fired when the agent's rag_search tool retrieves chunks */
   onRagSources?: (sources: RetrievedSourceDTO[], toolCallId: string) => void;
   /** Deliverables — fired when a tool produces a downloadable file (report, presentation) */
@@ -367,6 +371,12 @@ async function parseSSEStream(
             `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}  pending=${pending}`,
           );
           callbacks.onMemoryExtractionDone?.({ count, ran, pending });
+        }
+
+        // ── Conversation auto-title (LLM-generated from the first message) ──
+        if (eventType === "conversation_title" && parsed.title) {
+          log(`   🏷️ conversation_title event received  title=${parsed.title}`);
+          callbacks.onConversationTitle?.(parsed.title as string);
         }
 
         // ── RAG sources (agent's rag_search tool returned chunks) ──
