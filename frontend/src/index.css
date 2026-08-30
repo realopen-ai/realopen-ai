@@ -89,6 +89,21 @@ body,
   animation: fade-in 0.25s ease-out;
 }
 
+/* Dropdown menu open animation */
+@keyframes dropdown-menu-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.dropdown-menu-fade[data-state="open"] {
+  animation: dropdown-menu-fade-in 0.12s ease-out;
+}
+
 @keyframes streaming-cursor {
   0%,
   50% {
