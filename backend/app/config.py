@@ -459,6 +459,20 @@ class Settings(BaseSettings):
     # Context window (in messages) sent to the extraction LLM.
     MEMORY_EXTRACTION_CONTEXT_WINDOW: int = 6
 
+    # ── Conversation auto-titles ────────────────────────────────────────
+    # When the first user message lands in a conversation still titled
+    # "New Chat", a short 2-3 word title is generated with the utility
+    # model and streamed to the frontend as a `conversation_title` SSE
+    # event. See services/title_generator.py.
+    TITLE_GENERATION_ENABLED: bool = True
+    # Model role used for title generation — same default as the memory
+    # extractor, so profiles.yml's `default_utility` (smaller model) is
+    # reused automatically.
+    TITLE_GENERATION_MODEL_ROLE: str = "default_utility"
+    # Max seconds to wait for the title LLM call before giving up (the
+    # conversation keeps its previous title; the chat stream is unaffected).
+    TITLE_GENERATION_TIMEOUT_SECONDS: int = 60
+
     # ── Context compaction ──────────────────────────────────────────────
     # When context usage exceeds this fraction of the model's window,
     # compact older messages into a summary. Default 0.80 = 80% full.
