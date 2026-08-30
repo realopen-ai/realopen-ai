@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Plus,
   MessageSquare,
-  Trash2,
+  Archive,
+  ChevronDown,
+  ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
@@ -15,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { SettingsModal } from "@/components/settings/SettingsModal";
+import { ConversationItem } from "@/components/layout/ConversationItem";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
@@ -39,7 +42,25 @@ export function Sidebar() {
   const showWorkspacePage = useUIStore((s) => s.showWorkspacePage);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const t = useT();
+
+  // Split + sort the conversation list for display:
+  //   active: pinned first (most recently pinned at top), then by recency
+  //   archived: by recency, under a collapsible "Archived" section
+  const { activeConversations, archivedConversations } = useMemo(() => {
+    const active = conversations
+      .filter((c) => !c.archived)
+      .sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (a.pinned && b.pinned) return (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
+        return b.updatedAt - a.updatedAt;
+      });
+    const archived = conversations
+      .filter((c) => c.archived)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return { activeConversations: active, archivedConversations: archived };
+  }, [conversations]);
 
   const handleNewChat = () => {
     // Navigate to home page — the user will start a new conversation
@@ -58,8 +79,7 @@ export function Sidebar() {
     setSidebarMobileOpen(false);
   };
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
+  const handleDelete = (id: string) => {
     deleteConversation(id);
     // If we're currently viewing this conversation, go home
     if (id === urlConvId) {
@@ -197,7 +217,7 @@ export function Sidebar() {
       {/* Conversation List */}
       <ScrollArea className="flex-1 px-2">
         <div className="space-y-0.5 pb-2">
-          {conversations.length === 0 && !sidebarCollapsed && (
+          {activeConversations.length === 0 && !sidebarCollapsed && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <MessageSquare className="w-6 h-6 text-muted-foreground/40 mb-2" />
               <p className="text-[12px] text-muted-foreground/60">
@@ -208,34 +228,51 @@ export function Sidebar() {
               </p>
             </div>
           )}
-          {conversations.map((conv) => (
-            <div
+          {activeConversations.map((conv) => (
+            <ConversationItem
               key={conv.id}
-              onClick={() => handleSelect(conv.id)}
-              className={cn(
-                "group flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition-colors",
-                conv.id === urlConvId
-                  ? "bg-sidebar-accent text-foreground"
-                  : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
-                sidebarCollapsed && "justify-center px-0",
-              )}
-            >
-              <MessageSquare className="w-4 h-4 shrink-0 opacity-50" />
-              {!sidebarCollapsed && (
-                <>
-                  <span className="text-[13px] truncate flex-1">
-                    {conv.title}
-                  </span>
-                  <button
-                    onClick={(e) => handleDelete(e, conv.id)}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-destructive transition-all"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </>
+              conv={conv}
+              active={conv.id === urlConvId}
+              collapsed={sidebarCollapsed}
+              onSelect={handleSelect}
+              onDelete={handleDelete}
+            />
+          ))}
+
+          {/* Archived conversations (collapsible) */}
+          {!sidebarCollapsed && archivedConversations.length > 0 && (
+            <div className="pt-2">
+              <button
+                onClick={() => setArchivedOpen((o) => !o)}
+                aria-expanded={archivedOpen}
+                className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-foreground hover:bg-sidebar-accent/60 transition-colors"
+              >
+                {archivedOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <Archive className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">
+                  {t("sidebar.archived")} ({archivedConversations.length})
+                </span>
+              </button>
+              {archivedOpen && (
+                <div className="mt-0.5 space-y-0.5">
+                  {archivedConversations.map((conv) => (
+                    <ConversationItem
+                      key={conv.id}
+                      conv={conv}
+                      active={conv.id === urlConvId}
+                      collapsed={sidebarCollapsed}
+                      onSelect={handleSelect}
+                      onDelete={handleDelete}
+                    />
+                  ))}
+                </div>
               )}
             </div>
-          ))}
+          )}
         </div>
       </ScrollArea>
 
