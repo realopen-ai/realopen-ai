@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Plus,
+  Search,
   MessageSquare,
   Archive,
   ChevronDown,
@@ -18,6 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { SettingsModal } from "@/components/settings/SettingsModal";
 import { ConversationItem } from "@/components/layout/ConversationItem";
+import { SearchConversationsModal } from "@/components/layout/SearchConversationsModal";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
@@ -42,8 +44,21 @@ export function Sidebar() {
   const showWorkspacePage = useUIStore((s) => s.showWorkspacePage);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const t = useT();
+
+  // Command+K / Ctrl+K toggles the conversation search modal
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Split + sort the conversation list for display:
   //   active: pinned first (most recently pinned at top), then by recency
@@ -87,40 +102,60 @@ export function Sidebar() {
     }
   };
 
+  const handleOpenSearch = () => {
+    setSearchOpen(true);
+    // Close the mobile drawer so the modal isn't trapped underneath it
+    setSidebarMobileOpen(false);
+  };
+
+  const handleOpenFromSearch = (conversationId: string) => {
+    navigate(`/${conversationId}`);
+    setShowBrainPage(false);
+    setShowWorkspacePage(false);
+    setSidebarMobileOpen(false);
+    setSearchOpen(false);
+  };
+
   const sidebarContent = (
     <div className="flex flex-col h-full bg-sidebar-bg">
       {/* Header */}
+      {/* sidebar-chats-row: inside the mobile drawer, extra right padding keeps
+          the search icon clear of the Sheet's built-in close (X) button */}
       <div className="px-3 pt-4 pb-2">
         {!sidebarCollapsed ? (
-          <div className="flex items-center justify-between">
+          <div className="sidebar-chats-row flex items-center justify-between">
             <span className="text-[15px] font-semibold text-foreground">
               {t("sidebar.chats")}
             </span>
             <Button
-              onClick={handleNewChat}
+              onClick={handleOpenSearch}
               variant="ghost"
               size="icon"
+              title={t("sidebar.search")}
+              aria-label={t("sidebar.search")}
               className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
             >
-              <Plus className="w-4 h-4" />
+              <Search className="w-4 h-4" />
             </Button>
           </div>
         ) : (
           <div className="flex justify-center">
             <Button
-              onClick={handleNewChat}
+              onClick={handleOpenSearch}
               variant="ghost"
               size="icon"
+              title={t("sidebar.search")}
+              aria-label={t("sidebar.search")}
               className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
             >
-              <Plus className="w-4 h-4" />
+              <Search className="w-4 h-4" />
             </Button>
           </div>
         )}
       </div>
 
-      {/* New Chat Button */}
-      {!sidebarCollapsed && (
+      {/* New Chat Button — full width when expanded, icon when collapsed */}
+      {!sidebarCollapsed ? (
         <div className="px-2 pb-2">
           <button
             onClick={handleNewChat}
@@ -129,6 +164,19 @@ export function Sidebar() {
             <Plus className="w-4 h-4" />
             {t("sidebar.newChat")}
           </button>
+        </div>
+      ) : (
+        <div className="flex justify-center pb-2">
+          <Button
+            onClick={handleNewChat}
+            variant="ghost"
+            size="icon"
+            title={t("sidebar.newChat")}
+            aria-label={t("sidebar.newChat")}
+            className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
+          >
+            <Plus className="w-4 h-4" />
+          </Button>
         </div>
       )}
 
@@ -362,7 +410,7 @@ export function Sidebar() {
       <Sheet open={sidebarMobileOpen} onOpenChange={setSidebarMobileOpen}>
         <SheetContent
           side="left"
-          className="w-70 p-0 border-sidebar-border bg-sidebar-bg"
+          className="sidebar-mobile-sheet w-70 p-0 border-sidebar-border bg-sidebar-bg"
         >
           <SheetTitle className="sr-only">Navigation</SheetTitle>
           {sidebarContent}
@@ -373,6 +421,13 @@ export function Sidebar() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+      />
+
+      {/* Search Conversations Modal */}
+      <SearchConversationsModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onOpenConversation={handleOpenFromSearch}
       />
     </>
   );
