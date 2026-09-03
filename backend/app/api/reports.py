@@ -45,6 +45,7 @@ def _get_data_dir() -> Path:
 _MIME_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
 }
 
@@ -54,14 +55,15 @@ async def download_report(report_id: str):
     """Download a generated report file by its ID.
 
     The report_id is a UUID (without extension). The endpoint looks for
-    a file named {report_id}.pptx / .docx / .pdf in the data/reports/
-    directory and streams it with the correct Content-Type.
+    a file named {report_id}.pptx / .docx / .xlsx / .pdf in the
+    data/reports/ directory and streams it with the correct
+    Content-Type.
 
-    Probe order matters: PPTX and DOCX first, PDF last. The slide
+    Probe order matters: PPTX, DOCX and XLSX first, PDF last. The slide
     viewer caches a converted PDF *next to* a previewed PPTX report
     ({id}.pdf beside {id}.pptx), so probing .pdf first would make the
     download button serve the conversion artifact instead of the
-    original presentation. A bare .pptx/.docx file is always the
+    original presentation. A bare .pptx/.docx/.xlsx file is always the
     original deliverable.
     """
     # Validate report_id — must be a safe filename (UUID-like)
@@ -72,7 +74,7 @@ async def download_report(report_id: str):
 
     # Originals first (.pdf can be a conversion artifact of a previewed
     # PPTX report) — see the docstring above.
-    for ext in ("pptx", "docx", "pdf"):
+    for ext in ("pptx", "docx", "xlsx", "pdf"):
         mime_type = _MIME_TYPES[ext]
         file_path = reports_dir / f"{safe_id}.{ext}"
         if file_path.exists() and file_path.is_file():

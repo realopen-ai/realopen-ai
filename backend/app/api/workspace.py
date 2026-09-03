@@ -487,7 +487,7 @@ async def list_generated_files(
         # Try to get file size
         file_size = None
         if report_id:
-            for ext in ("pdf", "docx", "pptx"):
+            for ext in ("pdf", "docx", "pptx", "xlsx"):
                 p = reports_dir / f"{report_id}.{ext}"
                 if p.exists():
                     file_size = p.stat().st_size
