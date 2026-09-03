@@ -3,6 +3,7 @@ import {
   FileText,
   Image as ImageIcon,
   FileType,
+  FileSpreadsheet,
   Download,
   ExternalLink,
   Loader2,
@@ -53,6 +54,12 @@ const fileTypeConfig: Record<
     bg: "bg-amber-500/10",
     label: "PPTX",
   },
+  xlsx: {
+    icon: FileSpreadsheet,
+    color: "text-emerald-400",
+    bg: "bg-emerald-500/10",
+    label: "XLSX",
+  },
   image: {
     icon: ImageIcon,
     color: "text-emerald-400",
@@ -87,6 +94,7 @@ function formatDate(epoch: number): { date: string; time: string } {
 function getToolName(deliverableType: string): string {
   if (deliverableType === "presentation") return "use_pptx_gen";
   if (deliverableType === "report") return "use_report_gen";
+  if (deliverableType === "excel") return "use_excel_gen";
   if (deliverableType === "image") return "use_image_gen";
   return deliverableType;
 }
@@ -180,6 +188,7 @@ export function GeneratedFilesSection({
     { key: "pdf", label: "PDF" },
     { key: "docx", label: "DOCX" },
     { key: "pptx", label: "PPTX" },
+    { key: "xlsx", label: "XLSX" },
   ];
 
   return (

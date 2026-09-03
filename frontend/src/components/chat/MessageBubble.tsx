@@ -16,6 +16,7 @@ import {
   Loader2,
   Image,
   FileText,
+  FileSpreadsheet,
   Quote,
   AlertCircle,
   Download,
@@ -371,19 +372,22 @@ function ToolCallBlockView({
   const tc = block.toolCall;
   if (!tc) return null;
 
-  // Detect deliverable-producing tool calls (report_gen / pptx_gen both
-  // use ToolType.IMAGE_GEN but carry genResults with type "report" or
-  // "presentation"). We override the label/icon for these.
-  // Also detect during the "running" phase via the tool call title.
+  // Detect deliverable-producing tool calls (report_gen / pptx_gen /
+  // excel_gen all use ToolType.IMAGE_GEN but carry genResults with type
+  // "report", "presentation" or "excel"). We override the label/icon
+  // for these. Also detect during the "running" phase via the tool call
+  // title.
   const hasDeliverable = tc.genResults?.some(
-    (r) => r.type === "report" || r.type === "presentation",
+    (r) =>
+      r.type === "report" || r.type === "presentation" || r.type === "excel",
   );
   const isPresentationDeliverable = tc.genResults?.some(
     (r) => r.type === "presentation",
   );
+  const isExcelDeliverable = tc.genResults?.some((r) => r.type === "excel");
   // During "running" phase, genResults aren't set yet — detect via title.
-  // The running event title is "Calling use_report_gen" or "Calling use_pptx_gen".
-  // Check for "report", "pptx", "presentation", and "slides" in the title.
+  // The running event title is "Calling use_report_gen",
+  // "Calling use_pptx_gen" or "Calling use_excel_gen".
   const titleLower = (tc.title || "").toLowerCase();
   const isReportTool =
     hasDeliverable ||
@@ -391,6 +395,9 @@ function ToolCallBlockView({
   const isPresentationTool =
     isPresentationDeliverable ||
     (tc.status === "running" && titleLower.includes("pptx"));
+  const isExcelTool =
+    isExcelDeliverable ||
+    (tc.status === "running" && titleLower.includes("excel"));
 
   const configs: Record<
     string,
@@ -450,14 +457,27 @@ function ToolCallBlockView({
       runningLabel: "Generating presentation...",
       text: "text-amber-400",
     },
+    excel_gen: {
+      icon: FileSpreadsheet,
+      label: "Generated spreadsheet",
+      runningLabel: "Generating spreadsheet...",
+      text: "text-emerald-400",
+    },
   };
 
-  // For image_gen type with deliverable genResults or report/presentation
+  // For image_gen type with deliverable genResults or report/pptx/excel
   // title during running, override to show document icon/label instead
   // of image icon/label.
   let effectiveType: string = tc.type;
-  if (tc.type === "image_gen" && (isReportTool || isPresentationTool)) {
-    effectiveType = isPresentationTool ? "presentation_gen" : "report_gen";
+  if (
+    tc.type === "image_gen" &&
+    (isReportTool || isPresentationTool || isExcelTool)
+  ) {
+    effectiveType = isPresentationTool
+      ? "presentation_gen"
+      : isExcelTool
+        ? "excel_gen"
+        : "report_gen";
   }
 
   const {
@@ -485,7 +505,8 @@ function ToolCallBlockView({
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
     tc.status === "running" ||
-    ((isReportTool || isPresentationTool) && tc.status === "completed");
+    ((isReportTool || isPresentationTool || isExcelTool) &&
+      tc.status === "completed");
   const isExpanded = expanded || autoExpand;
 
   return (
@@ -563,16 +584,19 @@ function ToolCallDetail({
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "image_gen") {
-    // Check genResults for report/presentation deliverables
+    // Check genResults for report/presentation/excel deliverables
     const hasDeliverable = tc.genResults?.some(
-      (r) => r.type === "report" || r.type === "presentation",
+      (r) =>
+        r.type === "report" || r.type === "presentation" || r.type === "excel",
     );
     // During "running" phase, genResults aren't set yet — detect via title
     const titleLower = (tc.title || "").toLowerCase();
     const isReportOrPptx =
       hasDeliverable ||
       (tc.status === "running" &&
-        (titleLower.includes("report") || titleLower.includes("pptx")));
+        (titleLower.includes("report") ||
+          titleLower.includes("pptx") ||
+          titleLower.includes("excel")));
     if (isReportOrPptx) {
       return (
         <ReportGenDetail
@@ -776,22 +800,30 @@ function ReportDeliverableBadge({
   const [thumbError, setThumbError] = useState(false);
   const isPdf = format === "pdf";
   const isPptx = format === "pptx";
+  const isXlsx = format === "xlsx";
   const iconBg = isPdf
     ? "bg-red-500/10"
     : isPptx
       ? "bg-amber-500/10"
-      : "bg-blue-500/10";
+      : isXlsx
+        ? "bg-emerald-500/10"
+        : "bg-blue-500/10";
   const iconColor = isPdf
     ? "text-red-400"
     : isPptx
       ? "text-amber-400"
-      : "text-blue-400";
+      : isXlsx
+        ? "text-emerald-400"
+        : "text-blue-400";
   const labelColor = isPdf
     ? "text-red-400/70"
     : isPptx
       ? "text-amber-400/70"
-      : "text-blue-400/70";
-  const displayLabel = label ?? (isPptx ? "Presentation" : "Report");
+      : isXlsx
+        ? "text-emerald-400/70"
+        : "text-blue-400/70";
+  const displayLabel =
+    label ?? (isPptx ? "Presentation" : isXlsx ? "Spreadsheet" : "Report");
 
   const showThumb = isPptx && thumbnailUrl && !thumbError;
   const canView = Boolean(onView);
@@ -877,13 +909,16 @@ function ReportGenDetail({
 }) {
   const deliverableResults =
     tc.genResults?.filter(
-      (r) => r.type === "report" || r.type === "presentation",
+      (r) =>
+        r.type === "report" || r.type === "presentation" || r.type === "excel",
     ) ?? [];
   // During "running" phase, detect via title since genResults aren't set yet
   const titleLower = (tc.title || "").toLowerCase();
   const generatingLabel = titleLower.includes("pptx")
     ? "Generating presentation..."
-    : "Generating report...";
+    : titleLower.includes("excel")
+      ? "Generating spreadsheet..."
+      : "Generating report...";
 
   return (
     <div className="space-y-2">
@@ -901,7 +936,11 @@ function ReportGenDetail({
             const fmt = (r.format as ViewerFormat) ?? "pptx";
             // PDFs are rasterized server-side without LibreOffice, so the
             // eye button is always offered; PPTX/DOCX need LibreOffice.
-            const viewable = !!r.report_id && (fmt === "pdf" || canViewPptx);
+            // XLSX workbooks have no page-based preview — download only.
+            const viewable =
+              !!r.report_id &&
+              r.format !== "xlsx" &&
+              (fmt === "pdf" || canViewPptx);
             return (
               <ReportDeliverableBadge
                 key={i}
@@ -909,7 +948,13 @@ function ReportGenDetail({
                 format={r.format ?? "pdf"}
                 downloadUrl={r.download_url ?? "#"}
                 thumbnailUrl={r.thumbnail_url}
-                label={r.type === "presentation" ? "Presentation" : "Report"}
+                label={
+                  r.type === "presentation"
+                    ? "Presentation"
+                    : r.type === "excel"
+                      ? "Spreadsheet"
+                      : "Report"
+                }
                 onView={
                   viewable
                     ? () =>
