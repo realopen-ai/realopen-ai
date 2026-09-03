@@ -81,9 +81,9 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "imagine": {"use_image_gen"},
     # Report generation triggers
     "report": {"use_report_gen"},
-    "deliverable": {"use_report_gen", "use_pptx_gen"},
-    "generate": {"use_report_gen", "use_image_gen", "use_pptx_gen"},
-    "create": {"use_report_gen", "use_image_gen", "use_pptx_gen"},
+    "deliverable": {"use_report_gen", "use_pptx_gen", "use_excel_gen"},
+    "generate": {"use_report_gen", "use_image_gen", "use_pptx_gen", "use_excel_gen"},
+    "create": {"use_report_gen", "use_image_gen", "use_pptx_gen", "use_excel_gen"},
     # Presentation generation triggers
     "presentation": {"use_pptx_gen"},
     "slides": {"use_pptx_gen"},
@@ -91,6 +91,12 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "pptx": {"use_pptx_gen"},
     "deck": {"use_pptx_gen"},
     "powerpoint": {"use_pptx_gen"},
+    # Excel generation triggers
+    "excel": {"use_excel_gen"},
+    "spreadsheet": {"use_excel_gen"},
+    "xlsx": {"use_excel_gen"},
+    "xls": {"use_excel_gen"},
+    "workbook": {"use_excel_gen"},
     # Past-conversation search triggers
     "last week": {"search_past_conversations"},
     "yesterday": {"search_past_conversations"},
@@ -218,6 +224,7 @@ _TOOL_TAGS = {
     "use_image_gen",
     "use_report_gen",
     "use_pptx_gen",
+    "use_excel_gen",
     "manage_memory",
     "search_past_conversations",
 }
@@ -326,6 +333,22 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
                         args["template"] = val
                     elif key == "outline":
                         args["outline"] = val
+    elif tag_lower == "use_excel_gen":
+        # Format: brief on line 1, optional "requirements:" lines after
+        if lines:
+            args["brief"] = lines[0]
+            req_lines = []
+            for line in lines[1:]:
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    key = key.strip().lower()
+                    val = val.strip()
+                    if key == "requirements":
+                        req_lines.append(val)
+                else:
+                    req_lines.append(line.strip())
+            if req_lines:
+                args["requirements"] = "\n".join(req_lines)
     elif tag_lower == "manage_memory":
         # Format: action on line 1, then key:value pairs
         if lines:
