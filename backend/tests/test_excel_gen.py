@@ -496,6 +496,75 @@ class TestJsonExtraction:
         obj = excel_gen._extract_json_object(f"prefix {spec} suffix")
         assert obj == VALID_SPEC
 
+    def test_missing_array_closer_repaired(self):
+        """Reproduces the exact small-LLM failure from the project logs.
+
+        The LLM emitted `"auto_filter":true}}` — closed the table object
+        and the sheet object, but forgot to close the `tables` array
+        with `]` in between. The repair walker must insert the missing
+        `]` so the spec parses.
+        """
+        broken = (
+            '{"filename":"shopping_list.xlsx","sheets":['
+            '{"name":"Shopping List","tables":['
+            '{"start_cell":"A2","headers":["Item","Qty","Price"],'
+            '"rows":[["Milk",2,3.50]],"total_row":["Total","", "=SUM(C3:C10)"],'
+            '"auto_filter":true}},'
+            '{"name":"Notes","text_blocks":[{"cell":"A1","text":"hi"}]}'
+            "]}"
+        )
+        # Without repair, this JSON is unparseable.
+        import json as _json
+
+        with pytest.raises(_json.JSONDecodeError):
+            _json.loads(broken)
+        # With repair, the spec parses and the structure is recovered.
+        obj = excel_gen._extract_json_object(broken)
+        assert obj["filename"] == "shopping_list.xlsx"
+        assert obj["sheets"][0]["name"] == "Shopping List"
+        assert obj["sheets"][0]["tables"][0]["headers"] == ["Item", "Qty", "Price"]
+        assert obj["sheets"][1]["name"] == "Notes"
+
+    def test_missing_object_closer_repaired(self):
+        """Symmetric case: LLM closed an outer array but not the inner object."""
+        broken = '{"sheets":[{"name":"S","tables":[{"headers":["A"],"rows":[[1]]]}'
+        obj = excel_gen._extract_json_object(broken)
+        assert obj["sheets"][0]["name"] == "S"
+
+    def test_trailing_comma_in_nested_array(self):
+        """Trailing comma before a closer — already handled by the original code."""
+        obj = excel_gen._extract_json_object(
+            '{"sheets":[{"name":"S","tables":[1,2,]}]}'
+        )
+        assert obj["sheets"][0]["tables"] == [1, 2]
+
+    def test_missing_comma_between_elements_repaired(self):
+        """The LLM forgot a comma between two array elements."""
+        broken = '{"sheets":[{"name":"S","tables":[{"headers":["A"],"rows":[[1]]}]}{"extra":1}'
+        # The `{` directly after `]` triggers "Extra data" — repair truncates.
+        obj = excel_gen._extract_json_object(broken)
+        assert obj["sheets"][0]["name"] == "S"
+
+    def test_garbage_input_still_raises(self):
+        """Inputs with no JSON object start (`{`) must still raise ValueError.
+
+        The repair function is aggressive at salvaging broken JSON, but
+        it cannot invent structure where there is none. Inputs that
+        have no `{` at all (or only `{` followed by content the parser
+        cannot consume at all) must still surface a ValueError so the
+        LLM repair round can be triggered.
+        """
+        with pytest.raises(ValueError):
+            excel_gen._extract_json_object("no json here at all")
+        with pytest.raises(ValueError):
+            excel_gen._extract_json_object("")
+        with pytest.raises(ValueError):
+            excel_gen._extract_json_object("```json\n```\n")  # empty fence
+        # A non-empty empty object is salvageable — that's by design.
+        # The validator catches the empty spec downstream.
+        obj = excel_gen._extract_json_object("not even close to json {{{ }[")
+        assert isinstance(obj, dict)
+
 
 def json_dumps(obj) -> str:
     import json
@@ -569,6 +638,280 @@ class TestNormalization:
         assert row[1] == 3.14 and isinstance(row[1], float)
         assert row[2] == "007"  # leading zero stays text (zip codes etc.)
         assert isinstance(row[3], __import__("datetime").date)
+
+    def test_european_decimal_comma_coerced(self):
+        """Small LLMs often emit European decimal commas ("1,9" instead of "1.9").
+
+        The coercion is conservative — only 1-2 digits after the comma
+        qualify, so "1,234" (which could legitimately mean 1234 in
+        English) stays a string.
+        """
+        spec = {
+            "sheets": [
+                {
+                    "name": "Shopping",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Qty", "Price"],
+                            "rows": [
+                                ["Milk", "1,9", "3,50"],
+                                ["Bread", "3", "2,75"],
+                                ["Cheese", "0,25", "3,75"],
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        norm = excel_gen._normalize_spec(spec)
+        rows = norm["sheets"][0]["tables"][0]["rows"]
+        assert rows[0] == ["Milk", 1.9, 3.5]
+        assert rows[1] == ["Bread", 3, 2.75]
+        assert rows[2] == ["Cheese", 0.25, 3.75]
+        # Anglos thousands separator stays text (cannot be auto-coerced safely).
+        spec_anglo = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Population"],
+                            "rows": [["1,234"]],
+                        }
+                    ],
+                }
+            ]
+        }
+        norm_anglo = excel_gen._normalize_spec(spec_anglo)
+        assert norm_anglo["sheets"][0]["tables"][0]["rows"][0][0] == "1,234"
+        # Strings with units / extra characters are NOT touched.
+        spec_units = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Qty"],
+                            "rows": [["1,9 kg"]],
+                        }
+                    ],
+                }
+            ]
+        }
+        norm_units = excel_gen._normalize_spec(spec_units)
+        assert norm_units["sheets"][0]["tables"][0]["rows"][0][0] == "1,9 kg"
+
+    def test_total_row_true_auto_generates_sum(self):
+        """Shortcut `total_row: true` → auto-generate =SUM for numeric columns."""
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Qty", "Price"],
+                            "rows": [["Milk", 2, 3.5], ["Bread", 1, 2.75]],
+                            "total_row": True,
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        tr = processed["sheets"][0]["tables"][0]["total_row"]
+        assert tr[0] == "Total"
+        assert tr[1] == "=SUM(B{first_row}:B{last_row})"
+        assert tr[2] == "=SUM(C{first_row}:C{last_row})"
+
+    def test_total_row_sum_columns_shortcut(self):
+        """Shortcut `total_row: {"sum_columns": ["C"]}` only sums specific columns."""
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Qty", "Price"],
+                            "rows": [["Milk", 2, 3.5], ["Bread", 1, 2.75]],
+                            "total_row": {"sum_columns": ["C"]},
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        tr = processed["sheets"][0]["tables"][0]["total_row"]
+        assert tr[0] == "Total"
+        assert tr[1] is None  # column B not in sum_columns
+        assert tr[2] == "=SUM(C{first_row}:C{last_row})"
+
+    def test_total_row_sum_columns_by_header_name(self):
+        """sum_columns accepts header names (case-insensitive), not just letters."""
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Quantity", "Price"],
+                            "rows": [["Milk", 2, 3.5]],
+                            "total_row": {"sum_columns": ["Price"]},
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        tr = processed["sheets"][0]["tables"][0]["total_row"]
+        assert tr[2] == "=SUM(C{first_row}:C{last_row})"
+
+    def test_total_row_auto_fills_empty_numeric_cells(self):
+        """A list `total_row` with empty cells in numeric columns is auto-filled.
+
+        The LLM often leaves the quantity column blank when emitting a
+        "Total" row. Post-processing injects =SUM(...) so the total is
+        computed live instead of being blank.
+        """
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Qty", "Price"],
+                            "rows": [["Milk", 2, 3.5], ["Bread", 1, 2.75]],
+                            "total_row": ["Total", "", "=SUM(C2:C3)"],
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        tr = processed["sheets"][0]["tables"][0]["total_row"]
+        # Column B was empty — auto-filled with SUM formula.
+        assert tr[1] == "=SUM(B{first_row}:B{last_row})"
+        # Column C already had a formula — preserved untouched.
+        assert tr[2] == "=SUM(C2:C3)"
+        # Column A's label is preserved.
+        assert tr[0] == "Total"
+
+    def test_total_row_non_empty_values_preserved(self):
+        """Pre-computed numbers and labels in total_row are NOT auto-replaced.
+
+        The LLM may legitimately have a "Target" / "Budget" / "Average"
+        value in a numeric column — replacing it with SUM would be wrong.
+        Only empty cells are filled.
+        """
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "headers": ["Item", "Qty"],
+                            "rows": [["Milk", 2], ["Bread", 1]],
+                            "total_row": ["Total", 100],  # target value, not a sum
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        tr = processed["sheets"][0]["tables"][0]["total_row"]
+        assert tr == ["Total", 100]  # untouched
+
+    def test_freeze_header_shortcut(self):
+        """Shortcut `freeze_header: true` sets freeze_panes from the first table.
+
+        If the table starts at A1 with no title, freeze_panes = "A2"
+        (header row 1 frozen, data starts at row 2).
+        """
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "freeze_header": True,
+                    "tables": [
+                        {
+                            "start_cell": "A1",
+                            "headers": ["A", "B"],
+                            "rows": [[1, 2]],
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        assert processed["sheets"][0]["freeze_panes"] == "A2"
+
+    def test_freeze_header_with_title_offset(self):
+        """`freeze_header: true` + a table title → freeze below the title + header."""
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "freeze_header": True,
+                    "tables": [
+                        {
+                            "start_cell": "A3",
+                            "title": "My Table",
+                            "headers": ["A", "B"],
+                            "rows": [[1, 2]],
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        # Title at row 3, header at row 4, data at row 5 — freeze A5.
+        assert processed["sheets"][0]["freeze_panes"] == "A5"
+
+    def test_freeze_header_with_existing_freeze_panes_preserved(self):
+        """If `freeze_panes` is already set, `freeze_header` is ignored."""
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "freeze_header": True,
+                    "freeze_panes": "A3",
+                    "tables": [
+                        {
+                            "start_cell": "A1",
+                            "headers": ["A"],
+                            "rows": [[1]],
+                        }
+                    ],
+                }
+            ]
+        }
+        processed = excel_gen._post_process_spec(spec)
+        assert processed["sheets"][0]["freeze_panes"] == "A3"  # preserved
+
+    def test_post_process_spec_idempotent_on_valid_spec(self):
+        """A valid spec without shortcuts passes through unchanged (structurally)."""
+        spec_copy = json_dumps(VALID_SPEC)
+        import json as _json
+
+        spec = _json.loads(spec_copy)
+        processed = excel_gen._post_process_spec(spec)
+        # Same sheets, same name, same headers, same total_row (already a list).
+        assert processed["sheets"][0]["name"] == VALID_SPEC["sheets"][0]["name"]
+        assert processed["sheets"][0]["tables"][0]["headers"] == [
+            "Item",
+            "Qty",
+            "Price",
+        ]
+        # total_row was a list with formulas — _post_process_spec may
+        # auto-fill any empty numeric cells (none here). Structure preserved.
+        assert processed["sheets"][0]["tables"][0]["total_row"][0] == "Total"
+
+    def test_post_process_spec_handles_malformed_input(self):
+        """Malformed input is returned unchanged so the validator can complain."""
+        assert excel_gen._post_process_spec("not a dict") == "not a dict"
+        assert excel_gen._post_process_spec({"no_sheets": 1}) == {"no_sheets": 1}
+        assert excel_gen._post_process_spec({"sheets": "not a list"}) == {
+            "sheets": "not a list"
+        }
 
     def test_number_format_by_header_name(self):
         spec = {
@@ -1072,7 +1415,7 @@ class TestLlmFlow:
     async def test_first_try_success(self, monkeypatch):
         calls = []
 
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             calls.append(messages)
             return json_dumps(VALID_SPEC)
 
@@ -1088,7 +1431,7 @@ class TestLlmFlow:
             json_dumps(VALID_SPEC),  # repaired
         ]
 
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             return responses.pop(0)
 
         monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
@@ -1099,7 +1442,7 @@ class TestLlmFlow:
     async def test_repair_prompt_contains_errors(self, monkeypatch):
         prompts = []
 
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             prompts.append(messages)
             if len(messages) == 2:  # first attempt
                 return json_dumps({"sheets": []})
@@ -1113,7 +1456,7 @@ class TestLlmFlow:
 
     @pytest.mark.asyncio
     async def test_double_failure_raises(self, monkeypatch):
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             return "I refuse to output JSON"
 
         monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
@@ -1122,7 +1465,7 @@ class TestLlmFlow:
 
     @pytest.mark.asyncio
     async def test_fenced_output_handled(self, monkeypatch):
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             return f"```json\n{json_dumps(VALID_SPEC)}\n```"
 
         monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
@@ -1131,12 +1474,134 @@ class TestLlmFlow:
 
     @pytest.mark.asyncio
     async def test_wrapper_unwrapped_in_flow(self, monkeypatch):
-        async def fake_llm(messages):
+        async def fake_llm(messages, **kwargs):
             return json_dumps({"workbook": VALID_SPEC})
 
         monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
         spec = await excel_gen._generate_workbook_json("brief", "")
         assert "sheets" in spec
+
+    @pytest.mark.asyncio
+    async def test_three_attempt_flow_uses_simplified_prompt_on_third(
+        self, monkeypatch
+    ):
+        """Two failures followed by a simplified-prompt success.
+
+        The third call's system message must be the simplified one (much
+        shorter than the full prompt). Verifies the new fallback path.
+        """
+        responses = [
+            "I refuse to output JSON",  # attempt 1: parse failure
+            json_dumps({"sheets": "still bad"}),  # attempt 2: validation failure
+            json_dumps(
+                {
+                    "filename": "simple.xlsx",
+                    "sheets": [
+                        {
+                            "name": "S",
+                            "tables": [
+                                {
+                                    "headers": ["A", "B"],
+                                    "rows": [[1, 2]],
+                                    "total_row": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),  # attempt 3: simplified-prompt success
+        ]
+        system_messages_seen = []
+
+        async def fake_llm(messages, **kwargs):
+            # The system message is always messages[0]; its content is
+            # what tells us which prompt was used.
+            system_messages_seen.append(messages[0]["content"])
+            return responses.pop(0)
+
+        monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
+        spec = await excel_gen._generate_workbook_json("brief", "")
+        assert spec["filename"] == "simple.xlsx"
+        # The 3rd call must have used the simplified prompt.
+        assert system_messages_seen[2] == excel_gen._SIMPLIFIED_EXCEL_PROMPT
+        # The 1st and 2nd calls use the full prompt.
+        assert system_messages_seen[0] == excel_gen.EXCEL_SYSTEM_PROMPT
+        assert system_messages_seen[1] == excel_gen.EXCEL_SYSTEM_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_post_processing_runs_on_every_attempt(self, monkeypatch):
+        """Even attempt 1 benefits from shortcut expansion.
+
+        The LLM emits `total_row: true` and post-processing expands it
+        to a proper list of SUM formulas before validation runs.
+        """
+
+        async def fake_llm(messages, **kwargs):
+            return json_dumps(
+                {
+                    "filename": "x.xlsx",
+                    "sheets": [
+                        {
+                            "name": "S",
+                            "freeze_header": True,
+                            "tables": [
+                                {
+                                    "headers": ["Item", "Price"],
+                                    "rows": [["A", 1], ["B", 2]],
+                                    "total_row": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+        monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
+        spec = await excel_gen._generate_workbook_json("brief", "")
+        table = spec["sheets"][0]["tables"][0]
+        # Shortcut was expanded to a real list with SUM formulas.
+        assert isinstance(table["total_row"], list)
+        assert table["total_row"][1].startswith("=SUM(B")
+        # freeze_header was expanded to freeze_panes.
+        assert spec["sheets"][0]["freeze_panes"] == "A2"
+
+    @pytest.mark.asyncio
+    async def test_json_repair_saves_attempt_that_would_have_failed(self, monkeypatch):
+        """The exact failing JSON from the project logs (missing `]`)
+        must now parse and produce a valid spec on attempt 1.
+        """
+        broken = (
+            '{"filename":"shopping_list.xlsx","sheets":['
+            '{"name":"Shopping List","tables":['
+            '{"start_cell":"A1","headers":["Item","Qty","Price"],'
+            '"rows":[["Milk",2,3.50],["Bread",1,2.75]],'
+            '"total_row":true,'
+            '"auto_filter":true}},'
+            '{"name":"Notes","text_blocks":[{"cell":"A1","text":"hi"}]}'
+            "]}"
+        )
+
+        async def fake_llm(messages, **kwargs):
+            return broken
+
+        monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
+        spec = await excel_gen._generate_workbook_json("shopping list", "")
+        assert spec["filename"] == "shopping_list.xlsx"
+        assert spec["sheets"][0]["name"] == "Shopping List"
+        assert len(spec["sheets"][0]["tables"][0]["rows"]) == 2
+        # total_row shortcut was expanded to SUM formulas.
+        tr = spec["sheets"][0]["tables"][0]["total_row"]
+        assert any(isinstance(v, str) and v.startswith("=SUM(B") for v in tr)
+        assert any(isinstance(v, str) and v.startswith("=SUM(C") for v in tr)
+
+    @pytest.mark.asyncio
+    async def test_triple_failure_raises_with_three_attempts_message(self, monkeypatch):
+        async def fake_llm(messages, **kwargs):
+            return "not json at all"
+
+        monkeypatch.setattr(excel_gen, "_call_llm", fake_llm)
+        with pytest.raises(RuntimeError, match="3 attempts"):
+            await excel_gen._generate_workbook_json("brief", "")
 
 
 # ─────────────────────────────────────────────────────────────────────
