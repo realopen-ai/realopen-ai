@@ -880,15 +880,17 @@ async def run_agent_stream(
                     on_tool_call_update(tc_id, update_dict)
                 yield _sse_event("tool_call", {"tool_call": update_dict})
 
-                # If the tool produced deliverables (reports, presentations),
-                # emit a separate SSE event so the frontend can add them to
-                # the message's deliverables array immediately.
+                # If the tool produced deliverables (reports, presentations,
+                # excel workbooks), emit a separate SSE event so the
+                # frontend can add them to the message's deliverables
+                # array immediately.
                 if result.tool_call.gen_results:
                     deliverables = []
                     for gr in result.tool_call.gen_results:
                         if isinstance(gr, dict) and gr.get("type") in (
                             "report",
                             "presentation",
+                            "excel",
                         ):
                             deliverables.append(
                                 {
