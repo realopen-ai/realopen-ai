@@ -482,6 +482,18 @@ class Settings(BaseSettings):
     # Maximum tokens for the compaction summary response.
     CONTEXT_COMPACT_SUMMARY_TOKENS: int = 512
 
+    # ── Excel generation (use_excel_gen tool) ──────────────────────────
+    # The specialized Excel AI call emits a strict JSON workbook spec
+    # that a deterministic openpyxl converter turns into .xlsx. It uses
+    # the utility model by default (profiles.yml `default_utility`),
+    # falling back to the chat model like the other gen services.
+    EXCEL_GENERATION_MODEL_ROLE: str = "default_utility"
+    # JSON specs with data rows are longer than narrative markdown —
+    # the token budget is larger than report/pptx generation.
+    EXCEL_GENERATION_MAX_TOKENS: int = 8192
+    # Max seconds to wait for the spec LLM call (each attempt).
+    EXCEL_GENERATION_TIMEOUT_SECONDS: int = 600
+
     # ── Conversation memory (cross-session context) ─────────────────────
     # Minimum messages before a conversation is summarized for cross-session memory.
     CONVERSATION_SUMMARY_MIN_MESSAGES: int = 8
