@@ -142,8 +142,8 @@ export interface DigestProgressItem {
 /** A deliverable file (report, etc.) produced by a tool call. Persisted
  * in the DB so download badges survive page refresh. */
 export interface Deliverable {
-  type: string; // "report" | "presentation"
-  format: string; // "pdf" | "docx" | "pptx"
+  type: string; // "report" | "presentation" | "excel"
+  format: string; // "pdf" | "docx" | "pptx" | "xlsx"
   filename: string;
   file_path: string;
   download_url: string;
