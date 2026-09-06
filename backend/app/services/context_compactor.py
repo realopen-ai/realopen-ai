@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.config import settings
+from app.prompts import format_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -146,15 +147,6 @@ def _estimate_context_window(model_name: str) -> int:
 
 # ── Compaction prompt ────────────────────────────────────────────
 
-COMPACT_SYSTEM_PROMPT = """Summarize this conversation fragment concisely. Preserve:
-- User's name, identity, preferences
-- The task or question being worked on
-- Key decisions, code written, files created
-- Important facts, numbers, URLs
-- Current state and next steps
-
-Keep it under 200 words. Be dense — every word matters. Do not add commentary."""
-
 
 async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Optional[str]:
     """Call the LLM to produce a summary. Returns None on failure."""
@@ -170,7 +162,10 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": COMPACT_SYSTEM_PROMPT},
+                        {
+                            "role": "system",
+                            "content": format_prompt("context_compactor_system"),
+                        },
                         {"role": "user", "content": text},
                     ],
                     "think": False,
@@ -416,15 +411,6 @@ async def compact_conversation(
 
 
 # ── Conversation-end summary for cross-session memory ────────────
-
-
-CONVERSATION_SUMMARY_PROMPT = """Summarize this conversation for future reference. Include:
-1. What was discussed (main topic/theme)
-2. Key outcomes, decisions, or code written
-3. Important facts about the user learned
-4. Open items or follow-ups
-
-Keep it under 150 words. Be specific — include names, technologies, numbers."""
 
 
 async def summarize_conversation(
