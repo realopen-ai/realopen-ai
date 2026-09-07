@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.config import settings
-from app.prompts import format_prompt
+from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                     "messages": [
                         {
                             "role": "system",
-                            "content": format_prompt("context_compactor_system"),
+                            "content": get_prompt("context_compactor_system"),
                         },
                         {"role": "user", "content": text},
                     ],
