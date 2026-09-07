@@ -38,6 +38,15 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def get_prompt(name: str) -> str:
+    """Load a prompt template and return it.
+
+    Returns:
+        The prompt string.
+    """
+    return load_prompt(name)
+
+
 def format_prompt(name: str, **kwargs) -> str:
     """Load a prompt template and format it with the given values.
 
