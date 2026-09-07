@@ -63,108 +63,7 @@ from app.services.memory import (
     _set_audit_fingerprint,
     get_text_similarity,
 )
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-EXTRACT_SYSTEM_PROMPT = (
-    "You are a memory extraction assistant. Analyze the conversation and extract ONLY "
-    "durable personal facts about the user that would be useful across many future conversations.\n\n"
-    "Good examples: name, job title, city, family members, long-term projects, strong preferences.\n"
-    "Bad examples: what they asked about today, temporary moods, generic statements, "
-    "things the assistant said, one-off tasks, opinions on the current topic.\n\n"
-    "Rules:\n"
-    "- MAX 2 facts per conversation — only the most important\n"
-    "- Only extract facts the USER stated or clearly implied\n"
-    "- Each fact must be a single short sentence (under 15 words)\n"
-    "- If a fact is similar to something likely already known, skip it\n"
-    "- If nothing durable was revealed, return []\n\n"
-    "Make a best effort to follow the rules, but when in doubt, EXTRACT RATHER THAN SKIP.\n\n"
-    "Return a JSON array of objects with 'text' and 'category' fields.\n"
-    "Categories: 'identity', 'preference', 'fact', 'contact', 'project', 'goal'\n\n"
-    "Return ONLY valid JSON, no markdown fences, no extra commentary."
-)
-
-AUDIT_SYSTEM_PROMPT = """
-You are a memory database auditor.
-
-Goal:
-Reduce redundancy WITHOUT losing information.
-
-DEFAULT ACTION: KEEP.
-
-Deletion or merge requires HIGH CONFIDENCE that no information is lost.
-
-Procedure:
-
-Step 1 — Classify each memory:
-- identity → stable personal attributes
-- fact → concrete factual statement
-- preference → likes/dislikes/tendencies
-- project → goals, work, plans, initiatives
-- other
-
-Step 2 — Compare memories pairwise.
-
-MERGE only if ALL are true:
-A. Same subject
-B. Same category
-C. Same information content
-D. One can be removed with ZERO loss of meaning
-
-Examples:
-MERGE:
-- "User's name is Sam"
-- "The user is called Sam"
-
-KEEP BOTH:
-- "User likes Python"
-- "User uses Python at work"
-
-KEEP BOTH:
-- "User works on cloud cost optimization"
-- "User likes DevOps"
-
-KEEP BOTH:
-- "User lives in Casablanca"
-- "User name is Abdel and lives in Casablanca"
-(composite memories are NOT replacements)
-
-KEEP BOTH:
-- Specific fact vs broader summary
-  Example:
-  "User has Cloud Cost Optimizer project"
-  +
-  "User prefers DevOps projects"
-
-→ KEEP BOTH.
-
-Step 3 — Remove only:
-- empty text
-- malformed entries
-- AI-behavior statements
-- exact duplicates
-
-Rules:
-- NEVER generalize.
-- NEVER replace specific memories with broader summaries.
-- NEVER infer equivalence.
-- Prefer redundancy over deletion.
-- Preserve original wording.
-- Preserve id of kept entries.
-- Output entries in original order.
-
-Return ONLY:
-[
-  {
-    "id": "...",
-    "text": "...",
-    "category": "..."
-  }
-]
-"""
-
+from app.prompts import get_prompt
 
 # ---------------------------------------------------------------------------
 # LLM output cleaning — handles markdown fences, <think> tags, trailing
@@ -457,7 +356,7 @@ async def extract_and_store(
         transcript = "\n\n".join(transcript_parts)
 
         extraction_messages = [
-            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+            {"role": "system", "content": get_prompt("memory_extractor_system")},
             {
                 "role": "user",
                 "content": (
@@ -498,9 +397,7 @@ async def extract_and_store(
                         },
                     )
                     response.raise_for_status()
-                    print(
-                        f"[memory-extract] raw LLM response: ================================\n{response.text}..."
-                    )
+                    print(f"[memory-extract] raw LLM response: \n{response.text}...")
                     raw = response.json().get("message", {}).get("content", "")
 
                 # Parse JSON from response (handles markdown fences, <think>
@@ -699,7 +596,7 @@ async def audit_memories() -> dict:
             ]
 
             audit_messages = [
-                {"role": "system", "content": AUDIT_SYSTEM_PROMPT},
+                {"role": "system", "content": get_prompt("memory_audit_system")},
                 {
                     "role": "user",
                     "content": json.dumps(memory_payload, ensure_ascii=False),
