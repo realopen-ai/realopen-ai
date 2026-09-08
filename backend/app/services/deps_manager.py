@@ -114,8 +114,18 @@ CATALOG: list[Dependency] = [
 
 _PKG_MAP: dict[str, dict[str, list[str]]] = {
     "libreoffice": {
-        "debian": ["libreoffice-core", "libreoffice-impress", "libreoffice-writer"],
-        "fedora": ["libreoffice-core", "libreoffice-impress", "libreoffice-writer"],
+        "debian": [
+            "libreoffice-core",
+            "libreoffice-impress",
+            "libreoffice-writer",
+            "libreoffice-calc",
+        ],
+        "fedora": [
+            "libreoffice-core",
+            "libreoffice-impress",
+            "libreoffice-writer",
+            "libreoffice-calc",
+        ],
         "arch": ["libreoffice-fresh"],
         "suse": ["libreoffice"],
         "alpine": [],
