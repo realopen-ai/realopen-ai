@@ -5,7 +5,7 @@ Serves files from the data/reports/ directory with the correct
 Content-Type and Content-Disposition headers so the browser triggers
 a download. Also provides thumbnail endpoints for presentations and
 per-page image endpoints for the in-app document viewer
-(PPTX / PDF / DOCX).
+(PPTX / PDF / DOCX / XLSX).
 """
 
 import asyncio
@@ -194,9 +194,9 @@ def _get_slide_gen_lock(report_id: str) -> asyncio.Lock:
 @router.get("/reports/{report_id}/slides")
 async def get_report_slides(
     report_id: str,
-    format: str = Query(default="pptx", pattern="^(pptx|pdf|docx)$"),
+    format: str = Query(default="pptx", pattern="^(pptx|pdf|docx|xlsx)$"),
 ):
-    """Page manifest for the in-app document viewer (PPTX / PDF / DOCX).
+    """Page manifest for the in-app document viewer (PPTX / PDF / DOCX / XLSX).
 
     Renders every page of the document as JPEG images (full-size +
     thumbnail) on first request, caches them under
@@ -216,14 +216,17 @@ async def get_report_slides(
         }
 
     The `?format=` query parameter selects the deliverable to render
-    ("pptx" default, "pdf", or "docx") — a report_id maps to exactly
+    ("pptx" default, "pdf", "docx", or "xlsx") — a report_id maps to exactly
     one file, and the PDF preview of a PPTX report is cached as
     {id}.pdf, so the format must be explicit to pick the ORIGINAL file.
 
     Availability per format:
-      - pptx / docx — LibreOffice required (document → PDF conversion)
-      - pdf         — no LibreOffice needed (rasterized directly with
-                      PyMuPDF / poppler)
+      - pptx / docx / xlsx — LibreOffice required (document → PDF
+        conversion; spreadsheets are paginated by the workbook's print
+        setup, which excel_gen writes as landscape + fit-to-width +
+        repeated header rows)
+      - pdf                — no LibreOffice needed (rasterized directly
+                             with PyMuPDF / poppler)
 
     The `?v=` cache-buster is the source file's mtime, so a regenerated
     document gets fresh URLs and stale browser cache entries are
@@ -231,7 +234,7 @@ async def get_report_slides(
 
     Errors:
       - 404 — file not found for the requested format
-      - 404 — LibreOffice not installed (pptx/docx)
+      - 404 — LibreOffice not installed (pptx/docx/xlsx)
       - 404 — no PDF rasterizer available (pdf)
       - 404 — conversion/rendering failed
     """
@@ -253,7 +256,7 @@ async def get_report_slides(
         if libreoffice.is_slide_cache_valid(source_path, cache_dir):
             manifest = libreoffice.read_slides_manifest(cache_dir)
         else:
-            if format in ("pptx", "docx") and not libreoffice.is_available():
+            if format in ("pptx", "docx", "xlsx") and not libreoffice.is_available():
                 raise HTTPException(
                     status_code=404,
                     detail=(
@@ -319,7 +322,8 @@ async def get_report_slide_image(
     slide_number is 1-based. Use ?variant=thumb for the small filmstrip
     variant. The manifest endpoint must have been called first (it creates
     the cache); otherwise this returns 404. Works for every viewer format
-    (pptx/pdf/docx) — they all share the {report_id}_slides cache layout.
+    (pptx/pdf/docx/xlsx) — they all share the {report_id}_slides cache
+    layout.
     """
     safe_id = os.path.basename(report_id)
     reports_dir = _get_data_dir() / "reports"
