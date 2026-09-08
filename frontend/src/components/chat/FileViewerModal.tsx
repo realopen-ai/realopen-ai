@@ -17,16 +17,20 @@ import {
 } from "lucide-react";
 
 /** Formats the in-app document viewer supports. */
-export type ViewerFormat = "pptx" | "pdf" | "docx";
+export type ViewerFormat = "pptx" | "pdf" | "docx" | "xlsx";
 
 /**
- * Modal for viewing documents (PPTX / PDF / DOCX) as page images.
+ * Modal for viewing documents (PPTX / PDF / DOCX / XLSX) as page images.
  *
- * The backend renders every page as a JPEG (PPTX/DOCX via LibreOffice,
+ * The backend renders every page as a JPEG (PPTX/DOCX/XLSX via LibreOffice,
  * PDF directly via PyMuPDF — all cached server-side) and exposes:
- *   GET /api/reports/{reportId}/slides?format=pptx|pdf|docx → manifest
+ *   GET /api/reports/{reportId}/slides?format=pptx|pdf|docx|xlsx → manifest
  *   GET /api/reports/{reportId}/slides/{n}                 → page JPEG
  *   GET /api/reports/{reportId}/slides/{n}?variant=thumb   → thumbnail
+ *
+ * Spreadsheets are paginated by the workbook's print setup (landscape,
+ * fit-to-width, repeated header rows — written by the excel_gen service),
+ * so an XLSX preview reads like a print preview of the workbook.
  *
  * This component fetches the manifest on open and presents the document
  * with prev/next controls, a page indicator, a collapsible thumbnail
@@ -80,10 +84,15 @@ export function FileViewerModal({
   const count = manifest?.count ?? 0;
   const hasAnyNotes =
     manifest?.slides.some((s) => (s.notes ?? "").trim().length > 0) ?? false;
-  // PPTX decks have "slides"; PDF/DOCX documents have "pages".
+  // PPTX decks have "slides"; PDF/DOCX/XLSX documents have "pages".
   const pageWord = format === "pptx" ? "slide" : "page";
   const isPresentation = format === "pptx";
-  const documentLabel = isPresentation ? "presentation" : "document";
+  const documentLabel =
+    format === "pptx"
+      ? "presentation"
+      : format === "xlsx"
+        ? "spreadsheet"
+        : "document";
 
   // ── Fetch the slide manifest ────────────────────────────────────────
   useEffect(() => {

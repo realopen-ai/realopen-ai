@@ -287,7 +287,9 @@ export function GeneratedFilesSection({
                       )}
                       {file.report_id &&
                         (file.file_type === "pdf" || libreOfficeAvailable) &&
-                        ["pdf", "docx", "pptx"].includes(file.file_type) && (
+                        ["pdf", "docx", "pptx", "xlsx"].includes(
+                          file.file_type,
+                        ) && (
                           <button
                             onClick={() =>
                               setViewingPptx({
@@ -301,7 +303,9 @@ export function GeneratedFilesSection({
                             title={
                               file.file_type === "pptx"
                                 ? "View presentation"
-                                : "View document"
+                                : file.file_type === "xlsx"
+                                  ? "View spreadsheet"
+                                  : "View document"
                             }
                           >
                             <Eye className="w-4 h-4" />
@@ -324,7 +328,7 @@ export function GeneratedFilesSection({
         </div>
       </ScrollArea>
 
-      {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
+      {/* Document Viewer Modal (PPTX / PDF / DOCX / XLSX) */}
       {viewingPptx && (
         <FileViewerModal
           reportId={viewingPptx.reportId}
