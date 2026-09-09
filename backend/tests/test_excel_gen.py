@@ -35,6 +35,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.services import excel_gen  # noqa: E402
+from app import prompts as app_prompts  # noqa: E402
 
 # Importing the tools package registers every tool (including
 # ExcelGenTool) in the global registry at import time.
@@ -432,6 +433,38 @@ class TestValidation:
         }
         errors, _ = excel_gen.validate_workbook_spec(spec)
         assert any("'text' must be" in e for e in errors)
+
+    def test_text_block_number_format(self):
+        # money-valued labels outside tables (e.g. the amortization
+        # Monthly Payment input at B5) can carry an Excel number format
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "text_blocks": [
+                        {
+                            "cell": "B5",
+                            "text": "=-PMT(B3/12,B4,B2)",
+                            "number_format": '"$"#,##0.00',
+                        },
+                        {"cell": "A5", "text": "Monthly Payment"},
+                        {
+                            "cell": "B6",
+                            "text": 1,
+                            "number_format": "bad\nformat",
+                        },
+                    ],
+                }
+            ]
+        }
+        errors, warnings = excel_gen.validate_workbook_spec(spec)
+        assert errors == []
+        assert any("number_format" in w for w in warnings)
+        norm = excel_gen._normalize_spec(spec)
+        blocks = {b["cell"]: b for b in norm["sheets"][0]["text_blocks"]}
+        assert blocks["B5"]["number_format"] == '"$"#,##0.00'
+        assert blocks["A5"]["number_format"] is None
+        assert blocks["B6"]["number_format"] is None  # invalid → dropped
 
     def test_invalid_number_format_dropped_in_normalize(self):
         spec = {
@@ -1459,6 +1492,20 @@ class TestLlmFlow:
         assert spec["filename"] == "demo.xlsx"
         assert len(calls) == 1
 
+    def test_prompts_live_in_markdown_files(self):
+        # Prompts are NEVER inlined in code — both Excel prompts are
+        # loaded from prompts/*.md via the get_prompt loader.
+        from app.prompts import get_prompt
+        from pathlib import Path
+
+        prompts_dir = Path(app_prompts.__file__).parent
+        assert (prompts_dir / "excel_system.md").exists()
+        assert (prompts_dir / "excel_simplified.md").exists()
+        assert excel_gen.EXCEL_SYSTEM_PROMPT == get_prompt("excel_system")
+        assert excel_gen._SIMPLIFIED_EXCEL_PROMPT == get_prompt("excel_simplified")
+        # the simplified prompt is really the compact fallback contract
+        assert "ONE JSON workbook" in excel_gen._SIMPLIFIED_EXCEL_PROMPT
+
     @pytest.mark.asyncio
     async def test_repair_round(self, monkeypatch):
         responses = [
@@ -1733,6 +1780,13 @@ class TestExcelGenTool:
                 "report_id": "r1",
                 "created_at": 1234,
                 "sheet_count": 2,
+                "table_count": 3,
+                "chart_count": 1,
+                "formula_count": 47,
+                "sheet_names": ["Data", "Summary"],
+                "summary": (
+                    "2 sheets, 3 tables, 1 charts, 47 live formulas (Data, Summary)"
+                ),
             }
 
         # Patch where the TOOL imports it (bound reference), not just
@@ -1746,6 +1800,12 @@ class TestExcelGenTool:
         assert tc.gen_results[0]["type"] == "excel"
         assert tc.gen_results[0]["filename"] == "demo.xlsx"
         assert tc.gen_results[0]["format"] == "xlsx"
+        # the workbook summary travels back to the agent (and rides
+        # along in the deliverable metadata for the UI)
+        assert tc.gen_results[0]["summary"] == (
+            "2 sheets, 3 tables, 1 charts, 47 live formulas (Data, Summary)"
+        )
+        assert "2 sheets, 3 tables" in result.output
         assert "ready for download" in result.output
 
     @pytest.mark.asyncio
