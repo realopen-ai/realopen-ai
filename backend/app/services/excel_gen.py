@@ -48,6 +48,9 @@ SHEET object:
   tab_color     optional "RRGGBB".
   freeze_panes  optional cell ref such as "A2" — rows above + columns
                 left of it stay frozen while scrolling.
+  no_freeze     optional true — opt out of the default
+                freeze-below-first-header; for sheets meant to be
+                scrolled freely (budgets, planners).
   column_widths optional map {column letter → width in chars}.
   merged_cells  optional array of ranges ["A1:C1", ...].
   notes         optional string — rendered under the content in muted
@@ -101,6 +104,9 @@ TEXT_BLOCK object:
   font_size   default 11 (clamped 6..72).
   font_color  optional "RRGGBB".
   wrap        default false.
+  number_format optional string — Excel number format for this cell
+              ("#,##0.00", "0.0%"…). Money/percent values shown
+              OUTSIDE tables (labels, input cells) render formatted.
 
 CHART object:
   type              "bar" | "bar_h" | "line" | "area" | "pie" | "scatter".
@@ -463,6 +469,10 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         elif sheet["freeze_panes"].upper() == "A1":
             warnings.append(f"{ctx}: freeze_panes A1 freezes nothing — ignored")
 
+    if "no_freeze" in sheet and sheet["no_freeze"] is not None:
+        if not isinstance(sheet["no_freeze"], bool):
+            warnings.append(f"{ctx}: no_freeze must be true/false — ignored")
+
     if "column_widths" in sheet and sheet["column_widths"] is not None:
         cw = sheet["column_widths"]
         if not isinstance(cw, dict):
@@ -544,6 +554,12 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
                     warnings.append(
                         f"{bctx}: font_size must be a number — using default"
                     )
+                if (
+                    "number_format" in block
+                    and block["number_format"] is not None
+                    and not valid_number_format(block["number_format"])
+                ):
+                    warnings.append(f"{bctx}: invalid number_format — ignored")
 
     formulas = sheet.get("formulas")
     if formulas is not None:
@@ -1043,7 +1059,7 @@ def _shift_formula_refs(
             prefix, rest = full.split("!", 1)
             prefix += "!"
         else:
-            prefix, rest = "", full
+            prefix, _ = "", full
         c1, r1, c2, r2 = m.group(1), m.group(2), m.group(3), m.group(4)
         if not _col_ok(c1) or not _col_ok(c2):
             return full
@@ -1421,6 +1437,16 @@ def _normalize_spec(spec: dict) -> dict:
         if is_valid_cell(fp) and fp.upper() != "A1":
             s["freeze_panes"] = fp.upper()
 
+        # Explicit opt-out of the freeze-below-first-header default:
+        # sheets meant to be scrolled freely (budget planners…).
+        if sheet.get("no_freeze") is True:
+            s["no_freeze"] = True
+
+        # Explicit opt-out of the freeze-below-first-header default:
+        # sheets meant to be scrolled freely (budget planners…).
+        if sheet.get("no_freeze") is True:
+            s["no_freeze"] = True
+
         cw = sheet.get("column_widths")
         if isinstance(cw, dict):
             s["column_widths"] = {
@@ -1471,6 +1497,11 @@ def _normalize_spec(spec: dict) -> dict:
                         else None
                     ),
                     "wrap": bool(block.get("wrap", False)),
+                    "number_format": (
+                        block["number_format"]
+                        if valid_number_format(block.get("number_format"))
+                        else None
+                    ),
                 }
             )
         # NOTE: s["text_blocks"] is assigned after the tables are built —
@@ -2379,7 +2410,8 @@ class _SheetWriter:
                     color=block["font_color"] or INK,
                 ),
                 align=Alignment(wrap_text=block["wrap"], vertical="center"),
-                number_format=_default_date_format(block["text"]),
+                number_format=block.get("number_format")
+                or _default_date_format(block["text"]),
             )
             if block["wrap"]:
                 span = 6  # merged-ish visual width for wrapped labels
@@ -2730,7 +2762,16 @@ class _SheetWriter:
 
         if ctype == "pie":
             chart.dataLabels = DataLabelList()
+            # Percent-only labels ("63%") — everything else OFF.
+            # Unset OOXML flags render as ON in LibreOffice, which
+            # produced cluttered "Category; Series; $1,800.00; 63%"
+            # labels; the legend already carries the category names.
             chart.dataLabels.showPercent = True
+            chart.dataLabels.showVal = False
+            chart.dataLabels.showCatName = False
+            chart.dataLabels.showSerName = False
+            chart.dataLabels.showLegendKey = False
+            chart.dataLabels.showBubbleSize = False
         if chart_spec.get("title"):
             chart.title = chart_spec["title"]
         # PieChart has no axes; make sure axes are visible on the others
@@ -2782,6 +2823,10 @@ class _SheetWriter:
 
         if spec.get("freeze_panes"):
             self.ws.freeze_panes = spec["freeze_panes"]
+        elif spec.get("no_freeze"):
+            # explicit opt-out: no frozen rows/columns at all — the
+            # sheet is meant to be scrolled freely
+            pass
         elif self._has_header_row():
             # sensible default: freeze below the first table's header
             tables = spec.get("tables") or []
@@ -2867,6 +2912,74 @@ def _build_xlsx(spec: dict, output_path: Path) -> None:
 # ── Public API ────────────────────────────────────────────────────────
 
 
+def _workbook_stats(spec: dict) -> dict:
+    """Summarize a (normalized) workbook spec for the agent's response.
+
+    Counts sheets, tables, charts and live formulas and collects the
+    sheet names — the same "what did I just build" context report /
+    pptx generation hand back to the agent so it can tell the user
+    what the deliverable contains.
+    """
+    sheets = spec.get("sheets") or []
+    table_count = 0
+    chart_count = 0
+    formula_count = 0
+
+    def _count_formulas(texts: Any) -> int:
+        count = 0
+        for v in texts or []:
+            if isinstance(v, str) and v.lstrip().startswith("="):
+                count += 1
+        return count
+
+    for sheet in sheets:
+        tables = sheet.get("tables") or []
+        table_count += len(tables)
+        chart_count += len(sheet.get("charts") or [])
+        for table in tables:
+            for row in table.get("rows") or []:
+                if isinstance(row, list):
+                    formula_count += _count_formulas(row)
+            formula_count += _count_formulas(table.get("total_row"))
+        for block in sheet.get("text_blocks") or []:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str) and text.lstrip().startswith("="):
+                    formula_count += 1
+        formula_count += _count_formulas(
+            [f for _cell, f in (_normalize_formula_pairs(sheet.get("formulas")) or [])]
+        )
+
+    return {
+        "sheet_names": [str(s.get("name") or "") for s in sheets],
+        "table_count": table_count,
+        "chart_count": chart_count,
+        "formula_count": formula_count,
+    }
+
+
+def _workbook_summary_text(spec: dict, pattern_name: Optional[str]) -> str:
+    """Human-readable workbook summary for the agent / user message."""
+    stats = _workbook_stats(spec)
+    parts = [
+        f"{max(len(stats['sheet_names']), 1)} sheets",
+        f"{stats['table_count']} tables",
+    ]
+    if stats["chart_count"]:
+        parts.append(f"{stats['chart_count']} charts")
+    parts.append(f"{stats['formula_count']} live formulas")
+    summary = ", ".join(parts)
+    names = [n for n in stats["sheet_names"] if n]
+    if names:
+        summary += f" ({', '.join(names[:6])})"
+    if pattern_name:
+        summary += (
+            f" — built from the built-in {pattern_name} template, so all "
+            "formulas are code-generated and arithmetically correct"
+        )
+    return summary
+
+
 async def generate_spreadsheet(
     brief: str,
     requirements: str = "",
@@ -2925,6 +3038,12 @@ async def generate_spreadsheet(
 
     rel_path = f"reports/{report_id}.xlsx"
 
+    # 4. Workbook summary — same "what did I build" context report /
+    #    pptx generation return, so the agent can describe the
+    #    deliverable to the user (sheet/table/chart/formula counts).
+    stats = _workbook_stats(spec)
+    summary_text = _workbook_summary_text(spec, pattern_name)
+
     return {
         "type": "excel",
         "format": "xlsx",
@@ -2934,5 +3053,10 @@ async def generate_spreadsheet(
         "report_id": report_id,
         "created_at": int(time.time()),
         "sheet_count": len(spec["sheets"]),
+        "table_count": stats["table_count"],
+        "chart_count": stats["chart_count"],
+        "formula_count": stats["formula_count"],
+        "sheet_names": stats["sheet_names"],
+        "summary": summary_text,
         "pattern": pattern_name,
     }
