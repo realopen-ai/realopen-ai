@@ -152,29 +152,30 @@ class ExcelGenTool(BaseTool):
                     "report_id": result["report_id"],
                     "created_at": result["created_at"],
                     "pattern": result.get("pattern"),
+                    "summary": result.get("summary"),
                 }
             ]
 
-            pattern_note = ""
-            if result.get("pattern"):
-                pattern_note = (
-                    f" It was built from the built-in {result['pattern']} "
-                    "template, so all formulas are code-generated and "
-                    "arithmetically correct by construction."
-                )
+            # The workbook summary (sheets / tables / charts / live
+            # formulas, plus a note when a built-in template was used)
+            # travels back to the agent so it can describe the
+            # deliverable to the user — same contract as report and
+            # pptx generation.
+            summary_fragment = result.get("summary") or (
+                f"{result.get('sheet_count', 0)} sheets"
+            )
 
             output_msg = (
                 f"Excel workbook generated successfully: {result['filename']} "
-                f"({result.get('sheet_count', 0)} sheets, live formulas preserved)."
-                f"{pattern_note}"
+                f"— {summary_fragment}."
                 " The user can download it using the deliverable badge shown in the chat."
                 " Tell the user the spreadsheet is ready for download."
             )
 
             _log(
-                "execute DONE brief=%r sheets=%s time=%.1fs",
+                "execute DONE brief=%r summary=%s time=%.1fs",
                 brief[:60],
-                result.get("sheet_count"),
+                result.get("summary"),
                 time.time() - start,
             )
 
