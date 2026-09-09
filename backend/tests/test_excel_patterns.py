@@ -1,6 +1,7 @@
 """
-Tests for the deterministic template layer (services/excel_patterns.py)
-and its routing integration in services/excel_gen.py.
+Tests for the deterministic template layer (the app/services/patterns/
+package: one module per pattern, discovered dynamically) and its
+routing integration in services/excel_gen.py.
 
 The templates exist because models hand-writing formula lattices emit
 refs that don't match the rendered layout (off by 1..N rows) — see the
@@ -24,7 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services import excel_gen as eg  # noqa: E402
-from app.services import excel_patterns as ep  # noqa: E402
+from app.services import patterns as ep  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 
 # ── Param coercion ───────────────────────────────────────────────────
