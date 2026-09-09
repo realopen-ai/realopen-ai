@@ -162,6 +162,7 @@ from openpyxl.chart.marker import DataPoint
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.config import settings
 from app.services import excel_patterns
@@ -225,13 +226,17 @@ _NUMFMT_ALLOWED = set(
 )
 _INT_STR_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _FLOAT_STR_RE = re.compile(r"^-?(?:[0-9]+\.[0-9]*|\.[0-9]+)$")
-# Currency amounts — REQUIRES a currency symbol or a thousands comma
-# group so plain leading-zero strings ("007", zip codes) stay text.
-# Branches: leading symbol "$4.50" / comma group "1,234" (+optional
-# trailing symbol) / trailing symbol "4.50 €".
+# European decimal comma — conservative: 1-3 digits before the comma,
+# 1-2 after ("1,9", "3,50"). "1,234" (3 digits after) is deliberately
+# excluded: it could be an English thousands number.
+_DECIMAL_COMMA_RE = re.compile(r"^-?\d{1,3},\d{1,2}$")
+# Currency amounts — REQUIRES a currency symbol so plain leading-zero
+# strings ("007", zip codes) and ambiguous bare comma-groups ("1,234"
+# could be an English thousands number OR a European decimal) stay text.
+# Branches: leading symbol "$4.50" / trailing symbol "4.50 €" (the
+# trailing branch also covers comma groups: "1,234.56 €").
 _CURRENCY_STR_RE = re.compile(
     r"^(?:[€$£¥]\s?(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?)"
-    r"|(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?:\s?[€$£¥])?"
     r"|(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s?[€$£¥])$"
 )
 _ISO_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
@@ -1347,6 +1352,9 @@ def _coerce_cell_value(value: Any) -> Any:
 
     - numeric-looking strings WITHOUT leading zeros → int/float so
       SUM() & friends work on them
+    - European decimal commas ("1,9", "3,50") → floats — conservative:
+      only 1-2 digits after the comma qualify, so "1,234" (ambiguous
+      thousands) stays text
     - currency strings ("$4.50", "1,234.56 €", "£9") → numbers with
       the symbol/thousands separators stripped — a very common
       small-model mistake that otherwise leaves SUM() totals at 0
@@ -1360,6 +1368,11 @@ def _coerce_cell_value(value: Any) -> Any:
             return int(s)
         if s and _FLOAT_STR_RE.match(s):
             return float(s)
+        if s and _DECIMAL_COMMA_RE.match(s):
+            # European decimal comma ("1,9" / "3,50"). Only 1-2 digits
+            # after the comma qualify — "1,234" could legitimately be
+            # an English thousands number, so it stays text.
+            return float(s.replace(",", ".", 1))
         m = _CURRENCY_STR_RE.match(s)
         if m:
             num = next(g for g in m.groups() if g is not None)
@@ -1658,12 +1671,159 @@ def _normalize_spec(spec: dict) -> dict:
 # ── LLM call + JSON extraction ────────────────────────────────────────
 
 
+# Characters that can begin a JSON value. Used by the repair walker to
+# spot a missing comma between two array elements.
+_JSON_VALUE_START = set('{["-0123456789tfn')
+
+
+# Full Excel system prompt (loaded once at import; the file reads are
+# lru_cached by the prompts package).
+EXCEL_SYSTEM_PROMPT = get_prompt("excel_system")
+
+# Radically simplified fallback prompt for the 3rd LLM attempt. After
+# two failures the full schema prompt is clearly too much for the
+# model — this compact contract keeps only what a tiny local model
+# can reliably produce: one table, plain rows, an optional total row.
+_SIMPLIFIED_EXCEL_PROMPT = get_prompt("excel_simplified")
+
+
+def _repair_json_text(src: str) -> Optional[str]:
+    """Repair structurally broken LLM JSON by re-walking the token stream.
+
+    Small local models routinely emit JSON that is *almost* right: a
+    missing ``]`` before a ``}``, a missing ``}`` before a ``]``, a
+    missing comma between elements, a trailing comma before a closer, a
+    string left unterminated (token-limit truncation), or prose after
+    the root object closes. The walker re-emits the text while tracking
+    the open-container stack and fixes exactly those failure modes:
+
+    - ``}`` arriving while an array is open  → insert the missing ``]``
+    - ``]`` arriving while an object is open → insert the missing ``}``
+    - a value starting right after a finished value → insert ``,``
+    - a trailing comma before a closer → dropped
+    - everything after the root object closes → truncated
+    - an unterminated string at end of input → closed
+    - containers still open at end of input → closed in order
+
+    Returns the repaired text, or None when there is nothing to walk.
+    Never raises — the worst case is a repaired text that still fails
+    to parse, and the caller falls back to its other salvage steps.
+    """
+    if not src or "{" not in src:
+        return None
+
+    out: List[str] = []
+    stack: List[str] = []  # open containers, bottom → top ("{" or "[")
+    in_string = False
+    escape = False
+    prev_sig = ""  # last significant char emitted outside strings
+
+    def _value_end() -> bool:
+        # Anything that is not a container-opener / ':' / ',' means a
+        # value (or a key string) just finished.
+        return prev_sig != "" and prev_sig not in "{[:,"
+
+    i = 0
+    n = len(src)
+    while i < n:
+        c = src[i]
+        i += 1
+
+        if in_string:
+            out.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+                prev_sig = '"'
+            continue
+
+        if c in " \t\r\n":
+            continue
+
+        if c == '"':
+            # A string directly after a finished value = a missing
+            # comma (next array element, or the next object key).
+            if stack and _value_end():
+                out.append(",")
+            out.append(c)
+            in_string = True
+            continue
+
+        if c in "{[":
+            # A value directly after a finished value inside an array =
+            # a missing comma between elements.
+            if stack and stack[-1] == "[" and _value_end():
+                out.append(",")
+            out.append(c)
+            stack.append(c)
+            prev_sig = c
+            continue
+
+        if c in "}]":
+            # A trailing comma right before a closer is invalid JSON.
+            while out and out[-1] == ",":
+                out.pop()
+            if c == "}":
+                # The model closed an object while an array was still
+                # open → the array closer went missing. Close it first.
+                while stack and stack[-1] == "[":
+                    out.append("]")
+                    stack.pop()
+            else:
+                # Symmetric: closed an array while an object was open.
+                while stack and stack[-1] == "{":
+                    out.append("}")
+                    stack.pop()
+            if not stack:
+                # The root just closed — anything after this point is
+                # prose / extra data, so truncate here.
+                out.append(c)
+                break
+            out.append(c)
+            stack.pop()
+            prev_sig = c
+            continue
+
+        # ':', ',', digits, literals (and stray prose) pass through.
+        out.append(c)
+        prev_sig = c
+
+    if in_string:
+        # Output was truncated mid-string (token limit) — close it so
+        # the rest of the repair can produce parseable JSON.
+        if escape and out and out[-1] == "\\":
+            out.pop()  # a dangling escape would eat the closing quote
+        out.append('"')
+
+    while stack:
+        out.append("]" if stack[-1] == "[" else "}")
+        stack.pop()
+
+    return "".join(out)
+
+
 def _extract_json_object(content: str) -> Any:
     """Extract the first balanced JSON object from LLM output.
 
     Handles: markdown fences, leading/trailing prose, a single
     wrapper key like {"workbook": {...}}.
-    Raises ValueError when no object can be extracted.
+
+    Salvage ladder for structurally broken JSON (small local models
+    emit JSON that is *almost* right, and a hard parse failure would
+    waste the whole LLM call — the repairs feed the retry round
+    instead):
+      1. strict parse from the first ``{``;
+      2. trailing-comma cleanup;
+      3. structural repair walker (missing ``]``/``}`` closers,
+         missing commas, truncated strings, extra data after the
+         root object);
+      4. strict parse from every subsequent ``{`` — the first brace
+         may live in prose (``blah {oops} {"sheets": ...}``).
+
+    Raises ValueError when no object can be extracted at all.
     """
     if not content or not content.strip():
         raise ValueError("empty LLM response")
@@ -1680,15 +1840,49 @@ def _extract_json_object(content: str) -> Any:
         raise ValueError("no JSON object found in LLM output")
 
     decoder = json.JSONDecoder()
+    body = text[start:]
+    obj: Any = None
+    first_error: Optional[json.JSONDecodeError] = None
+
+    # 1. strict parse
     try:
-        obj, _ = decoder.raw_decode(text[start:])
+        obj, _ = decoder.raw_decode(body)
     except json.JSONDecodeError as e:
-        # common fix: trailing commas
-        cleaned = re.sub(r",\s*([}\]])", r"\1", text[start:])
+        first_error = e
+
+    # 2. common quick fix: trailing commas
+    if obj is None:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", body)
         try:
             obj, _ = decoder.raw_decode(cleaned)
         except json.JSONDecodeError:
-            raise ValueError(f"unparseable JSON from LLM: {e}") from e
+            pass
+
+    # 3. structural repair walker
+    if obj is None:
+        repaired = _repair_json_text(body)
+        if repaired is not None and repaired != body:
+            try:
+                obj, _ = decoder.raw_decode(repaired)
+            except json.JSONDecodeError:
+                pass
+            else:
+                _log("JSON repair walker recovered a broken spec")
+
+    # 4. the first '{' may live in prose — try every other one
+    if obj is None:
+        for pos in [m.start() for m in re.finditer(r"\{", body)][:200]:
+            if pos == 0:
+                continue
+            try:
+                obj, _ = decoder.raw_decode(body[pos:])
+            except json.JSONDecodeError:
+                continue
+            break
+
+    if obj is None:
+        detail = str(first_error) if first_error is not None else "no parseable object"
+        raise ValueError(f"unparseable JSON from LLM: {detail}")
 
     # Unwrap {"workbook": {...}} / {"spec": {...}} single-key wrappers
     if isinstance(obj, dict) and "sheets" not in obj and len(obj) == 1:
@@ -1696,6 +1890,170 @@ def _extract_json_object(content: str) -> Any:
         if isinstance(inner, dict) and "sheets" in inner:
             return inner
     return obj
+
+
+# ── LLM shortcut expansion (post-processing) ──────────────────────────
+
+
+def _sum_placeholder(col_letter: str) -> str:
+    """=SUM() formula for a table column, with row placeholders.
+
+    {first_row}/{last_row} are expanded by the converter at write
+    time (the same contract as model-written total_row formulas), so
+    the SUM range always covers exactly the rows that were rendered.
+    """
+    return f"=SUM({col_letter}{{first_row}}:{col_letter}{{last_row}})"
+
+
+def _table_numeric_columns(headers: List[Any], rows: List[Any]) -> set:
+    """Column indices (0-based) that carry numeric data in any row."""
+    numeric: set = set()
+    for row in rows:
+        if not isinstance(row, list):
+            row = [row]
+        for i, v in enumerate(row[: len(headers)]):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                numeric.add(i)
+    return numeric
+
+
+def _expand_total_row_shortcut(table: dict) -> None:
+    """Expand `total_row` shortcuts into a concrete list (in place).
+
+    - ``true`` → ["Total", =SUM(...) for every numeric column, None
+      for the remaining non-numeric columns]
+    - ``{"sum_columns": ["C", "Price"]}`` → sums only the listed
+      columns (letters OR header names, case-insensitive)
+    - a list → empty cells ("", null) in numeric columns are
+      auto-filled with =SUM(...); non-empty values are preserved
+      (a "Target"/"Budget" number must NOT be replaced by a sum)
+    """
+    tr = table.get("total_row")
+    if tr is None or not isinstance(table, dict):
+        return
+    headers = table.get("headers")
+    rows = table.get("rows")
+    if not isinstance(headers, list) or not headers:
+        return
+    if not isinstance(rows, list) or not rows:
+        return
+    n = len(headers)
+    numeric = _table_numeric_columns(headers, rows)
+
+    if tr is True:
+        total: List[Any] = []
+        for i in range(n):
+            if i in numeric:
+                total.append(_sum_placeholder(get_column_letter(i + 1)))
+            elif i == 0:
+                total.append("Total")
+            else:
+                total.append(None)
+        table["total_row"] = total
+        return
+
+    if isinstance(tr, dict):
+        sum_idx: set = set()
+        cols = tr.get("sum_columns")
+        if isinstance(cols, list):
+            for c in cols:
+                cs = str(c).strip()
+                if re.match(r"^[A-Za-z]{1,3}$", cs):
+                    try:
+                        idx = column_index_from_string(cs.upper()) - 1
+                    except ValueError:
+                        continue
+                    if 0 <= idx < n:
+                        sum_idx.add(idx)
+                else:
+                    # header-name lookup (case-insensitive)
+                    for hi, h in enumerate(headers):
+                        if str(h).strip().lower() == cs.lower():
+                            sum_idx.add(hi)
+                            break
+        total = []
+        for i in range(n):
+            if i in sum_idx:
+                total.append(_sum_placeholder(get_column_letter(i + 1)))
+            elif i == 0:
+                total.append("Total")
+            else:
+                total.append(None)
+        table["total_row"] = total
+        return
+
+    if isinstance(tr, list):
+        out = list(tr[:n]) + [None] * max(0, n - len(tr))
+        for i in range(n):
+            v = out[i]
+            empty = v is None or (isinstance(v, str) and not v.strip())
+            if empty and i in numeric:
+                out[i] = _sum_placeholder(get_column_letter(i + 1))
+        table["total_row"] = out
+
+
+def _expand_freeze_header(sheet: dict) -> None:
+    """Expand `freeze_header: true` → freeze_panes (in place).
+
+    Freezes everything above the first table's header row (the title
+    row when the table has one). An explicit `freeze_panes` always
+    wins — the shortcut is then simply dropped.
+    """
+    if sheet.get("freeze_header") is not True:
+        sheet.pop("freeze_header", None)
+        return
+    if sheet.get("freeze_panes"):
+        sheet.pop("freeze_header", None)  # explicit freeze wins
+        return
+    tables = sheet.get("tables")
+    if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
+        return
+    first = tables[0]
+    try:
+        start_row, _ = cell_to_indices(
+            first.get("start_cell") if is_valid_cell(first.get("start_cell")) else "A1"
+        )
+    except ValueError:
+        return
+    if isinstance(first.get("title"), str) and first["title"].strip():
+        start_row += 1  # the title occupies its own row above the header
+    freeze_row = start_row + 1  # below the header row
+    if freeze_row > 1:
+        sheet["freeze_panes"] = f"A{freeze_row}"
+    sheet.pop("freeze_header", None)
+
+
+def _post_process_spec(spec: Any) -> Any:
+    """Expand LLM shortcut keys into concrete spec structures.
+
+    Runs on EVERY LLM attempt, right after JSON extraction and BEFORE
+    validation, so models can use ergonomic shortcuts that would
+    otherwise surface as validation errors:
+
+    - ``total_row: true`` / ``{"sum_columns": [...]}`` → a real total
+      row with =SUM() formulas (see _expand_total_row_shortcut)
+    - ``freeze_header: true`` → freeze_panes below the first table's
+      title + header rows
+
+    Malformed input passes through unchanged so the validator can
+    report the real problems. Idempotent on already-expanded specs.
+    """
+    if not isinstance(spec, dict):
+        return spec
+    sheets = spec.get("sheets")
+    if not isinstance(sheets, list):
+        return spec
+    for sheet in sheets:
+        if not isinstance(sheet, dict):
+            continue
+        _expand_freeze_header(sheet)
+        tables = sheet.get("tables")
+        if not isinstance(tables, list):
+            continue
+        for table in tables:
+            if isinstance(table, dict):
+                _expand_total_row_shortcut(table)
+    return spec
 
 
 async def _call_llm(messages: List[dict]) -> str:
@@ -1734,8 +2092,16 @@ async def _call_llm(messages: List[dict]) -> str:
 async def _generate_workbook_json(brief: str, requirements: str) -> dict:
     """Specialized Excel AI call: brief → validated + normalized workbook spec.
 
-    One repair round on validation errors (the errors are fed back to
-    the LLM). Raises RuntimeError when the spec is still invalid.
+    Three attempts, cheapest first:
+      1. full schema prompt;
+      2. repair round — the failed output + validation errors are fed
+         back under the full prompt;
+      3. simplified prompt — a compact schema-only contract that even
+         tiny local models can follow.
+
+    Shortcut post-processing (`total_row: true`, `freeze_header`) runs
+    on EVERY attempt right after JSON extraction, before validation.
+    Raises RuntimeError when the spec is still invalid after 3 attempts.
     """
     user_content = f"Brief: {brief}"
     if requirements and requirements.strip():
@@ -1745,13 +2111,13 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
     user_content += "\n\nRespond with the JSON workbook specification now."
 
     messages: List[dict] = [
-        {"role": "system", "content": get_prompt("excel_system")},
+        {"role": "system", "content": EXCEL_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
     last_errors: List[str] = []
     last_raw = ""
-    for attempt in (1, 2):
+    for attempt in (1, 2, 3):
         _log("LLM call %d: brief=%r", attempt, brief[:60])
         raw = await _call_llm(messages)
         last_raw = raw
@@ -1762,6 +2128,10 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
             parsed = None
 
         if parsed is not None:
+            # Expand LLM shortcuts BEFORE validation — total_row: true
+            # and freeze_header would otherwise surface as schema
+            # errors even though the model's intent is perfectly clear.
+            parsed = _post_process_spec(parsed)
             errors, warnings = validate_workbook_spec(parsed)
             if warnings:
                 _log("validation warnings: %s", "; ".join(warnings[:8]))
@@ -1779,28 +2149,44 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
                 return normalized
             last_errors = errors
 
-        # Build the repair prompt
+        # Build the messages for the next attempt.
         _log("attempt %d invalid: %s", attempt, "; ".join(last_errors[:5]))
-        messages = [
-            {"role": "system", "content": get_prompt("excel_system")},
-            {
-                "role": "user",
-                "content": user_content,
-            },
-            {"role": "assistant", "content": raw[:4000]},
-            {
-                "role": "user",
-                "content": (
-                    "Your previous output is INVALID. Problems:\n- "
-                    + "\n- ".join(last_errors[:15])
-                    + "\n\nOutput the CORRECTED JSON workbook specification only. "
-                    "Follow the schema exactly; output ONE JSON object, nothing else."
-                ),
-            },
-        ]
+        if attempt == 1:
+            # Repair round: full prompt + the failed output + errors.
+            messages = [
+                {"role": "system", "content": EXCEL_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": user_content,
+                },
+                {"role": "assistant", "content": raw[:4000]},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous output is INVALID. Problems:\n- "
+                        + "\n- ".join(last_errors[:15])
+                        + "\n\nOutput the CORRECTED JSON workbook specification only. "
+                        "Follow the schema exactly; output ONE JSON object, nothing else."
+                    ),
+                },
+            ]
+        else:
+            # Attempt 3: radically simplified prompt — a fresh start
+            # with only the compact schema contract.
+            messages = [
+                {"role": "system", "content": _SIMPLIFIED_EXCEL_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Create an Excel workbook for this request:\n{brief}\n\n"
+                        "Respond with the JSON object only."
+                    ),
+                },
+            ]
 
     raise RuntimeError(
-        f"Excel workbook spec failed validation after retry: {'; '.join(last_errors[:5])} "
+        f"Excel workbook spec failed validation after 3 attempts: "
+        f"{'; '.join(last_errors[:5])} "
         f"(raw output started: {last_raw[:200]!r})"
     )
 
@@ -2415,6 +2801,39 @@ class _SheetWriter:
         return bool(self.spec.get("tables"))
 
 
+def _apply_print_setup(ws) -> None:
+    """Write reader-friendly print defaults on a generated worksheet.
+
+    The in-app XLSX preview converts the workbook to PDF with LibreOffice,
+    which paginates strictly by the workbook's print setup. A default
+    openpyxl sheet has no print setup at all, so a wide table gets sliced
+    into narrow A4-portrait columns that read terribly in the viewer.
+
+    Instead: landscape A4, fit to ONE page wide (as many pages tall as
+    the data needs), and repeat the frozen header region (title + column
+    headers — the same rows the freeze panes keep on screen) at the top
+    of every printed page, exactly like a proper print preview.
+    """
+    # fitToWidth/fitToHeight only take effect with fitToPage enabled.
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1  # never slice columns across pages
+    ws.page_setup.fitToHeight = 0  # 0 = as many pages tall as needed
+
+    # Repeat the frozen header region (rows above the freeze anchor) on
+    # every page so multi-page tables stay readable in the preview.
+    # Freeze anchors look like "A4" / "B4" / "$A$4" / "B4:C9" — parse the
+    # row from the first cell of the range.
+    freeze = ws.freeze_panes
+    if freeze:
+        m = re.match(r"^[A-Za-z]+(\d+)", str(freeze).split(":")[0].replace("$", ""))
+        if m:
+            anchor_row = int(m.group(1))
+            if anchor_row > 1:
+                ws.print_title_rows = f"1:{anchor_row - 1}"
+
+
 def _build_xlsx(spec: dict, output_path: Path) -> None:
     """Deterministic JSON spec → .xlsx (pure openpyxl, no LLM)."""
     wb = Workbook()
@@ -2431,6 +2850,7 @@ def _build_xlsx(spec: dict, output_path: Path) -> None:
         writer.write_notes()  # documentation under content
         writer.write_merged_cells()
         writer.apply_layout()
+        _apply_print_setup(ws)  # print-friendly pagination for the XLSX preview
 
     if wb.sheetnames:
         wb.active = 0

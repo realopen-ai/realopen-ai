@@ -8,7 +8,12 @@ PPTX → per-slide JPEG rendering (for the in-app slide viewer).
 The slide/page viewer pipeline is format-generic:
     PPTX --soffice --> PDF --fitz/pdftoppm      --> slide_NNN.jpg (+ _t thumb)
     DOCX --soffice --> PDF (into the cache dir) --> page JPEGs
+    XLSX --soffice --> PDF (into the cache dir) --> page JPEGs
     PDF  (already a PDF — no soffice needed)    --> page JPEGs
+
+XLSX workbooks honor the print setup stored in the workbook (the excel_gen
+service writes landscape + fit-to-width + repeated header rows), so the
+converted pages read like a properly paginated print preview.
 
 LibreOffice is installed to its DEFAULT system location (/usr/lib/libreoffice)
 via apt-get install, and that path is mounted as a Docker volume. This means:
@@ -809,7 +814,7 @@ async def convert_pptx_to_slide_images(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Generic document → per-page JPEG rendering (PDF / DOCX viewer)
+# Generic document → per-page JPEG rendering (PDF / DOCX / XLSX viewer)
 # ══════════════════════════════════════════════════════════════════════
 #
 # The PPTX pipeline above is specialized (speaker notes, cached PDF next
@@ -822,9 +827,14 @@ async def convert_pptx_to_slide_images(
 #          to the source, so a stray {id}.pdf can never hijack the
 #          download endpoint), then pages are rasterized like a PDF.
 #          LibreOffice IS required.
+#   XLSX — identical to DOCX: soffice converts the workbook to PDF into
+#          the cache dir (honoring the workbook's print setup — the
+#          excel_gen service writes landscape/fit-to-width/repeat-header
+#          print settings), then pages are rasterized. LibreOffice IS
+#          required.
 
 # Formats the generic viewer pipeline understands.
-VIEWER_SUPPORTED_FORMATS = ("pptx", "pdf", "docx")
+VIEWER_SUPPORTED_FORMATS = ("pptx", "pdf", "docx", "xlsx")
 
 
 def can_rasterize_pdf() -> bool:
@@ -843,7 +853,7 @@ def can_rasterize_pdf() -> bool:
 
 
 def viewer_format_of(source_path: Path) -> Optional[str]:
-    """Normalized viewer format for a source file ("pptx"/"pdf"/"docx")."""
+    """Normalized viewer format for a source file ("pptx"/"pdf"/"docx"/"xlsx")."""
     suffix = source_path.suffix.lower().lstrip(".")
     return suffix if suffix in VIEWER_SUPPORTED_FORMATS else None
 
@@ -857,42 +867,57 @@ def viewer_cache_dir(source_path: Path) -> Path:
     return slides_cache_dir(source_path)
 
 
-async def _convert_docx_to_pdf_in_cache(
-    docx_path: Path, cache_dir: Path
+async def _convert_office_to_pdf_in_cache(
+    source_path: Path, cache_dir: Path
 ) -> Optional[Path]:
-    """Convert DOCX → PDF *inside the cache dir* using LibreOffice.
+    """Convert a DOCX/XLSX → PDF *inside the cache dir* using LibreOffice.
 
     The output lands at {cache_dir}/{stem}.pdf — deliberately NOT next
     to the source file. data/reports/ is probed by extension by the
-    download endpoint, so writing {id}.pdf next to {id}.docx would make
-    downloads serve the PDF conversion instead of the original DOCX.
-    (The cache dir is wiped whenever the source changes, so the embedded
-    PDF can never go stale either.)
+    download endpoint, so writing {id}.pdf next to {id}.docx / {id}.xlsx
+    would make downloads serve the PDF conversion instead of the original
+    deliverable. (The cache dir is wiped whenever the source changes, so
+    the embedded PDF can never go stale either.)
+
+    For spreadsheets, LibreOffice paginates according to the workbook's
+    print setup (page size / orientation / fit-to-width / repeated title
+    rows) — the excel_gen service writes reader-friendly defaults on
+    every generated sheet, so the preview reads like a print preview.
     """
     if not is_available():
-        _log("LibreOffice not available — cannot convert DOCX to PDF")
+        _log("LibreOffice not available — cannot convert %s to PDF", source_path.suffix)
         return None
 
     async with _so_lock:
         rc, _, stderr = await _run_soffice(
-            ["--convert-to", "pdf", "--outdir", str(cache_dir), str(docx_path)]
+            ["--convert-to", "pdf", "--outdir", str(cache_dir), str(source_path)]
         )
 
         if rc != 0:
-            _log("soffice DOCX→PDF failed (rc=%d): %s", rc, stderr[:200])
+            _log(
+                "soffice %s→PDF failed (rc=%d): %s",
+                source_path.suffix,
+                rc,
+                stderr[:200],
+            )
             return None
 
-        pdf_path = cache_dir / f"{docx_path.stem}.pdf"
+        pdf_path = cache_dir / f"{source_path.stem}.pdf"
         if not pdf_path.exists():
-            _log("DOCX→PDF output not found: %s", pdf_path)
+            _log("%s→PDF output not found: %s", source_path.suffix, pdf_path)
             return None
 
         _log(
-            "DOCX→PDF converted into cache: %s (%d bytes)",
+            "%s→PDF converted into cache: %s (%d bytes)",
+            source_path.suffix,
             pdf_path.name,
             pdf_path.stat().st_size,
         )
         return pdf_path
+
+
+# Backwards-compatible alias (the DOCX path was the original caller).
+_convert_docx_to_pdf_in_cache = _convert_office_to_pdf_in_cache
 
 
 async def _rasterize_pdf_into_cache(
@@ -937,7 +962,7 @@ async def convert_document_to_page_images(
     thumb_width: int = SLIDE_THUMB_WIDTH,
     force: bool = False,
 ) -> Optional[dict]:
-    """Render every page of a PDF/DOCX/PPTX as JPEG images (full + thumb).
+    """Render every page of a PDF/DOCX/XLSX/PPTX as JPEG images (full + thumb).
 
     Format-generic entry point for the in-app document viewer. Dispatches
     on the file extension:
@@ -947,6 +972,10 @@ async def convert_document_to_page_images(
       - .pdf  → rasterize directly (PyMuPDF / pdftoppm). No LibreOffice.
       - .docx → soffice converts to PDF *inside the cache dir*, then
         rasterizes. Requires LibreOffice.
+      - .xlsx → identical to .docx: soffice converts the workbook to PDF
+        inside the cache dir (honoring the workbook's print setup — the
+        excel_gen service writes landscape/fit-to-width/repeat-header
+        print settings), then rasterizes. Requires LibreOffice.
 
     Cache layout + manifest format are identical to the PPTX pipeline
     ({stem}_slides/ with slide_NNN.jpg + slide_NNN_t.jpg + manifest.json),
@@ -987,10 +1016,10 @@ async def convert_document_to_page_images(
 
     if fmt == "pdf":
         pdf_path = source_path
-    else:  # docx
-        pdf_path = await _convert_docx_to_pdf_in_cache(source_path, cache_dir)
+    else:  # docx / xlsx — same soffice → PDF-in-cache pipeline
+        pdf_path = await _convert_office_to_pdf_in_cache(source_path, cache_dir)
         if pdf_path is None:
-            _log("DOCX→PDF failed — cannot render pages")
+            _log("%s→PDF failed — cannot render pages", fmt.upper())
             return None
 
     manifest = await _rasterize_pdf_into_cache(

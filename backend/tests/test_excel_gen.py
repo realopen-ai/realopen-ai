@@ -24,6 +24,7 @@ Layers:
    param aliases; agent service keyword selection + fenced parsing.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -1084,6 +1085,40 @@ class TestConverter:
         wb = load_workbook(str(amort_file))
         assert wb.sheetnames == ["Inputs", "Schedule"]
         wb.close()
+
+    def test_print_setup_written_for_viewer(self, amort_file):
+        """Every sheet must carry print defaults so the XLSX preview
+        (LibreOffice workbook→PDF) paginates like a print preview:
+        landscape A4, fit to one page WIDE (never slice columns), as many
+        pages tall as needed, and repeated header rows via print_title_rows
+        wherever freeze panes anchor below row 1."""
+        from openpyxl import load_workbook
+
+        wb = load_workbook(str(amort_file))
+        try:
+            for ws in wb.worksheets:
+                pr = ws.sheet_properties.pageSetUpPr
+                assert pr is not None and pr.fitToPage is True, ws.title
+                assert ws.page_setup.orientation == "landscape", ws.title
+                assert str(ws.page_setup.paperSize) == "9", ws.title  # A4
+                assert int(ws.page_setup.fitToWidth) == 1, ws.title
+                assert int(ws.page_setup.fitToHeight) == 0, ws.title
+
+                freeze = ws.freeze_panes
+                if freeze:
+                    anchor_row = int(
+                        re.match(r"^[A-Za-z]+(\d+)", str(freeze).split(":")[0]).group(1)
+                    )
+                    if anchor_row > 1:
+                        expected = f"1:{anchor_row - 1}"
+                        # openpyxl normalizes to absolute form ("$1:$2").
+                        actual = str(ws.print_title_rows or "").replace("$", "")
+                        assert actual == expected, (
+                            f"{ws.title}: print_title_rows {ws.print_title_rows!r}"
+                            f" != {expected!r}"
+                        )
+        finally:
+            wb.close()
 
     def test_text_blocks_written(self, amort_file):
         from openpyxl import load_workbook

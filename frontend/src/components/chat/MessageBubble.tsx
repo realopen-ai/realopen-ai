@@ -827,7 +827,11 @@ function ReportDeliverableBadge({
 
   const showThumb = isPptx && thumbnailUrl && !thumbError;
   const canView = Boolean(onView);
-  const viewTitle = isPptx ? "View presentation" : "View document";
+  const viewTitle = isPptx
+    ? "View presentation"
+    : isXlsx
+      ? "View spreadsheet"
+      : "View document";
 
   return (
     <div className="flex items-center rounded-lg border border-border bg-card overflow-hidden hover:bg-accent/50 transition-colors group">
@@ -935,12 +939,10 @@ function ReportGenDetail({
           {deliverableResults.map((r, i) => {
             const fmt = (r.format as ViewerFormat) ?? "pptx";
             // PDFs are rasterized server-side without LibreOffice, so the
-            // eye button is always offered; PPTX/DOCX need LibreOffice.
-            // XLSX workbooks have no page-based preview — download only.
-            const viewable =
-              !!r.report_id &&
-              r.format !== "xlsx" &&
-              (fmt === "pdf" || canViewPptx);
+            // eye button is always offered; PPTX/DOCX/XLSX need LibreOffice
+            // (XLSX workbooks are converted to paginated PDF by soffice —
+            // the workbook's print setup controls the pagination).
+            const viewable = !!r.report_id && (fmt === "pdf" || canViewPptx);
             return (
               <ReportDeliverableBadge
                 key={i}
@@ -1269,7 +1271,7 @@ export function MessageBubble({
               thumbnailUrl={d.thumbnail_url}
               onView={
                 d.report_id &&
-                ["pdf", "docx", "pptx"].includes(d.format) &&
+                ["pdf", "docx", "pptx", "xlsx"].includes(d.format) &&
                 (d.format === "pdf" || libreOfficeAvailable)
                   ? () =>
                       setViewingPptx({
