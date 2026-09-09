@@ -5,10 +5,12 @@ deterministic openpyxl converter turns it into a real .xlsx file.
 Pipeline (mirrors report_gen.py / pptx_gen.py):
   0. Deterministic template routing — a small classifier call maps the
      brief to a built-in pattern (loan amortization, invoice, budget
-     planner) and extracts scalar parameters. Matched requests are
-     built by excel_patterns.py: every formula reference is computed
-     from the actual layout rows in code, so off-by-N model row-math
-     is impossible (the failure class behind silently wrong
+     planner, investment portfolio) and extracts scalar parameters.
+     Matched requests are built by the patterns package
+     (app/services/patterns/ — one module per pattern, discovered
+     dynamically like agent tools): every formula reference is
+     computed from the actual layout rows in code, so off-by-N model
+     row-math is impossible (the failure class behind silently wrong
      amortization schedules). No match → the AI path below, unchanged.
   1. Specialized Excel AI call — the LLM receives a brief (+ optional
      requirements) and emits a STRICT JSON workbook specification. It
@@ -171,7 +173,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.config import settings
-from app.services import excel_patterns
+from app.services.patterns import PATTERN_BUILDERS
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -529,7 +531,8 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         else:
             if len(text_blocks) > MAX_TEXT_BLOCKS_PER_SHEET:
                 warnings.append(
-                    f"{ctx}: {len(text_blocks)} text_blocks > {MAX_TEXT_BLOCKS_PER_SHEET} — truncated"
+                    f"{ctx}: {len(text_blocks)} text_blocks > {MAX_TEXT_BLOCKS_PER_SHEET}"
+                    " — truncated"
                 )
             for bi, block in enumerate(text_blocks[:MAX_TEXT_BLOCKS_PER_SHEET]):
                 bctx = f"{ctx}.text_blocks[{bi}]"
@@ -1657,6 +1660,8 @@ def _normalize_spec(spec: dict) -> dict:
                 c["title"] = _sanitize_cell_text(chart["title"])[:200]
             if isinstance(chart.get("categories_range"), str):
                 c["categories_range"] = chart["categories_range"]
+            if chart.get("show_values") is True:
+                c["show_values"] = True
             charts.append(c)
         if charts:
             s["charts"] = charts
@@ -2230,7 +2235,9 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
 _PATTERN_GATE_RE = re.compile(
     r"loan|mortgage|amortiz|repay|interest|installment|credit|debt|refund|"
     r"invoice|bill|billing|quote|quotation|estimate|receipt|budget|expense|"
-    r"income|earning|salary|payroll|saving|finance",
+    r"income|earning|salary|payroll|saving|finance|"
+    r"portfolio|invest|stock|holding|share|ticker|crypto|etf|bond|"
+    r"dividend|position",
     re.IGNORECASE,
 )
 _ANY_DIGIT_RE = re.compile(r"\d")
@@ -2243,9 +2250,10 @@ async def _try_pattern_spec(
 
     One small classifier call (JSON mode) picks the pattern and
     extracts scalar parameters — the part small models are reliable
-    at. The workbook spec itself is then built in code by
-    excel_patterns.py, where every formula reference is computed
-    from the actual layout rows: off-by-N row math is impossible.
+    at. The workbook spec itself is then built in code by the
+    patterns package (app/services/patterns/), where every formula
+    reference is computed from the actual layout rows: off-by-N row
+    math is impossible.
 
     Returns (normalized_spec, pattern_name), or None when no pattern
     matches / params are insufficient / anything fails — the caller
@@ -2274,11 +2282,7 @@ async def _try_pattern_spec(
     if not isinstance(parsed, dict):
         return None
     pattern = parsed.get("pattern")
-    builder = (
-        excel_patterns.PATTERN_BUILDERS.get(pattern)
-        if isinstance(pattern, str)
-        else None
-    )
+    builder = PATTERN_BUILDERS.get(pattern) if isinstance(pattern, str) else None
     if builder is None:
         return None
 
@@ -2772,6 +2776,17 @@ class _SheetWriter:
             chart.dataLabels.showSerName = False
             chart.dataLabels.showLegendKey = False
             chart.dataLabels.showBubbleSize = False
+        elif chart_spec.get("show_values"):
+            # Opt-in value labels on non-pie charts (e.g. a gain/loss
+            # bar chart reading "+650 / -120" per bar). Same all-OFF
+            # discipline as the pie: show ONLY the value.
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+            chart.dataLabels.showPercent = False
+            chart.dataLabels.showCatName = False
+            chart.dataLabels.showSerName = False
+            chart.dataLabels.showLegendKey = False
+            chart.dataLabels.showBubbleSize = False
         if chart_spec.get("title"):
             chart.title = chart_spec["title"]
         # PieChart has no axes; make sure axes are visible on the others
@@ -2885,17 +2900,27 @@ def _build_xlsx(spec: dict, output_path: Path) -> None:
     default_ws = wb.active
     wb.remove(default_ws)
 
+    writers = []
     for sheet_spec in spec["sheets"]:
         ws = wb.create_sheet(title=sheet_spec["name"])
         writer = _SheetWriter(ws, sheet_spec, sheet_spec["name"])
+        writers.append(writer)
         writer.write_tables()  # tables first (structural backbone)
         writer.write_text_blocks()  # labels/headings
         writer.write_formulas()  # override anything beneath
-        writer.write_charts()  # floating objects
         writer.write_notes()  # documentation under content
         writer.write_merged_cells()
         writer.apply_layout()
         _apply_print_setup(ws)  # print-friendly pagination for the XLSX preview
+
+    # Charts LAST, after every sheet exists: a chart may reference a
+    # range on ANOTHER sheet (e.g. the portfolio overview's allocation
+    # pie reading the Holdings sheet, which is built later), and an
+    # openpyxl Reference needs the target worksheet object at build
+    # time. Charts are floating objects — writing them after notes,
+    # merges and layout changes nothing on the grid.
+    for writer in writers:
+        writer.write_charts()
 
     if wb.sheetnames:
         wb.active = 0
