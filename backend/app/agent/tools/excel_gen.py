@@ -3,10 +3,12 @@ use_excel_gen tool — generates an Excel workbook (.xlsx) from a brief.
 
 Architecture (mirrors use_report_gen / use_pptx_gen):
   0. Deterministic template routing — a small classifier call maps
-     well-known requests to built-in templates in services/excel_patterns.py.
-     Every formula is generated from the actual layout rows in code,
-     so model row-math mistakes are impossible for these documents.
-     Unmatched requests continue with the AI path below.
+     well-known requests to built-in templates in the patterns package
+     (app/services/patterns/ — one module per pattern; discovered dynamically
+     like agent tools). Every formula is generated from the actual
+     layout rows in code, so model row-math mistakes are impossible
+     for these documents. Unmatched requests continue with the AI path
+     below.
   1. Specialized Excel AI LLM call turns (brief, requirements) into a
      strict JSON workbook specification — sheet structure, tables,
      live formulas, charts, notes. See services/excel_gen.py.
@@ -152,29 +154,30 @@ class ExcelGenTool(BaseTool):
                     "report_id": result["report_id"],
                     "created_at": result["created_at"],
                     "pattern": result.get("pattern"),
+                    "summary": result.get("summary"),
                 }
             ]
 
-            pattern_note = ""
-            if result.get("pattern"):
-                pattern_note = (
-                    f" It was built from the built-in {result['pattern']} "
-                    "template, so all formulas are code-generated and "
-                    "arithmetically correct by construction."
-                )
+            # The workbook summary (sheets / tables / charts / live
+            # formulas, plus a note when a built-in template was used)
+            # travels back to the agent so it can describe the
+            # deliverable to the user — same contract as report and
+            # pptx generation.
+            summary_fragment = result.get("summary") or (
+                f"{result.get('sheet_count', 0)} sheets"
+            )
 
             output_msg = (
                 f"Excel workbook generated successfully: {result['filename']} "
-                f"({result.get('sheet_count', 0)} sheets, live formulas preserved)."
-                f"{pattern_note}"
+                f"— {summary_fragment}."
                 " The user can download it using the deliverable badge shown in the chat."
                 " Tell the user the spreadsheet is ready for download."
             )
 
             _log(
-                "execute DONE brief=%r sheets=%s time=%.1fs",
+                "execute DONE brief=%r summary=%s time=%.1fs",
                 brief[:60],
-                result.get("sheet_count"),
+                result.get("summary"),
                 time.time() - start,
             )
 

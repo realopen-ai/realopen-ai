@@ -2,13 +2,16 @@
 Excel generation service — LLM emits a strict JSON workbook spec, a
 deterministic openpyxl converter turns it into a real .xlsx file.
 
-Pipeline (mirrors report_gen.py / pptx_gen.py):
+Pipeline:
   0. Deterministic template routing — a small classifier call maps the
      brief to a built-in pattern (loan amortization, invoice, budget
-     planner) and extracts scalar parameters. Matched requests are
-     built by excel_patterns.py: every formula reference is computed
-     from the actual layout rows in code, so off-by-N model row-math
-     is impossible (the failure class behind silently wrong
+     planner, investment portfolio, habit tracker) and extracts scalar
+     parameters.
+     Matched requests are built by the patterns package
+     (app/services/patterns/ — one module per pattern, discovered
+     dynamically like agent tools): every formula reference is
+     computed from the actual layout rows in code, so off-by-N model
+     row-math is impossible (the failure class behind silently wrong
      amortization schedules). No match → the AI path below, unchanged.
   1. Specialized Excel AI call — the LLM receives a brief (+ optional
      requirements) and emits a STRICT JSON workbook specification. It
@@ -48,6 +51,11 @@ SHEET object:
   tab_color     optional "RRGGBB".
   freeze_panes  optional cell ref such as "A2" — rows above + columns
                 left of it stay frozen while scrolling.
+  no_freeze     optional true — opt out of the default
+                freeze-below-first-header; for sheets meant to be
+                scrolled freely (budgets, planners).
+  hidden        optional true — hide the sheet (helper/calc sheets the
+                user never edits; unhidable from the tab context menu).
   column_widths optional map {column letter → width in chars}.
   merged_cells  optional array of ranges ["A1:C1", ...].
   notes         optional string — rendered under the content in muted
@@ -59,6 +67,16 @@ SHEET object:
                 OR a map {"B10": "=SUM(B2:B9)", ...}.
                 Written AFTER tables/text so they override.
   charts        optional array of CHART (floating, anchored to a cell).
+  data_validation     optional array of DATA_VALIDATION (in-cell
+                      dropdown lists — habit marks, Yes/No flags…).
+  conditional_formats optional array of CONDITIONAL_FORMATS entry
+                      (green done / red missed / highlight-today…).
+  protect       optional true, or {"unlocked_ranges": ["C5:L66", ...],
+                "password": optional} — locks every cell on the sheet
+                EXCEPT the unlocked ranges (and the password, when
+                given) so live formulas can't be overwritten by
+                accident. Selection stays allowed; cosmetic cell
+                formatting stays allowed.
 
 TABLE object:
   start_cell      default "A1" — the table's anchor row. WITHOUT a
@@ -82,6 +100,9 @@ TABLE object:
   zebra           default true — alternating row tint.
   auto_filter     default false — adds Excel's filter dropdowns on the
                   header row.
+  alignments      optional map {column letter → "left" | "center" |
+                  "right"} — horizontal alignment for that column's
+                  header and data cells (✓ marks, scores…).
   fill_down       optional {"rows": N, "exclude_columns": ["A", ...]} —
                   replicates the LAST data row N more times, shifting
                   relative formula refs exactly like Excel fill-down
@@ -89,6 +110,44 @@ TABLE object:
                   values form a sequence continue it (1, 2 → 3, 4, …);
                   other literals repeat. Used for amortization
                   schedules, cumulative series, projections.
+
+DATA_VALIDATION object (one dropdown list):
+  range          required "C5:L66" (this sheet).
+  values         required non-empty array of scalars — the dropdown
+                 entries (omit when source_range is given). Commas/
+                 quotes are not allowed inside values (Excel's list
+                 syntax); the joined list is capped at Excel's
+                 255-char limit.
+  source_range   optional "Categories!$A$5:$A$24" — a live RANGE the
+                 dropdown reads its entries from (sheet-qualified, no
+                 leading "="). The list then grows with the source
+                 sheet: rows added later show up in the dropdown
+                 automatically — use it for user-extensible pick
+                 lists (categories, locations). Takes precedence
+                 over values; no 255-char limit applies.
+  allow_blank    default true — clearing a cell stays legal.
+  prompt_title / prompt     optional input tooltip strings.
+  error_title / error       optional rejection message.
+  error_style    "stop" (default) | "warning" | "information".
+
+CONDITIONAL_FORMATS entry (rules apply in array order — earlier rules
+have higher priority; set stop_if_true to keep later rules from also
+painting a matching cell):
+  range          required "C5:L66" (this sheet). Formula rules anchor
+                 relative refs to the range's TOP-LEFT cell.
+  rules          required non-empty array (max 5) of:
+    type         "cell_is" | "formula"
+    operator     cell_is only: equal | not_equal | greater_than |
+                 less_than | greater_than_or_equal |
+                 less_than_or_equal | between | not_between
+    value        the comparison value (scalar, or [lo, hi] for
+                 between); strings compare as text.
+    formula      formula-type only — the expression, e.g.
+                 "$A5=TODAY()" (no leading "=").
+    fill         optional "RRGGBB" background.
+    font_color   optional "RRGGBB" text color.
+    bold         default false.
+    stop_if_true default false.
 
 TEXT_BLOCK object:
   cell        required cell ref. NEVER inside a table's rectangle
@@ -101,6 +160,9 @@ TEXT_BLOCK object:
   font_size   default 11 (clamped 6..72).
   font_color  optional "RRGGBB".
   wrap        default false.
+  number_format optional string — Excel number format for this cell
+              ("#,##0.00", "0.0%"…). Money/percent values shown
+              OUTSIDE tables (labels, input cells) render formatted.
 
 CHART object:
   type              "bar" | "bar_h" | "line" | "area" | "pie" | "scatter".
@@ -114,6 +176,9 @@ CHART object:
                     range is used. Ranges may use {last_row}
                     (= last data row of the last table on that sheet).
                     Sheet names with spaces use 'My Sheet'!B2:B13.
+  value_numfmt      optional Excel number format applied to the value
+                    axis AND the value data labels — "0%" turns a
+                    0..1 fraction series into a percentage chart.
 
 Value typing rules for the LLM:
   numbers as JSON numbers, text as strings, booleans as JSON
@@ -159,13 +224,15 @@ from openpyxl.chart import (
 )
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.marker import DataPoint
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.formula.translate import Translator
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.config import settings
-from app.services import excel_patterns
+from app.services.patterns import PATTERN_BUILDERS
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -194,6 +261,30 @@ MAX_FILL_DOWN_ROWS = 5000  # expanded rows via fill_down
 MAX_TOTAL_CELLS = 60_000
 MAX_ROW_INDEX = 1_048_576  # Excel hard limit
 MAX_COL_INDEX = 16_384  # Excel hard limit (XFD)
+MAX_VALIDATIONS_PER_SHEET = 10
+MAX_CF_ENTRIES_PER_SHEET = 20
+MAX_CF_RULES_PER_ENTRY = 5
+MAX_DV_VALUES = 10
+
+# Range-source dropdown refs: "Categories!$A$5:$A$24" (sheet part
+# optional → same-sheet source). Quoted sheet names may contain
+# anything; unquoted ones stick to the safe charset.
+_SOURCE_RANGE_RE = re.compile(
+    r"^(?:'([^']+)'!|([A-Za-z0-9_][A-Za-z0-9_.\- ]*)!)?"
+    r"\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+$"
+)
+
+# spec operator → openpyxl CellIsRule operator
+_CF_OPERATORS = {
+    "equal": "equal",
+    "not_equal": "notEqual",
+    "greater_than": "greaterThan",
+    "less_than": "lessThan",
+    "greater_than_or_equal": "greaterThanOrEqual",
+    "less_than_or_equal": "lessThanOrEqual",
+    "between": "between",
+    "not_between": "notBetween",
+}
 
 # Design tokens (same as report_gen.py)
 NAVY = "16304F"
@@ -463,6 +554,72 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         elif sheet["freeze_panes"].upper() == "A1":
             warnings.append(f"{ctx}: freeze_panes A1 freezes nothing — ignored")
 
+    if "no_freeze" in sheet and sheet["no_freeze"] is not None:
+        if not isinstance(sheet["no_freeze"], bool):
+            warnings.append(f"{ctx}: no_freeze must be true/false — ignored")
+
+    if "hidden" in sheet and sheet["hidden"] is not None:
+        if not isinstance(sheet["hidden"], bool):
+            warnings.append(f"{ctx}: hidden must be true/false — ignored")
+
+    dvs = sheet.get("data_validation")
+    if dvs is not None:
+        if not isinstance(dvs, list):
+            errors.append(f"{ctx}: 'data_validation' must be an array")
+        else:
+            if len(dvs) > MAX_VALIDATIONS_PER_SHEET:
+                warnings.append(
+                    f"{ctx}: {len(dvs)} validations > "
+                    f"{MAX_VALIDATIONS_PER_SHEET} — truncated"
+                )
+            for di, dv in enumerate(dvs[:MAX_VALIDATIONS_PER_SHEET]):
+                errors.extend(
+                    _validate_data_validation(f"{ctx}.data_validation[{di}]", dv)
+                )
+
+    cfs = sheet.get("conditional_formats")
+    if cfs is not None:
+        if not isinstance(cfs, list):
+            errors.append(f"{ctx}: 'conditional_formats' must be an array")
+        else:
+            if len(cfs) > MAX_CF_ENTRIES_PER_SHEET:
+                warnings.append(
+                    f"{ctx}: {len(cfs)} conditional_formats > "
+                    f"{MAX_CF_ENTRIES_PER_SHEET} — truncated"
+                )
+            for fi, cf in enumerate(cfs[:MAX_CF_ENTRIES_PER_SHEET]):
+                errors.extend(
+                    _validate_conditional_format(
+                        f"{ctx}.conditional_formats[{fi}]",
+                        cf,
+                        sheet.get("name", "Sheet"),
+                    )
+                )
+
+    prot = sheet.get("protect")
+    if prot is not None and prot is not True:
+        if not isinstance(prot, dict):
+            warnings.append(f"{ctx}: protect must be true or an object — ignored")
+        else:
+            ur = prot.get("unlocked_ranges")
+            if ur is not None:
+                if not isinstance(ur, list):
+                    errors.append(f"{ctx}: protect.unlocked_ranges must be an array")
+                else:
+                    for rng in ur:
+                        try:
+                            parse_range(str(rng), sheet.get("name", "Sheet"))
+                        except ValueError:
+                            errors.append(
+                                f"{ctx}: invalid protect.unlocked_range {rng!r}"
+                            )
+            if (
+                "password" in prot
+                and prot["password"] is not None
+                and not isinstance(prot["password"], str)
+            ):
+                warnings.append(f"{ctx}: protect.password must be a string — ignored")
+
     if "column_widths" in sheet and sheet["column_widths"] is not None:
         cw = sheet["column_widths"]
         if not isinstance(cw, dict):
@@ -519,7 +676,8 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         else:
             if len(text_blocks) > MAX_TEXT_BLOCKS_PER_SHEET:
                 warnings.append(
-                    f"{ctx}: {len(text_blocks)} text_blocks > {MAX_TEXT_BLOCKS_PER_SHEET} — truncated"
+                    f"{ctx}: {len(text_blocks)} text_blocks > "
+                    f"{MAX_TEXT_BLOCKS_PER_SHEET} — truncated"
                 )
             for bi, block in enumerate(text_blocks[:MAX_TEXT_BLOCKS_PER_SHEET]):
                 bctx = f"{ctx}.text_blocks[{bi}]"
@@ -544,6 +702,12 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
                     warnings.append(
                         f"{bctx}: font_size must be a number — using default"
                     )
+                if (
+                    "number_format" in block
+                    and block["number_format"] is not None
+                    and not valid_number_format(block["number_format"])
+                ):
+                    warnings.append(f"{bctx}: invalid number_format — ignored")
 
     formulas = sheet.get("formulas")
     if formulas is not None:
@@ -681,6 +845,21 @@ def _validate_table(ctx: str, table: dict, sheet_name: str) -> List[str]:
     if not is_valid_cell(start):
         errors.append(f"{ctx}: invalid start_cell {start!r}")
 
+    alignments = table.get("alignments")
+    if alignments is not None:
+        if not isinstance(alignments, dict):
+            errors.append(f"{ctx}: 'alignments' must be an object")
+        else:
+            for col, align in alignments.items():
+                if not re.match(r"^[A-Za-z]{1,3}$", str(col)):
+                    errors.append(
+                        f"{ctx}: alignments key {col!r} is not a column letter"
+                    )
+                if align not in ("left", "center", "right"):
+                    errors.append(
+                        f"{ctx}: alignments[{col!r}] must be left/center/right"
+                    )
+
     headers = table.get("headers")
     if not isinstance(headers, list) or not headers:
         errors.append(f"{ctx}: 'headers' must be a non-empty array")
@@ -730,6 +909,112 @@ def _validate_table(ctx: str, table: dict, sheet_name: str) -> List[str]:
     header_style = table.get("header_style")
     if header_style is not None and not isinstance(header_style, dict):
         errors.append(f"{ctx}: 'header_style' must be an object")
+
+    return errors
+
+
+def _validate_data_validation(ctx: str, dv: Any) -> List[str]:
+    """Validate one DATA_VALIDATION entry (dropdown list)."""
+    errors: List[str] = []
+    if not isinstance(dv, dict):
+        return [f"{ctx}: must be an object"]
+
+    rng = dv.get("range")
+    if not isinstance(rng, str):
+        errors.append(f"{ctx}: 'range' must be a string")
+    else:
+        try:
+            parse_range(rng, "Sheet")
+        except ValueError:
+            errors.append(f"{ctx}: invalid range {rng!r}")
+
+    values = dv.get("values")
+    source_range = dv.get("source_range")
+    has_source = isinstance(source_range, str) and bool(source_range.strip())
+    has_values = isinstance(values, list) and bool(values)
+
+    if has_source:
+        if has_values:
+            errors.append(f"{ctx}: set either 'values' or 'source_range', not both")
+        ref = source_range.strip().lstrip("=")
+        if not _SOURCE_RANGE_RE.match(ref):
+            errors.append(
+                f"{ctx}: invalid source_range {source_range!r} — expected a "
+                'range reference like "Categories!$A$5:$A$24"'
+            )
+    elif not has_values:
+        errors.append(
+            f"{ctx}: 'values' must be a non-empty array (or provide a "
+            "'source_range' range reference)"
+        )
+    else:
+        joined = ",".join(str(v) for v in values)
+        if len(joined) > 250:
+            errors.append(f"{ctx}: values too long for an Excel list (>255)")
+        for vi, v in enumerate(values):
+            if isinstance(v, (dict, list)):
+                errors.append(f"{ctx}.values[{vi}]: must be a scalar")
+            elif isinstance(v, str) and ("," in v or '"' in v):
+                errors.append(
+                    f"{ctx}.values[{vi}]: commas/quotes are not allowed "
+                    "inside list values"
+                )
+
+    style = dv.get("error_style")
+    if style is not None and style not in ("stop", "warning", "information"):
+        errors.append(f"{ctx}: error_style must be stop/warning/information")
+
+    return errors
+
+
+def _validate_conditional_format(ctx: str, cf: Any, sheet_name: str) -> List[str]:
+    """Validate one CONDITIONAL_FORMATS entry."""
+    errors: List[str] = []
+    if not isinstance(cf, dict):
+        return [f"{ctx}: must be an object"]
+
+    rng = cf.get("range")
+    if not isinstance(rng, str):
+        errors.append(f"{ctx}: 'range' must be a string")
+    else:
+        try:
+            parse_range(rng, sheet_name)
+        except ValueError:
+            errors.append(f"{ctx}: invalid range {rng!r}")
+
+    rules = cf.get("rules")
+    if not isinstance(rules, list) or not rules:
+        errors.append(f"{ctx}: 'rules' must be a non-empty array")
+        return errors
+    if len(rules) > MAX_CF_RULES_PER_ENTRY:
+        errors.append(f"{ctx}: {len(rules)} rules > {MAX_CF_RULES_PER_ENTRY}")
+
+    for ri, rule in enumerate(rules[:MAX_CF_RULES_PER_ENTRY]):
+        rctx = f"{ctx}.rules[{ri}]"
+        if not isinstance(rule, dict):
+            errors.append(f"{rctx}: must be an object")
+            continue
+        rtype = rule.get("type")
+        if rtype not in ("cell_is", "formula"):
+            errors.append(f"{rctx}: type must be cell_is or formula")
+            continue
+        if rtype == "cell_is":
+            op = rule.get("operator", "equal")
+            if op not in _CF_OPERATORS:
+                errors.append(f"{rctx}: unknown operator {op!r}")
+                continue
+            value = rule.get("value")
+            if op in ("between", "not_between"):
+                if not isinstance(value, list) or len(value) < 2:
+                    errors.append(f"{rctx}: between needs a [lo, hi] value")
+            elif value is None or isinstance(value, (dict, list)):
+                errors.append(f"{rctx}: 'value' must be a scalar")
+        else:  # formula
+            formula = rule.get("formula", rule.get("value"))
+            if not isinstance(formula, str) or not formula.strip():
+                errors.append(f"{rctx}: formula rules need a 'formula' string")
+        # invalid fill/font_color are cosmetic — silently dropped during
+        # normalization rather than erroring here
 
     return errors
 
@@ -1043,7 +1328,7 @@ def _shift_formula_refs(
             prefix, rest = full.split("!", 1)
             prefix += "!"
         else:
-            prefix, rest = "", full
+            prefix, _ = "", full
         c1, r1, c2, r2 = m.group(1), m.group(2), m.group(3), m.group(4)
         if not _col_ok(c1) or not _col_ok(c2):
             return full
@@ -1395,6 +1680,182 @@ def _coerce_cell_value(value: Any) -> Any:
     return _sanitize_cell_text(str(value))
 
 
+def _cf_operand(value: Any) -> str:
+    """A cell_is comparison value → its formula-string form."""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        f = float(value)
+        return str(int(f)) if f.is_integer() else repr(f)
+    if isinstance(value, str):
+        return f'"{value}"'
+    return '""'
+
+
+def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
+    """Sanitize one data_validation entry; None when unusable."""
+    if not isinstance(dv, dict):
+        return None
+    try:
+        _sheet, r1, r2, c1, c2 = parse_range(str(dv.get("range", "")), sheet_name)
+    except ValueError:
+        return None
+    single = r1 == r2 and c1 == c2
+    range_str = (
+        f"{get_column_letter(c1)}{r1}"
+        if single
+        else f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}"
+    )
+
+    values_raw = dv.get("values")
+
+    # Range-sourced dropdown first: entries read live from a range
+    # (e.g. the Categories sheet) so the list grows with its source.
+    source_raw = dv.get("source_range")
+    if isinstance(source_raw, str):
+        ref = source_raw.strip().lstrip("=")
+        if _SOURCE_RANGE_RE.match(ref):
+            out: Dict[str, Any] = {
+                "range": range_str,
+                "source_range": ref,
+                "allow_blank": bool(dv.get("allow_blank", True)),
+                "error_style": (
+                    dv.get("error_style")
+                    if dv.get("error_style") in ("stop", "warning", "information")
+                    else "stop"
+                ),
+            }
+            for key, limit in (
+                ("prompt_title", 32),
+                ("prompt", 255),
+                ("error_title", 32),
+                ("error", 255),
+            ):
+                s = dv.get(key)
+                if isinstance(s, str) and s.strip():
+                    out[key] = _sanitize_cell_text(s.strip())[:limit]
+            return out
+        # unusable ref → fall through to the inline-values path
+
+    if not isinstance(values_raw, list):
+        return None
+    values: List[str] = []
+    for v in values_raw[:MAX_DV_VALUES]:
+        if isinstance(v, bool):
+            values.append("TRUE" if v else "FALSE")
+        elif isinstance(v, (int, float)):
+            f = float(v)
+            values.append(str(int(f)) if f.is_integer() else repr(f))
+        elif isinstance(v, str):
+            s = v.strip()
+            # Excel list syntax: entries are one comma-joined quoted
+            # string — embedded commas or quotes would corrupt it.
+            if not s or "," in s or '"' in s:
+                continue
+            values.append(s)
+    if not values:
+        return None
+    if len('","'.join(values)) + 2 > 255:  # Excel's hard list limit
+        return None
+
+    out: Dict[str, Any] = {
+        "range": range_str,
+        "values": values,
+        "allow_blank": bool(dv.get("allow_blank", True)),
+        "error_style": (
+            dv.get("error_style")
+            if dv.get("error_style") in ("stop", "warning", "information")
+            else "stop"
+        ),
+    }
+    for key, limit in (
+        ("prompt_title", 32),
+        ("prompt", 255),
+        ("error_title", 32),
+        ("error", 255),
+    ):
+        s = dv.get(key)
+        if isinstance(s, str) and s.strip():
+            out[key] = _sanitize_cell_text(s.strip())[:limit]
+    return out
+
+
+def _normalize_conditional_format(cf: Any, sheet_name: str) -> Optional[dict]:
+    """Sanitize one conditional_formats entry; None when unusable."""
+    if not isinstance(cf, dict):
+        return None
+    try:
+        _sheet, r1, r2, c1, c2 = parse_range(str(cf.get("range", "")), sheet_name)
+    except ValueError:
+        return None
+    range_str = f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}"
+
+    rules_raw = cf.get("rules")
+    if not isinstance(rules_raw, list):
+        return None
+    rules: List[dict] = []
+    for raw in rules_raw[:MAX_CF_RULES_PER_ENTRY]:
+        if not isinstance(raw, dict):
+            continue
+        rtype = raw.get("type")
+        if rtype not in ("cell_is", "formula"):
+            continue
+        rule: Dict[str, Any] = {
+            "type": rtype,
+            "stop_if_true": bool(raw.get("stop_if_true", False)),
+        }
+        if valid_hex_color(raw.get("fill")):
+            rule["fill"] = str(raw["fill"]).upper()
+        if valid_hex_color(raw.get("font_color")):
+            rule["font_color"] = str(raw["font_color"]).upper()
+        if raw.get("bold") is True:
+            rule["bold"] = True
+
+        if rtype == "formula":
+            formula = raw.get("formula")
+            if not isinstance(formula, str):
+                formula = raw.get("value")  # ergonomic alias
+            if not isinstance(formula, str) or not formula.strip():
+                continue
+            expression = formula.strip()
+            if expression.startswith("="):
+                expression = expression[1:]
+            rule["value"] = expression
+        else:
+            op = raw.get("operator", "equal")
+            if op not in _CF_OPERATORS:
+                continue
+            rule["operator"] = op
+            value = raw.get("value")
+            if op in ("between", "not_between"):
+                if not isinstance(value, list) or len(value) < 2:
+                    continue
+                pair = []
+                for v in value[:2]:
+                    if isinstance(v, (bool, int, float)):
+                        pair.append(v)
+                    elif isinstance(v, str) and v.strip() and '"' not in v:
+                        pair.append(v.strip())
+                    else:
+                        pair = []
+                        break
+                if len(pair) != 2:
+                    continue
+                rule["value"] = pair
+            else:
+                if isinstance(value, (bool, int, float)):
+                    rule["value"] = value
+                elif isinstance(value, str) and value.strip() and '"' not in value:
+                    rule["value"] = value.strip()
+                else:
+                    continue
+        rules.append(rule)
+
+    if not rules:
+        return None
+    return {"range": range_str, "rules": rules}
+
+
 def _normalize_spec(spec: dict) -> dict:
     """Apply warning-level fixes so the converter sees a clean spec."""
     out: Dict[str, Any] = {
@@ -1420,6 +1881,57 @@ def _normalize_spec(spec: dict) -> dict:
         fp = sheet.get("freeze_panes")
         if is_valid_cell(fp) and fp.upper() != "A1":
             s["freeze_panes"] = fp.upper()
+
+        # Explicit opt-out of the freeze-below-first-header default:
+        # sheets meant to be scrolled freely (budget planners…).
+        if sheet.get("no_freeze") is True:
+            s["no_freeze"] = True
+
+        # Hidden helper sheets (calc engines the user never edits).
+        if sheet.get("hidden") is True:
+            s["hidden"] = True
+
+        # Dropdown-list validations
+        dvs = []
+        for dv in (sheet.get("data_validation") or [])[:MAX_VALIDATIONS_PER_SHEET]:
+            ndv = _normalize_data_validation(dv, s["name"])
+            if ndv is not None:
+                dvs.append(ndv)
+        if dvs:
+            s["data_validation"] = dvs
+
+        # Conditional formatting
+        cfs = []
+        for cf in (sheet.get("conditional_formats") or [])[:MAX_CF_ENTRIES_PER_SHEET]:
+            ncf = _normalize_conditional_format(cf, s["name"])
+            if ncf is not None:
+                cfs.append(ncf)
+        if cfs:
+            s["conditional_formats"] = cfs
+
+        # Cell protection: everything locked except unlocked_ranges
+        prot = sheet.get("protect")
+        if prot is True:
+            s["protect"] = {"unlocked": [], "password": None}
+        elif isinstance(prot, dict):
+            unlocked = []
+            for rng in prot.get("unlocked_ranges") or []:
+                try:
+                    _sheet, r1, r2, c1, c2 = parse_range(str(rng), s["name"])
+                except ValueError:
+                    continue
+                unlocked.append(
+                    f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}"
+                )
+            password = prot.get("password")
+            s["protect"] = {
+                "unlocked": unlocked,
+                "password": (
+                    password.strip()
+                    if isinstance(password, str) and password.strip()
+                    else None
+                ),
+            }
 
         cw = sheet.get("column_widths")
         if isinstance(cw, dict):
@@ -1471,6 +1983,11 @@ def _normalize_spec(spec: dict) -> dict:
                         else None
                     ),
                     "wrap": bool(block.get("wrap", False)),
+                    "number_format": (
+                        block["number_format"]
+                        if valid_number_format(block.get("number_format"))
+                        else None
+                    ),
                 }
             )
         # NOTE: s["text_blocks"] is assigned after the tables are built —
@@ -1516,6 +2033,18 @@ def _normalize_spec(spec: dict) -> dict:
             if total_rows > MAX_FILL_DOWN_ROWS:
                 fill_down_rows = MAX_FILL_DOWN_ROWS - len(rows)
 
+            # per-column horizontal alignment (marks, scores…)
+            aligns: Dict[str, str] = {}
+            al = table.get("alignments")
+            if isinstance(al, dict):
+                for key, align in al.items():
+                    if re.match(r"^[A-Za-z]{1,3}$", str(key)) and align in (
+                        "left",
+                        "center",
+                        "right",
+                    ):
+                        aligns[str(key).upper()] = align
+
             # number formats: resolve header names → column letters
             numfmts: Dict[str, str] = {}
             nf = table.get("number_formats")
@@ -1545,6 +2074,7 @@ def _normalize_spec(spec: dict) -> dict:
                 "auto_filter": bool(table.get("auto_filter", False)),
                 "borders": bool(table.get("borders", True)),
                 "number_formats": numfmts,
+                "alignments": aligns,
                 "fill_down": (
                     {"rows": fill_down_rows, "exclude_columns": exclude_cols}
                     if fill_down_rows > 0
@@ -1626,6 +2156,12 @@ def _normalize_spec(spec: dict) -> dict:
                 c["title"] = _sanitize_cell_text(chart["title"])[:200]
             if isinstance(chart.get("categories_range"), str):
                 c["categories_range"] = chart["categories_range"]
+            if chart.get("show_values") is True:
+                c["show_values"] = True
+            if isinstance(chart.get("value_numfmt"), str) and valid_number_format(
+                chart.get("value_numfmt")
+            ):
+                c["value_numfmt"] = chart["value_numfmt"]
             charts.append(c)
         if charts:
             s["charts"] = charts
@@ -2199,7 +2735,10 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
 _PATTERN_GATE_RE = re.compile(
     r"loan|mortgage|amortiz|repay|interest|installment|credit|debt|refund|"
     r"invoice|bill|billing|quote|quotation|estimate|receipt|budget|expense|"
-    r"income|earning|salary|payroll|saving|finance",
+    r"income|earning|salary|payroll|saving|finance|"
+    r"portfolio|invest|stock|holding|share|ticker|crypto|etf|bond|"
+    r"dividend|position|habit|streak|routine|"
+    r"inventory|belonging|collection|warranty|serial",
     re.IGNORECASE,
 )
 _ANY_DIGIT_RE = re.compile(r"\d")
@@ -2212,9 +2751,10 @@ async def _try_pattern_spec(
 
     One small classifier call (JSON mode) picks the pattern and
     extracts scalar parameters — the part small models are reliable
-    at. The workbook spec itself is then built in code by
-    excel_patterns.py, where every formula reference is computed
-    from the actual layout rows: off-by-N row math is impossible.
+    at. The workbook spec itself is then built in code by the
+    patterns package (app/services/patterns/), where every formula
+    reference is computed from the actual layout rows: off-by-N row
+    math is impossible.
 
     Returns (normalized_spec, pattern_name), or None when no pattern
     matches / params are insufficient / anything fails — the caller
@@ -2243,11 +2783,7 @@ async def _try_pattern_spec(
     if not isinstance(parsed, dict):
         return None
     pattern = parsed.get("pattern")
-    builder = (
-        excel_patterns.PATTERN_BUILDERS.get(pattern)
-        if isinstance(pattern, str)
-        else None
-    )
+    builder = PATTERN_BUILDERS.get(pattern) if isinstance(pattern, str) else None
     if builder is None:
         return None
 
@@ -2379,7 +2915,8 @@ class _SheetWriter:
                     color=block["font_color"] or INK,
                 ),
                 align=Alignment(wrap_text=block["wrap"], vertical="center"),
-                number_format=_default_date_format(block["text"]),
+                number_format=block.get("number_format")
+                or _default_date_format(block["text"]),
             )
             if block["wrap"]:
                 span = 6  # merged-ish visual width for wrapped labels
@@ -2412,6 +2949,7 @@ class _SheetWriter:
 
         header_row = row
         numfmts: Dict[str, str] = table.get("number_formats", {})
+        alignments: Dict[str, str] = table.get("alignments", {}) or {}
         hs = table.get("header_style") or {}
         h_fill = PatternFill(
             fill_type="solid",
@@ -2423,8 +2961,8 @@ class _SheetWriter:
             size=hs.get("font_size", 11.0),
             color=hs.get("font_color", "FFFFFF"),
         )
-        h_align = Alignment(vertical="center", wrap_text=True)
         for ci, header in enumerate(headers):
+            col_letter = get_column_letter(start_col + ci)
             self._put_styled(
                 header_row,
                 start_col + ci,
@@ -2432,8 +2970,12 @@ class _SheetWriter:
                 font=h_font,
                 fill=h_fill,
                 border=_ALL_THIN,
-                align=h_align,
-                number_format=numfmts.get(get_column_letter(start_col + ci)),
+                align=Alignment(
+                    vertical="center",
+                    wrap_text=True,
+                    horizontal=alignments.get(col_letter),
+                ),
+                number_format=numfmts.get(col_letter),
             )
         row += 1
         first_data_row = row
@@ -2475,7 +3017,9 @@ class _SheetWriter:
                     font=data_font,
                     fill=zebra_fill if is_zebra else None,
                     border=_ALL_THIN if borders_on else None,
-                    align=Alignment(vertical="center"),
+                    align=Alignment(
+                        vertical="center", horizontal=alignments.get(col_letter)
+                    ),
                     number_format=nf,
                 )
         last_data_row = first_data_row + len(rows) - 1 if rows else first_data_row - 1
@@ -2730,7 +3274,35 @@ class _SheetWriter:
 
         if ctype == "pie":
             chart.dataLabels = DataLabelList()
+            # Percent-only labels ("63%") — everything else OFF.
+            # Unset OOXML flags render as ON in LibreOffice, which
+            # produced cluttered "Category; Series; $1,800.00; 63%"
+            # labels; the legend already carries the category names.
             chart.dataLabels.showPercent = True
+            chart.dataLabels.showVal = False
+            chart.dataLabels.showCatName = False
+            chart.dataLabels.showSerName = False
+            chart.dataLabels.showLegendKey = False
+            chart.dataLabels.showBubbleSize = False
+        elif chart_spec.get("show_values"):
+            # Opt-in value labels on non-pie charts (e.g. a gain/loss
+            # bar chart reading "+650 / -120" per bar). Same all-OFF
+            # discipline as the pie: show ONLY the value.
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+            chart.dataLabels.showPercent = False
+            chart.dataLabels.showCatName = False
+            chart.dataLabels.showSerName = False
+            chart.dataLabels.showLegendKey = False
+            chart.dataLabels.showBubbleSize = False
+        # Value-axis + label number format (e.g. "0%" for fraction
+        # series) — applied after the label objects exist above.
+        value_numfmt = chart_spec.get("value_numfmt")
+        if value_numfmt:
+            if chart.dataLabels is not None:
+                chart.dataLabels.numFmt = value_numfmt
+            if not isinstance(chart, PieChart):
+                chart.y_axis.numFmt = value_numfmt
         if chart_spec.get("title"):
             chart.title = chart_spec["title"]
         # PieChart has no axes; make sure axes are visible on the others
@@ -2764,6 +3336,121 @@ class _SheetWriter:
             return None
         return str(value) if value is not None else None
 
+    # ── interactivity: dropdowns, conditional formats, protection ──
+
+    def write_data_validation(self) -> None:
+        """In-cell dropdown lists (openpyxl DataValidation, type=list).
+
+        Two source modes: an inline value list (formula1 = "a,b,c") or
+        a live RANGE reference (formula1 = Categories!$A$5:$A$24) —
+        range-sourced dropdowns grow with their source sheet.
+        """
+        for dv in self.spec.get("data_validation", []):
+            try:
+                source = dv.get("source_range")
+                if isinstance(source, str) and source:
+                    formula1 = source
+                else:
+                    formula1 = '"' + ",".join(dv.get("values") or []) + '"'
+                validation = DataValidation(
+                    type="list",
+                    formula1=formula1,
+                    allow_blank=dv.get("allow_blank", True),
+                    showErrorMessage=True,
+                    errorStyle=dv.get("error_style", "stop"),
+                )
+                if dv.get("prompt"):
+                    validation.showInputMessage = True
+                    validation.promptTitle = dv.get("prompt_title") or "Pick a value"
+                    validation.prompt = dv["prompt"]
+                if dv.get("error"):
+                    validation.errorTitle = dv.get("error_title") or "Invalid entry"
+                    validation.error = dv["error"]
+                validation.add(dv["range"])
+                self.ws.add_data_validation(validation)
+            except Exception as e:
+                _log("data validation skipped (non-fatal): %s", e)
+
+    def write_conditional_formats(self) -> None:
+        """Add rules in spec order — earlier rules get priority."""
+        for entry in self.spec.get("conditional_formats", []):
+            for rule_spec in entry.get("rules", []):
+                try:
+                    rule = self._build_cf_rule(rule_spec)
+                    if rule is not None:
+                        self.ws.conditional_formatting.add(entry["range"], rule)
+                except Exception as e:
+                    _log("conditional format skipped (non-fatal): %s", e)
+
+    @staticmethod
+    def _build_cf_rule(rule_spec: dict):
+        """One normalized CF rule → an openpyxl Rule object."""
+        fill = None
+        if rule_spec.get("fill"):
+            fill = PatternFill(
+                start_color=rule_spec["fill"],
+                end_color=rule_spec["fill"],
+                fill_type="solid",
+            )
+        font = None
+        if rule_spec.get("font_color") or rule_spec.get("bold"):
+            font = Font(
+                color=rule_spec.get("font_color") or INK,
+                bold=bool(rule_spec.get("bold")),
+            )
+        stop = bool(rule_spec.get("stop_if_true"))
+
+        if rule_spec["type"] == "formula":
+            return FormulaRule(
+                formula=[rule_spec["value"]],
+                stopIfTrue=stop,
+                fill=fill,
+                font=font,
+            )
+
+        operator = _CF_OPERATORS.get(rule_spec.get("operator", "equal"), "equal")
+        value = rule_spec.get("value")
+        if rule_spec.get("operator") in ("between", "not_between"):
+            formulas = [_cf_operand(v) for v in value]
+        else:
+            formulas = [_cf_operand(value)]
+        return CellIsRule(
+            operator=operator,
+            formula=formulas,
+            stopIfTrue=stop,
+            fill=fill,
+            font=font,
+        )
+
+    def apply_sheet_state(self) -> None:
+        if self.spec.get("hidden") is True:
+            self.ws.sheet_state = "hidden"
+
+    def apply_protection(self) -> None:
+        """Lock every cell except the spec's unlocked ranges.
+
+        No password by default — Review → Unprotect Sheet removes the
+        lock, which keeps the template friendly while formulas can't
+        be typed over by accident. Selection and cosmetic formatting
+        stay allowed.
+        """
+        prot = self.spec.get("protect")
+        if not prot:
+            return
+        self.ws.protection.sheet = True
+        self.ws.protection.formatCells = False
+        self.ws.protection.formatColumns = False
+        self.ws.protection.formatRows = False
+        if prot.get("password"):
+            self.ws.protection.set_password(prot["password"])
+        for rng in prot.get("unlocked", []):
+            try:
+                for row in self.ws[rng]:
+                    for cell in row:
+                        cell.protection = Protection(locked=False)
+            except Exception:
+                continue
+
     # ── finishing touches ──
 
     def apply_layout(self) -> None:
@@ -2782,6 +3469,10 @@ class _SheetWriter:
 
         if spec.get("freeze_panes"):
             self.ws.freeze_panes = spec["freeze_panes"]
+        elif spec.get("no_freeze"):
+            # explicit opt-out: no frozen rows/columns at all — the
+            # sheet is meant to be scrolled freely
+            pass
         elif self._has_header_row():
             # sensible default: freeze below the first table's header
             tables = spec.get("tables") or []
@@ -2840,17 +3531,31 @@ def _build_xlsx(spec: dict, output_path: Path) -> None:
     default_ws = wb.active
     wb.remove(default_ws)
 
+    writers = []
     for sheet_spec in spec["sheets"]:
         ws = wb.create_sheet(title=sheet_spec["name"])
         writer = _SheetWriter(ws, sheet_spec, sheet_spec["name"])
+        writers.append(writer)
         writer.write_tables()  # tables first (structural backbone)
         writer.write_text_blocks()  # labels/headings
         writer.write_formulas()  # override anything beneath
-        writer.write_charts()  # floating objects
         writer.write_notes()  # documentation under content
         writer.write_merged_cells()
+        writer.write_data_validation()  # dropdown lists
+        writer.write_conditional_formats()  # done/missed/today highlighting
         writer.apply_layout()
+        writer.apply_sheet_state()  # hidden helper sheets
+        writer.apply_protection()  # unlock the user-editable ranges LAST
         _apply_print_setup(ws)  # print-friendly pagination for the XLSX preview
+
+    # Charts LAST, after every sheet exists: a chart may reference a
+    # range on ANOTHER sheet (e.g. the portfolio overview's allocation
+    # pie reading the Holdings sheet, which is built later), and an
+    # openpyxl Reference needs the target worksheet object at build
+    # time. Charts are floating objects — writing them after notes,
+    # merges and layout changes nothing on the grid.
+    for writer in writers:
+        writer.write_charts()
 
     if wb.sheetnames:
         wb.active = 0
@@ -2865,6 +3570,74 @@ def _build_xlsx(spec: dict, output_path: Path) -> None:
 
 
 # ── Public API ────────────────────────────────────────────────────────
+
+
+def _workbook_stats(spec: dict) -> dict:
+    """Summarize a (normalized) workbook spec for the agent's response.
+
+    Counts sheets, tables, charts and live formulas and collects the
+    sheet names — the same "what did I just build" context report /
+    pptx generation hand back to the agent so it can tell the user
+    what the deliverable contains.
+    """
+    sheets = spec.get("sheets") or []
+    table_count = 0
+    chart_count = 0
+    formula_count = 0
+
+    def _count_formulas(texts: Any) -> int:
+        count = 0
+        for v in texts or []:
+            if isinstance(v, str) and v.lstrip().startswith("="):
+                count += 1
+        return count
+
+    for sheet in sheets:
+        tables = sheet.get("tables") or []
+        table_count += len(tables)
+        chart_count += len(sheet.get("charts") or [])
+        for table in tables:
+            for row in table.get("rows") or []:
+                if isinstance(row, list):
+                    formula_count += _count_formulas(row)
+            formula_count += _count_formulas(table.get("total_row"))
+        for block in sheet.get("text_blocks") or []:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str) and text.lstrip().startswith("="):
+                    formula_count += 1
+        formula_count += _count_formulas(
+            [f for _cell, f in (_normalize_formula_pairs(sheet.get("formulas")) or [])]
+        )
+
+    return {
+        "sheet_names": [str(s.get("name") or "") for s in sheets],
+        "table_count": table_count,
+        "chart_count": chart_count,
+        "formula_count": formula_count,
+    }
+
+
+def _workbook_summary_text(spec: dict, pattern_name: Optional[str]) -> str:
+    """Human-readable workbook summary for the agent / user message."""
+    stats = _workbook_stats(spec)
+    parts = [
+        f"{max(len(stats['sheet_names']), 1)} sheets",
+        f"{stats['table_count']} tables",
+    ]
+    if stats["chart_count"]:
+        parts.append(f"{stats['chart_count']} charts")
+    parts.append(f"{stats['formula_count']} live formulas")
+    summary = ", ".join(parts)
+    names = [n for n in stats["sheet_names"] if n]
+    if names:
+        summary += f" ({', '.join(names[:6])})"
+    if pattern_name:
+        summary += (
+            f" — built from the built-in {pattern_name} template, so all "
+            "formulas are code-generated and arithmetically correct"
+        )
+    return summary
 
 
 async def generate_spreadsheet(
@@ -2925,6 +3698,12 @@ async def generate_spreadsheet(
 
     rel_path = f"reports/{report_id}.xlsx"
 
+    # 4. Workbook summary — same "what did I build" context report /
+    #    pptx generation return, so the agent can describe the
+    #    deliverable to the user (sheet/table/chart/formula counts).
+    stats = _workbook_stats(spec)
+    summary_text = _workbook_summary_text(spec, pattern_name)
+
     return {
         "type": "excel",
         "format": "xlsx",
@@ -2934,5 +3713,10 @@ async def generate_spreadsheet(
         "report_id": report_id,
         "created_at": int(time.time()),
         "sheet_count": len(spec["sheets"]),
+        "table_count": stats["table_count"],
+        "chart_count": stats["chart_count"],
+        "formula_count": stats["formula_count"],
+        "sheet_names": stats["sheet_names"],
+        "summary": summary_text,
         "pattern": pattern_name,
     }
