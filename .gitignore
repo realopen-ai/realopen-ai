@@ -22,6 +22,7 @@ frontend/.vite/
 # IDE
 .vscode/
 .idea/
+PROJECT_NOTES.md
 *.swp
 *.swo
 *~
