@@ -2,7 +2,7 @@
 Excel generation service — LLM emits a strict JSON workbook spec, a
 deterministic openpyxl converter turns it into a real .xlsx file.
 
-Pipeline (mirrors report_gen.py / pptx_gen.py):
+Pipeline:
   0. Deterministic template routing — a small classifier call maps the
      brief to a built-in pattern (loan amortization, invoice, budget
      planner, investment portfolio, habit tracker) and extracts scalar
@@ -114,9 +114,17 @@ TABLE object:
 DATA_VALIDATION object (one dropdown list):
   range          required "C5:L66" (this sheet).
   values         required non-empty array of scalars — the dropdown
-                 entries. Commas/quotes are not allowed inside values
-                 (Excel's list syntax); the joined list is capped at
-                 Excel's 255-char limit.
+                 entries (omit when source_range is given). Commas/
+                 quotes are not allowed inside values (Excel's list
+                 syntax); the joined list is capped at Excel's
+                 255-char limit.
+  source_range   optional "Categories!$A$5:$A$24" — a live RANGE the
+                 dropdown reads its entries from (sheet-qualified, no
+                 leading "="). The list then grows with the source
+                 sheet: rows added later show up in the dropdown
+                 automatically — use it for user-extensible pick
+                 lists (categories, locations). Takes precedence
+                 over values; no 255-char limit applies.
   allow_blank    default true — clearing a cell stays legal.
   prompt_title / prompt     optional input tooltip strings.
   error_title / error       optional rejection message.
@@ -257,6 +265,14 @@ MAX_VALIDATIONS_PER_SHEET = 10
 MAX_CF_ENTRIES_PER_SHEET = 20
 MAX_CF_RULES_PER_ENTRY = 5
 MAX_DV_VALUES = 10
+
+# Range-source dropdown refs: "Categories!$A$5:$A$24" (sheet part
+# optional → same-sheet source). Quoted sheet names may contain
+# anything; unquoted ones stick to the safe charset.
+_SOURCE_RANGE_RE = re.compile(
+    r"^(?:'([^']+)'!|([A-Za-z0-9_][A-Za-z0-9_.\- ]*)!)?"
+    r"\$?[A-Za-z]{1,3}\$?\d+:\$?[A-Za-z]{1,3}\$?\d+$"
+)
 
 # spec operator → openpyxl CellIsRule operator
 _CF_OPERATORS = {
@@ -660,7 +676,8 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         else:
             if len(text_blocks) > MAX_TEXT_BLOCKS_PER_SHEET:
                 warnings.append(
-                    f"{ctx}: {len(text_blocks)} text_blocks > {MAX_TEXT_BLOCKS_PER_SHEET} — truncated"
+                    f"{ctx}: {len(text_blocks)} text_blocks > "
+                    f"{MAX_TEXT_BLOCKS_PER_SHEET} — truncated"
                 )
             for bi, block in enumerate(text_blocks[:MAX_TEXT_BLOCKS_PER_SHEET]):
                 bctx = f"{ctx}.text_blocks[{bi}]"
@@ -912,8 +929,24 @@ def _validate_data_validation(ctx: str, dv: Any) -> List[str]:
             errors.append(f"{ctx}: invalid range {rng!r}")
 
     values = dv.get("values")
-    if not isinstance(values, list) or not values:
-        errors.append(f"{ctx}: 'values' must be a non-empty array")
+    source_range = dv.get("source_range")
+    has_source = isinstance(source_range, str) and bool(source_range.strip())
+    has_values = isinstance(values, list) and bool(values)
+
+    if has_source:
+        if has_values:
+            errors.append(f"{ctx}: set either 'values' or 'source_range', not both")
+        ref = source_range.strip().lstrip("=")
+        if not _SOURCE_RANGE_RE.match(ref):
+            errors.append(
+                f"{ctx}: invalid source_range {source_range!r} — expected a "
+                'range reference like "Categories!$A$5:$A$24"'
+            )
+    elif not has_values:
+        errors.append(
+            f"{ctx}: 'values' must be a non-empty array (or provide a "
+            "'source_range' range reference)"
+        )
     else:
         joined = ",".join(str(v) for v in values)
         if len(joined) > 250:
@@ -1675,6 +1708,35 @@ def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
     )
 
     values_raw = dv.get("values")
+
+    # Range-sourced dropdown first: entries read live from a range
+    # (e.g. the Categories sheet) so the list grows with its source.
+    source_raw = dv.get("source_range")
+    if isinstance(source_raw, str):
+        ref = source_raw.strip().lstrip("=")
+        if _SOURCE_RANGE_RE.match(ref):
+            out: Dict[str, Any] = {
+                "range": range_str,
+                "source_range": ref,
+                "allow_blank": bool(dv.get("allow_blank", True)),
+                "error_style": (
+                    dv.get("error_style")
+                    if dv.get("error_style") in ("stop", "warning", "information")
+                    else "stop"
+                ),
+            }
+            for key, limit in (
+                ("prompt_title", 32),
+                ("prompt", 255),
+                ("error_title", 32),
+                ("error", 255),
+            ):
+                s = dv.get(key)
+                if isinstance(s, str) and s.strip():
+                    out[key] = _sanitize_cell_text(s.strip())[:limit]
+            return out
+        # unusable ref → fall through to the inline-values path
+
     if not isinstance(values_raw, list):
         return None
     values: List[str] = []
@@ -2675,7 +2737,8 @@ _PATTERN_GATE_RE = re.compile(
     r"invoice|bill|billing|quote|quotation|estimate|receipt|budget|expense|"
     r"income|earning|salary|payroll|saving|finance|"
     r"portfolio|invest|stock|holding|share|ticker|crypto|etf|bond|"
-    r"dividend|position|habit|streak|routine",
+    r"dividend|position|habit|streak|routine|"
+    r"inventory|belonging|collection|warranty|serial",
     re.IGNORECASE,
 )
 _ANY_DIGIT_RE = re.compile(r"\d")
@@ -3276,12 +3339,22 @@ class _SheetWriter:
     # ── interactivity: dropdowns, conditional formats, protection ──
 
     def write_data_validation(self) -> None:
-        """In-cell dropdown lists (openpyxl DataValidation, type=list)."""
+        """In-cell dropdown lists (openpyxl DataValidation, type=list).
+
+        Two source modes: an inline value list (formula1 = "a,b,c") or
+        a live RANGE reference (formula1 = Categories!$A$5:$A$24) —
+        range-sourced dropdowns grow with their source sheet.
+        """
         for dv in self.spec.get("data_validation", []):
             try:
+                source = dv.get("source_range")
+                if isinstance(source, str) and source:
+                    formula1 = source
+                else:
+                    formula1 = '"' + ",".join(dv.get("values") or []) + '"'
                 validation = DataValidation(
                     type="list",
-                    formula1='"' + ",".join(dv["values"]) + '"',
+                    formula1=formula1,
                     allow_blank=dv.get("allow_blank", True),
                     showErrorMessage=True,
                     errorStyle=dv.get("error_style", "stop"),
