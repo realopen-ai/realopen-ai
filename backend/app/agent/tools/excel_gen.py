@@ -4,11 +4,11 @@ use_excel_gen tool — generates an Excel workbook (.xlsx) from a brief.
 Architecture (mirrors use_report_gen / use_pptx_gen):
   0. Deterministic template routing — a small classifier call maps
      well-known requests to built-in templates in the patterns package
-     (app/services/patterns/ — one module per pattern: amortization,
-     invoice, budget, portfolio; discovered dynamically like agent
-     tools). Every formula is generated from the actual layout rows
-     in code, so model row-math mistakes are impossible for these
-     documents. Unmatched requests continue with the AI path below.
+     (app/services/patterns/ — one module per pattern; discovered dynamically
+     like agent tools). Every formula is generated from the actual
+     layout rows in code, so model row-math mistakes are impossible
+     for these documents. Unmatched requests continue with the AI path
+     below.
   1. Specialized Excel AI LLM call turns (brief, requirements) into a
      strict JSON workbook specification — sheet structure, tables,
      live formulas, charts, notes. See services/excel_gen.py.
