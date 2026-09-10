@@ -18,6 +18,7 @@ tests pin down:
 """
 
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -718,3 +719,295 @@ class TestOffByNDetection:
         summary_rows = norm["sheets"][1]["tables"][0]["rows"]
         # heal must not shift the cross-sheet refs (no false positive)
         assert summary_rows[1][1] == "=Amortization!$B$4"
+
+
+# ── Habit tracker ─────────────────────────────────────────────────────
+
+
+def _current_month_first() -> date:
+    t = date.today()
+    return date(t.year, t.month, 1)
+
+
+def _days_in_month(y: int, m: int) -> int:
+    import calendar
+
+    return calendar.monthrange(y, m)[1]
+
+
+class TestHabitTrackerCoercion:
+    def test_habits_from_strings_pad_to_ten(self):
+        p = ep.coerce_habit_tracker_params({"habits": ["Meditate", "Gym"]})
+        assert len(p["habits"]) == 10
+        assert p["habits"][0]["name"] == "Meditate"
+        assert p["habits"][0]["active"] is True
+        # filler rows are inactive so daily scores only count real habits
+        assert p["habits"][2]["active"] is False
+        assert p["habits"][2]["name"] == "Habit 3"
+
+    def test_habit_objects_normalized(self):
+        p = ep.coerce_habit_tracker_params(
+            {
+                "habits": [
+                    {"name": " Run ", "target": "weekdays", "active": False},
+                    {"name": "Read", "target": "sometimes", "start_date": "2026-09-01"},
+                ]
+            }
+        )
+        assert p["habits"][0]["name"] == "Run"
+        assert p["habits"][0]["target"] == "Weekdays"
+        assert p["habits"][0]["active"] is False
+        # unknown target → Daily; active defaults to True
+        assert p["habits"][1]["target"] == "Daily"
+        assert p["habits"][1]["active"] is True
+        assert p["habits"][1]["start_date"] == "2026-09-01"
+
+    def test_no_habits_gives_ten_active_slots(self):
+        p = ep.coerce_habit_tracker_params({})
+        assert len(p["habits"]) == 10
+        assert all(h["active"] for h in p["habits"])
+        assert p["habits"][0]["name"] == "Habit 1"
+        assert p["month_start"] == _current_month_first()
+
+    def test_month_start_clamped_when_far_away(self):
+        p = ep.coerce_habit_tracker_params({"month_start": "2018-01-01"})
+        assert p["month_start"] == _current_month_first()
+
+    def test_bad_params_raise(self):
+        with pytest.raises(ValueError):
+            ep.coerce_habit_tracker_params("nope")
+        with pytest.raises(ValueError):
+            ep.coerce_habit_tracker_params({"habits": "Meditate"})
+
+
+class TestHabitTrackerBuilder:
+    def setup_method(self):
+        self.spec = ep.build_habit_tracker_spec(
+            {"habits": ["Morning Run", "Read 20 Pages", "Meditate"]}
+        )
+        self.norm = eg._normalize_spec(self.spec)
+        first = _current_month_first()
+        y2, m2 = (
+            (first.year + 1, 1) if first.month == 12 else (first.year, first.month + 1)
+        )
+        self.n_m1 = _days_in_month(first.year, first.month)
+        self.n_m2 = _days_in_month(y2, m2)
+        self.n_days = self.n_m1 + self.n_m2
+        self.r0 = 5
+        self.rM1 = 4 + self.n_m1
+        self.rN = 4 + self.n_days
+        self.S = self.rN + 3
+
+    def _sheet(self, name: str) -> dict:
+        return next(s for s in self.norm["sheets"] if s["name"] == name)
+
+    def test_spec_validates_clean(self):
+        errors, warnings = eg.validate_workbook_spec(self.spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+
+    def test_sheet_order_and_hidden_calc(self):
+        assert [s["name"] for s in self.norm["sheets"]] == [
+            "Tracker",
+            "Dashboard",
+            "Habits",
+            "Instructions",
+            "Calc",
+        ]
+        assert self.norm["sheets"][4].get("hidden") is True
+        assert self.norm["sheets"][0].get("hidden") is None
+
+    def test_tracker_geometry_and_formula_lattice(self):
+        tracker = self._sheet("Tracker")
+        table = tracker["tables"][0]
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == self.n_days
+        first, second = table["rows"][0], table["rows"][1]
+        # weekday from the row's own date; score over the active flags
+        assert (
+            first[1]
+            == '=CHOOSE(WEEKDAY(A5,2),"Mon","Tue","Wed","Thu","Fri","Sat","Sun")'
+        )
+        assert first[12] == '=SUMPRODUCT((C5:L5="✓")*Calc!$C$1:$L$1)'
+        assert first[13] == "=IF(Calc!$N$1=0,0,M5/Calc!$N$1)"
+        assert second[12] == '=SUMPRODUCT((C6:L6="✓")*Calc!$C$1:$L$1)'
+        # habit headers are LIVE refs to the Habits sheet names
+        assert table["headers"][2] == "=Habits!$A$5"
+        assert table["headers"][11] == "=Habits!$A$14"
+        assert tracker["freeze_panes"] == "C5"
+        # marks + notes editable, dates/day/scores locked
+        assert tracker["protect"]["unlocked"] == [
+            f"C{self.r0}:L{self.rN}",
+            f"O{self.r0}:O{self.rN}",
+        ]
+        assert len(tracker["data_validation"]) == 1
+        assert tracker["data_validation"][0]["values"] == ["✓", "x"]
+        # ✓ / x rules carry stop_if_true so today's gold row can't repaint them
+        cf = {c["range"]: c for c in tracker["conditional_formats"]}
+        assert cf[f"C{self.r0}:L{self.rN}"]["rules"][0]["stop_if_true"] is True
+        assert cf[f"A{self.r0}:O{self.rN}"]["rules"][0]["value"] == "$A5=TODAY()"
+
+    def test_calc_helpers_and_stats_formulas(self):
+        calc = self._sheet("Calc")
+        helpers = calc["tables"][0]
+        assert helpers["start_cell"] == "C4"
+        assert len(helpers["rows"]) == self.n_days  # 1:1 with Tracker rows
+        assert helpers["rows"][0][0] == '=IF(Tracker!C5="✓",1,0)'
+        assert helpers["rows"][1][0] == '=IF(Tracker!C6="✓",C5+1,0)'
+        assert helpers["rows"][0][9] == '=IF(Tracker!L5="✓",1,0)'
+        # anchors
+        blocks = {b["cell"]: b["text"] for b in calc["text_blocks"]}
+        assert blocks["N1"] == "=SUM(C1:L1)"
+        assert blocks["P1"] == (
+            f"=IFERROR(MATCH(TODAY(),Tracker!$A$5:$A${self.rN},1),0)"
+        )
+        assert blocks["P2"] == (f'=COUNTIF(Tracker!$A$5:$A${self.rM1},"<="&TODAY())')
+        assert blocks["C1"] == '=IF(Habits!$C$5="Yes",1,0)'
+        # stats table: one row per habit, every ref from THIS layout
+        stats = calc["tables"][1]
+        assert stats["start_cell"] == f"A{self.S}"
+        row1 = stats["rows"][0]
+        assert row1[0] == "=Habits!$A$5"
+        assert row1[1] == (
+            "=IF($P$1=0,0,"
+            "IF(ISTEXT(INDEX(Tracker!C$5:C${rN},$P$1)),"
+            "INDEX(C$5:C${rN},$P$1),"
+            "IF($P$1=1,0,INDEX(C$5:C${rN},$P$1-1))))"
+        ).format(rN=self.rN)
+        assert row1[2] == f"=MAX(C5:C{self.rN})"
+        assert row1[3] == f'=COUNTIF(Tracker!C5:C{self.rN},"✓")'
+        assert row1[4] == f'=COUNTIF(Tracker!C5:C{self.rM1},"✓")'
+        assert row1[5] == f"=IF($P$2=0,0,E{self.S + 1}/$P$2)"
+        assert row1[6] == f'=IF(Habits!$C$5="Yes",F{self.S + 1},9)'
+
+    def test_habits_sheet_stats_are_calc_references(self):
+        habits = self._sheet("Habits")
+        table = habits["tables"][0]
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 10
+        row1 = table["rows"][0]
+        assert row1[0] == "Morning Run"
+        assert row1[2] == "Yes"
+        assert row1[4] == f"=Calc!$B${self.S + 1}"
+        assert row1[5] == f"=Calc!$C${self.S + 1}"
+        assert row1[6] == f"=Calc!$D${self.S + 1}"
+        assert row1[7] == f"=Calc!$F${self.S + 1}"
+        # filler habits beyond the three given are inactive
+        assert table["rows"][3][0] == "Habit 4"
+        assert table["rows"][3][2] == "No"
+        # dropdowns for Target and Active
+        ranges = {dv["range"] for dv in habits["data_validation"]}
+        assert ranges == {"B5:B14", "C5:C14"}
+        # name/target/active/start/color editable — stats locked
+        assert habits["protect"]["unlocked"] == [
+            "A5:A14",
+            "B5:B14",
+            "C5:C14",
+            "D5:D14",
+            "I5:I14",
+        ]
+
+    def test_dashboard_stats_streak_table_and_charts(self):
+        dash = self._sheet("Dashboard")
+        blocks = {b["cell"]: b["text"] for b in dash["text_blocks"]}
+        assert blocks["B3"] == "=TODAY()"
+        assert blocks["B7"] == (
+            "=IF((Calc!$P$2*Calc!$N$1)=0,0,"
+            f'COUNTIF(Tracker!$C$5:$L${self.rM1},"✓")/(Calc!$P$2*Calc!$N$1))'
+        )
+        # empty-tracker guard → em dash, not #N/A from MATCH
+        assert blocks["B13"].startswith("=IF(COUNTIF")
+        assert '"—"' in blocks["B13"]
+        # attention pick uses the inactive-mask column so unused rows
+        # never win "needs attention"
+        assert f"Calc!$G${self.S + 1}:$G${self.S + 10}" in blocks["B14"]
+        streak = dash["tables"][0]
+        assert streak["start_cell"] == "A17"
+        assert len(streak["rows"]) == 10
+        assert streak["rows"][0][0] == "=Habits!$A$5"
+        assert streak["rows"][0][1] == f"=Calc!$B${self.S + 1}"
+        assert streak["rows"][9][3] == f"=Calc!$F${self.S + 10}"
+        # charts read the live table; rates render as percentages
+        bar, line = dash["charts"]
+        assert bar["type"] == "bar"
+        assert bar["categories_range"] == "Dashboard!$A$18:$A$27"
+        assert bar["series"][0]["values_range"] == "Dashboard!$D$18:$D$27"
+        assert bar["value_numfmt"] == "0%"
+        assert bar["show_values"] is True
+        assert line["type"] == "line"
+        assert line["categories_range"] == f"Tracker!$A$5:$A${self.rM1}"
+        assert line["series"][0]["values_range"] == f"Tracker!$N$5:$N${self.rM1}"
+
+    def test_converter_round_trip_structure(self, tmp_path):
+        out = tmp_path / "habit.xlsx"
+        eg._build_xlsx(self.norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == [
+            "Tracker",
+            "Dashboard",
+            "Habits",
+            "Instructions",
+            "Calc",
+        ]
+        tr = wb["Tracker"]
+        assert tr.freeze_panes == "C5"
+        assert tr.protection.sheet is True
+        assert tr["C5"].protection.locked is False  # marks editable
+        assert tr["M5"].protection.locked is True  # formulas locked
+        assert len(tr.data_validations.dataValidation) == 1
+        assert tr.data_validations.dataValidation[0].formula1 == '"✓,x"'
+        assert len(list(tr.conditional_formatting)) == 3
+        assert wb["Calc"].sheet_state == "hidden"
+        assert wb["Habits"].freeze_panes == "A5"
+        dash = wb["Dashboard"]
+        assert len(dash._charts) == 2
+        assert dash.protection.sheet is True
+
+
+class TestHabitTrackerRouting:
+    @pytest.mark.asyncio
+    async def test_habit_tracker_routes_to_template(self, tmp_path, monkeypatch):
+        import json
+
+        async def fake_llm(messages):
+            assert "route spreadsheet requests" in messages[0]["content"]
+            return json.dumps(
+                {
+                    "pattern": "habit_tracker",
+                    "params": {
+                        "habits": [
+                            {"name": "Meditation"},
+                            {"name": "Morning Run"},
+                            {"name": "Read 20 pages"},
+                        ]
+                    },
+                }
+            )
+
+        async def must_not_run(brief, requirements):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_call_llm", fake_llm)
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "habit tracker for meditation, running and reading"
+        )
+        assert result["pattern"] == "habit_tracker"
+        assert result["sheet_count"] == 5
+        assert result["sheet_names"] == [
+            "Tracker",
+            "Dashboard",
+            "Habits",
+            "Instructions",
+            "Calc",
+        ]
+        assert result["chart_count"] == 2
+        assert result["formula_count"] > 700  # helpers + stats + daily formulas
+        assert "habit_tracker template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    def test_gate_regex_matches_habit_briefs(self):
+        assert eg._PATTERN_GATE_RE.search("build me a habit tracker")
+        assert eg._PATTERN_GATE_RE.search("track my daily streaks")
+        assert eg._PATTERN_GATE_RE.search("morning routine spreadsheet")
