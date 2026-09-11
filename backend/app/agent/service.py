@@ -22,6 +22,8 @@ from app.core.prompt_security import untrusted_context_message
 from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
 from app.services.context_compactor import compact_conversation
+from app.services import model_prefs
+from app.services import providers
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
@@ -149,7 +151,12 @@ _MODELS_WITH_NATIVE_TOOLS = {
 
 
 def _model_supports_native_tools(model_name: str) -> bool:
-    """Check if a model likely supports native Ollama tool calling."""
+    """Check if a model likely supports native tool calling.
+
+    Groq (cloud) models all use the OpenAI function-calling format.
+    """
+    if providers.is_groq_model(model_name):
+        return True
     ml = model_name.lower()
     return any(kw in ml for kw in _MODELS_WITH_NATIVE_TOOLS)
 
@@ -456,7 +463,7 @@ async def run_agent_stream(
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
-    resolved_model = settings.resolve_model(model)
+    resolved_model = await model_prefs.resolve_chat_request_model(model)
     registry = get_tool_registry()
 
     # ── Select relevant tools ──
@@ -658,77 +665,66 @@ async def run_agent_stream(
         thinking_start = None
 
         try:
-            async with httpx.AsyncClient(timeout=1200.0) as client:
-                payload = {
-                    "model": resolved_model,
-                    "messages": ollama_messages,
-                    "stream": True,
-                }
-                if ollama_tools:
-                    payload["tools"] = ollama_tools
+            # Provider-routed streaming;
+            # stream_chat normalizes both wire formats into chunks of
+            # {thinking, content, tool_calls, done}.
+            _dbg(
+                "   ➡️  streaming from provider=%s  model=%s",
+                providers.provider_of(resolved_model),
+                resolved_model,
+            )
+            async for chunk in providers.stream_chat(
+                resolved_model,
+                ollama_messages,
+                tools=ollama_tools,
+                timeout=1200.0,
+            ):
+                # Thinking tokens
+                thinking = chunk.get("thinking", "")
+                if thinking:
+                    if not thinking_start:
+                        thinking_start = time.time()
+                        yield _sse_event("thinking_start", {})
+                    thinking_content += thinking
+                    yield _sse_event("thinking", {"thinking": thinking})
 
-                async with client.stream(
-                    "POST",
-                    f"{settings.OLLAMA_BASE_URL}/api/chat",
-                    json=payload,
-                    timeout=1200.0,
-                ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            chunk = json.loads(line)
+                # Content tokens
+                token = chunk.get("content", "")
+                if token:
+                    if thinking_start is not None:
+                        elapsed = round(time.time() - thinking_start)
+                        yield _sse_event("thinking_done", {"thinkingDuration": elapsed})
+                        thinking_start = None
+                    full_response += token
+                    yield _sse_event(
+                        "message",
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": token,
+                            }
+                        },
+                    )
 
-                            # Thinking tokens
-                            thinking = chunk.get("message", {}).get("thinking", "")
-                            if thinking:
-                                if not thinking_start:
-                                    thinking_start = time.time()
-                                    yield _sse_event("thinking_start", {})
-                                thinking_content += thinking
-                                yield _sse_event("thinking", {"thinking": thinking})
+                # Native tool calls (already complete — the groq adapter
+                # accumulates streamed fragments into whole calls)
+                for tc in chunk.get("tool_calls", []) or []:
+                    native_tool_calls.append(tc)
 
-                            # Content tokens
-                            token = chunk.get("message", {}).get("content", "")
-                            if token:
-                                if thinking_start is not None:
-                                    elapsed = round(time.time() - thinking_start)
-                                    yield _sse_event(
-                                        "thinking_done", {"thinkingDuration": elapsed}
-                                    )
-                                    thinking_start = None
-                                full_response += token
-                                yield _sse_event(
-                                    "message",
-                                    {
-                                        "message": {
-                                            "role": "assistant",
-                                            "content": token,
-                                        }
-                                    },
-                                )
-
-                            # Native tool calls from Ollama
-                            for tc in chunk.get("message", {}).get("tool_calls", []):
-                                native_tool_calls.append(tc)
-
-                            if chunk.get("done"):
-                                break
-                        except json.JSONDecodeError:
-                            continue
+                if chunk.get("done"):
+                    break
 
         except httpx.ConnectError:
-            logger.error("Cannot connect to Ollama at %s", settings.OLLAMA_BASE_URL)
-            _dbg("🤖 ❌ Cannot connect to Ollama at %s", settings.OLLAMA_BASE_URL)
+            logger.error("Cannot connect to the model provider for %s", resolved_model)
+            _dbg("🤖 ❌ Cannot connect to the provider for %s", resolved_model)
             yield _sse_event(
-                "error", {"error": "Cannot connect to Ollama. Is it running?"}
+                "error", {"error": "Cannot connect to the AI engine. Is it running?"}
             )
             return
         except Exception as e:
-            logger.exception("Ollama error: %s", e)
-            _dbg("🤖 ❌ Unexpected Ollama error: %s", e)
-            yield _sse_event("error", {"error": f"Ollama error: {e}"})
+            logger.exception("LLM provider error: %s", e)
+            _dbg("🤖 ❌ Unexpected provider error: %s", e)
+            yield _sse_event("error", {"error": f"AI engine error: {e}"})
             return
 
         # Flush thinking if still active
