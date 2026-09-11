@@ -50,6 +50,133 @@ export async function fetchModels(): Promise<{
   };
 }
 
+// ─── AI settings: models + providers ─────────────────────────────
+
+/** A model entry in the Settings ▸ AI ▸ Models dropdowns. */
+export interface AvailableModel {
+  id: string;
+  provider: "ollama" | "groq";
+  installed: boolean;
+  description: string;
+  size: string;
+  type: string;
+}
+
+/** One task slot row (Chat / Agent, Vision, …). */
+export interface ModelTaskSlot {
+  task: string;
+  label: string;
+  model: string;
+  provider: "ollama" | "groq";
+  default_model: string;
+  is_default: boolean;
+  local_only: boolean;
+}
+
+export interface AvailableModelsResponse {
+  models: AvailableModel[];
+  tasks: ModelTaskSlot[];
+  groq_connected: boolean;
+  ollama_connected: boolean;
+}
+
+export async function fetchAvailableModels(): Promise<AvailableModelsResponse | null> {
+  log("➡️  fetchAvailableModels  url=/api/models/available");
+  try {
+    const res = await fetch("/api/models/available");
+    if (res.ok) return await res.json();
+    dbgError(`   ❌ fetchAvailableModels NOT OK  status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ fetchAvailableModels error: ${err}`);
+  }
+  return null;
+}
+
+export async function setModelPreference(
+  task: string,
+  model: string | null,
+): Promise<ModelTaskSlot | null> {
+  log(`➡️  setModelPreference  task=${task}  model=${model}`);
+  try {
+    const res = await fetch("/api/models/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, model }),
+    });
+    if (res.ok) return await res.json();
+    const err = await res.json().catch(() => ({}));
+    dbgError(`   ❌ setModelPreference error: ${err.detail || res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ setModelPreference error: ${err}`);
+  }
+  return null;
+}
+
+// ─── Providers ─────────────────────────────────────────────────────
+
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  kind: "local" | "cloud";
+  connected: boolean;
+  model_count: number;
+  has_key?: boolean;
+  key_masked?: string;
+}
+
+export async function fetchProviders(): Promise<ProviderInfo[]> {
+  log("➡️  fetchProviders  url=/api/providers");
+  try {
+    const res = await fetch("/api/providers");
+    if (res.ok) {
+      const data = await res.json();
+      return data.providers ?? [];
+    }
+    dbgError(`   ❌ fetchProviders NOT OK  status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ fetchProviders error: ${err}`);
+  }
+  return [];
+}
+
+/**
+ * Connect the Groq provider: the backend validates the key with a mini
+ * request to Groq and saves it only when Groq accepts it.
+ * Returns { ok, error } — error carries the user-facing message.
+ */
+export async function connectGroqProvider(
+  apiKey: string,
+): Promise<{ ok: boolean; error?: string; keyMasked?: string }> {
+  log("➡️  connectGroqProvider");
+  try {
+    const res = await fetch("/api/providers/groq", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, keyMasked: data.key_masked };
+    }
+    const err = await res.json().catch(() => ({}));
+    return { ok: false, error: err.detail || `Request failed (${res.status})` };
+  } catch (err) {
+    dbgError(`   ❌ connectGroqProvider error: ${err}`);
+    return { ok: false, error: "Cannot reach the server" };
+  }
+}
+
+export async function disconnectGroqProvider(): Promise<boolean> {
+  log("➡️  disconnectGroqProvider");
+  try {
+    const res = await fetch("/api/providers/groq", { method: "DELETE" });
+    return res.ok;
+  } catch (err) {
+    dbgError(`   ❌ disconnectGroqProvider error: ${err}`);
+    return false;
+  }
+}
+
 // ─── Modules ─────────────────────────────────────────────────────
 
 export interface ModuleInfo {
