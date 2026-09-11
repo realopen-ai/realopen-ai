@@ -20,6 +20,7 @@ from app.api.documents import router as documents_router
 from app.api.reports import router as reports_router
 from app.api.workspace import router as workspace_router
 from app.api.deps import router as deps_router
+from app.api.providers import router as providers_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
@@ -319,3 +320,4 @@ app.include_router(documents_router, prefix="/api", tags=["documents"])
 app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
+app.include_router(providers_router, prefix="/api", tags=["providers"])
