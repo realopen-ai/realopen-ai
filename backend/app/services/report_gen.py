@@ -44,9 +44,8 @@ from datetime import date as _date
 from pathlib import Path
 from typing import Optional
 
-import httpx
-
-from app.config import settings
+from app.services import model_prefs
+from app.services import providers
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -98,11 +97,11 @@ async def _generate_markdown(topic: str, outline: Optional[str]) -> str:
     Uses the resolved chat model (or default_utility if available).
     Falls back to the chat model if default_utility isn't configured.
     """
-    model = settings.resolve_model(settings.MEMORY_EXTRACTION_MODEL_ROLE)
-    ollama_url = settings.OLLAMA_BASE_URL
+    # Report task slot (Settings ▸ AI ▸ Models)
+    model = await model_prefs.resolve_task_model("report")
 
-    if not ollama_url or not model:
-        raise RuntimeError("No LLM model or URL configured for report generation")
+    if not model:
+        raise RuntimeError("No LLM model configured for report generation")
 
     user_content = f"Topic: {topic}"
     if outline:
@@ -116,20 +115,14 @@ async def _generate_markdown(topic: str, outline: Optional[str]) -> str:
 
     _log("generating markdown report: topic=%r model=%s", topic[:60], model)
 
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        response = await client.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "options": {"num_predict": 4096},
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        content = data.get("message", {}).get("content", "").strip()
+    data = await providers.chat_once(
+        model,
+        messages,
+        think=False,
+        options={"num_predict": 4096},
+        timeout=600.0,
+    )
+    content = data.get("message", {}).get("content", "").strip()
 
     if not content:
         raise RuntimeError("LLM returned empty report content")
