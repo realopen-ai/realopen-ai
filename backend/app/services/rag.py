@@ -61,6 +61,8 @@ from app.config import settings
 from app.db.models import Document, DocumentChunk
 from app.db.session import async_session_factory
 from app.services.embeddings import get_embedding, get_embeddings
+from app.services import model_prefs
+from app.services import providers
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -1144,7 +1146,10 @@ async def digest_document(
             DigestProgress(
                 stage="extracting_images",
                 percent=20,
-                details=f"Extracted {len(extraction.pages)} page(s), {len(extraction.images)} image(s)",
+                details=(
+                    f"Extracted {len(extraction.pages)} page(s), "
+                    f"{len(extraction.images)} image(s)"
+                ),
             )
         )
 
@@ -1348,14 +1353,20 @@ async def digest_document(
             DigestProgress(
                 stage="done",
                 percent=100,
-                details=f"Digested {filename}: {len(text_chunks)} text chunks, {len(image_chunks)} image chunks",
+                details=(
+                    f"Digested {filename}: {len(text_chunks)} text chunks, "
+                    f"{len(image_chunks)} image chunks"
+                ),
                 document_id=str(doc_id),
                 total_chunks=len(all_chunks),
                 total_images=len(image_chunks),
             )
         )
         _log(
-            "digest_document DONE  filename=%s  doc_id=%s  text_chunks=%d  image_chunks=%d  total_time=%.2fs",
+            (
+                "digest_document DONE  filename=%s  doc_id=%s  text_chunks=%d  "
+                "image_chunks=%d  total_time=%.2fs"
+            ),
             filename,
             doc_id,
             len(text_chunks),
@@ -1523,7 +1534,7 @@ async def search_documents(
     # with great keyword overlap but mediocre vector similarity never got
     # a chance. Now we run a separate tsvector query to fetch keyword-only
     # candidates and merge them with the vector candidates.
-    chunk_ids = [r.id for r in vector_rows]
+    chunk_ids = [r.id for r in vector_rows]  # noqa
     bm25_scores: Dict[str, float] = {}
     keyword_only_rows: Dict[str, Any] = {}  # chunk_id_str -> row-like dict
 
@@ -1702,7 +1713,8 @@ def _expand_query(query: str) -> str:
     (so the embedding still matches the original intent) and synonyms
     are appended (so the embedding also catches paraphrases).
 
-    Example: "how to fix the problem" → "how to fix the problem way method approach solve resolve repair correct issue error bug failure"
+    Example: "how to fix the problem" → "how to fix the problem way method
+    approach solve resolve repair correct issue error bug failure"
     """
     if not query or not query.strip():
         return query
@@ -1744,9 +1756,9 @@ async def _rerank_with_llm(
         return sources
 
     try:
-        model = settings.resolve_model(settings.MEMORY_EXTRACTION_MODEL_ROLE)
-        ollama_url = settings.OLLAMA_BASE_URL
-        if not ollama_url or not model:
+        # Document-reasoning task slot (Settings ▸ AI ▸ Models)
+        model = await model_prefs.resolve_task_model("document_reasoning")
+        if not model:
             return sources
 
         # Build the excerpts list (truncate each chunk to keep payload small)
@@ -1761,25 +1773,18 @@ async def _rerank_with_llm(
             f"Return the JSON array of indices, most relevant first."
         )
 
-        import httpx as _httpx
-
-        async with _httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": get_prompt("rag_rerank_system")},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "think": False,
-                    "stream": False,
-                    "format": "json",
-                    "options": {"num_predict": 256},
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("message", {}).get("content", "").strip()
+        data = await providers.chat_once(
+            model,
+            [
+                {"role": "system", "content": get_prompt("rag_rerank_system")},
+                {"role": "user", "content": user_msg},
+            ],
+            think=False,
+            format="json",
+            options={"num_predict": 256},
+            timeout=30.0,
+        )
+        raw = data.get("message", {}).get("content", "").strip()
 
         # Parse the JSON array of indices
         import json as _json

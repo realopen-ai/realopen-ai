@@ -28,6 +28,8 @@ from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
+from app.services import model_prefs
+from app.services import providers
 from app.services import rag as rag_service
 from app.services.title_generator import maybe_generate_and_save_title
 from app.services.conversations import DEFAULT_TITLE
@@ -122,7 +124,7 @@ async def chat(
 
     with RequestTimer("chat_endpoint", logger):
         raw_model = request.model_override or request.model or "default"
-        resolved_model = settings.resolve_model(raw_model)
+        resolved_model = await model_prefs.resolve_chat_request_model(raw_model)
         dbg("   resolved_model=%s (raw=%s)", resolved_model, raw_model)
 
         # Persist conversation if ID provided
@@ -139,88 +141,81 @@ async def chat(
             await conv_service.add_message(db, conv_id, "user", user_content)
             dbg("   ✅  saved user message to DB (conv_id=%s)", conv_id)
 
-        async with httpx.AsyncClient(timeout=1200.0) as client:
-            try:
-                dbg(
-                    "   ➡️  sending to Ollama %s/api/chat  model=%s",
-                    settings.OLLAMA_BASE_URL,
-                    resolved_model,
-                )
-                response = await client.post(
-                    f"{settings.OLLAMA_BASE_URL}/api/chat",
-                    json={
-                        "model": resolved_model,
-                        "messages": [
-                            {"role": m.role, "content": m.content}
-                            for m in request.messages
-                        ],
-                        "stream": False,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-                dbg(
-                    "   ⬅️  Ollama responded  total_duration=%s  eval_count=%s",
-                    data.get("total_duration"),
-                    data.get("eval_count"),
-                )
+        try:
+            dbg(
+                "   ➡️  sending chat request (provider=%s)  model=%s",
+                providers.provider_of(resolved_model),
+                resolved_model,
+            )
+            # Provider-routed call;
+            # always returns an Ollama-shaped response dict.
+            data = await providers.chat_once(
+                resolved_model,
+                [{"role": m.role, "content": m.content} for m in request.messages],
+                timeout=1200.0,
+            )
+            dbg(
+                "   ⬅️  LLM responded  total_duration=%s  eval_count=%s",
+                data.get("total_duration"),
+                data.get("eval_count"),
+            )
 
-                # Save assistant message
-                if conv_id:
-                    content = data.get("message", {}).get("content", "")
-                    await conv_service.add_message(
-                        db, conv_id, "assistant", content, model=resolved_model
+            # Save assistant message
+            if conv_id:
+                content = data.get("message", {}).get("content", "")
+                await conv_service.add_message(
+                    db, conv_id, "assistant", content, model=resolved_model
+                )
+                dbg("   saved assistant message to DB (conv_id=%s)", conv_id)
+
+                # Auto-title the conversation from the first user
+                # message (LLM via default_utility; no-op on later turns
+                # and when the title is no longer the default).
+                try:
+                    new_title = await maybe_generate_and_save_title(
+                        conv_id,
+                        request.messages[-1].content if request.messages else "",
                     )
-                    dbg("   saved assistant message to DB (conv_id=%s)", conv_id)
+                    if new_title:
+                        dbg("   🏷️  conversation auto-titled: %r", new_title)
+                except Exception as e:
+                    dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
 
-                    # Auto-title the conversation from the first user
-                    # message (LLM via default_utility; no-op on later turns
-                    # and when the title is no longer the default).
-                    try:
-                        new_title = await maybe_generate_and_save_title(
-                            conv_id,
-                            request.messages[-1].content if request.messages else "",
-                        )
-                        if new_title:
-                            dbg("   🏷️  conversation auto-titled: %r", new_title)
-                    except Exception as e:
-                        dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
-
-                return ChatResponse(
-                    model=resolved_model,
-                    message=ChatMessage(
-                        **data.get("message", {"role": "assistant", "content": ""})
+            return ChatResponse(
+                model=resolved_model,
+                message=ChatMessage(
+                    **data.get("message", {"role": "assistant", "content": ""})
+                ),
+                done=True,
+                total_duration=data.get("total_duration"),
+                eval_count=data.get("eval_count"),
+                conversation_id=str(conv_id) if conv_id else None,
+            )
+        except httpx.ConnectError:
+            logger.error("Cannot connect to the model provider for %s", resolved_model)
+            dbg("   ❌ ConnectError for model %s", resolved_model)
+            return ChatResponse(
+                model=resolved_model,
+                message=ChatMessage(
+                    role="assistant",
+                    content=(
+                        "Error: Cannot connect to AI engine. Please ensure Ollama "
+                        "is running (or the cloud provider is reachable)."
                     ),
-                    done=True,
-                    total_duration=data.get("total_duration"),
-                    eval_count=data.get("eval_count"),
-                    conversation_id=str(conv_id) if conv_id else None,
-                )
-            except httpx.ConnectError:
-                logger.error("Cannot connect to Ollama at %s", settings.OLLAMA_BASE_URL)
-                dbg("   ❌ ConnectError to Ollama at %s", settings.OLLAMA_BASE_URL)
-                return ChatResponse(
-                    model=resolved_model,
-                    message=ChatMessage(
-                        role="assistant",
-                        content=(
-                            "Error: Cannot connect to AI engine. Please ensure Ollama "
-                            "is running."
-                        ),
-                    ),
-                    done=True,
-                )
-            except httpx.HTTPStatusError as e:
-                logger.error("Ollama error: %s", e)
-                dbg("   ❌ HTTPStatusError from Ollama: %s", e)
-                return ChatResponse(
-                    model=resolved_model,
-                    message=ChatMessage(
-                        role="assistant",
-                        content=f"Error from AI engine: {e.response.status_code}",
-                    ),
-                    done=True,
-                )
+                ),
+                done=True,
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error("LLM provider error: %s", e)
+            dbg("   ❌ HTTPStatusError from provider: %s", e)
+            return ChatResponse(
+                model=resolved_model,
+                message=ChatMessage(
+                    role="assistant",
+                    content=f"Error from AI engine: {e.response.status_code}",
+                ),
+                done=True,
+            )
 
 
 async def _persist_message(
@@ -501,7 +496,7 @@ async def chat_stream(request: ChatRequest):
 
     raw_model = request.model_override or request.model or "default"
     _log("   raw_model=%s", raw_model)
-    resolved_model = settings.resolve_model(raw_model)
+    resolved_model = await model_prefs.resolve_chat_request_model(raw_model)
     _log("   resolved_model=%s", resolved_model)
 
     # Resolve conversation ID for persistence
@@ -778,7 +773,7 @@ async def chat_stream_multipart(
 
     raw_model = model_override or model or "default"
     _log("   raw_model=%s", raw_model)
-    resolved_model = settings.resolve_model(raw_model)
+    resolved_model = await model_prefs.resolve_chat_request_model(raw_model)
     _log("   resolved_model=%s", resolved_model)
 
     # Resolve conversation ID for persistence

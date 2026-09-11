@@ -210,7 +210,6 @@ from datetime import date as _date, datetime as _datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.chart import (
@@ -232,6 +231,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from app.config import settings
+from app.services import model_prefs
+from app.services import providers
 from app.services.patterns import PATTERN_BUILDERS
 from app.prompts import get_prompt
 
@@ -590,9 +591,7 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
             for fi, cf in enumerate(cfs[:MAX_CF_ENTRIES_PER_SHEET]):
                 errors.extend(
                     _validate_conditional_format(
-                        f"{ctx}.conditional_formats[{fi}]",
-                        cf,
-                        sheet.get("name", "Sheet"),
+                        f"{ctx}.conditional_formats[{fi}]", cf, sheet.get("name", "Sheet")
                     )
                 )
 
@@ -604,7 +603,9 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
             ur = prot.get("unlocked_ranges")
             if ur is not None:
                 if not isinstance(ur, list):
-                    errors.append(f"{ctx}: protect.unlocked_ranges must be an array")
+                    errors.append(
+                        f"{ctx}: protect.unlocked_ranges must be an array"
+                    )
                 else:
                     for rng in ur:
                         try:
@@ -618,7 +619,9 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
                 and prot["password"] is not None
                 and not isinstance(prot["password"], str)
             ):
-                warnings.append(f"{ctx}: protect.password must be a string — ignored")
+                warnings.append(
+                    f"{ctx}: protect.password must be a string — ignored"
+                )
 
     if "column_widths" in sheet and sheet["column_widths"] is not None:
         cw = sheet["column_widths"]
@@ -935,12 +938,14 @@ def _validate_data_validation(ctx: str, dv: Any) -> List[str]:
 
     if has_source:
         if has_values:
-            errors.append(f"{ctx}: set either 'values' or 'source_range', not both")
+            errors.append(
+                f"{ctx}: set either 'values' or 'source_range', not both"
+            )
         ref = source_range.strip().lstrip("=")
         if not _SOURCE_RANGE_RE.match(ref):
             errors.append(
                 f"{ctx}: invalid source_range {source_range!r} — expected a "
-                'range reference like "Categories!$A$5:$A$24"'
+                "range reference like \"Categories!$A$5:$A$24\""
             )
     elif not has_values:
         errors.append(
@@ -1721,7 +1726,8 @@ def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
                 "allow_blank": bool(dv.get("allow_blank", True)),
                 "error_style": (
                     dv.get("error_style")
-                    if dv.get("error_style") in ("stop", "warning", "information")
+                    if dv.get("error_style")
+                    in ("stop", "warning", "information")
                     else "stop"
                 ),
             }
@@ -1768,12 +1774,7 @@ def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
             else "stop"
         ),
     }
-    for key, limit in (
-        ("prompt_title", 32),
-        ("prompt", 255),
-        ("error_title", 32),
-        ("error", 255),
-    ):
+    for key, limit in (("prompt_title", 32), ("prompt", 255), ("error_title", 32), ("error", 255)):
         s = dv.get(key)
         if isinstance(s, str) and s.strip():
             out[key] = _sanitize_cell_text(s.strip())[:limit]
@@ -1927,9 +1928,7 @@ def _normalize_spec(spec: dict) -> dict:
             s["protect"] = {
                 "unlocked": unlocked,
                 "password": (
-                    password.strip()
-                    if isinstance(password, str) and password.strip()
-                    else None
+                    password.strip() if isinstance(password, str) and password.strip() else None
                 ),
             }
 
@@ -2593,32 +2592,28 @@ def _post_process_spec(spec: Any) -> Any:
 
 
 async def _call_llm(messages: List[dict]) -> str:
-    """Single Ollama /api/chat call in JSON mode."""
-    model = settings.resolve_model(settings.EXCEL_GENERATION_MODEL_ROLE)
-    ollama_url = settings.OLLAMA_BASE_URL
-    if not ollama_url or not model:
-        raise RuntimeError("No LLM model or URL configured for Excel generation")
+    """Single provider-routed chat call in JSON mode.
+
+    Uses the Excel task slot (Settings ▸ AI ▸ Models).
+    JSON mode maps to response_format=json_object for cloud providers.
+    """
+    model = await model_prefs.resolve_task_model("excel")
+    if not model:
+        raise RuntimeError("No LLM model configured for Excel generation")
 
     timeout = float(getattr(settings, "EXCEL_GENERATION_TIMEOUT_SECONDS", 600) or 600)
     num_predict = int(getattr(settings, "EXCEL_GENERATION_MAX_TOKENS", 8192) or 8192)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "format": "json",  # JSON mode — constrains output to valid JSON
-                "options": {"num_predict": num_predict, "temperature": 0.2},
-            },
-        )
-        response.raise_for_status()
-        _log(response)
-        data = response.json()
-        _log(data)
-        content = data.get("message", {}).get("content", "")
+    data = await providers.chat_once(
+        model,
+        messages,
+        think=False,
+        format="json",  # JSON mode — constrains output to valid JSON
+        options={"num_predict": num_predict, "temperature": 0.2},
+        timeout=timeout,
+    )
+    _log(data)
+    content = data.get("message", {}).get("content", "")
 
     if not content.strip():
         raise RuntimeError("LLM returned empty content for Excel generation")
@@ -2783,7 +2778,11 @@ async def _try_pattern_spec(
     if not isinstance(parsed, dict):
         return None
     pattern = parsed.get("pattern")
-    builder = PATTERN_BUILDERS.get(pattern) if isinstance(pattern, str) else None
+    builder = (
+        PATTERN_BUILDERS.get(pattern)
+        if isinstance(pattern, str)
+        else None
+    )
     if builder is None:
         return None
 

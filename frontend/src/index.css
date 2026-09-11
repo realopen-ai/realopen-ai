@@ -74,6 +74,15 @@ body,
   background: var(--color-muted-foreground);
 }
 
+/* Hide scrollbars while keeping scrollability (mobile tab pills) */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Animations */
 @keyframes fade-in {
   from {

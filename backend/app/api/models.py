@@ -1,6 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app.config import settings
+from app.services import model_prefs
+from app.services import providers
 
 router = APIRouter()
 
@@ -50,3 +53,35 @@ async def get_all_profiles():
         }
         for name, p in profiles.items()
     }
+
+
+# ─── AI tab: model picker + per-task preferences ─────────────────────
+
+
+@router.get("/models/available")
+async def get_available_models():
+    """Everything the Settings ▸ AI ▸ Models tab needs in one call.
+
+    Returns the merged model list (Ollama installed + profile defaults +
+    cloud providers when connected) and the per-task slot overview with the
+    current selections and their setup defaults.
+    """
+    listing = await providers.list_available_models()
+    tasks = await model_prefs.task_overview()
+    return {**listing, "tasks": tasks}
+
+
+class ModelPreferenceRequest(BaseModel):
+    task: str
+    # Model id, or null/"" to reset the task to its setup default
+    model: str | None = None
+
+
+@router.put("/models/preferences")
+async def set_model_preference(request: ModelPreferenceRequest):
+    """Set (or clear) one task slot's model preference."""
+    try:
+        row = await model_prefs.set_task_model(request.task, request.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return row

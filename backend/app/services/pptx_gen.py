@@ -61,11 +61,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from pptx.dml.color import RGBColor
 from pptx.util import Emu, Inches, Pt
 
-from app.config import settings
+from app.services import model_prefs
+from app.services import providers
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -399,8 +399,8 @@ def _theme_from_template(template_path: Path) -> ThemeSpec:
         # ── Palette ──
         dk1 = _clr("dk1") or _hex("1A1A1A")
         lt1 = _clr("lt1") or _hex("FFFFFF")
-        dk2 = _clr("dk2") or dk1
-        lt2 = _clr("lt2") or lt1
+        dk2 = _clr("dk2") or dk1  # noqa
+        lt2 = _clr("lt2") or lt1  # noqa
         accent = _clr("accent1") or _hex("3E7CB1")
         accent2 = _clr("accent2") or accent
 
@@ -513,11 +513,12 @@ def _resolve_theme(
 
 
 async def _generate_slide_markdown(topic: str, outline: Optional[str]) -> str:
-    model = settings.resolve_model(settings.MEMORY_EXTRACTION_MODEL_ROLE)
-    ollama_url = settings.OLLAMA_BASE_URL
+    # Presentation generation follows the Report task slot
+    # (Settings ▸ AI ▸ Models)
+    model = await model_prefs.resolve_task_model("report")
 
-    if not ollama_url or not model:
-        raise RuntimeError("No LLM model or URL configured for presentation generation")
+    if not model:
+        raise RuntimeError("No LLM model configured for presentation generation")
 
     user_content = f"Topic: {topic}"
     if outline:
@@ -531,20 +532,14 @@ async def _generate_slide_markdown(topic: str, outline: Optional[str]) -> str:
 
     _log("generating slide markdown: topic=%r model=%s", topic[:60], model)
 
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        response = await client.post(
-            f"{ollama_url}/api/chat",
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "options": {"num_predict": 4096},
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        content = data.get("message", {}).get("content", "").strip()
+    data = await providers.chat_once(
+        model,
+        messages,
+        think=False,
+        options={"num_predict": 4096},
+        timeout=600.0,
+    )
+    content = data.get("message", {}).get("content", "").strip()
 
     if not content:
         raise RuntimeError("LLM returned empty presentation content")
@@ -1202,7 +1197,9 @@ _NS = {
     "vt": "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes",
 }
 
-_PRINTER_SETTINGS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings"
+_PRINTER_SETTINGS_REL_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings"
+)
 
 
 def _count_words(slides: list[Slide]) -> int:
