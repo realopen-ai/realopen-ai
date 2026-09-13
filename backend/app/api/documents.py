@@ -2,17 +2,22 @@
 Documents API routes for RealOpen-AI.
 
 Endpoints under /api/documents:
-  POST   /documents/upload            — multipart upload (sync digestion)
-  POST   /documents/upload/stream     — multipart upload with SSE progress
-  GET    /documents                   — list all (optionally filter by scope/conversation)
-  GET    /documents/{id}              — get one
-  GET    /documents/{id}/download     — stream the raw file
-  GET    /documents/chunks/{id}/image — get the image bytes for a chunk
-  PATCH  /documents/{id}              — rename and/or toggle scope
-  DELETE /documents/{id}              — delete (file + DB rows)
+  POST   /documents/upload                     — multipart upload (sync digestion)
+  POST   /documents/upload/stream              — multipart upload with SSE progress
+  GET    /documents                            — list all (optionally filter by scope/conversation)
+  GET    /documents/{id}                       — get one
+  GET    /documents/{id}/download              — stream the raw file
+  GET    /documents/{id}/thumbnail             — card thumbnail JPEG (any format, LibreOffice/PIL)
+  GET    /documents/{id}/pages                 — page-image manifest for the preview viewer
+  GET    /documents/{id}/pages/{page}          — one page JPEG (variant=full|thumb)
+  POST   /documents/{id}/reindex/stream        — re-digest with SSE progress
+  DELETE /documents/{id}/knowledge             — remove chunks (keep the file)
+  GET    /documents/chunks/{id}/image          — get the image bytes for a chunk
+  PATCH  /documents/{id}                       — rename / toggle scope / set collections
+  DELETE /documents/{id}                       — delete (file + DB rows)
 
-The /upload/stream endpoint is what the frontend uses — it emits
-`document_digest_*` SSE events so the Brain page and chat upload can show
+The /upload/stream and /reindex/stream endpoints emit `document_digest_*`
+SSE events so the Workspace > Documents UI (and chat upload) can show
 real-time progress (extracting text → chunking → describing images →
 embedding → done).
 """
@@ -67,8 +72,9 @@ def _parse_optional_uuid(s: Optional[str]) -> Optional[uuid.UUID]:
         raise HTTPException(status_code=400, detail=f"Invalid UUID: {s}")
 
 
-# Acceptable upload extensions (matches the frontend accept attribute plus
-# a few extras like .pptx that we may support later).
+# Acceptable upload extensions. Any type the RAG pipeline can digest AND
+# the preview renderer can rasterize. Legacy .doc/.xls/.ppt are converted
+# to their modern equivalents by LibreOffice at digestion time.
 _ALLOWED_EXTENSIONS = {
     "txt",
     "md",
@@ -80,6 +86,8 @@ _ALLOWED_EXTENSIONS = {
     "doc",
     "xlsx",
     "xls",
+    "pptx",
+    "ppt",
 }
 
 
@@ -105,11 +113,13 @@ class DocumentUpdateRequest(BaseModel):
 
     All fields optional — only provided fields are updated. When
     `scope` is "private", `conversation_id` MUST be provided.
+    `collections` replaces the full list (user-defined knowledge groups).
     """
 
     filename: Optional[str] = None
     scope: Optional[str] = None  # "private" | "public"
     conversation_id: Optional[str] = None
+    collections: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +432,258 @@ async def get_chunk_image(chunk_id: str):
         )
 
 
+# ---------------------------------------------------------------------------
+# Endpoints — preview (thumbnail + page images, any document type)
+# ---------------------------------------------------------------------------
+
+
+async def _get_document_file(document_id: str):
+    """Fetch the Document row and resolve its on-disk file path.
+
+    Returns (doc, Path) or raises the right HTTPException (404 unknown
+    id, 404 missing file on disk).
+    """
+    doc_uuid = _parse_uuid(document_id)
+    async with async_session_factory() as db:
+        doc = await rag_service.get_document(db, doc_uuid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+    file_path = rag_service.resolve_document_path(doc.file_path)
+    if not doc.file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document file not found on disk")
+    return doc, file_path
+
+
+@router.get("/documents/{document_id}/thumbnail")
+async def get_document_thumbnail(document_id: str):
+    """Card thumbnail (first page) for any document type.
+
+    Renders via LibreOffice (office formats incl. legacy .doc/.xls/.ppt),
+    PyMuPDF (PDF), or PIL (plain text fallback) — cached at
+    data/documents/{id}/{stem}_pages/thumb.jpg, invalidated by the
+    source file's mtime. The frontend uses this URL in <img> tags with
+    onError fallback to a file-type icon, so a 404 degrades gracefully.
+    """
+    from fastapi.responses import Response
+    from app.services.integrations import libreoffice
+
+    doc, file_path = await _get_document_file(document_id)
+
+    if libreoffice.document_preview_format(file_path) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No preview available for .{file_path.suffix.lstrip('.')} files",
+        )
+
+    thumb_bytes = await libreoffice.render_document_thumbnail(file_path)
+    if thumb_bytes is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Thumbnail unavailable — "
+                + (
+                    "LibreOffice is not installed."
+                    if not libreoffice.is_available()
+                    else "rendering failed for this file."
+                )
+            ),
+        )
+    return Response(
+        content=thumb_bytes,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},  # 24h
+    )
+
+
+@router.get("/documents/{document_id}/pages")
+async def get_document_pages(document_id: str):
+    """Page-image manifest for the document preview viewer.
+
+    Same manifest contract as /reports/{id}/slides:
+    { count, width, height, notes, ... }. Page JPEGs are served by
+    /documents/{id}/pages/{n}?variant=full|thumb. The mtime recorded in
+    the manifest doubles as the frontend's cache-buster (?v=).
+    """
+    from app.services.integrations import libreoffice
+
+    doc, file_path = await _get_document_file(document_id)
+
+    manifest = await libreoffice.render_document_pages(file_path)
+    if manifest is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Preview unavailable — "
+                + (
+                    "LibreOffice is not installed."
+                    if not libreoffice.is_available()
+                    else "this file could not be rendered."
+                )
+            ),
+        )
+    return {
+        "count": manifest["count"],
+        "width": manifest.get("width") or 0,
+        "height": manifest.get("height") or 0,
+        "source_mtime": manifest.get("source_mtime"),
+        "document_id": str(doc.id),
+        "filename": doc.filename,
+    }
+
+
+@router.get("/documents/{document_id}/pages/{page_number}")
+async def get_document_page(document_id: str, page_number: int, variant: str = "full"):
+    """Serve one rendered page JPEG (variant=full|thumb, 1-based index)."""
+    from fastapi.responses import FileResponse
+    from app.services.integrations import libreoffice
+
+    if variant not in ("full", "thumb"):
+        raise HTTPException(status_code=400, detail="variant must be 'full' or 'thumb'")
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="page_number must be >= 1")
+
+    doc, file_path = await _get_document_file(document_id)
+
+    cache_dir = libreoffice.document_preview_cache_dir(file_path)
+    manifest = await libreoffice.render_document_pages(file_path)
+    if manifest is None or page_number > manifest["count"]:
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not available")
+    img_path = cache_dir / libreoffice.slide_image_name(
+        page_number, thumb=(variant == "thumb")
+    )
+    if not img_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Page {page_number} not rendered")
+    return FileResponse(
+        path=str(img_path),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — AI knowledge management (reindex / remove)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/documents/{document_id}/reindex/stream")
+async def reindex_document_stream(document_id: str):
+    """Re-digest an existing document with real-time SSE progress.
+
+    Reads the raw file back from disk and re-runs the full digestion
+    pipeline IN PLACE (same document id, scope and conversation kept).
+    Emits the same events as /documents/upload/stream:
+      document_digest_progress / document_digest_done / document_digest_error
+    """
+    import asyncio
+
+    doc_uuid = _parse_uuid(document_id)
+
+    # Validate up-front (404s before the stream starts).
+    async with async_session_factory() as db:
+        doc = await rag_service.get_document(db, doc_uuid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if (
+            not doc.file_path
+            or not rag_service.resolve_document_path(doc.file_path).exists()
+        ):
+            raise HTTPException(
+                status_code=404, detail="Document file not found on disk"
+            )
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+    _DONE_SENTINEL = object()
+
+    def collect_progress(p: rag_service.DigestProgress) -> None:
+        try:
+            progress_queue.put_nowait(p)
+        except Exception as e:
+            _log("failed to enqueue progress event: %s", e)
+
+    async def generate():
+        digestion_error: List[Optional[Exception]] = [None]
+        digestion_result: List[Optional[object]] = [None]
+
+        async def run_reindex():
+            try:
+                async with async_session_factory() as db:
+                    doc = await rag_service.reindex_document(
+                        db, doc_uuid, progress=collect_progress
+                    )
+                    digestion_result[0] = doc
+            except Exception as e:
+                digestion_error[0] = e
+            finally:
+                try:
+                    progress_queue.put_nowait(_DONE_SENTINEL)
+                except Exception:
+                    pass
+
+        task = asyncio.create_task(run_reindex())
+
+        while True:
+            try:
+                item = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                if task.done():
+                    break
+                continue
+            if item is _DONE_SENTINEL:
+                break
+            yield _progress_to_sse(item)
+
+        try:
+            await task
+        except Exception as e:
+            _log("reindex task failed: %s", e)
+
+        if digestion_error[0] is not None:
+            yield _sse(
+                "document_digest_error",
+                {"error": str(digestion_error[0]), "document_id": str(doc_uuid)},
+            )
+            return
+
+        if digestion_result[0] is not None:
+            doc = digestion_result[0]
+            yield _sse(
+                "document_digest_done",
+                {"document": rag_service.document_to_dict(doc, include_chunks=False)},
+            )
+            return
+
+        yield _sse(
+            "document_digest_error",
+            {"error": "Unknown error: reindex completed without result or error"},
+        )
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.delete("/documents/{document_id}/knowledge")
+async def remove_document_knowledge(document_id: str):
+    """Remove a document from the AI knowledge base, keeping the file.
+
+    Deletes all chunks (embeddings + extracted images) and sets
+    digestion_status="not_indexed" — the document stays in the list and
+    can be re-indexed later via /reindex/stream.
+    """
+    doc_uuid = _parse_uuid(document_id)
+    async with async_session_factory() as db:
+        doc = await rag_service.remove_document_knowledge(db, doc_uuid)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return rag_service.document_to_dict(doc, include_chunks=False)
+
+
 @router.get("/documents/{document_id}")
 async def get_document(document_id: str):
     """Get a single document with its chunks."""
@@ -463,7 +725,7 @@ async def download_document(document_id: str):
 
 @router.patch("/documents/{document_id}")
 async def update_document(document_id: str, req: DocumentUpdateRequest):
-    """Update a document (rename and/or toggle scope)."""
+    """Update a document (rename, toggle scope, and/or set collections)."""
     doc_uuid = _parse_uuid(document_id)
     async with async_session_factory() as db:
         # Rename first if requested
@@ -495,6 +757,14 @@ async def update_document(document_id: str, req: DocumentUpdateRequest):
                     raise HTTPException(status_code=404, detail="Document not found")
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
+
+        # Then handle collections if requested (full-list replacement)
+        if req.collections is not None:
+            updated = await rag_service.set_document_collections(
+                db, doc_uuid, req.collections
+            )
+            if not updated:
+                raise HTTPException(status_code=404, detail="Document not found")
 
         # Return the updated doc
         doc = await rag_service.get_document(db, doc_uuid)

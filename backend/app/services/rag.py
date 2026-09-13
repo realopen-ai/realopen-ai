@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -572,6 +572,47 @@ def _extract_pdf(buf: bytes) -> ExtractionResult:
     return ExtractionResult(pages=pages, images=images, mime_type="application/pdf")
 
 
+def _extract_pptx(buf: bytes) -> ExtractionResult:
+    """PPTX — slide + notes text via python-pptx, one page per slide.
+
+    Walks every shape on every slide (text frames + tables) plus the
+    speaker-notes pane, so presentations become searchable with per-slide
+    page numbers for citations.
+    """
+    from pptx import Presentation
+
+    prs = Presentation(io.BytesIO(buf))
+    pages: List[ExtractedPage] = []
+    for i, slide in enumerate(prs.slides, start=1):
+        lines: List[str] = []
+        try:
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        text = "".join(run.text for run in para.runs)
+                        if text.strip():
+                            lines.append(text)
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [cell.text.strip() for cell in row.cells]
+                        lines.append(" | ".join(cells))
+        except Exception as inner:
+            _log("pptx shape walk failed on slide %d: %s", i, inner)
+        try:
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text
+                if notes.strip():
+                    lines.append("[Notes] " + notes)
+        except Exception as inner:
+            _log("pptx notes read failed on slide %d: %s", i, inner)
+        page_text = _sanitize_text_for_pg("\n".join(lines))
+        pages.append(ExtractedPage(page_number=i, text=page_text))
+    return ExtractionResult(
+        pages=pages,
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+
+
 # Dispatch table — extension → extractor
 _EXTRACTORS = {
     "txt": _extract_txt,
@@ -583,6 +624,15 @@ _EXTRACTORS = {
     "xls": _extract_xlsx,
     "docx": _extract_docx,
     "pdf": _extract_pdf,
+    "pptx": _extract_pptx,
+}
+
+# Legacy binary formats that must be converted to a modern format by
+# LibreOffice before the Python extractors can read them.
+_LEGACY_CONVERSIONS = {
+    "doc": "docx",
+    "xls": "xlsx",
+    "ppt": "pptx",
 }
 
 
@@ -605,15 +655,68 @@ def extract_content(buf: bytes, filename: str) -> ExtractionResult:
 
 
 async def extract_content_async(buf: bytes, filename: str) -> ExtractionResult:
-    """Async wrapper around extract_content — runs in a thread pool.
+    """Async entry point the digestion pipeline uses.
 
-    This is the entry point the digestion pipeline uses. The synchronous
-    extractors (pdfplumber, pypdf, openpyxl, python-docx) are CPU-bound
-    and would block the event loop for seconds-to-minutes on large files.
-    asyncio.to_thread() runs them in a worker thread so the FastAPI event
-    loop can keep serving subsequent requests.
+    Runs the CPU-bound synchronous extractors (pdfplumber, pypdf,
+    openpyxl, python-docx, python-pptx) in a worker thread via
+    asyncio.to_thread() so the FastAPI event loop keeps serving other
+    requests. Legacy binary formats (.doc/.xls/.ppt — no Python reader)
+    are first converted to their modern equivalent by LibreOffice when
+    it is available; without LibreOffice they fall back to the plain-text
+    path like any other unknown extension.
     """
+    ext = get_file_extension(filename)
+    target = _LEGACY_CONVERSIONS.get(ext)
+    if target is not None:
+        converted_buf, converted_name = await _convert_legacy_bytes(
+            buf, filename, target
+        )
+        if converted_buf is not None:
+            _log("legacy .%s converted to .%s for extraction", ext, target)
+            buf, filename = converted_buf, converted_name
+        else:
+            _log(
+                "legacy .%s could not be converted (LibreOffice missing or "
+                "conversion failed) — falling back to text extraction",
+                ext,
+            )
     return await asyncio.to_thread(extract_content, buf, filename)
+
+
+async def _convert_legacy_bytes(
+    buf: bytes, filename: str, target_format: str
+) -> tuple[Optional[bytes], str]:
+    """Convert legacy office bytes (.doc/.xls/.ppt) to the modern format.
+
+    Writes the bytes to a temp file, lets soffice convert it, and reads
+    the result back. Returns (None, "") when LibreOffice is unavailable
+    or the conversion fails. The temp dir is always cleaned up.
+    """
+    import shutil
+    import tempfile
+
+    from app.services.integrations import libreoffice
+
+    if not libreoffice.is_available():
+        return None, ""
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="rag_legacy_"))
+    try:
+        src = tmp_dir / ("source" + os.path.splitext(filename)[1])
+        src.write_bytes(buf)
+        converted = await libreoffice.convert_legacy_document(
+            src, target_format, tmp_dir
+        )
+        if converted is None or converted == src:
+            return None, ""
+        out_bytes = await asyncio.to_thread(converted.read_bytes)
+        out_name = (os.path.splitext(filename)[0] or "document") + "." + target_format
+        return out_bytes, out_name
+    except Exception as e:
+        _log("legacy conversion of %s failed: %s", filename, e)
+        return None, ""
+    finally:
+        await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +1085,7 @@ async def digest_document(
     conversation_id: Optional[uuid.UUID] = None,
     message_id: Optional[uuid.UUID] = None,
     progress: ProgressCallback = _noop_progress,
+    reuse_doc_id: Optional[uuid.UUID] = None,
 ) -> Document:
     """Digest an uploaded file into searchable chunks.
 
@@ -989,6 +1093,12 @@ async def digest_document(
     chunking, PIL image normalization, file writes) runs in a thread
     pool via asyncio.to_thread() so the FastAPI event loop can keep
     serving other requests while a large PDF is being processed.
+
+    REINDEX MODE — when `reuse_doc_id` is provided, the document row with
+    that ID is re-digested IN PLACE: its chunks are deleted first, the
+    row is flipped back to "digesting", and the raw file on disk is
+    reused (no re-save, same ID, same scope/conversation/collections).
+    This is what POST /documents/{id}/reindex/stream uses.
 
     DB SESSION DISCIPLINE — the caller's `db` session is used ONLY for
     the initial doc-row insert. After that commit, the session is
@@ -1014,7 +1124,7 @@ async def digest_document(
     failed commit) and re-raises.
     """
     t0 = time.time()
-    doc_id = uuid.uuid4()
+    doc_id = reuse_doc_id or uuid.uuid4()
     safe_scope = scope if scope in ("private", "public") else "private"
     mime = guess_mime_type(filename)
 
@@ -1024,36 +1134,37 @@ async def digest_document(
     # re-digestion and return the existing document. This prevents
     # re-embedding a 200-page PDF that was already uploaded.
     content_hash = _sha256(file_bytes)
-    try:
-        dedup_stmt = select(Document).where(Document.content_hash == content_hash)
-        if safe_scope == "private" and conversation_id:
-            dedup_stmt = dedup_stmt.where(
-                Document.scope == "private",
-                Document.conversation_id == conversation_id,
-            )
-        else:
-            dedup_stmt = dedup_stmt.where(Document.scope == safe_scope)
-        dedup_result = await db.execute(dedup_stmt)
-        existing_doc = dedup_result.scalar_one_or_none()
-        if existing_doc and existing_doc.digestion_status == "ready":
-            _log(
-                "digest: SKIP — content_hash %s already digested as doc %s",
-                content_hash[:12],
-                existing_doc.id,
-            )
-            progress(
-                DigestProgress(
-                    stage="done",
-                    percent=100,
-                    details=f"Duplicate of existing document: {existing_doc.filename}",
-                    document_id=str(existing_doc.id),
-                    total_chunks=existing_doc.total_chunks,
-                    total_images=existing_doc.total_images,
+    if reuse_doc_id is None:
+        try:
+            dedup_stmt = select(Document).where(Document.content_hash == content_hash)
+            if safe_scope == "private" and conversation_id:
+                dedup_stmt = dedup_stmt.where(
+                    Document.scope == "private",
+                    Document.conversation_id == conversation_id,
                 )
-            )
-            return existing_doc
-    except Exception as e:
-        _log("digest: dedup check failed (non-fatal): %s", e)
+            else:
+                dedup_stmt = dedup_stmt.where(Document.scope == safe_scope)
+            dedup_result = await db.execute(dedup_stmt)
+            existing_doc = dedup_result.scalar_one_or_none()
+            if existing_doc and existing_doc.digestion_status == "ready":
+                _log(
+                    "digest: SKIP — content_hash %s already digested as doc %s",
+                    content_hash[:12],
+                    existing_doc.id,
+                )
+                progress(
+                    DigestProgress(
+                        stage="done",
+                        percent=100,
+                        details=f"Duplicate of existing document: {existing_doc.filename}",
+                        document_id=str(existing_doc.id),
+                        total_chunks=existing_doc.total_chunks,
+                        total_images=existing_doc.total_images,
+                    )
+                )
+                return existing_doc
+        except Exception as e:
+            _log("digest: dedup check failed (non-fatal): %s", e)
 
     _log(
         "digest_document START  filename=%s  size=%d  scope=%s  conv=%s  doc_id=%s",
@@ -1069,47 +1180,91 @@ async def digest_document(
     # connection goes back to the pool. All subsequent phases either
     # need no DB (extraction/chunking/embedding) or open a fresh
     # session (chunk persistence, error marking).
-    doc = Document(
-        id=doc_id,
-        filename=os.path.basename(filename),
-        original_filename=os.path.basename(filename),
-        mime_type=mime,
-        file_path="",  # filled in after save
-        file_size_bytes=len(file_bytes),
-        content_hash=content_hash,  # reuse the hash computed for dedup
-        scope=safe_scope,
-        conversation_id=conversation_id if safe_scope == "private" else None,
-        message_id=message_id,
-        digestion_status="digesting",
-    )
-    db.add(doc)
-    await db.commit()
-    await db.refresh(doc)
-    _log("digest: created doc row id=%s (session held briefly)", doc_id)
+    if reuse_doc_id is not None:
+        # REINDEX MODE — reuse the existing row in place: delete old
+        # chunks, reset counters, flip back to "digesting". The raw file
+        # on disk is reused as-is (no re-save); scope / conversation /
+        # collections are preserved.
+        await db.execute(
+            delete(DocumentChunk).where(DocumentChunk.document_id == doc_id)
+        )
+        await db.execute(
+            update(Document)
+            .where(Document.id == doc_id)
+            .values(
+                filename=os.path.basename(filename),
+                original_filename=os.path.basename(filename),
+                mime_type=mime,
+                file_size_bytes=len(file_bytes),
+                content_hash=content_hash,
+                total_chunks=0,
+                total_images=0,
+                digestion_status="digesting",
+                digestion_error=None,
+            )
+        )
+        await db.commit()
+        _log("digest: reindex reset for doc %s (chunks dropped)", doc_id)
+        rel_path = None  # reuse the on-disk file — resolved below
+    else:
+        doc = Document(
+            id=doc_id,
+            filename=os.path.basename(filename),
+            original_filename=os.path.basename(filename),
+            mime_type=mime,
+            file_path="",  # filled in after save
+            file_size_bytes=len(file_bytes),
+            content_hash=content_hash,  # reuse the hash computed for dedup
+            scope=safe_scope,
+            conversation_id=conversation_id if safe_scope == "private" else None,
+            message_id=message_id,
+            digestion_status="digesting",
+        )
+        db.add(doc)
+        await db.commit()
+        await db.refresh(doc)
+        _log("digest: created doc row id=%s (session held briefly)", doc_id)
 
     progress(DigestProgress(stage="started", percent=0, details=filename))
 
     try:
-        # ── 1. Save raw file to disk (THREAD POOL — disk I/O) ───────────
-        t1 = time.time()
-        rel_path = await save_uploaded_file(file_bytes, filename, doc_id)
+        if reuse_doc_id is not None:
+            # Reuse the existing on-disk raw file — its stored rel_path.
+            row = (
+                await db.execute(
+                    select(Document.file_path).where(Document.id == doc_id)
+                )
+            ).first()
+            if row is None or not row[0]:
+                raise RuntimeError(
+                    f"Reindex failed: document {doc_id} has no stored file path"
+                )
+            rel_path = row[0]
+            _log("digest: reindex reusing on-disk file %s", rel_path)
+        else:
+            # ── 1. Save raw file to disk (THREAD POOL — disk I/O) ──────
+            t1 = time.time()
+            rel_path = await save_uploaded_file(file_bytes, filename, doc_id)
 
-        # Update the doc row with the file path. Use a FRESH session so
-        # we don't pin the caller's connection while we go off and do
-        # CPU-bound work next.
-        async with async_session_factory() as db2:
-            stmt = (
-                Document.__table__.update()
-                .where(Document.id == doc_id)
-                .values(file_path=rel_path)
+            # Update the doc row with the file path. Use a FRESH session
+            # so we don't pin the caller's connection while we go off and
+            # do CPU-bound work next.
+            async with async_session_factory() as db2:
+                stmt = (
+                    Document.__table__.update()
+                    .where(Document.id == doc_id)
+                    .values(file_path=rel_path)
+                )
+                await db2.execute(stmt)
+                await db2.commit()
+            _log(
+                "digest: saved raw file in %.2fs (db session released)",
+                time.time() - t1,
             )
-            await db2.execute(stmt)
-            await db2.commit()
         # The caller's `db` session is now free to be returned to the
         # pool by the caller's `async with` block — we don't touch it
         # again until the very end (and even then, we prefer fresh
         # sessions for the chunk persistence phase).
-        _log("digest: saved raw file in %.2fs (db session released)", time.time() - t1)
 
         # ── 2. Extract text + images (THREAD POOL — CPU-bound) ──────────
         # NO DB SESSION HELD during this phase. This is the key fix for
@@ -1960,6 +2115,109 @@ async def toggle_document_scope(
     return doc
 
 
+async def reindex_document(
+    db: AsyncSession,
+    doc_id: uuid.UUID,
+    progress: ProgressCallback = _noop_progress,
+) -> Document:
+    """Re-digest an existing document in place (same ID, same scope).
+
+    Reads the raw file back from disk and runs the full digestion
+    pipeline with `reuse_doc_id` — chunks are dropped first, the row is
+    reset to "digesting", and all stats are recomputed. Used by
+    POST /documents/{id}/reindex/stream from the Workspace detail modal.
+    """
+    doc = await get_document(db, doc_id)
+    if not doc:
+        raise ValueError(f"Document not found: {doc_id}")
+
+    if not doc.file_path:
+        raise ValueError(f"Document {doc_id} has no stored file on disk")
+
+    file_path = resolve_document_path(doc.file_path)
+    if not file_path.exists():
+        raise ValueError(
+            f"Document file missing on disk: {file_path} — re-upload instead"
+        )
+
+    file_bytes = await asyncio.to_thread(file_path.read_bytes)
+    scope = doc.scope if doc.scope in ("private", "public") else "private"
+    return await digest_document(
+        db,
+        file_bytes=file_bytes,
+        filename=doc.original_filename or doc.filename,
+        scope=scope,
+        conversation_id=doc.conversation_id if scope == "private" else None,
+        progress=progress,
+        reuse_doc_id=doc_id,
+    )
+
+
+async def remove_document_knowledge(
+    db: AsyncSession, doc_id: uuid.UUID
+) -> Optional[Document]:
+    """Remove a document from the AI knowledge base (keep the file).
+
+    Deletes every chunk (embeddings + BM25 vectors go with them) and the
+    extracted images, resets the counters, and sets digestion_status to
+    "not_indexed" — the document row and raw file stay so it can be
+    re-indexed later. Used by DELETE /documents/{id}/knowledge.
+    """
+    doc = await get_document(db, doc_id)
+    if not doc:
+        return None
+
+    await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
+    doc.total_chunks = 0
+    doc.total_images = 0
+    doc.digestion_status = "not_indexed"
+    doc.digestion_error = None
+    await db.commit()
+    await db.refresh(doc)
+
+    # Remove extracted images (data/documents/{id}/images/) — orphans
+    # once the chunks that referenced them are gone.
+    images_dir = get_document_dir(doc_id) / "images"
+    try:
+        if images_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, images_dir)
+    except Exception as e:
+        _log("failed to remove images dir for %s: %s", doc_id, e)
+
+    _log("removed AI knowledge for doc %s (%s)", doc_id, doc.filename)
+    return doc
+
+
+async def set_document_collections(
+    db: AsyncSession, doc_id: uuid.UUID, collections: List[str]
+) -> Optional[Document]:
+    """Assign the document's collections (user-defined knowledge groups).
+
+    Values are trimmed, de-duplicated (case-insensitively), capped at 16
+    entries of 40 chars each, and empty strings are dropped.
+    """
+    doc = await get_document(db, doc_id)
+    if not doc:
+        return None
+
+    cleaned: List[str] = []
+    seen_lower = set()
+    for raw in collections or []:
+        value = str(raw).strip()[:40]
+        if not value or value.lower() in seen_lower:
+            continue
+        seen_lower.add(value.lower())
+        cleaned.append(value)
+        if len(cleaned) >= 16:
+            break
+
+    doc.collections = cleaned
+    await db.commit()
+    await db.refresh(doc)
+    _log("set collections for doc %s → %s", doc_id, cleaned)
+    return doc
+
+
 # ---------------------------------------------------------------------------
 # Document → dict (for API responses)
 # ---------------------------------------------------------------------------
@@ -1982,6 +2240,7 @@ def document_to_dict(doc: Document, *, include_chunks: bool = False) -> dict:
         "total_images": doc.total_images,
         "digestion_status": doc.digestion_status,
         "digestion_error": doc.digestion_error,
+        "collections": list(doc.collections) if doc.collections else [],
         "created_at": int(doc.created_at.timestamp() * 1000) if doc.created_at else 0,
         "updated_at": int(doc.updated_at.timestamp() * 1000) if doc.updated_at else 0,
     }
