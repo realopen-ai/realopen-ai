@@ -5,17 +5,32 @@ import {
   FileImage,
   Package,
   ChevronLeft,
+  Files,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TemplatesSection } from "@/components/workspace/TemplatesSection";
 import { GeneratedFilesSection } from "@/components/workspace/GeneratedFilesSection";
 import { AssetsSection } from "@/components/workspace/AssetsSection";
+import { DocumentsSection } from "@/components/workspace/DocumentsSection";
 import { useNavigate } from "react-router-dom";
 import { useUIStore } from "@/store/uiStore";
 
-type WorkspaceView = "folders" | "templates" | "generated" | "assets";
+type WorkspaceView =
+  | "folders"
+  | "documents"
+  | "templates"
+  | "generated"
+  | "assets";
 
 const folders = [
+  {
+    key: "documents" as const,
+    label: "Documents",
+    icon: Files,
+    color: "text-emerald-400",
+    bg: "bg-emerald-500/10",
+    desc: "Knowledge base files indexed for RAG",
+  },
   {
     key: "templates" as const,
     label: "Templates",
@@ -51,6 +66,28 @@ export function WorkspacePage() {
     navigate(`/${conversationId}`);
     setShowWorkspacePage(false);
   };
+
+  if (view === "documents") {
+    return (
+      <div className="flex h-full w-full flex-col bg-background">
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
+          <button
+            onClick={() => setView("folders")}
+            className="p-1 rounded hover:bg-accent transition-colors"
+          >
+            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
+          </button>
+          <FolderOpen className="w-5 h-5 text-primary" />
+          <h1 className="text-[16px] font-semibold text-foreground">
+            Workspace · Documents
+          </h1>
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <DocumentsSection />
+        </div>
+      </div>
+    );
+  }
 
   if (view === "templates") {
     return (
