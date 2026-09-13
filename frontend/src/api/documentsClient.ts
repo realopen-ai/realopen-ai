@@ -2,19 +2,24 @@
  * API client for /api/documents/* — the RAG documents endpoints.
  *
  * Mirrors the backend app/api/documents.py routes:
- *   POST   /documents/upload            — multipart upload (sync digestion)
- *   POST   /documents/upload/stream     — multipart upload with SSE progress
- *   GET    /documents                   — list (optionally filter by scope/conversation)
- *   GET    /documents/{id}              — get one (with chunks)
- *   GET    /documents/{id}/download     — stream the raw file (returns a Blob)
- *   PATCH  /documents/{id}              — rename and/or toggle scope
- *   DELETE /documents/{id}              — delete (file + DB rows)
- *   GET    /conversations/{id}/documents — list docs attached to a conversation
+ *   POST   /documents/upload                     — multipart upload (sync digestion)
+ *   POST   /documents/upload/stream              — multipart upload with SSE progress
+ *   GET    /documents                            — list (optionally filter by scope/conversation)
+ *   GET    /documents/{id}                       — get one (with chunks)
+ *   GET    /documents/{id}/download              — stream the raw file (returns a Blob)
+ *   GET    /documents/{id}/thumbnail             — card thumbnail JPEG (any format)
+ *   GET    /documents/{id}/pages                 — page-image manifest (preview viewer)
+ *   GET    /documents/{id}/pages/{n}             — one page JPEG (variant=full|thumb)
+ *   POST   /documents/{id}/reindex/stream        — re-digest with SSE progress
+ *   DELETE /documents/{id}/knowledge             — remove chunks (keep the file)
+ *   PATCH  /documents/{id}                       — rename / toggle scope / collections
+ *   DELETE /documents/{id}                       — delete (file + DB rows)
+ *   GET    /conversations/{id}/documents         — list docs attached to a conversation
  *
- * The /upload/stream endpoint is the one the Brain page uses — it emits
+ * The /upload/stream and /reindex/stream endpoints emit
  * `document_digest_progress`, `document_digest_done`, `document_digest_error`
- * SSE events so the UI can show real-time extraction/chunking/embedding
- * progress.
+ * SSE events so the Workspace > Documents UI (and chat upload) can show
+ * real-time extraction/chunking/embedding progress.
  */
 
 import { createDebugLogger, dbgError } from "@/lib/debug";
@@ -24,7 +29,12 @@ const log = createDebugLogger("documentsClient");
 // ─── Types ────────────────────────────────────────────────────────────
 
 export type DocumentScope = "private" | "public";
-export type DigestionStatus = "pending" | "digesting" | "ready" | "failed";
+export type DigestionStatus =
+  | "pending"
+  | "digesting"
+  | "ready"
+  | "failed"
+  | "not_indexed";
 
 export interface DocumentChunkDTO {
   id: string;
@@ -52,6 +62,8 @@ export interface DocumentDTO {
   total_images: number;
   digestion_status: DigestionStatus;
   digestion_error: string | null;
+  /** User-assignable knowledge groups (e.g. ["Company", "Strategy"]). */
+  collections: string[];
   created_at: number; // ms epoch
   updated_at: number;
   chunks?: DocumentChunkDTO[];
@@ -175,7 +187,7 @@ export async function downloadDocument(doc: DocumentDTO): Promise<void> {
   }
 }
 
-// ─── Update (rename / toggle scope) ──────────────────────────────────
+// ─── Update (rename / toggle scope / collections) ──────────────────
 
 export async function updateDocument(
   id: string,
@@ -183,6 +195,7 @@ export async function updateDocument(
     filename?: string;
     scope?: DocumentScope;
     conversation_id?: string | null;
+    collections?: string[];
   },
 ): Promise<DocumentDTO | null> {
   log(`➡️  updateDocument  id=${id}  updates=${JSON.stringify(updates)}`);
@@ -340,4 +353,160 @@ export async function uploadDocumentStream(
     dbgError(`   ❌ uploadDocumentStream read error: ${err}`);
     opts.onError?.(err instanceof Error ? err.message : String(err));
   }
+}
+
+// ─── Preview (thumbnail + page images) ────────────────────────────────
+
+/** Card thumbnail URL for a document (any format; 404s degrade to an icon
+ *  via the <img> onError fallback). */
+export function documentThumbnailUrl(id: string): string {
+  return `/api/documents/${id}/thumbnail`;
+}
+
+export interface DocumentPagesManifest {
+  count: number;
+  width: number;
+  height: number;
+  source_mtime: number | null;
+  document_id: string;
+  filename: string;
+}
+
+/** Page-image manifest for the document preview viewer (renders on demand
+ *  server-side: LibreOffice / PyMuPDF / PIL depending on the format). */
+export async function getDocumentPages(
+  id: string,
+): Promise<DocumentPagesManifest | null> {
+  log(`➡️  getDocumentPages  id=${id}`);
+  try {
+    const res = await fetch(`/api/documents/${id}/pages`);
+    if (res.ok) return await res.json();
+    dbgError(`   ❌ getDocumentPages status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ getDocumentPages error: ${err}`);
+  }
+  return null;
+}
+
+/** URL of one rendered page JPEG (1-based index; variant full|thumb).
+ *  `v` is the manifest's source_mtime — a cache-buster so a re-rendered
+ *  preview never serves a stale image from browser cache. */
+export function documentPageUrl(
+  id: string,
+  page: number,
+  variant: "full" | "thumb" = "full",
+  v?: number | null,
+): string {
+  const qs = new URLSearchParams({ variant });
+  if (v) qs.set("v", String(v));
+  return `/api/documents/${id}/pages/${page}?${qs.toString()}`;
+}
+
+// ─── AI knowledge management ─────────────────────────────────────────
+
+export interface ReindexOptions {
+  onProgress?: (p: DigestProgress) => void;
+  onDone?: (doc: DocumentDTO) => void;
+  onError?: (error: string) => void;
+}
+
+/**
+ * Re-digest an existing document with real-time SSE progress.
+ *
+ * The backend re-runs the full pipeline in place (same id, same scope);
+ * `document_digest_progress` / `done` / `error` events are parsed and
+ * forwarded to the callbacks. Resolves when digestion completes.
+ */
+export async function reindexDocumentStream(
+  id: string,
+  opts: ReindexOptions,
+): Promise<void> {
+  log(`➡️  reindexDocumentStream  id=${id}`);
+
+  let res: Response;
+  try {
+    res = await fetch(`/api/documents/${id}/reindex/stream`, {
+      method: "POST",
+    });
+  } catch (err) {
+    dbgError(`   ❌ reindexDocumentStream fetch error: ${err}`);
+    opts.onError?.(err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    dbgError(`   ❌ reindexDocumentStream status=${res.status}  body=${text}`);
+    opts.onError?.(`Re-index failed (HTTP ${res.status}): ${text}`);
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    opts.onError?.("No response body for SSE stream");
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (!data) continue;
+        try {
+          const parsed = JSON.parse(data);
+          const event = parsed.event;
+          if (event === "document_digest_progress") {
+            opts.onProgress?.({
+              stage: parsed.stage,
+              percent: parsed.percent,
+              details: parsed.details,
+              document_id: parsed.document_id,
+              total_chunks: parsed.total_chunks,
+              total_images: parsed.total_images,
+            });
+          } else if (event === "document_digest_done") {
+            const doc: DocumentDTO = parsed.document;
+            opts.onDone?.(doc);
+            return;
+          } else if (event === "document_digest_error") {
+            opts.onError?.(parsed.error || "Re-index failed");
+            return;
+          }
+        } catch {
+          /* skip malformed JSON */
+        }
+      }
+    }
+    opts.onError?.("Re-index stream ended unexpectedly");
+  } catch (err) {
+    dbgError(`   ❌ reindexDocumentStream read error: ${err}`);
+    opts.onError?.(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Remove a document from the AI knowledge base (delete chunks, keep the
+ *  file). Returns the updated doc (digestion_status="not_indexed"). */
+export async function removeDocumentKnowledge(
+  id: string,
+): Promise<DocumentDTO | null> {
+  log(`➡️  removeDocumentKnowledge  id=${id}`);
+  try {
+    const res = await fetch(`/api/documents/${id}/knowledge`, {
+      method: "DELETE",
+    });
+    if (res.ok) return await res.json();
+    dbgError(`   ❌ removeDocumentKnowledge status=${res.status}`);
+  } catch (err) {
+    dbgError(`   ❌ removeDocumentKnowledge error: ${err}`);
+  }
+  return null;
 }
