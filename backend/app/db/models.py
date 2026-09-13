@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
+from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -159,6 +160,11 @@ class Document(Base):
 
     digestion_status = Column(String(16), nullable=False, default="pending")
     digestion_error = Column(Text, nullable=True)
+
+    # User-assignable knowledge groups (Workspace > Documents detail
+    # modal, e.g. ["Company", "Strategy"]). JSON list of strings — kept
+    # simple on purpose (no join table); only the documents API touches it.
+    collections = Column(JSON, nullable=True, default=list)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
