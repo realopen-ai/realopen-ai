@@ -47,18 +47,19 @@ def test_chunks_image_route_is_get():
     raise AssertionError("Route /documents/chunks/{chunk_id}/image not found")
 
 
-def test_documents_router_has_nine_routes():
-    """The documents router should have exactly 9 routes after the
-    realopen-ai17 changes (added /documents/chunks/{id}/image)."""
+def test_documents_router_has_fourteen_routes():
+    """The documents router should have exactly 14 routes after the
+    realopen-ai23 changes (Workspace Documents: thumbnail, pages,
+    pages/{n}, reindex/stream, knowledge removal + collections PATCH)."""
     routes = list(router.routes)
-    assert len(routes) == 9, (
-        f"Expected 9 routes in documents router, got {len(routes)}: "
+    assert len(routes) == 14, (
+        f"Expected 14 routes in documents router, got {len(routes)}: "
         f"{[getattr(r, 'path', '') for r in routes]}"
     )
 
 
 def test_all_expected_routes_exist():
-    """All 9 expected routes must be present in the documents router."""
+    """All expected routes must be present in the documents router."""
     routes = list(router.routes)
     paths = {getattr(r, "path", "") for r in routes}
     expected = {
@@ -68,8 +69,49 @@ def test_all_expected_routes_exist():
         "/documents/chunks/{chunk_id}/image",
         "/documents/{document_id}",
         "/documents/{document_id}/download",
-        "/documents/{document_id}",
+        "/documents/{document_id}/thumbnail",
+        "/documents/{document_id}/pages",
+        "/documents/{document_id}/pages/{page_number}",
+        "/documents/{document_id}/reindex/stream",
+        "/documents/{document_id}/knowledge",
         "/conversations/{conversation_id}/documents",
     }
     missing = expected - paths
     assert not missing, f"Missing routes: {missing}"
+
+
+def test_preview_routes_methods():
+    """The new preview / knowledge endpoints use the right HTTP verbs."""
+    routes = list(router.routes)
+    for r in routes:
+        path = getattr(r, "path", "")
+        methods = getattr(r, "methods", set())
+        if path == "/documents/{document_id}/thumbnail":
+            assert methods == {"GET"}
+        elif path == "/documents/{document_id}/pages":
+            assert methods == {"GET"}
+        elif path == "/documents/{document_id}/pages/{page_number}":
+            assert methods == {"GET"}
+        elif path == "/documents/{document_id}/reindex/stream":
+            assert methods == {"POST"}
+        elif path == "/documents/{document_id}/knowledge":
+            assert methods == {"DELETE"}
+
+
+def test_pages_route_does_not_shadow_chunks_route():
+    """/documents/{id}/pages/{page} must never capture the chunks image path.
+
+    Both are 4-segment routes; FastAPI tries them in registration order.
+    A GET /documents/chunks/{uuid}/image must resolve to the chunks route
+    (registered earlier), never to /documents/{document_id}/pages/{page}
+    with document_id="chunks".
+    """
+    routes = list(router.routes)
+    paths = [getattr(r, "path", "") for r in routes]
+
+    chunks_idx = paths.index("/documents/chunks/{chunk_id}/image")
+    pages_idx = paths.index("/documents/{document_id}/pages/{page_number}")
+    assert chunks_idx < pages_idx, (
+        "/documents/chunks/{chunk_id}/image must be registered before "
+        "/documents/{document_id}/pages/{page_number}"
+    )

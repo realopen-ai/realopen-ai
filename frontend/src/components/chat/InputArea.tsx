@@ -464,7 +464,7 @@ export function InputArea({
             <input
               ref={docInputRef}
               type="file"
-              accept=".pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx"
+              accept=".pdf,.txt,.md,.markdown,.csv,.tsv,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
               multiple
               className="hidden"
               onChange={handleDocumentSelect}

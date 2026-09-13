@@ -1035,3 +1035,493 @@ async def convert_document_to_page_images(
         cache_dir.name,
     )
     return manifest
+
+
+# ===========================================================================
+# RAG document preview — thumbnails + page images for ANY document type
+# ===========================================================================
+#
+# The Workspace > Documents section needs previews for everything a user can
+# upload, not just the four report formats: txt, md, markdown, csv, tsv, pdf,
+# docx, doc, xlsx, xls, pptx, ppt.
+#
+# Rendering strategy per family:
+#   pdf          → PyMuPDF / pdftoppm raster directly (no LibreOffice needed)
+#   office files → soffice → PDF inside the cache dir → raster (LibreOffice
+#                  required; soffice happily converts legacy .doc/.xls/.ppt
+#                  and modern .docx/.xlsx/.pptx alike)
+#   text files   → soffice → PDF when available; PIL-rendered text pages as
+#                  a universal fallback (works with zero external tools)
+#
+# Cache layout mirrors the slide viewer ({stem}_pages/ next to the source,
+# slide_NNN.jpg + slide_NNN_t.jpg + manifest.json + thumb.jpg), invalidated
+# by the source file's mtime + size. For RAG documents the cache lives at
+# data/documents/{id}/{stem}_pages/ — inside the per-document directory —
+# so delete_document's rmtree cleans the cache automatically.
+# ---------------------------------------------------------------------------
+
+# Every extension the documents module accepts can get a preview.
+DOCUMENT_PREVIEW_FORMATS = {
+    "pdf",
+    "docx",
+    "doc",
+    "xlsx",
+    "xls",
+    "pptx",
+    "ppt",
+    "txt",
+    "md",
+    "markdown",
+    "csv",
+    "tsv",
+}
+
+_TEXT_PREVIEW_FORMATS = {"txt", "md", "markdown", "csv", "tsv"}
+
+# Monospace-ish font for the PIL text fallback (probed in order).
+_TEXT_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
+
+
+def document_preview_format(source_path: Path) -> Optional[str]:
+    """Normalized preview format for a RAG document (any accepted ext)."""
+    suffix = source_path.suffix.lower().lstrip(".")
+    return suffix if suffix in DOCUMENT_PREVIEW_FORMATS else None
+
+
+def document_preview_cache_dir(source_path: Path) -> Path:
+    """Cache dir for a document's page renders — {stem}_pages next to it."""
+    return source_path.parent / f"{source_path.stem}_pages"
+
+
+def _load_text_font(size: int):
+    """Load a TTF font for the PIL text renderer, with a default fallback."""
+    from PIL import ImageFont
+
+    for candidate in _TEXT_FONT_CANDIDATES:
+        try:
+            if Path(candidate).exists():
+                return ImageFont.truetype(candidate, size)
+        except Exception:
+            continue
+    try:
+        # Pillow ≥ 10 supports sized default fonts
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _read_text_bytes(buf: bytes) -> str:
+    """Decode text-ish bytes (utf-8 first, latin-1 fallback) with a size cap."""
+    if len(buf) > 400_000:  # cap at ~400 KB for preview purposes
+        buf = buf[:400_000]
+    try:
+        return buf.decode("utf-8")
+    except UnicodeDecodeError:
+        return buf.decode("latin-1", errors="replace")
+
+
+def _paginate_text_lines(
+    text: str, chars_per_line: int, lines_per_page: int, max_pages: int
+) -> list[list[str]]:
+    """Wrap + paginate raw text into screenfuls for the PIL renderer."""
+    raw_lines = text.splitlines() or [""]
+    # Long lines (CSV rows can be huge) get hard-wrapped.
+    wrapped: list[str] = []
+    for line in raw_lines:
+        line = line.rstrip("\r")
+        if len(line) <= chars_per_line:
+            wrapped.append(line)
+        else:
+            for i in range(0, len(line), chars_per_line):
+                wrapped.append(line[i : i + chars_per_line])
+    pages: list[list[str]] = []
+    for i in range(0, len(wrapped), lines_per_page):
+        pages.append(wrapped[i : i + lines_per_page])
+        if len(pages) >= max_pages:
+            break
+    return pages or [[""]]
+
+
+def _render_text_page_image(
+    filename: str,
+    lines: list[str],
+    page_number: int,
+    total_pages: int,
+    width: int,
+) -> "object":
+    """Render one 'text document' page as a PIL image (white bg, dark text,
+    header bar with the filename + page indicator)."""
+    from PIL import Image, ImageDraw
+
+    line_height = 26
+    margin_x, margin_top, margin_bottom = 56, 88, 56
+    body_font = _load_text_font(17)
+    header_font = _load_text_font(15)
+
+    height = margin_top + line_height * len(lines) + margin_bottom
+    height = max(height, 420)
+
+    img = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Header band (subtle gray) with filename + page x/y
+    draw.rectangle([0, 0, width, 64], fill=(245, 246, 248))
+    draw.line([0, 64, width, 64], fill=(210, 214, 220), width=1)
+
+    title = filename if len(filename) <= 70 else filename[:67] + "…"
+    draw.text((margin_x, 22), title, font=header_font, fill=(55, 60, 70))
+    page_label = f"page {page_number}/{total_pages}"
+    pl_w = draw.textlength(page_label, font=header_font)
+    draw.text(
+        (width - margin_x - pl_w, 22),
+        page_label,
+        font=header_font,
+        fill=(120, 126, 138),
+    )
+
+    y = margin_top
+    for line in lines:
+        # Render tabs as visible spacing, strip control chars
+        safe = line.replace("\t", "    ")
+        safe = "".join(ch for ch in safe if ch == " " or ch.isprintable())
+        draw.text((margin_x, y), safe[:400], font=body_font, fill=(24, 26, 32))
+        y += line_height
+
+    return img
+
+
+def _render_text_pages_sync(
+    source_path: Path,
+    cache_dir: Path,
+    max_width: int,
+    thumb_width: int,
+) -> Optional[list[dict]]:
+    """PIL-render a text-ish file (txt/md/csv/tsv) into page JPEGs.
+
+    Returns the same page dict shape as the PDF rasterizers, or None on
+    failure. Runs synchronously — call via asyncio.to_thread().
+    """
+    try:
+        text = _read_text_bytes(source_path.read_bytes())
+        pages = _paginate_text_lines(
+            text, chars_per_line=96, lines_per_page=34, max_pages=20
+        )
+        rendered: list[dict] = []
+        for i, lines in enumerate(pages, start=1):
+            img = _render_text_page_image(source_path.name, lines, i, len(pages), 1000)
+            full, fw, fh = _pil_to_jpeg_bytes(img, max_width, _SLIDE_JPEG_QUALITY)
+            thumb, _, _ = _pil_to_jpeg_bytes(img, thumb_width, _THUMB_JPEG_QUALITY)
+            (cache_dir / slide_image_name(i)).write_bytes(full)
+            (cache_dir / slide_image_name(i, thumb=True)).write_bytes(thumb)
+            rendered.append({"index": i, "width": fw, "height": fh})
+        return rendered or None
+    except Exception as e:
+        _log("PIL text page rendering failed for %s: %s", source_path.name, e)
+        return None
+
+
+def _render_pdf_first_page_sync(pdf_path: Path, max_width: int):
+    """Render ONLY page 1 of a PDF as a PIL image (cheap card thumbnails)."""
+    try:
+        import fitz  # PyMuPDF
+        from PIL import Image
+    except ImportError as e:
+        _log("PyMuPDF/Pillow unavailable for first-page render: %s", e)
+        return None
+    try:
+        doc = fitz.open(str(pdf_path))
+        with doc:
+            if doc.page_count < 1:
+                return None
+            page = doc[0]
+            zoom = max_width / max(page.rect.width, 1.0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    except Exception as e:
+        _log("fitz first-page render failed for %s: %s", pdf_path, e)
+        return None
+
+
+def _first_page_image_sync(pdf_path: Path, max_width: int):
+    """Page-1 PIL image via fitz, falling back to pdftoppm."""
+    img = _render_pdf_first_page_sync(pdf_path, max_width)
+    if img is not None:
+        return img
+    # pdftoppm fallback (renders page 1 only with -f/-l)
+    import subprocess
+    import tempfile
+
+    binary = shutil.which("pdftoppm")
+    if not binary:
+        return None
+    out_dir = Path(tempfile.mkdtemp(prefix="doc_thumb_"))
+    try:
+        proc = subprocess.run(
+            [
+                binary,
+                "-jpeg",
+                "-f",
+                "1",
+                "-l",
+                "1",
+                "-scale-to",
+                str(max_width),
+                str(pdf_path),
+                str(out_dir / "page"),
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        files = sorted(out_dir.glob("page-*.jpg"))
+        if proc.returncode != 0 or not files:
+            return None
+        from PIL import Image
+
+        return Image.open(str(files[0])).convert("RGB")
+    except Exception as e:
+        _log("pdftoppm first-page fallback failed: %s", e)
+        return None
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+def _thumb_is_fresh(source_path: Path, thumb_path: Path) -> bool:
+    """A thumbnail is fresh when it's newer than the source file."""
+    try:
+        return (
+            thumb_path.exists()
+            and thumb_path.stat().st_mtime >= source_path.stat().st_mtime
+        )
+    except OSError:
+        return False
+
+
+async def render_document_thumbnail(
+    source_path: Path,
+    cache_dir: Optional[Path] = None,
+    max_width: int = 480,
+) -> Optional[bytes]:
+    """Render a CARD thumbnail (first page) for any RAG document.
+
+    Lightweight by design: renders only page 1 (never the whole document),
+    caches it at {cache_dir}/thumb.jpg, and reuses an existing full-page
+    render's slide_001_t.jpg when present. Returns JPEG bytes, or None when
+    the format is unsupported / conversion fails (frontend falls back to a
+    file-type icon).
+    """
+    fmt = document_preview_format(source_path)
+    if fmt is None or not source_path.exists():
+        return None
+
+    cache_dir = cache_dir or document_preview_cache_dir(source_path)
+
+    # Reuse a fresh full-render thumbnail when the pages cache is valid.
+    if is_slide_cache_valid(source_path, cache_dir):
+        first_thumb = cache_dir / slide_image_name(1, thumb=True)
+        if first_thumb.is_file():
+            return first_thumb.read_bytes()
+
+    thumb_path = cache_dir / "thumb.jpg"
+    if _thumb_is_fresh(source_path, thumb_path):
+        return thumb_path.read_bytes()
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        img = None
+        if fmt == "pdf":
+            img = await asyncio.to_thread(
+                _first_page_image_sync, source_path, max_width
+            )
+        elif fmt in _TEXT_PREVIEW_FORMATS:
+            # LibreOffice renders text files beautifully (Writer/Calc);
+            # fall back to the PIL text renderer when soffice is missing
+            # or refuses the format.
+            if is_available():
+                pdf_path = await _convert_office_to_pdf_in_cache(source_path, cache_dir)
+                if pdf_path is not None:
+                    img = await asyncio.to_thread(
+                        _first_page_image_sync, pdf_path, max_width
+                    )
+            if img is None:
+                text = _read_text_bytes(source_path.read_bytes())
+                first_page = _paginate_text_lines(
+                    text, chars_per_line=96, lines_per_page=22, max_pages=1
+                )
+                if first_page:
+                    img = await asyncio.to_thread(
+                        _render_text_page_image,
+                        source_path.name,
+                        first_page[0],
+                        1,
+                        1,
+                        1000,
+                    )
+        else:  # office documents (docx/doc/xlsx/xls/pptx/ppt)
+            if not is_available():
+                _log("LibreOffice unavailable — no thumbnail for %s", source_path.name)
+                return None
+            pdf_path = await _convert_office_to_pdf_in_cache(source_path, cache_dir)
+            if pdf_path is None:
+                return None
+            img = await asyncio.to_thread(_first_page_image_sync, pdf_path, max_width)
+
+        if img is None:
+            return None
+
+        thumb_bytes, _, _ = await asyncio.to_thread(
+            _pil_to_jpeg_bytes, img, max_width, _THUMB_JPEG_QUALITY
+        )
+        thumb_path.write_bytes(thumb_bytes)
+        _log(
+            "document thumbnail rendered: %s (%d bytes)",
+            source_path.name,
+            len(thumb_bytes),
+        )
+        return thumb_bytes
+    except Exception as e:
+        _log("document thumbnail failed for %s: %s", source_path.name, e)
+        return None
+
+
+async def render_document_pages(
+    source_path: Path,
+    cache_dir: Optional[Path] = None,
+    max_width: int = SLIDE_MAX_WIDTH,
+    thumb_width: int = SLIDE_THUMB_WIDTH,
+    force: bool = False,
+) -> Optional[dict]:
+    """Render EVERY page of any RAG document as JPEGs + manifest.
+
+    Same contract as convert_document_to_page_images (manifest dict on
+    success, None on failure), but accepts the full documents-extension
+    universe including legacy .doc/.xls/.ppt and plain text formats.
+    Used by the document detail modal's preview pane.
+    """
+    fmt = document_preview_format(source_path)
+    if fmt is None or not source_path.exists():
+        _log("document pages: unsupported/missing source %s", source_path.name)
+        return None
+
+    cache_dir = cache_dir or document_preview_cache_dir(source_path)
+
+    # Serve from cache when still fresh (unless forced).
+    if not force and is_slide_cache_valid(source_path, cache_dir):
+        manifest = read_slides_manifest(cache_dir)
+        if manifest is not None:
+            return manifest
+
+    # Fresh generation — start from an empty cache dir (drops stale thumbs
+    # and any previous soffice PDF conversion).
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if fmt == "pdf":
+        pdf_path = source_path
+    elif fmt in _TEXT_PREVIEW_FORMATS:
+        pdf_path = None
+        if is_available():
+            pdf_path = await _convert_office_to_pdf_in_cache(source_path, cache_dir)
+        if pdf_path is None:
+            # PIL text pages — always works, no external tools.
+            pages = await asyncio.to_thread(
+                _render_text_pages_sync, source_path, cache_dir, max_width, thumb_width
+            )
+            if pages is None:
+                return None
+            manifest = await asyncio.to_thread(
+                _write_slides_manifest, cache_dir, source_path, pages, None
+            )
+            _log(
+                "text pages rendered: %s → %d pages (PIL)",
+                source_path.name,
+                manifest["count"],
+            )
+            return manifest
+    else:  # office documents
+        if not is_available():
+            _log("LibreOffice unavailable — no page preview for %s", source_path.name)
+            return None
+        pdf_path = await _convert_office_to_pdf_in_cache(source_path, cache_dir)
+        if pdf_path is None:
+            _log("%s→PDF failed — cannot render document pages", fmt.upper())
+            return None
+
+    # PDF (native or soffice-produced) → per-page JPEGs.
+    pages = await asyncio.to_thread(
+        _render_pdf_pages_with_fitz, pdf_path, cache_dir, max_width, thumb_width
+    )
+    if pages is None:
+        _log("fitz renderer failed — falling back to pdftoppm")
+        pages = await asyncio.to_thread(
+            _render_pdf_pages_with_pdftoppm, pdf_path, cache_dir, max_width, thumb_width
+        )
+    if not pages:
+        _log("no page images rendered for %s", source_path.name)
+        return None
+
+    manifest = await asyncio.to_thread(
+        _write_slides_manifest, cache_dir, source_path, pages, None
+    )
+    _log(
+        "document pages rendered: %s → %d pages in %s",
+        source_path.name,
+        manifest["count"],
+        cache_dir.name,
+    )
+    return manifest
+
+
+async def convert_legacy_document(
+    source_path: Path,
+    target_format: str,
+    out_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Convert a legacy/odd office file to a modern format via soffice.
+
+    Used by the RAG ingestion path: .doc → .docx, .xls → .xlsx,
+    .ppt → .pptx so the standard Python extractors (python-docx /
+    openpyxl / python-pptx) can read them. Returns the converted file's
+    path (inside out_dir, which defaults to a temp dir), or None.
+    """
+    if not is_available():
+        return None
+    if target_format not in ("docx", "xlsx", "pptx", "pdf"):
+        return None
+
+    out_dir = out_dir or Path(tempfile.mkdtemp(prefix="lo_convert_"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    async with _so_lock:
+        rc, _, stderr = await _run_soffice(
+            ["--convert-to", target_format, "--outdir", str(out_dir), str(source_path)]
+        )
+        if rc != 0:
+            _log(
+                "soffice %s→%s failed (rc=%d): %s",
+                source_path.suffix,
+                target_format,
+                rc,
+                stderr[:200],
+            )
+            return None
+        converted = out_dir / f"{source_path.stem}.{target_format}"
+        if not converted.exists():
+            # soffice sometimes names outputs differently on exotic inputs
+            candidates = sorted(out_dir.glob(f"*.{target_format}"))
+            if not candidates:
+                _log(
+                    "%s→%s output not found in %s",
+                    source_path.suffix,
+                    target_format,
+                    out_dir,
+                )
+                return None
+            converted = candidates[0]
+        return converted
