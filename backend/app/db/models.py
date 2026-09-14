@@ -267,6 +267,32 @@ class AppState(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ToolConfig(Base):
+    """Per-tool agent configuration (Brain ▸ Tools).
+
+    One row per discovered tool, keyed by the stable tool identifier
+    (BaseTool.name — e.g. "use_websearch"). The `config` JSONB blob holds
+    BOTH the universal settings (enabled / always_load / tags /
+    model override) and any tool-specific custom settings (e.g. the Web
+    Search provider matrix). Defaults come from the tool configuration
+    definitions under app/agent/tools/ (config_base) — they are used to
+    SEED missing rows and to fill partially-missing keys at read time;
+    the database is the source of truth after initialization and is
+    never silently overwritten by changed defaults.
+
+    Secrets (API keys) do NOT live here — see app/services/secrets.py
+    (file store under the state dir). The config JSON only references
+    them implicitly via the tool's declared secret fields.
+    """
+
+    __tablename__ = "tool_configs"
+
+    tool_name = Column(String(128), primary_key=True)
+    config = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Template(Base):
     """A PPTX template for presentation generation.
 
