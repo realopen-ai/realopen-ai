@@ -16,6 +16,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 import httpx
 
 from app.agent.base import ToolCall, get_tool_registry
+from app.agent.tools import config_store
 from app.config import settings
 from app.core.logger import is_debug
 from app.core.prompt_security import untrusted_context_message
@@ -42,85 +43,41 @@ def _dbg(msg: str, *args) -> None:
         logger.debug(msg, *args)
 
 
-# ── Always-available tools (shown regardless of query) ──
-# manage_memory is always available because "remember this" can follow
-# any message regardless of topic. search_past_conversations is keyword-
-# triggered to avoid bloating the tool list on every turn.
-_ALWAYS_TOOLS: Set[str] = {
-    "use_websearch",
-    "use_webfetch",
-    "use_code_exec",
-    "rag_search",
-    "manage_memory",
-}
-
-# ── Keyword → tool mapping for dynamic selection ──
-_KEYWORD_TOOLS: Dict[str, Set[str]] = {
-    "search": {"use_websearch", "use_webfetch"},
-    "look up": {"use_websearch"},
-    "find": {"use_websearch", "rag_search"},
-    "calculate": {"use_code_exec"},
-    "compute": {"use_code_exec"},
-    "run": {"use_code_exec"},
-    "code": {"use_code_exec"},
-    "script": {"use_code_exec"},
-    "document": {"rag_search"},
-    "pdf": {"rag_search"},
-    "file": {"rag_search"},
-    "image": {"use_vision", "use_image_gen"},
-    "picture": {"use_vision"},
-    "photo": {"use_vision"},
-    "video": {"use_vision"},
-    "fetch": {"use_webfetch"},
-    "url": {"use_webfetch"},
-    "website": {"use_webfetch"},
-    "current": {"use_websearch"},
-    "today": {"use_websearch"},
-    "latest": {"use_websearch"},
-    "news": {"use_websearch"},
-    "weather": {"use_websearch"},
-    "price": {"use_websearch"},
-    "imagine": {"use_image_gen"},
-    # Report generation triggers
-    "report": {"use_report_gen"},
-    "deliverable": {"use_report_gen", "use_pptx_gen", "use_excel_gen"},
-    "generate": {"use_report_gen", "use_image_gen", "use_pptx_gen", "use_excel_gen"},
-    "create": {"use_report_gen", "use_image_gen", "use_pptx_gen", "use_excel_gen"},
-    # Presentation generation triggers
-    "presentation": {"use_pptx_gen"},
-    "slides": {"use_pptx_gen"},
-    "slideshow": {"use_pptx_gen"},
-    "pptx": {"use_pptx_gen"},
-    "deck": {"use_pptx_gen"},
-    "powerpoint": {"use_pptx_gen"},
-    # Excel generation triggers
-    "excel": {"use_excel_gen"},
-    "spreadsheet": {"use_excel_gen"},
-    "xlsx": {"use_excel_gen"},
-    "xls": {"use_excel_gen"},
-    "workbook": {"use_excel_gen"},
-    # Past-conversation search triggers
-    "last week": {"search_past_conversations"},
-    "yesterday": {"search_past_conversations"},
-    "before": {"search_past_conversations"},
-    "previous": {"search_past_conversations"},
-    "earlier": {"search_past_conversations"},
-    "we discussed": {"search_past_conversations"},
-    "i told you": {"search_past_conversations"},
-    "i said": {"search_past_conversations"},
-    "i mentioned": {"search_past_conversations"},
-    "remember when": {"search_past_conversations"},
-    "what did i": {"search_past_conversations"},
-}
+# ── Tool selection (config-driven: Brain ▸ Tools) ──────────────────
+# The policy now lives in the persisted per-tool configuration
+# (PostgreSQL, seeded from app/agent/tools/tool_defaults.py):
+#   enabled     → a disabled tool is completely unavailable to the LLM
+#                 (never in the tool list, schema, prompt, or executor)
+#   always_load → included on every turn when enabled
+#   tags        → activation tags; a gated tool is offered only when
+#                 one of them appears in the message
+# The universal defaults mirror the original hardcoded policy, so
+# fresh installs behave exactly as before.
 
 
 def _select_tools(user_message: str) -> Set[str]:
-    """Select relevant tools based on the user's message keywords."""
-    selected = set(_ALWAYS_TOOLS)
-    msg_lower = user_message.lower()
-    for keyword, tools in _KEYWORD_TOOLS.items():
-        if keyword in msg_lower:
-            selected.update(tools)
+    """Select relevant tools based on the persisted configuration.
+
+    Reads the write-through config cache (loaded from the DB at
+    startup, updated on every Brain ▸ Tools write). Only tools that are
+    BOTH enabled and currently registered (module system) can be
+    selected.
+    """
+    configs = config_store.get_all_tool_configs()
+    msg_lower = (user_message or "").lower()
+    selected: Set[str] = set()
+    for name, cfg in configs.items():
+        if not cfg.get("enabled", True):
+            continue  # disabled → invisible to the LLM
+        if cfg.get("always_load", True):
+            selected.add(name)
+            continue
+        raw_tags = cfg.get("tags") or []
+        if isinstance(raw_tags, str):  # legacy rows / hand-edited JSON
+            raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        tags = [str(t).strip().lower() for t in raw_tags if str(t).strip()]
+        if any(tag in msg_lower for tag in tags):
+            selected.add(name)
     return selected
 
 
@@ -589,7 +546,11 @@ async def run_agent_stream(
                 result = await vision_tool.execute(
                     image_base64=img_b64,
                     prompt=format_prompt("vision_default"),
-                    model=settings.resolve_model("default_vision"),
+                    # Vision model: tool-level override (Brain ▸ Tools)
+                    # when set, else the profile default role.
+                    model=await config_store.resolve_tool_model(
+                        "use_vision", fallback_role="default_vision"
+                    ),
                 )
 
                 if result.tool_call:
@@ -624,6 +585,20 @@ async def run_agent_stream(
         await _build_ollama_tools(selected_tools) if use_native_tools else None
     )
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
+
+    async def _switch_model(new_model: str) -> None:
+        """Apply a tool model override (Brain ▸ Tools) mid-request.
+
+        A tool with a model override makes the model that processes its
+        results — and every subsequent round of this request — that
+        model. The tool schemas themselves are model-independent, so
+        only the native-tools decision is recomputed.
+        """
+        nonlocal resolved_model, use_native_tools
+        if new_model and new_model != resolved_model:
+            resolved_model = new_model
+            use_native_tools = _model_supports_native_tools(resolved_model)
+            _dbg("Model override after tool call → %s", resolved_model)
 
     max_rounds = 10
     for round_number in range(max_rounds):
@@ -676,7 +651,7 @@ async def run_agent_stream(
             async for chunk in providers.stream_chat(
                 resolved_model,
                 ollama_messages,
-                tools=ollama_tools,
+                tools=ollama_tools if use_native_tools else None,
                 timeout=1200.0,
             ):
                 # Thinking tokens
@@ -778,8 +753,16 @@ async def run_agent_stream(
             _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
 
             tool = registry.get(tool_name)
-            if not tool:
-                _dbg("Unknown tool: %s", tool_name)
+            if not tool or tool_name not in selected_tools:
+                # Unknown, module-disabled, or turned off in Brain ▸ Tools
+                # (enabled=false) → completely unavailable: not in the
+                # schema, not in the prompt, and not executable either.
+                _dbg(
+                    "Tool unavailable: %s (registry=%s, selected=%s)",
+                    tool_name,
+                    tool is not None,
+                    tool_name in selected_tools,
+                )
                 messages.append(
                     {
                         "role": "assistant",
@@ -837,9 +820,24 @@ async def run_agent_stream(
             )
 
             # Execute the tool (with error handling)
+            #
+            # Model override (Brain ▸ Tools): when the tool has a model
+            # override, it is (a) passed to the tool as the `model` kwarg
+            # for tools that internally call an LLM (vision), and (b)
+            # applied to the agent loop so the model that processes this
+            # tool's results is the overridden one.
+            exec_args = dict(tool_args)
+            try:
+                model_override = await config_store.tool_model_override(tool_name)
+            except Exception:
+                model_override = None
+            if model_override:
+                exec_args.setdefault("model", model_override)
             try:
                 with app_metrics.track_tool_call(tool_name):
-                    result = await tool.execute(**tool_args)
+                    result = await tool.execute(**exec_args)
+                if model_override:
+                    await _switch_model(model_override)
             except Exception as e:
                 logger.exception("Tool %s failed: %s", tool_name, e)
                 yield _sse_event(
