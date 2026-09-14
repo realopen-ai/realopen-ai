@@ -50,6 +50,7 @@ class ExcelGenTool(BaseTool):
     """Generate an Excel workbook (.xlsx) from a high-level brief."""
 
     name = "use_excel_gen"
+    display_name = "Excel Generation"
     description = (
         "Generate an Excel spreadsheet (.xlsx) from a brief. "
         "Use when the user asks for an Excel file, spreadsheet, workbook, "
@@ -137,9 +138,15 @@ class ExcelGenTool(BaseTool):
         )
 
         try:
+            # Model override (Brain ▸ Tools) when set, else the service
+            # falls back to the Excel task slot (Settings ▸ AI ▸ Models).
+            from app.agent.tools import config_store
+
+            model_override = await config_store.tool_model_override(self.name)
             result = await generate_spreadsheet(
                 brief=brief.strip(),
                 requirements=(requirements or "").strip(),
+                model=model_override,
             )
 
             tool_call.status = "completed"

@@ -20,6 +20,7 @@ from app.agent.base import BaseTool, ToolResult, ToolType, tool_registry
 
 class WebFetchTool(BaseTool):
     name = "use_webfetch"
+    display_name = "Web Fetch"
     description = (
         "Fetch and extract readable text from a URL. "
         "Use after web search for full context, or when the user provides "

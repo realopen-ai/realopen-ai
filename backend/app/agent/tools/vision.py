@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 class VisionTool(BaseTool):
     name = "use_vision"
+    display_name = "Vision"
     description = (
         "Analyze an image using a vision model. "
         "Automatically invoked when the user sends an image."
@@ -47,7 +48,16 @@ class VisionTool(BaseTool):
     ) -> ToolResult:
         """Send an image to the vision model and return the description."""
         start = time.time()
-        resolved_model = model or settings.resolve_model("default_vision")
+        # Model priority: explicit kwarg (agent passes the Brain ▸ Tools
+        # override) → tool config override → profile default role.
+        if model:
+            resolved_model = model
+        else:
+            from app.agent.tools import config_store
+
+            resolved_model = await config_store.resolve_tool_model(
+                "use_vision", fallback_role="default_vision"
+            ) or settings.resolve_model("default_vision")
         tool_call = ToolCall(
             id=f"tc-vision-{int(start * 1000)}",
             type=self.tool_type,

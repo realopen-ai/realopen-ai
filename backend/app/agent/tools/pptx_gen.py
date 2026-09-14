@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 class PptxGenTool(BaseTool):
     name = "use_pptx_gen"
+    display_name = "Presentation Generation"
     # Base description — the agent service appends the dynamic template list
     description = (
         "Generate a PowerPoint presentation (.pptx) about a topic. "
@@ -110,8 +111,16 @@ class PptxGenTool(BaseTool):
         tpl = template if template in db_templates else DEFAULT_TEMPLATE
 
         try:
+            # Model override (Brain ▸ Tools) when set, else the service
+            # falls back to the Report task slot (Settings ▸ AI ▸ Models).
+            from app.agent.tools import config_store
+
+            model_override = await config_store.tool_model_override(self.name)
             result = await generate_presentation(
-                topic=topic.strip(), outline=outline, template=tpl
+                topic=topic.strip(),
+                outline=outline,
+                template=tpl,
+                model=model_override,
             )
             tool_call.status = "completed"
             tool_call.completed_at = time.time()

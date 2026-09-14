@@ -44,6 +44,7 @@ class SearchPastConversationsTool(BaseTool):
     """Search past conversation transcripts by keyword."""
 
     name = "search_past_conversations"
+    display_name = "Past Conversation Search"
     description = (
         "Search the user's PAST conversation transcripts (not summaries — the actual "
         "messages) by keyword. Use when the user asks about something discussed "

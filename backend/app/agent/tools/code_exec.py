@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class CodeExecTool(BaseTool):
     name = "use_code_exec"
+    display_name = "Code Execution"
     description = (
         "Execute Python code and return the output. "
         "Use for calculations, data processing, or scripting. "

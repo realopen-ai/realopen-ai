@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class ImageGenTool(BaseTool):
     name = "use_image_gen"
+    display_name = "Image Generation"
     description = (
         "Generate an image from a text description. Be specific and descriptive."
     )
@@ -36,8 +37,13 @@ class ImageGenTool(BaseTool):
 
     async def execute(self, *, prompt: str, **kwargs) -> ToolResult:
         start = time.time()
-        # Image task slot (Settings ▸ AI ▸ Models) — local-only model
-        resolved_model = await model_prefs.resolve_task_model("image")
+        # Model priority: Brain ▸ Tools override for this tool → the
+        # image task slot (Settings ▸ AI ▸ Models) — local-only model.
+        from app.agent.tools import config_store
+
+        resolved_model = await config_store.resolve_tool_model(
+            "use_image_gen", task="image"
+        )
         tool_call = ToolCall(
             id=f"tc-imgen-{int(start * 1000)}",
             type=self.tool_type,

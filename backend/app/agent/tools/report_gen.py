@@ -40,6 +40,7 @@ class ReportGenTool(BaseTool):
     """Generate a formatted report (PDF or DOCX) about a topic."""
 
     name = "use_report_gen"
+    display_name = "Report Generation"
     description = (
         "Generate a formatted report (PDF or DOCX) about a topic. "
         "Use when the user asks for a report, document, or deliverable file. "
@@ -111,10 +112,16 @@ class ReportGenTool(BaseTool):
         )
 
         try:
+            # Model override (Brain ▸ Tools) when set, else the service
+            # falls back to the Report task slot (Settings ▸ AI ▸ Models).
+            from app.agent.tools import config_store
+
+            model_override = await config_store.tool_model_override(self.name)
             result = await generate_report(
                 topic=topic.strip(),
                 outline=outline,
                 format=fmt,
+                model=model_override,
             )
 
             tool_call.status = "completed"
