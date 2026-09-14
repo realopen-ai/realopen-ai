@@ -591,7 +591,9 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
             for fi, cf in enumerate(cfs[:MAX_CF_ENTRIES_PER_SHEET]):
                 errors.extend(
                     _validate_conditional_format(
-                        f"{ctx}.conditional_formats[{fi}]", cf, sheet.get("name", "Sheet")
+                        f"{ctx}.conditional_formats[{fi}]",
+                        cf,
+                        sheet.get("name", "Sheet"),
                     )
                 )
 
@@ -603,9 +605,7 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
             ur = prot.get("unlocked_ranges")
             if ur is not None:
                 if not isinstance(ur, list):
-                    errors.append(
-                        f"{ctx}: protect.unlocked_ranges must be an array"
-                    )
+                    errors.append(f"{ctx}: protect.unlocked_ranges must be an array")
                 else:
                     for rng in ur:
                         try:
@@ -619,9 +619,7 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
                 and prot["password"] is not None
                 and not isinstance(prot["password"], str)
             ):
-                warnings.append(
-                    f"{ctx}: protect.password must be a string — ignored"
-                )
+                warnings.append(f"{ctx}: protect.password must be a string — ignored")
 
     if "column_widths" in sheet and sheet["column_widths"] is not None:
         cw = sheet["column_widths"]
@@ -938,14 +936,12 @@ def _validate_data_validation(ctx: str, dv: Any) -> List[str]:
 
     if has_source:
         if has_values:
-            errors.append(
-                f"{ctx}: set either 'values' or 'source_range', not both"
-            )
+            errors.append(f"{ctx}: set either 'values' or 'source_range', not both")
         ref = source_range.strip().lstrip("=")
         if not _SOURCE_RANGE_RE.match(ref):
             errors.append(
                 f"{ctx}: invalid source_range {source_range!r} — expected a "
-                "range reference like \"Categories!$A$5:$A$24\""
+                'range reference like "Categories!$A$5:$A$24"'
             )
     elif not has_values:
         errors.append(
@@ -1726,8 +1722,7 @@ def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
                 "allow_blank": bool(dv.get("allow_blank", True)),
                 "error_style": (
                     dv.get("error_style")
-                    if dv.get("error_style")
-                    in ("stop", "warning", "information")
+                    if dv.get("error_style") in ("stop", "warning", "information")
                     else "stop"
                 ),
             }
@@ -1774,7 +1769,12 @@ def _normalize_data_validation(dv: Any, sheet_name: str) -> Optional[dict]:
             else "stop"
         ),
     }
-    for key, limit in (("prompt_title", 32), ("prompt", 255), ("error_title", 32), ("error", 255)):
+    for key, limit in (
+        ("prompt_title", 32),
+        ("prompt", 255),
+        ("error_title", 32),
+        ("error", 255),
+    ):
         s = dv.get(key)
         if isinstance(s, str) and s.strip():
             out[key] = _sanitize_cell_text(s.strip())[:limit]
@@ -1928,7 +1928,9 @@ def _normalize_spec(spec: dict) -> dict:
             s["protect"] = {
                 "unlocked": unlocked,
                 "password": (
-                    password.strip() if isinstance(password, str) and password.strip() else None
+                    password.strip()
+                    if isinstance(password, str) and password.strip()
+                    else None
                 ),
             }
 
@@ -2591,13 +2593,15 @@ def _post_process_spec(spec: Any) -> Any:
     return spec
 
 
-async def _call_llm(messages: List[dict]) -> str:
+async def _call_llm(messages: List[dict], model: Optional[str] = None) -> str:
     """Single provider-routed chat call in JSON mode.
 
-    Uses the Excel task slot (Settings ▸ AI ▸ Models).
+    ``model``: optional per-call override (the use_excel_gen tool passes
+    its Brain ▸ Tools model override here). Falls back to the Excel
+    task slot (Settings ▸ AI ▸ Models) when not provided.
     JSON mode maps to response_format=json_object for cloud providers.
     """
-    model = await model_prefs.resolve_task_model("excel")
+    model = model or await model_prefs.resolve_task_model("excel")
     if not model:
         raise RuntimeError("No LLM model configured for Excel generation")
 
@@ -2620,7 +2624,9 @@ async def _call_llm(messages: List[dict]) -> str:
     return content
 
 
-async def _generate_workbook_json(brief: str, requirements: str) -> dict:
+async def _generate_workbook_json(
+    brief: str, requirements: str, model: Optional[str] = None
+) -> dict:
     """Specialized Excel AI call: brief → validated + normalized workbook spec.
 
     Three attempts, cheapest first:
@@ -2650,7 +2656,7 @@ async def _generate_workbook_json(brief: str, requirements: str) -> dict:
     last_raw = ""
     for attempt in (1, 2, 3):
         _log("LLM call %d: brief=%r", attempt, brief[:60])
-        raw = await _call_llm(messages)
+        raw = await _call_llm(messages, model=model)
         last_raw = raw
         try:
             parsed = _extract_json_object(raw)
@@ -2740,7 +2746,7 @@ _ANY_DIGIT_RE = re.compile(r"\d")
 
 
 async def _try_pattern_spec(
-    brief: str, requirements: str
+    brief: str, requirements: str, model: Optional[str] = None
 ) -> Optional[Tuple[dict, str]]:
     """Route the brief to a deterministic template when one matches.
 
@@ -2768,7 +2774,8 @@ async def _try_pattern_spec(
             [
                 {"role": "system", "content": get_prompt("pattern_classifier")},
                 {"role": "user", "content": user_content},
-            ]
+            ],
+            model=model,
         )
         parsed = _extract_json_object(raw)
     except Exception as e:  # unparseable / LLM down → AI path
@@ -2778,11 +2785,7 @@ async def _try_pattern_spec(
     if not isinstance(parsed, dict):
         return None
     pattern = parsed.get("pattern")
-    builder = (
-        PATTERN_BUILDERS.get(pattern)
-        if isinstance(pattern, str)
-        else None
-    )
+    builder = PATTERN_BUILDERS.get(pattern) if isinstance(pattern, str) else None
     if builder is None:
         return None
 
@@ -3642,6 +3645,7 @@ def _workbook_summary_text(spec: dict, pattern_name: Optional[str]) -> str:
 async def generate_spreadsheet(
     brief: str,
     requirements: str = "",
+    model: Optional[str] = None,
 ) -> dict:
     """Generate an Excel workbook from a brief.
 
@@ -3667,11 +3671,11 @@ async def generate_spreadsheet(
     #    planner): formulas code-generated from actual layout rows.
     #    No match → specialized Excel AI call → validated spec.
     pattern_name: Optional[str] = None
-    pattern_result = await _try_pattern_spec(brief, requirements)
+    pattern_result = await _try_pattern_spec(brief, requirements, model=model)
     if pattern_result is not None:
         spec, pattern_name = pattern_result
     else:
-        spec = await _generate_workbook_json(brief, requirements)
+        spec = await _generate_workbook_json(brief, requirements, model=model)
 
     # 2. Deterministic conversion (sync/CPU-bound → thread pool)
     output_path = reports_dir / f"{report_id}.xlsx"

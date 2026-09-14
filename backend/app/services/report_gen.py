@@ -91,14 +91,17 @@ CALLOUT_BG = "FAF6EA"  # blockquote tint
 CODE_BG = "F1F3F6"  # code background
 
 
-async def _generate_markdown(topic: str, outline: Optional[str]) -> str:
+async def _generate_markdown(
+    topic: str, outline: Optional[str], model: Optional[str] = None
+) -> str:
     """Call the LLM to generate a Markdown report.
 
-    Uses the resolved chat model (or default_utility if available).
-    Falls back to the chat model if default_utility isn't configured.
+    ``model``: optional per-call override (the use_report_gen tool passes
+    its Brain ▸ Tools model override here). Falls back to the Report
+    task slot (Settings ▸ AI ▸ Models) when not provided.
     """
-    # Report task slot (Settings ▸ AI ▸ Models)
-    model = await model_prefs.resolve_task_model("report")
+    # Report task slot (Settings ▸ AI ▸ Models) — unless overridden
+    model = model or await model_prefs.resolve_task_model("report")
 
     if not model:
         raise RuntimeError("No LLM model configured for report generation")
@@ -1217,6 +1220,7 @@ async def generate_report(
     topic: str,
     outline: Optional[str] = None,
     format: str = "pdf",
+    model: Optional[str] = None,
 ) -> dict:
     """Generate a report and save it to disk.
 
@@ -1236,7 +1240,7 @@ async def generate_report(
     reports_dir = _get_reports_dir()
 
     # 1. Generate Markdown via LLM
-    markdown_content = await _generate_markdown(topic, outline)
+    markdown_content = await _generate_markdown(topic, outline, model=model)
 
     # 2. Convert to target format (run in thread pool — these are sync/CPU-bound)
     ext = "pdf" if fmt == "pdf" else "docx"

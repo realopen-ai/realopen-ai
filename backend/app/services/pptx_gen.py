@@ -512,10 +512,13 @@ def _resolve_theme(
     return DEFAULT_TEMPLATE, BUILTIN_THEMES[DEFAULT_TEMPLATE]
 
 
-async def _generate_slide_markdown(topic: str, outline: Optional[str]) -> str:
-    # Presentation generation follows the Report task slot
-    # (Settings ▸ AI ▸ Models)
-    model = await model_prefs.resolve_task_model("report")
+async def _generate_slide_markdown(
+    topic: str, outline: Optional[str], model: Optional[str] = None
+) -> str:
+    # ``model``: optional per-call override (the use_pptx_gen tool passes
+    # its Brain ▸ Tools model override here). Otherwise presentation
+    # generation follows the Report task slot (Settings ▸ AI ▸ Models).
+    model = model or await model_prefs.resolve_task_model("report")
 
     if not model:
         raise RuntimeError("No LLM model configured for presentation generation")
@@ -1369,12 +1372,13 @@ async def generate_presentation(
     topic: str,
     outline: Optional[str] = None,
     template: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> dict:
     report_id = str(uuid.uuid4())
     reports_dir = _get_reports_dir()
     slug, theme = _resolve_theme(template)
 
-    markdown_content = await _generate_slide_markdown(topic, outline)
+    markdown_content = await _generate_slide_markdown(topic, outline, model=model)
     slides = _parse_slides(markdown_content)
     if not slides:
         raise RuntimeError("No slides parsed from LLM output")
