@@ -1,17 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, Cloud, HardDrive, Search } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Cloud,
+  HardDrive,
+  Search,
+  Sparkles,
+} from "lucide-react";
 
 import type { AvailableModel } from "@/api/client";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 
 /**
- * Searchable model picker for the Settings ▸ AI ▸ Models section.
+ * Searchable model picker for the Settings ▸ AI ▸ Models section and
+ * the Brain ▸ Tools model override.
  *
  * - Lists every model available to pick from.
  * - Search filters on the display name and the raw model id.
  * - `localOnly` slots (vision / image) show cloud models greyed out
  *   with an explanatory hint — the backend rejects them anyway.
+ * - `inheritOption` (Tools tab) adds a first row meaning "no override —
+ *   use the general model"; selected when currentModel is null/"".
  */
 
 function ModelRow({
@@ -88,19 +98,23 @@ export function ModelSelect({
   groqConnected,
   localOnly,
   onSelect,
+  inheritOption,
 }: {
   task: string;
   models: AvailableModel[];
-  currentModel: string;
+  currentModel: string | null;
   groqConnected: boolean;
   localOnly: boolean;
   onSelect: (task: string, model: string | null) => void;
+  /** Label for the "inherit the default" row (omit = no inherit row). */
+  inheritOption?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const isInherit = inheritOption !== undefined && !currentModel;
   const current = models.find((m) => m.id === currentModel);
   const t = useT();
 
@@ -160,15 +174,21 @@ export function ModelSelect({
         <span
           className={cn(
             "shrink-0 w-1.5 h-1.5 rounded-full",
-            current?.provider === "groq"
-              ? "bg-amber-500"
-              : current?.installed === false
-                ? "bg-muted-foreground/40"
-                : "bg-emerald-500",
+            isInherit
+              ? "bg-muted-foreground/40"
+              : current?.provider === "groq"
+                ? "bg-amber-500"
+                : current?.installed === false
+                  ? "bg-muted-foreground/40"
+                  : "bg-emerald-500",
           )}
         />
         <span className="flex-1 min-w-0 truncate text-[13px] text-foreground">
-          {current ? current.description : currentModel}
+          {isInherit
+            ? inheritOption
+            : current
+              ? current.description
+              : currentModel}
         </span>
         {open ? (
           <Search className="shrink-0 w-3.5 h-3.5 text-muted-foreground" />
@@ -194,6 +214,28 @@ export function ModelSelect({
 
           {/* List */}
           <div className="max-h-64 overflow-y-auto py-1">
+            {inheritOption && (
+              <button
+                onClick={() => {
+                  onSelect(task, null);
+                  setOpen(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-accent cursor-pointer"
+              >
+                <span className="shrink-0 w-5 h-5 rounded-md bg-secondary text-muted-foreground flex items-center justify-center">
+                  <Sparkles className="w-3 h-3" />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[13px] text-foreground truncate">
+                    {inheritOption}
+                  </span>
+                </span>
+                {isInherit && (
+                  <Check className="shrink-0 w-4 h-4 text-primary" />
+                )}
+              </button>
+            )}
+
             {localModels.length === 0 && cloudModels.length === 0 && (
               <div className="px-3 py-6 text-center text-[12px] text-muted-foreground/60">
                 {t("settings.ai.models.noResults")}
