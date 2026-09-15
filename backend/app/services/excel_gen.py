@@ -2593,6 +2593,29 @@ def _post_process_spec(spec: Any) -> Any:
     return spec
 
 
+def _llm_limits() -> tuple:
+    """The Excel LLM call limits: (timeout_s, num_predict).
+
+    Priority: the persisted tool configuration (Brain ▸ Tools ▸ Excel
+    Generation — custom.timeout_s / custom.max_tokens) → the
+    EXCEL_GENERATION_* env settings → the hardcoded defaults.
+    """
+    timeout = float(getattr(settings, "EXCEL_GENERATION_TIMEOUT_SECONDS", 600) or 600)
+    num_predict = int(getattr(settings, "EXCEL_GENERATION_MAX_TOKENS", 8192) or 8192)
+    try:
+        from app.agent.tools import config_store
+
+        cfg = config_store.get_tool_config("use_excel_gen") or {}
+        custom = cfg.get("custom") or {}
+        if custom.get("timeout_s"):
+            timeout = float(custom["timeout_s"])
+        if custom.get("max_tokens"):
+            num_predict = int(custom["max_tokens"])
+    except Exception as e:  # config store unavailable — env defaults
+        _log("tool-config limits unavailable (%s) — using env defaults", e)
+    return timeout, num_predict
+
+
 async def _call_llm(messages: List[dict], model: Optional[str] = None) -> str:
     """Single provider-routed chat call in JSON mode.
 
@@ -2600,13 +2623,17 @@ async def _call_llm(messages: List[dict], model: Optional[str] = None) -> str:
     its Brain ▸ Tools model override here). Falls back to the Excel
     task slot (Settings ▸ AI ▸ Models) when not provided.
     JSON mode maps to response_format=json_object for cloud providers.
+
+    The generation timeout and max tokens are configurable in
+    Brain ▸ Tools ▸ Excel Generation (custom.timeout_s /
+    custom.max_tokens); the EXCEL_GENERATION_* env settings are the
+    fallback defaults.
     """
     model = model or await model_prefs.resolve_task_model("excel")
     if not model:
         raise RuntimeError("No LLM model configured for Excel generation")
 
-    timeout = float(getattr(settings, "EXCEL_GENERATION_TIMEOUT_SECONDS", 600) or 600)
-    num_predict = int(getattr(settings, "EXCEL_GENERATION_MAX_TOKENS", 8192) or 8192)
+    timeout, num_predict = _llm_limits()
 
     data = await providers.chat_once(
         model,
