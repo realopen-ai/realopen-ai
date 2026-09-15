@@ -43,12 +43,13 @@ logger = logging.getLogger(__name__)
 # ── Schema field descriptor types ──────────────────────────────────
 # ``bool``    → toggle
 # ``string``  → text input
-# ``int``     → number input
+# ``int``     → number input (whole numbers)
+# ``float``   → number input (decimals, e.g. thresholds 0–1)
 # ``secret``  → password-style input (value lives in the secret store;
 #               the config JSON only carries a null placeholder)
 # ``select``  → dropdown (``options``: [{value, label}])
 
-FIELD_TYPES = ("bool", "string", "int", "secret", "select")
+FIELD_TYPES = ("bool", "string", "int", "float", "secret", "select")
 
 
 class ConfigField:

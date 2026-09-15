@@ -4,18 +4,29 @@ Vision tool using Ollama's multimodal models.
 When the user sends an image alongside their message, the agent
 automatically uses this tool to describe/analyze the image using
 the configured vision model (from profiles.yml).
+
+The inference timeout is configurable (Brain ▸ Tools ▸ Vision).
 """
 
 import logging
 import time
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 import httpx
 
 from app.agent.base import BaseTool, ToolResult, ToolCall, ToolType, tool_registry
 from app.config import settings
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
 
 logger = logging.getLogger(__name__)
+
+# Fallback inference timeout (seconds) when the persisted configuration
+# predates the setting — the actual value lives in the tool config.
+DEFAULT_TIMEOUT_S = 120
 
 
 class VisionTool(BaseTool):
@@ -100,9 +111,12 @@ class VisionTool(BaseTool):
         if "," in image_base64 and image_base64.startswith("data:"):
             image_base64 = image_base64.split(",", 1)[1]
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        from app.config import settings as app_settings
+
+        base_url = _configured_base_url() or app_settings.OLLAMA_BASE_URL
+        async with httpx.AsyncClient(timeout=float(_configured_timeout_s())) as client:
             response = await client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
+                f"{base_url.rstrip('/')}/api/chat",
                 json={
                     "model": model,
                     "messages": [
@@ -118,6 +132,100 @@ class VisionTool(BaseTool):
             response.raise_for_status()
             data = response.json()
             return data.get("message", {}).get("content", "No description available")
+
+
+# ── Configuration definition (Brain ▸ Tools ▸ Vision) ─────────────
+
+
+def _configured_timeout_s() -> int:
+    """The persisted inference timeout (custom.timeout_s)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_vision") or {}
+    try:
+        value = int((cfg.get("custom") or {}).get("timeout_s", DEFAULT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_S
+    return max(5, min(600, value))
+
+
+def _configured_base_url():
+    """The persisted Ollama base URL override (custom.base_url)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_vision") or {}
+    base = (cfg.get("custom") or {}).get("base_url")
+    if isinstance(base, str) and base.strip():
+        return base.strip()
+    return None
+
+
+def _validate_vision_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the custom settings; returns the cleaned object."""
+    if not isinstance(custom, dict):
+        raise ValueError("'custom' must be an object")
+    if "timeout_s" in custom:
+        try:
+            v = float(custom["timeout_s"])
+        except (TypeError, ValueError):
+            raise ValueError("'timeout_s' must be a number")
+        if v <= 0 or v > 600:
+            raise ValueError("'timeout_s' must be between 1 and 600")
+        custom["timeout_s"] = int(v)
+    if "base_url" in custom:
+        base = custom["base_url"]
+        if base is not None:
+            if not isinstance(base, str) or not base.strip():
+                raise ValueError(
+                    "'base_url' must be a non-empty URL (or empty to use "
+                    "the default Ollama server)"
+                )
+            if not base.strip().startswith(("http://", "https://")):
+                raise ValueError("'base_url' must start with http:// or https://")
+    return custom
+
+
+VISION_CONFIG = ToolConfigDefinition(
+    tool_name="use_vision",
+    display_name="Vision",
+    description=(
+        "Analyze an image using a vision model. "
+        "Automatically invoked when the user sends an image."
+    ),
+    model_fallback_role="default_vision",
+    custom_defaults={
+        "timeout_s": DEFAULT_TIMEOUT_S,
+        "base_url": None,  # None → settings.OLLAMA_BASE_URL
+    },
+    custom_schema=[
+        {
+            "key": "inference",
+            "label": "Inference",
+            "fields": [
+                ConfigField(
+                    "timeout_s",
+                    "Timeout (s)",
+                    "int",
+                    default=DEFAULT_TIMEOUT_S,
+                    help=(
+                        "Maximum seconds to wait for the vision model — "
+                        "large images on CPU can be slow"
+                    ),
+                ).to_dict(),
+                ConfigField(
+                    "base_url",
+                    "Base URL",
+                    "string",
+                    help="Ollama server (empty = the global Ollama URL)",
+                    placeholder="http://localhost:11434",
+                ).to_dict(),
+            ],
+        },
+    ],
+    validate_custom=_validate_vision_custom,
+)
+
+register_config(VISION_CONFIG)
 
 
 # Register the tool

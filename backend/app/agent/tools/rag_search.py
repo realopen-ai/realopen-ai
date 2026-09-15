@@ -30,6 +30,11 @@ import uuid
 from typing import Optional, List
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
 from app.db.session import async_session_factory
 from app.services import rag as rag_service
 
@@ -132,11 +137,18 @@ class RagSearchTool(BaseTool):
                 conv_uuid = None
 
         try:
+            # Retrieval knobs come from the persisted tool configuration
+            # (Brain ▸ Tools ▸ Document Search); defaults mirror the
+            # global RAG_* env settings.
+            top_k_per_doc, top_k_total, cutoff = _configured_retrieval()
             async with async_session_factory() as db:
                 sources = await rag_service.search_documents(
                     db,
                     query=query,
                     conversation_id=conv_uuid,
+                    top_k_per_doc=top_k_per_doc,
+                    top_k_total=top_k_total,
+                    similarity_cutoff=cutoff,
                 )
         except Exception as e:
             _log("search FAILED: %s", e)
@@ -176,6 +188,127 @@ class RagSearchTool(BaseTool):
             output=formatted,
             tool_call=tool_call,
         )
+
+
+# ── Configuration definition (Brain ▸ Tools ▸ Document Search) ────
+
+
+def _configured_retrieval() -> tuple:
+    """The persisted retrieval settings, or the global defaults.
+
+    Returns (top_k_per_doc, top_k_total, similarity_cutoff) — any of
+    them None (unset) falls back to the global RAG_* settings inside
+    rag_service.search_documents.
+    """
+    from app.agent.tools import config_store
+    from app.config import settings as app_settings
+
+    cfg = config_store.get_tool_config("rag_search") or {}
+    custom = cfg.get("custom") or {}
+
+    def _int(key):
+        value = custom.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _float(key):
+        value = custom.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    top_k_per_doc = _int("top_k_per_doc") or app_settings.RAG_TOP_K_PER_DOC
+    top_k_total = _int("top_k_total") or app_settings.RAG_TOP_K_TOTAL
+    cutoff = _float("similarity_cutoff")
+    if cutoff is None:
+        cutoff = app_settings.RAG_SIMILARITY_CUTOFF
+    return top_k_per_doc, top_k_total, cutoff
+
+
+def _validate_rag_custom(custom: dict) -> dict:
+    """Validate the custom settings; returns the cleaned object."""
+    if not isinstance(custom, dict):
+        raise ValueError("'custom' must be an object")
+    for key, lo, hi in (
+        ("top_k_per_doc", 1, 20),
+        ("top_k_total", 1, 50),
+    ):
+        if key in custom and custom[key] is not None:
+            try:
+                v = int(custom[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"'{key}' must be a number")
+            if v < lo or v > hi:
+                raise ValueError(f"'{key}' must be between {lo} and {hi}")
+            custom[key] = v
+    if "similarity_cutoff" in custom and custom["similarity_cutoff"] is not None:
+        try:
+            v = float(custom["similarity_cutoff"])
+        except (TypeError, ValueError):
+            raise ValueError("'similarity_cutoff' must be a number")
+        if v < 0 or v > 1:
+            raise ValueError("'similarity_cutoff' must be between 0 and 1")
+        custom["similarity_cutoff"] = v
+    return custom
+
+
+RAG_SEARCH_CONFIG = ToolConfigDefinition(
+    tool_name="rag_search",
+    display_name="Document Search (RAG)",
+    description=(
+        "Search the user's knowledge base of uploaded documents (PDFs, DOCX, text files, "
+        "spreadsheets) for information. Use PROACTIVELY when the user has uploaded documents "
+        "and asks about their content — retrieve relevant excerpts BEFORE answering so you "
+        "can ground your response in the actual document text."
+    ),
+    custom_defaults={
+        "top_k_per_doc": 3,
+        "top_k_total": 8,
+        "similarity_cutoff": 0.20,
+    },
+    custom_schema=[
+        {
+            "key": "retrieval",
+            "label": "Retrieval",
+            "fields": [
+                ConfigField(
+                    "top_k_per_doc",
+                    "Chunks per document",
+                    "int",
+                    default=3,
+                    help="How many excerpts to keep from each matched document",
+                ).to_dict(),
+                ConfigField(
+                    "top_k_total",
+                    "Total chunks",
+                    "int",
+                    default=8,
+                    help="Overall cap on excerpts returned to the model",
+                ).to_dict(),
+                ConfigField(
+                    "similarity_cutoff",
+                    "Similarity cutoff",
+                    "float",
+                    default=0.20,
+                    help=(
+                        "Minimum similarity (0–1) for an excerpt to count "
+                        "as a match — higher is stricter"
+                    ),
+                ).to_dict(),
+            ],
+        },
+    ],
+    validate_custom=_validate_rag_custom,
+)
+
+register_config(RAG_SEARCH_CONFIG)
 
 
 # Register the tool

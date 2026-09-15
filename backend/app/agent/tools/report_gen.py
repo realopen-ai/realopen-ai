@@ -20,12 +20,21 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
 from app.services.report_gen import generate_report
 
 logger = logging.getLogger(__name__)
+
+# Fallback default format when the persisted configuration predates
+# the setting — the actual value lives in the tool config.
+DEFAULT_FORMAT = "pdf"
 
 
 def _log(msg: str, *args) -> None:
@@ -58,16 +67,23 @@ class ReportGenTool(BaseTool):
         return {
             "topic": {
                 "type": "string",
-                "description": "What the report is about (e.g. 'Climate change impacts on agriculture')",
+                "description": (
+                    "What the report is about (e.g. 'Climate change impacts on agriculture')"
+                ),
             },
             "outline": {
                 "type": "string",
-                "description": "Optional section outline to guide the report structure",
+                "description": (
+                    "Optional section outline to guide the report structure"
+                ),
             },
             "format": {
                 "type": "string",
                 "enum": ["pdf", "docx"],
-                "description": 'Output format. Default: "pdf". Use "docx" if the user asks for a Word document.',
+                "description": (
+                    'Output format. Default: "pdf". '
+                    'Use "docx" if the user asks for a Word document.'
+                ),
             },
         }
 
@@ -79,10 +95,15 @@ class ReportGenTool(BaseTool):
         *,
         topic: str,
         outline: Optional[str] = None,
-        format: str = "pdf",
+        format: Optional[str] = None,
         **kwargs,
     ) -> ToolResult:
-        """Generate the report and return deliverable metadata."""
+        """Generate the report and return deliverable metadata.
+
+        ``format`` honors the LLM's explicit choice; when omitted it
+        falls back to the configured default (Brain ▸ Tools ▸ Report
+        Generation).
+        """
         start = time.time()
         tool_call = ToolCall(
             id=f"tc-report-{int(start * 1000)}",
@@ -103,7 +124,7 @@ class ReportGenTool(BaseTool):
                 tool_call=tool_call,
             )
 
-        fmt = format if format in ("pdf", "docx") else "pdf"
+        fmt = format if format in ("pdf", "docx") else _configured_default_format()
         _log(
             "execute START topic=%r format=%s outline=%s",
             topic[:60],
@@ -167,6 +188,66 @@ class ReportGenTool(BaseTool):
                 output=f"Report generation failed: {e}",
                 tool_call=tool_call,
             )
+
+
+# ── Configuration definition (Brain ▸ Tools ▸ Report Generation) ──
+
+
+def _configured_default_format() -> str:
+    """The persisted default output format (custom.default_format)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_report_gen") or {}
+    value = (cfg.get("custom") or {}).get("default_format")
+    return value if value in ("pdf", "docx") else DEFAULT_FORMAT
+
+
+def _validate_report_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the custom settings; returns the cleaned object."""
+    if not isinstance(custom, dict):
+        raise ValueError("'custom' must be an object")
+    if "default_format" in custom:
+        if custom["default_format"] not in ("pdf", "docx", None):
+            raise ValueError("'default_format' must be 'pdf' or 'docx'")
+    return custom
+
+
+REPORT_GEN_CONFIG = ToolConfigDefinition(
+    tool_name="use_report_gen",
+    display_name="Report Generation",
+    description=(
+        "Generate a formatted report (PDF or DOCX) about a topic. "
+        "Use when the user asks for a report, document, or deliverable file. "
+        "The report is generated from scratch by the AI and saved as a downloadable file."
+    ),
+    model_task_slot="report",
+    custom_defaults={"default_format": DEFAULT_FORMAT},
+    custom_schema=[
+        {
+            "key": "output",
+            "label": "Output",
+            "fields": [
+                ConfigField(
+                    "default_format",
+                    "Default format",
+                    "select",
+                    options=[
+                        {"value": "pdf", "label": "PDF"},
+                        {"value": "docx", "label": "Word (.docx)"},
+                    ],
+                    default=DEFAULT_FORMAT,
+                    help=(
+                        "Used when the request doesn't specify a format — "
+                        "the model can still explicitly ask for the other"
+                    ),
+                ).to_dict(),
+            ],
+        },
+    ],
+    validate_custom=_validate_report_custom,
+)
+
+register_config(REPORT_GEN_CONFIG)
 
 
 # Register the tool
