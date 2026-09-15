@@ -8,6 +8,7 @@
  *              Tags / Model override) rendered generically, then the
  *              tool's CUSTOM settings:
  *                - use_websearch → dedicated WebSearchCustom component
+ *                - use_image_gen → dedicated ImageGenCustom component
  *                - others        → generic renderer driven by the
  *                                  backend's custom_schema
  *                - none          → basic settings only
@@ -42,11 +43,18 @@ import { cn } from "@/lib/utils";
 import type { ToolInfo } from "@/api/toolsClient";
 import { ModelSelect } from "@/components/settings/ModelSelect";
 import { WebSearchCustom } from "@/components/brain/tools/WebSearchCustom";
+import { ImageGenCustom } from "@/components/brain/tools/ImageGenCustom";
 import { GenericCustomConfig } from "@/components/brain/tools/GenericCustomConfig";
 
 // ─── Tool icons by name (cosmetic; unknown tools fall back to Wrench) ─
 
-function ToolIcon({ toolName, className }: { toolName: string; className?: string }) {
+function ToolIcon({
+  toolName,
+  className,
+}: {
+  toolName: string;
+  className?: string;
+}) {
   switch (toolName) {
     case "use_websearch":
       return <Search className={className} />;
@@ -172,13 +180,14 @@ function TagsField({
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-2 py-1.5 min-h-[40px] cursor-text disabled:opacity-50"
+    <div
+      className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-2 py-1.5 min-h-10 cursor-text disabled:opacity-50"
       onClick={() => inputRef.current?.focus()}
     >
       {tags.map((tag) => (
         <span
           key={tag}
-          className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg bg-primary/10 text-primary text-[11.5px] font-medium max-w-[180px]"
+          className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg bg-primary/10 text-primary text-[11.5px] font-medium max-w-45"
         >
           <span className="truncate">{tag}</span>
           <button
@@ -215,7 +224,7 @@ function TagsField({
             ? t("brain.tools.tagsPlaceholder")
             : t("brain.tools.tagsAddMore")
         }
-        className="flex-1 min-w-[110px] bg-transparent text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+        className="flex-1 min-w-27.5 bg-transparent text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
       />
       {input.trim() && (
         <button
@@ -232,13 +241,7 @@ function TagsField({
 
 // ─── Tool list row ─────────────────────────────────────────────────
 
-function ToolCard({
-  tool,
-  onOpen,
-}: {
-  tool: ToolInfo;
-  onOpen: () => void;
-}) {
+function ToolCard({ tool, onOpen }: { tool: ToolInfo; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
@@ -273,7 +276,9 @@ function ToolCard({
             <span
               className={cn(
                 "w-1.5 h-1.5 rounded-full",
-                tool.config.enabled ? "bg-emerald-500" : "bg-muted-foreground/50",
+                tool.config.enabled
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground/50",
               )}
             />
             {tool.config.enabled ? "Enabled" : "Disabled"}
@@ -403,9 +408,7 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
                   cfg.model
                     ? undefined
                     : `${t("brain.tools.modelHelp")}${
-                        tool.effective_model
-                          ? ` (${tool.effective_model})`
-                          : ""
+                        tool.effective_model ? ` (${tool.effective_model})` : ""
                       }`
                 }
               >
@@ -414,7 +417,9 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
                   models={models}
                   currentModel={cfg.model}
                   groqConnected={groqConnected}
-                  localOnly={tool.tool === "use_image_gen" || tool.tool === "use_vision"}
+                  localOnly={
+                    tool.tool === "use_image_gen" || tool.tool === "use_vision"
+                  }
                   inheritOption={t("brain.tools.modelInherit")}
                   onSelect={(_task, model) =>
                     updateConfig(tool.tool, { model })
@@ -432,6 +437,8 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
               </div>
               {tool.tool === "use_websearch" ? (
                 <WebSearchCustom tool={tool} />
+              ) : tool.tool === "use_image_gen" ? (
+                <ImageGenCustom tool={tool} />
               ) : (
                 <GenericCustomConfig tool={tool} />
               )}
