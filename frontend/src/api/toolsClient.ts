@@ -22,7 +22,7 @@ const log = createDebugLogger("toolsClient");
 export interface ToolConfigField {
   key: string;
   label: string;
-  type: "bool" | "string" | "int" | "secret" | "select";
+  type: "bool" | "string" | "int" | "float" | "secret" | "select";
   help?: string;
   placeholder?: string;
   options?: { value: string; label: string }[];
