@@ -3,8 +3,10 @@
  *
  * Fallback UI for tools that declare a custom_schema but do not (yet)
  * have a dedicated React component: walks the backend's field
- * descriptors and renders toggles / text inputs / number inputs /
- * dropdowns. Secret fields are NOT rendered here — they need dedicated
+ * descriptors and renders toggles / text inputs / number inputs —
+ * int (whole values) or float (decimal step, e.g. rag_search's
+ * similarity_cutoff 0–1) — and dropdowns. Secret fields are NOT
+ * rendered here — they need dedicated
  * components with the secret-store flow (see WebSearchCustom).
  *
  * This keeps the hybrid architecture: the backend remains the source
@@ -118,6 +120,22 @@ function FieldRow({
             disabled={isSaving}
             onBlur={(e) => {
               const n = parseInt(e.target.value, 10);
+              if (!isNaN(n)) commit(n);
+            }}
+            className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground text-right outline-none focus:border-primary/40 disabled:opacity-50"
+          />
+        )}
+        {field.type === "float" && (
+          <input
+            type="number"
+            step="0.01"
+            min={0}
+            max={1}
+            defaultValue={Number(current ?? field.default ?? 0.5)}
+            key={`${field.key}-${String(current ?? "")}`}
+            disabled={isSaving}
+            onBlur={(e) => {
+              const n = parseFloat(e.target.value);
               if (!isNaN(n)) commit(n);
             }}
             className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground text-right outline-none focus:border-primary/40 disabled:opacity-50"
