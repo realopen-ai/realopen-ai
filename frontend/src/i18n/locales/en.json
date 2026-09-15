@@ -229,5 +229,12 @@
   "brain.tools.websearch.subject": "Subject",
   "brain.tools.websearch.sortBy": "Sort by",
   "brain.tools.websearch.sortRelevance": "Relevance",
-  "brain.tools.websearch.sortNewest": "Newest first"
+  "brain.tools.websearch.sortNewest": "Newest first",
+  "brain.tools.imagegen.providers": "Providers",
+  "brain.tools.imagegen.ollamaSubtitle": "Local image models via the Ollama API (x/flux2-klein…)",
+  "brain.tools.imagegen.baseUrl": "Base URL",
+  "brain.tools.imagegen.baseUrlHelp": "Ollama server (empty = the global Ollama URL)",
+  "brain.tools.imagegen.timeout": "Timeout (s)",
+  "brain.tools.imagegen.comfyuiSubtitle": "Workflow-based local generation",
+  "brain.tools.imagegen.comingSoon": "Coming soon"
 }
