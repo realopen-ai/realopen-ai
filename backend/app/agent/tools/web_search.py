@@ -140,6 +140,14 @@ def _validate_web_search_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not isinstance(custom, dict):
         raise ValueError("'custom' must be an object")
+    if "max_total_results" in custom:
+        try:
+            v = int(custom["max_total_results"])
+        except (TypeError, ValueError):
+            raise ValueError("'max_total_results' must be a number")
+        if v <= 0 or v > 60:
+            raise ValueError("'max_total_results' must be between 1 and 60")
+        custom["max_total_results"] = v
     providers_cfg = custom.get("providers")
     if providers_cfg is not None:
         if not isinstance(providers_cfg, dict):
@@ -329,12 +337,31 @@ WEB_SEARCH_CONFIG = ToolConfigDefinition(
             "wikipedia": {"enabled": False, "language": "en", "max_results": 3},
             "google": {"enabled": False, "cse_id": "", "max_results": 5},
         },
+        # Total results cap across providers (keeps prompts small for
+        # 4B/7B models — the agent only needs the top hits).
+        "max_total_results": 8,
     },
     custom_schema=[
         {
             "key": "providers",
             "label": "Providers",
             "fields": [],
+        },
+        {
+            "key": "results",
+            "label": "Results",
+            "fields": [
+                ConfigField(
+                    "max_total_results",
+                    "Max total results",
+                    "int",
+                    default=8,
+                    help=(
+                        "Overall cap across all providers — keeps the "
+                        "prompt small for small models"
+                    ),
+                ).to_dict(),
+            ],
         },
     ],
     secrets=[

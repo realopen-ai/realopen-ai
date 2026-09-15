@@ -44,8 +44,11 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Total results cap across providers (keeps prompts small for 4B/7B
-# models — the agent only needs the top hits).
+# Default total results cap across providers (keeps prompts small for
+# 4B/7B models — the agent only needs the top hits). The actual cap
+# is configurable per install in Brain ▸ Tools ▸ Web Search
+# (custom.max_total_results); this constant is the fallback when the
+# configuration predates the setting or omits it.
 MAX_TOTAL_RESULTS = 8
 
 _HEADERS = {
@@ -428,6 +431,23 @@ def _providers_config() -> Dict[str, Any]:
     return (cfg.get("custom") or {}).get("providers") or {}
 
 
+def _max_total_results() -> int:
+    """The configured overall result cap (custom.max_total_results).
+
+    Falls back to MAX_TOTAL_RESULTS when unset — legacy rows self-heal
+    at read time via the config-store merge, so this only covers
+    direct callers bypassing the store (tests).
+    """
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_websearch") or {}
+    try:
+        value = int((cfg.get("custom") or {}).get("max_total_results", MAX_TOTAL_RESULTS))
+    except (TypeError, ValueError):
+        return MAX_TOTAL_RESULTS
+    return max(1, min(60, value))
+
+
 async def search(
     query: str, providers_cfg: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -448,6 +468,7 @@ async def search(
     if providers_cfg is None:
         providers_cfg = _providers_config()
     providers_cfg = providers_cfg or {}
+    max_total = _max_total_results()
 
     search_tasks = []
 
@@ -516,7 +537,7 @@ async def search(
         if results:
             by_provider[provider_name] = results
 
-    results = interleave(by_provider)[:MAX_TOTAL_RESULTS]
+    results = interleave(by_provider)[:max_total]
     return {
         "results": results,
         "by_provider": by_provider,
