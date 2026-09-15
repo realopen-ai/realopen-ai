@@ -11,15 +11,21 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
 from app.services.pptx_gen import (
     generate_presentation,
     _get_available_templates_from_db,
     _get_templates_with_descriptions,
     AVAILABLE_TEMPLATES,
     DEFAULT_TEMPLATE,
+    MAX_SLIDES,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,8 +113,15 @@ class PptxGenTool(BaseTool):
         # Fetch the actual available templates from the DB at runtime.
         db_templates = await _get_available_templates_from_db()
 
-        # Validate the requested template against the DB list.
-        tpl = template if template in db_templates else DEFAULT_TEMPLATE
+        # Validate the requested template against the DB list — the
+        # fallback is the configured default (Brain ▸ Tools), itself
+        # falling back to the service's DEFAULT_TEMPLATE.
+        default_tpl = _configured_default_template()
+        tpl = (
+            template
+            if template in db_templates
+            else (default_tpl if default_tpl in db_templates else DEFAULT_TEMPLATE)
+        )
 
         try:
             # Model override (Brain ▸ Tools) when set, else the service
@@ -121,6 +134,7 @@ class PptxGenTool(BaseTool):
                 outline=outline,
                 template=tpl,
                 model=model_override,
+                max_slides=_configured_max_slides(),
             )
             tool_call.status = "completed"
             tool_call.completed_at = time.time()
@@ -139,7 +153,12 @@ class PptxGenTool(BaseTool):
             ]
             return ToolResult(
                 success=True,
-                output=f"Presentation generated: {result['filename']} ({result.get('slide_count', 0)} slides, template: {result.get('template', tpl)}). Tell the user it's ready for download.",
+                output=(
+                    f"Presentation generated: {result['filename']} "
+                    f"({result.get('slide_count', 0)} slides, template: "
+                    f"{result.get('template', tpl)}). "
+                    "Tell the user it's ready for download."
+                ),
                 tool_call=tool_call,
             )
         except Exception as e:
@@ -152,6 +171,98 @@ class PptxGenTool(BaseTool):
                 output=f"Presentation generation failed: {e}",
                 tool_call=tool_call,
             )
+
+
+# ── Configuration definition (Brain ▸ Tools ▸ Presentation Generation) ──
+
+
+def _configured_max_slides() -> int:
+    """The persisted slide cap (custom.max_slides)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_pptx_gen") or {}
+    try:
+        value = int((cfg.get("custom") or {}).get("max_slides", MAX_SLIDES))
+    except (TypeError, ValueError):
+        return MAX_SLIDES
+    return max(3, min(100, value))
+
+
+def _configured_default_template() -> str:
+    """The persisted default template slug (custom.default_template)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("use_pptx_gen") or {}
+    value = (cfg.get("custom") or {}).get("default_template")
+    return value if isinstance(value, str) and value.strip() else DEFAULT_TEMPLATE
+
+
+def _validate_pptx_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the custom settings; returns the cleaned object."""
+    if not isinstance(custom, dict):
+        raise ValueError("'custom' must be an object")
+    if "max_slides" in custom:
+        try:
+            v = float(custom["max_slides"])
+        except (TypeError, ValueError):
+            raise ValueError("'max_slides' must be a number")
+        if v < 3 or v > 100:
+            raise ValueError("'max_slides' must be between 3 and 100")
+        custom["max_slides"] = int(v)
+    if "default_template" in custom and custom["default_template"] is not None:
+        tpl = custom["default_template"]
+        if not isinstance(tpl, str) or not tpl.strip():
+            raise ValueError("'default_template' must be a template slug")
+    return custom
+
+
+PPTX_GEN_CONFIG = ToolConfigDefinition(
+    tool_name="use_pptx_gen",
+    display_name="Presentation Generation",
+    description=(
+        "Generate a PowerPoint presentation (.pptx) about a topic. "
+        "Use when the user asks for a presentation, slides, a slideshow, or a deck. "
+        "The presentation is generated from scratch by the AI with speaker notes "
+        "and saved as a downloadable file."
+    ),
+    model_task_slot="report",
+    custom_defaults={
+        "max_slides": MAX_SLIDES,
+        "default_template": DEFAULT_TEMPLATE,
+    },
+    custom_schema=[
+        {
+            "key": "deck",
+            "label": "Deck",
+            "fields": [
+                ConfigField(
+                    "max_slides",
+                    "Max slides",
+                    "int",
+                    default=MAX_SLIDES,
+                    help="Hard cap on the deck length — longer decks are trimmed",
+                ).to_dict(),
+                ConfigField(
+                    "default_template",
+                    "Default template",
+                    "select",
+                    options=[
+                        {"value": slug, "label": slug.capitalize()}
+                        for slug in AVAILABLE_TEMPLATES
+                    ],
+                    default=DEFAULT_TEMPLATE,
+                    help=(
+                        "Used when the request doesn't pick a template — "
+                        "custom DB templates can still be requested by name"
+                    ),
+                ).to_dict(),
+            ],
+        },
+    ],
+    validate_custom=_validate_pptx_custom,
+)
+
+register_config(PPTX_GEN_CONFIG)
 
 
 tool_registry.register(PptxGenTool())

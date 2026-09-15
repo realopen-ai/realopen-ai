@@ -1201,7 +1201,7 @@ _NS = {
 }
 
 _PRINTER_SETTINGS_REL_TYPE = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings",
 )
 
 
@@ -1373,7 +1373,14 @@ async def generate_presentation(
     outline: Optional[str] = None,
     template: Optional[str] = None,
     model: Optional[str] = None,
+    max_slides: Optional[int] = None,
 ) -> dict:
+    """Generate a presentation and save it to disk.
+
+    ``max_slides`` overrides the MAX_SLIDES cap (the use_pptx_gen tool
+    passes its Brain ▸ Tools configured value); None → MAX_SLIDES.
+    """
+    cap = max(1, int(max_slides)) if max_slides else MAX_SLIDES
     report_id = str(uuid.uuid4())
     reports_dir = _get_reports_dir()
     slug, theme = _resolve_theme(template)
@@ -1382,9 +1389,9 @@ async def generate_presentation(
     slides = _parse_slides(markdown_content)
     if not slides:
         raise RuntimeError("No slides parsed from LLM output")
-    if len(slides) > MAX_SLIDES:
-        _log("capping deck at %d slides (LLM produced %d)", MAX_SLIDES, len(slides))
-        slides = slides[:MAX_SLIDES]
+    if len(slides) > cap:
+        _log("capping deck at %d slides (LLM produced %d)", cap, len(slides))
+        slides = slides[:cap]
     _log("parsed %d slides from markdown (theme=%s)", len(slides), slug)
 
     output_path = reports_dir / f"{report_id}.pptx"
