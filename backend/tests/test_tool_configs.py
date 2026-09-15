@@ -346,9 +346,33 @@ class TestApi:
         assert "google_api_key" in ws["secrets"]
         assert ws["secrets"]["google_api_key"] == {"set": False}
         # basic tool: no custom config
-        vision = tools["use_vision"]
-        assert vision["display_name"] == "Vision"
-        assert vision["has_custom"] is False
+        memory = tools["manage_memory"]
+        assert memory["display_name"] == "Memory Management"
+        assert memory["has_custom"] is False
+        # tools that gained configurable constants expose a custom schema
+        for name in (
+            "use_image_gen",
+            "use_vision",
+            "use_code_exec",
+            "use_webfetch",
+            "rag_search",
+            "search_past_conversations",
+            "use_report_gen",
+            "use_pptx_gen",
+            "use_excel_gen",
+        ):
+            assert tools[name]["has_custom"] is True, name
+            assert tools[name]["custom_schema"], name
+        # image generation carries the provider matrix (like websearch)
+        img = tools["use_image_gen"]
+        provider_fields = [
+            f["key"]
+            for s in img["custom_schema"]
+            for f in s["fields"]
+            if f["key"].startswith("providers.")
+        ]
+        assert "providers.ollama.enabled" in provider_fields
+        assert img["config"]["custom"]["providers"]["ollama"]["enabled"] is True
 
     def test_get_single_tool(self, client):
         r = client.get("/api/tools/use_websearch")
@@ -462,6 +486,123 @@ class TestApi:
         cfg = db["use_websearch"].config
         assert cfg["custom"]["providers"]["arxiv"]["enabled"] is True
         assert cfg["custom"]["providers"]["searxng"]["enabled"] is False
+
+    def test_update_custom_websearch_max_total_results(self, client, db):
+        r = client.put(
+            "/api/tools/use_websearch",
+            json={"config": {"custom": {"max_total_results": 3}}},
+        )
+        assert r.status_code == 200
+        assert db["use_websearch"].config["custom"]["max_total_results"] == 3
+        # invalid values are rejected
+        r = client.put(
+            "/api/tools/use_websearch",
+            json={"config": {"custom": {"max_total_results": 0}}},
+        )
+        assert r.status_code == 400
+
+    def test_update_custom_image_gen_providers(self, client, db):
+        # valid provider matrix round-trips
+        r = client.put(
+            "/api/tools/use_image_gen",
+            json={
+                "config": {
+                    "custom": {
+                        "providers": {
+                            "ollama": {
+                                "enabled": True,
+                                "base_url": "http://gpu-box:11434",
+                                "timeout_s": 900,
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        assert r.status_code == 200
+        cfg = db["use_image_gen"].config
+        assert (
+            cfg["custom"]["providers"]["ollama"]["base_url"] == "http://gpu-box:11434"
+        )
+        assert cfg["custom"]["providers"]["ollama"]["timeout_s"] == 900
+
+    def test_update_custom_image_gen_validation(self, client):
+        cases = [
+            # comfyui is planned but not yet a provider
+            {"providers": {"comfyui": {"enabled": True}}},
+            {"providers": {"ollama": {"enabled": "yes"}}},
+            {"providers": {"ollama": {"timeout_s": -5}}},
+            {"providers": {"ollama": {"base_url": "not-a-url"}}},
+        ]
+        for custom in cases:
+            r = client.put(
+                "/api/tools/use_image_gen", json={"config": {"custom": custom}}
+            )
+            assert r.status_code == 400, custom
+
+    def test_update_custom_other_tools(self, client, db):
+        """The configurable constants of the remaining tools round-trip."""
+        r = client.put(
+            "/api/tools/use_code_exec",
+            json={"config": {"custom": {"timeout_s": 120}}},
+        )
+        assert r.status_code == 200
+        assert db["use_code_exec"].config["custom"]["timeout_s"] == 120
+
+        r = client.put(
+            "/api/tools/use_webfetch",
+            json={"config": {"custom": {"timeout_s": 30, "max_chars": 12000}}},
+        )
+        assert r.status_code == 200
+        cfg = db["use_webfetch"].config["custom"]
+        assert cfg["timeout_s"] == 30
+        assert cfg["max_chars"] == 12000
+
+        r = client.put(
+            "/api/tools/rag_search",
+            json={
+                "config": {
+                    "custom": {
+                        "top_k_per_doc": 5,
+                        "top_k_total": 12,
+                        "similarity_cutoff": 0.35,
+                    }
+                }
+            },
+        )
+        assert r.status_code == 200
+        cfg = db["rag_search"].config["custom"]
+        assert cfg["top_k_per_doc"] == 5
+        assert cfg["top_k_total"] == 12
+        assert cfg["similarity_cutoff"] == 0.35
+
+        r = client.put(
+            "/api/tools/use_report_gen",
+            json={"config": {"custom": {"default_format": "docx"}}},
+        )
+        assert r.status_code == 200
+        assert db["use_report_gen"].config["custom"]["default_format"] == "docx"
+
+        r = client.put(
+            "/api/tools/use_pptx_gen",
+            json={"config": {"custom": {"max_slides": 12}}},
+        )
+        assert r.status_code == 200
+        assert db["use_pptx_gen"].config["custom"]["max_slides"] == 12
+
+    def test_update_custom_other_tools_validation(self, client):
+        cases = [
+            ("use_code_exec", {"timeout_s": 0}),
+            ("use_webfetch", {"max_chars": 5}),
+            ("rag_search", {"similarity_cutoff": 1.5}),
+            ("use_report_gen", {"default_format": "html"}),
+            ("use_pptx_gen", {"max_slides": 2}),
+            ("use_excel_gen", {"max_tokens": 10}),
+            ("search_past_conversations", {"max_results": 500}),
+        ]
+        for tool, custom in cases:
+            r = client.put(f"/api/tools/{tool}", json={"config": {"custom": custom}})
+            assert r.status_code == 400, (tool, custom)
 
     def test_update_custom_validation_errors(self, client):
         cases = [
@@ -979,9 +1120,29 @@ class TestSchemaContract:
 
         keys = [f["key"] for s in WEB_SEARCH_CONFIG.custom_schema for f in s["fields"]]
         assert len(keys) == len(set(keys))
-        # fully-qualified (providers.<provider>.<setting>)
+        # provider fields are fully-qualified (providers.<provider>.<setting>)
+        for key in keys:
+            if key.startswith("providers."):
+                assert key.count(".") == 2, key
+        # the global result cap is a plain custom key (no dot)
+        assert "max_total_results" in keys
+        # ...and lives in its own section
+        sections = {s["key"] for s in WEB_SEARCH_CONFIG.custom_schema}
+        assert sections == {"providers", "results"}
+
+    def test_image_gen_schema_is_fully_qualified(self):
+        from app.agent.tools.image_gen import IMAGE_GEN_CONFIG
+
+        schema = IMAGE_GEN_CONFIG.schema_dict()
+        assert schema and schema[0]["key"] == "providers"
+        keys = [f["key"] for s in schema for f in s["fields"]]
+        assert keys, "image gen provider fields missing"
         for key in keys:
             assert key.startswith("providers."), key
+            assert key.count(".") == 2, key
+        assert "providers.ollama.enabled" in keys
+        assert "providers.ollama.base_url" in keys
+        assert "providers.ollama.timeout_s" in keys
 
 
 # ─── 5b. ArXiv: subject-based query construction ──────────────────
