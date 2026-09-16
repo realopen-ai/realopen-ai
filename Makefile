@@ -132,7 +132,7 @@ health:
 # ── Install frontend dependencies ──
 .PHONY: npm-install
 npm-install:
-	@cd frontend && npm install
+	@cd frontend && npm install && npm audit fix
 
 # ── Pull ALL models for the current hardware profile ──
 .PHONY: pull-models

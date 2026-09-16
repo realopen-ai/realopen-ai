@@ -569,5 +569,5 @@ async def test_generate_report_invalid_format_defaults_pdf(tmp_path, monkeypatch
     assert result["format"] == "pdf"
 
 
-async def _fake_markdown(topic: str, outline) -> str:
+async def _fake_markdown(topic: str, outline, model=None) -> str:
     return SAMPLE_MD

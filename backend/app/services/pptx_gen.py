@@ -512,10 +512,13 @@ def _resolve_theme(
     return DEFAULT_TEMPLATE, BUILTIN_THEMES[DEFAULT_TEMPLATE]
 
 
-async def _generate_slide_markdown(topic: str, outline: Optional[str]) -> str:
-    # Presentation generation follows the Report task slot
-    # (Settings ▸ AI ▸ Models)
-    model = await model_prefs.resolve_task_model("report")
+async def _generate_slide_markdown(
+    topic: str, outline: Optional[str], model: Optional[str] = None
+) -> str:
+    # ``model``: optional per-call override (the use_pptx_gen tool passes
+    # its Brain ▸ Tools model override here). Otherwise presentation
+    # generation follows the Report task slot (Settings ▸ AI ▸ Models).
+    model = model or await model_prefs.resolve_task_model("report")
 
     if not model:
         raise RuntimeError("No LLM model configured for presentation generation")
@@ -1198,7 +1201,7 @@ _NS = {
 }
 
 _PRINTER_SETTINGS_REL_TYPE = (
-    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings"
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings",
 )
 
 
@@ -1369,18 +1372,26 @@ async def generate_presentation(
     topic: str,
     outline: Optional[str] = None,
     template: Optional[str] = None,
+    model: Optional[str] = None,
+    max_slides: Optional[int] = None,
 ) -> dict:
+    """Generate a presentation and save it to disk.
+
+    ``max_slides`` overrides the MAX_SLIDES cap (the use_pptx_gen tool
+    passes its Brain ▸ Tools configured value); None → MAX_SLIDES.
+    """
+    cap = max(1, int(max_slides)) if max_slides else MAX_SLIDES
     report_id = str(uuid.uuid4())
     reports_dir = _get_reports_dir()
     slug, theme = _resolve_theme(template)
 
-    markdown_content = await _generate_slide_markdown(topic, outline)
+    markdown_content = await _generate_slide_markdown(topic, outline, model=model)
     slides = _parse_slides(markdown_content)
     if not slides:
         raise RuntimeError("No slides parsed from LLM output")
-    if len(slides) > MAX_SLIDES:
-        _log("capping deck at %d slides (LLM produced %d)", MAX_SLIDES, len(slides))
-        slides = slides[:MAX_SLIDES]
+    if len(slides) > cap:
+        _log("capping deck at %d slides (LLM produced %d)", cap, len(slides))
+        slides = slides[:cap]
     _log("parsed %d slides from markdown (theme=%s)", len(slides), slug)
 
     output_path = reports_dir / f"{report_id}.pptx"

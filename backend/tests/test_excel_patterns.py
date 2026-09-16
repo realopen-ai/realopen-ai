@@ -488,7 +488,7 @@ class TestBudgetBuilder:
 def _classify_response(payload):
     import json
 
-    async def fake_llm(messages):
+    async def fake_llm(messages, model=None):
         assert "route spreadsheet requests" in messages[0]["content"]
         return json.dumps(payload)
 
@@ -514,7 +514,7 @@ class TestPatternRouting:
             ),
         )
 
-        async def must_not_run(brief, requirements):
+        async def must_not_run(brief, requirements, model=None):
             raise AssertionError("AI path must not run when pattern matches")
 
         monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
@@ -535,10 +535,10 @@ class TestPatternRouting:
     async def test_none_falls_back(self, tmp_path, monkeypatch):
         import json
 
-        async def fake_llm(messages):
+        async def fake_llm(messages, model=None):
             return json.dumps({"pattern": "none", "params": {}})
 
-        async def fake_ai(brief, requirements):
+        async def fake_ai(brief, requirements, model=None):
             return eg._normalize_spec(
                 {
                     "sheets": [
@@ -560,10 +560,10 @@ class TestPatternRouting:
 
     @pytest.mark.asyncio
     async def test_gate_skips_classifier(self, tmp_path, monkeypatch):
-        async def must_not_run_llm(messages):
+        async def must_not_run_llm(messages, model=None):
             raise AssertionError("classifier must be skipped without keywords/digits")
 
-        async def fake_ai(brief, requirements):
+        async def fake_ai(brief, requirements, model=None):
             return eg._normalize_spec(
                 {
                     "sheets": [
@@ -585,7 +585,7 @@ class TestPatternRouting:
 
     @pytest.mark.asyncio
     async def test_insufficient_params_fall_back(self, tmp_path, monkeypatch):
-        async def fake_ai(brief, requirements):
+        async def fake_ai(brief, requirements, model=None):
             return eg._normalize_spec(
                 {
                     "sheets": [
@@ -613,10 +613,10 @@ class TestPatternRouting:
 
     @pytest.mark.asyncio
     async def test_garbage_classifier_falls_back(self, tmp_path, monkeypatch):
-        async def fake_llm(messages):
+        async def fake_llm(messages, model=None):
             return "I cannot answer that"
 
-        async def fake_ai(brief, requirements):
+        async def fake_ai(brief, requirements, model=None):
             return eg._normalize_spec(
                 {
                     "sheets": [
@@ -969,7 +969,7 @@ class TestHabitTrackerRouting:
     async def test_habit_tracker_routes_to_template(self, tmp_path, monkeypatch):
         import json
 
-        async def fake_llm(messages):
+        async def fake_llm(messages, model=None):
             assert "route spreadsheet requests" in messages[0]["content"]
             return json.dumps(
                 {
@@ -984,7 +984,7 @@ class TestHabitTrackerRouting:
                 }
             )
 
-        async def must_not_run(brief, requirements):
+        async def must_not_run(brief, requirements, model=None):
             raise AssertionError("AI path must not run when pattern matches")
 
         monkeypatch.setattr(eg, "_call_llm", fake_llm)

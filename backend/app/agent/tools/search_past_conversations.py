@@ -20,9 +20,14 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
 from app.db.session import async_session_factory
 from app.services.session_search import (
     search_past_messages,
@@ -30,6 +35,10 @@ from app.services.session_search import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Fallback result cap when the persisted configuration predates the
+# setting — the actual value lives in the tool config (Brain ▸ Tools).
+DEFAULT_MAX_RESULTS = 10
 
 
 def _log(msg: str, *args) -> None:
@@ -44,6 +53,7 @@ class SearchPastConversationsTool(BaseTool):
     """Search past conversation transcripts by keyword."""
 
     name = "search_past_conversations"
+    display_name = "Past Conversation Search"
     description = (
         "Search the user's PAST conversation transcripts (not summaries — the actual "
         "messages) by keyword. Use when the user asks about something discussed "
@@ -101,7 +111,7 @@ class SearchPastConversationsTool(BaseTool):
                 results = await search_past_messages(
                     db,
                     query=query,
-                    limit=10,
+                    limit=_configured_max_results(),
                     exclude_conversation_id=conversation_id,
                 )
         except Exception as e:
@@ -133,6 +143,67 @@ class SearchPastConversationsTool(BaseTool):
             output=formatted,
             tool_call=tool_call,
         )
+
+
+# ── Configuration definition (Brain ▸ Tools ▸ Past Conversation Search) ──
+
+
+def _configured_max_results() -> int:
+    """The persisted result cap (custom.max_results)."""
+    from app.agent.tools import config_store
+
+    cfg = config_store.get_tool_config("search_past_conversations") or {}
+    try:
+        value = int((cfg.get("custom") or {}).get("max_results", DEFAULT_MAX_RESULTS))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_RESULTS
+    return max(1, min(50, value))
+
+
+def _validate_spc_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the custom settings; returns the cleaned object."""
+    if not isinstance(custom, dict):
+        raise ValueError("'custom' must be an object")
+    if "max_results" in custom:
+        try:
+            v = float(custom["max_results"])
+        except (TypeError, ValueError):
+            raise ValueError("'max_results' must be a number")
+        if v <= 0 or v > 50:
+            raise ValueError("'max_results' must be between 1 and 50")
+        custom["max_results"] = int(v)
+    return custom
+
+
+SPC_CONFIG = ToolConfigDefinition(
+    tool_name="search_past_conversations",
+    display_name="Past Conversation Search",
+    description=(
+        "Search the user's PAST conversation transcripts (not summaries — the actual "
+        "messages) by keyword. Use when the user asks about something discussed "
+        "previously ('what did I say about X?', 'show me the code from last week'). "
+        "Returns matching messages with their source conversation title."
+    ),
+    custom_defaults={"max_results": DEFAULT_MAX_RESULTS},
+    custom_schema=[
+        {
+            "key": "results",
+            "label": "Results",
+            "fields": [
+                ConfigField(
+                    "max_results",
+                    "Max results",
+                    "int",
+                    default=DEFAULT_MAX_RESULTS,
+                    help="How many matching messages to return to the model",
+                ).to_dict(),
+            ],
+        },
+    ],
+    validate_custom=_validate_spc_custom,
+)
+
+register_config(SPC_CONFIG)
 
 
 # Register the tool

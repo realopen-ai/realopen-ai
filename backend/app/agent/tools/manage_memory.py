@@ -66,6 +66,7 @@ class ManageMemoryTool(BaseTool):
     """Let the LLM manage the user's persistent memories."""
 
     name = "manage_memory"
+    display_name = "Memory Management"
     description = (
         "Manage the user's persistent memories: list, add, edit, delete, or search. "
         "Memories persist across conversations. Use 'add' when the user explicitly "

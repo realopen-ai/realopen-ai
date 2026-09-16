@@ -1694,7 +1694,7 @@ class TestLlmFlow:
 class TestPublicApi:
     @pytest.mark.asyncio
     async def test_contract(self, tmp_path, monkeypatch):
-        async def fake_spec(brief, requirements):
+        async def fake_spec(brief, requirements, model=None):
             return excel_gen._normalize_spec(VALID_SPEC)
 
         monkeypatch.setattr(excel_gen, "_generate_workbook_json", fake_spec)
@@ -1715,7 +1715,7 @@ class TestPublicApi:
         spec = excel_gen._normalize_spec(VALID_SPEC)
         spec["filename"] = None
 
-        async def fake_spec(brief, requirements):
+        async def fake_spec(brief, requirements, model=None):
             return spec
 
         monkeypatch.setattr(excel_gen, "_generate_workbook_json", fake_spec)
@@ -1733,7 +1733,7 @@ class TestPublicApi:
     async def test_requirements_forwarded(self, tmp_path, monkeypatch):
         captured = {}
 
-        async def fake_spec(brief, requirements):
+        async def fake_spec(brief, requirements, model=None):
             captured["brief"] = brief
             captured["requirements"] = requirements
             return excel_gen._normalize_spec(VALID_SPEC)
@@ -1770,7 +1770,7 @@ class TestExcelGenTool:
     async def test_execute_success(self, tmp_path, monkeypatch):
         from app.agent.base import tool_registry
 
-        async def fake_gen(brief, requirements):
+        async def fake_gen(brief, requirements, model=None):
             return {
                 "type": "excel",
                 "format": "xlsx",
@@ -1822,7 +1822,7 @@ class TestExcelGenTool:
     async def test_execute_service_failure(self, monkeypatch):
         from app.agent.base import tool_registry
 
-        async def failing_gen(brief, requirements):
+        async def failing_gen(brief, requirements, model=None):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(

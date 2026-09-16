@@ -21,6 +21,7 @@ from app.api.reports import router as reports_router
 from app.api.workspace import router as workspace_router
 from app.api.deps import router as deps_router
 from app.api.providers import router as providers_router
+from app.api.tools import router as tools_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
@@ -256,6 +257,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Template seeding failed: %s", e)
 
+    # Seed + load tool configurations (Brain ▸ Tools). Discovers every
+    # registered tool, seeds a default configuration row for the ones
+    # missing one (existing rows are never overwritten), and fills the
+    # runtime config cache from the database.
+    try:
+        from app.agent.tools import config_store as tool_config_store
+
+        result = await tool_config_store.seed_and_load()
+        logger.info(
+            "🧰 Tool configurations: %d seeded, %d loaded",
+            result["seeded"],
+            result["loaded"],
+        )
+    except Exception as e:
+        logger.warning("Tool configuration seeding failed: %s", e)
+
     # Reinstall any optional deps that are in the manifest but missing from
     # the system (e.g. after a container rebuild). Uses apt-get install
     # --no-download to reinstall from cached .debs.
@@ -321,3 +338,4 @@ app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
 app.include_router(providers_router, prefix="/api", tags=["providers"])
+app.include_router(tools_router, prefix="/api", tags=["tools"])

@@ -71,6 +71,7 @@ class BaseTool(ABC):
 
     name: str = ""
     description: str = ""
+    display_name: str = ""
     tool_type: ToolType = ToolType.WEB_SEARCH
 
     # Parameter aliases — maps common names to the tool's expected kwarg names.
@@ -90,6 +91,15 @@ class BaseTool(ABC):
             "description": self.description,
             "type": self.tool_type.value,
         }
+
+    def get_display_name(self) -> str:
+        """Friendly UI name: explicit display_name or prettified name."""
+        if self.display_name:
+            return self.display_name
+        base = self.name
+        if base.startswith("use_"):
+            base = base[4:]
+        return base.replace("_", " ").strip().title()
 
     def get_parameters(self) -> dict:
         """Return JSON Schema properties for native function calling.
