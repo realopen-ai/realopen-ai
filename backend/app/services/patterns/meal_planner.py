@@ -27,9 +27,22 @@ time):
   items                = COUNTA(item column)
   items to buy         = COUNTIF(to-buy column, ">0")
 
-week_start null → next Monday (stanza default); a week_start that is
-not itself a Monday snaps back to its week's Monday so the grid's
-seven dated rows always run Monday..Sunday.
+TEMPLATE MODE: a request with no specific dishes ("create a meal
+planner spreadsheet") builds the BLANK dated Monday-Sunday grid +
+empty shopping-list rows — never invents dishes (hard rule), never
+refuses for lack of data. week_start null → next Monday (stanza
+default); a week_start that is not itself a Monday snaps back to its
+week's Monday so the grid's seven dated rows always run Monday..Sunday.
+
+FILL MODE: when the request states guidance instead of dishes (a
+  diet goal, foods to eat more of, cuisines, dislikes), the router
+  sets "fill": true and excel_gen drafts starter meals + a shopping
+  list via prompts/pattern_populator.md BEFORE calling the builder
+  — the user gets a populated week, not a blank grid. Drafted params
+  flow through coerce_meal_planner_params like any other; a failed
+  or invalid draft falls back to the plain extracted params (blank
+  template — never worse than no fill).
+
 
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction. No
@@ -58,7 +71,8 @@ PATTERN_DESCRIPTION = (
     "per-meal coverage counts, plus a shopping list with unit "
     "dropdowns and a live To-Buy column (MAX(0, quantity − have at "
     "home)). Use when the user plans meals, a weekly menu or a meal "
-    "prep. Do not use it for daily habit tracking."
+    "prep — a request with no dishes still gets a blank dated "
+    "planner template. Do not use it for daily habit tracking."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -72,6 +86,12 @@ PATTERN_KEYWORDS = (
     "dinner plan",
     "what to eat",
 )
+
+# Fillable pattern: guidance-only requests (diet goals, foods to eat
+# more of, cuisines…) may draft starter dishes + shopping list via
+# prompts/pattern_populator.md before building — see PATTERN_FILLABLE
+# in patterns/__init__.py.
+PATTERN_FILL = True
 
 MAX_MEALS = 100  # meal entries accepted from the request
 MAX_SHOPPING = 120  # shopping-list items accepted
@@ -191,7 +211,13 @@ def _clean_unit(raw: Any) -> str:
 
 
 def coerce_meal_planner_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing meals and shopping_list are FINE —
+    the builder emits the blank dated grid with blank shopping rows
+    (the "create a meal planner spreadsheet" case). ValueError only
+    for structurally wrong params (non-array meals/shopping_list).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -206,7 +232,6 @@ def coerce_meal_planner_params(params: dict) -> dict:
     # meals → the 7×4 grid (multiple dishes in one slot are joined).
     raw_meals = _pick(params, "meals", "meal_list", "dishes")
     grid: List[List[str]] = [["" for _ in MEALS] for _ in DAYS]
-    n_meals = 0
     if raw_meals is not None:
         if not isinstance(raw_meals, list):
             raise ValueError("meals must be an array")
@@ -222,9 +247,8 @@ def coerce_meal_planner_params(params: dict) -> dict:
                 continue  # cannot place it in the grid
             slot = grid[day_idx][MEALS.index(meal)]
             grid[day_idx][MEALS.index(meal)] = f"{slot}, {dish}" if slot else dish
-            n_meals += 1
-    if n_meals == 0:
-        raise ValueError("meal_planner needs at least one meal entry")
+    # Template mode: n_meals == 0 is fine — blank grid, the user
+    # types dishes into the dated cells (never invent dishes).
 
     # shopping_list → sorted, grouped rows.
     raw_items = _pick(params, "shopping_list", "shopping", "groceries")
