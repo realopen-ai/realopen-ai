@@ -28,6 +28,25 @@ time):
   overdue (CF)       = AND(date <> "", date < TODAY(),
                            status <> "Published")
 
+TEMPLATE MODE: a request with no specific posts ("create a content
+calendar") builds the BLANK content plan — never invents posts
+(hard rule), never refuses for lack of data. The Posts sheet
+carries ten blank rows covered by the status (and, when the request
+names channels, platform) dropdowns; the Summary sheet's live
+COUNTA/COUNTIF/COUNTIFS formulas read 0 counts over the blank band
+and update the moment posts are typed in. month_start null → the
+current month (stanza default). With zero posts there is nothing
+meaningful to chart, so the posts-by-platform bar chart is skipped
+(it returns as soon as the plan carries posts and platforms).
+
+FILL MODE: when the request states a niche/platforms/frequency but
+  no concrete posts, the router sets "fill": true and excel_gen
+  drafts a starter month of posts via prompts/pattern_populator.md
+  BEFORE calling the builder. Drafted params flow through
+  coerce_content_calendar_params like any other; a failed draft
+  falls back to the extracted params (blank plan).
+
+
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction. No
 ROUND() anywhere — display rounding is the number format's job.
@@ -54,8 +73,9 @@ PATTERN_DESCRIPTION = (
     "Scheduled / Published), a live summary with per-platform and "
     "per-status counts, a posts-by-platform bar chart, upcoming-7-days "
     "count and overdue highlighting. Use when the user plans content, "
-    "blog posts or a posting schedule. Do not use it for project task "
-    "plans or event planning."
+    "blog posts or a posting schedule — a request with no posts yet "
+    "still gets a blank content plan template. Do not use it for project "
+    "task plans or event planning."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -73,9 +93,15 @@ PATTERN_KEYWORDS = (
     "calendar",
 )
 
+# Fillable pattern: guidance-only requests (goals, split, frequency…)
+# may draft starter sessions via prompts/pattern_populator.md before
+# building — see PATTERN_FILLABLE in patterns/__init__.py.
+PATTERN_FILL = True
+
 MAX_POSTS = 200  # hard cap on emitted post rows
 MAX_PLATFORMS = 8  # platform summary + dropdown cap
 MIN_PAD_ROWS = 8  # blank editable rows kept below the posts
+MIN_TEMPLATE_ROWS = 10  # scaffold rows when the plan starts empty
 MONTH_WINDOW = 24  # months a requested month_start may sit away
 DEFAULT_NAME = "Content Calendar"
 
@@ -204,7 +230,13 @@ def _coerce_platforms(raw: Any) -> List[str]:
 
 
 def coerce_content_calendar_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing posts are FINE — the builder emits
+    the blank content plan with scaffold rows (the "create a content
+    calendar" case). ValueError only for structurally wrong params
+    (non-object params, non-array posts).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -228,8 +260,8 @@ def coerce_content_calendar_params(params: dict) -> dict:
             normalized = _normalize_post(entry)
             if normalized is not None:
                 posts.append(normalized)
-    if not posts:
-        raise ValueError("content_calendar needs at least one post")
+    # Template mode: zero usable posts is fine — blank plan rows
+    # (never invent posts).
 
     # platforms = the request's platform list, else the distinct
     # platforms in posts (stanza) — union so every post is counted;
@@ -274,13 +306,16 @@ def build_content_calendar_spec(params: dict) -> dict:
       row 2      usage hint
       row 4      headers: Date | Title | Platform | Topic | Status | Owner
       rows 5..   one row per post, padded with blank rows up to 8
+                 (template mode: 10 blank scaffold rows)
     Summary sheet:
       rows 4-8   KPI label/value blocks (total / published / scheduled /
                  this month / upcoming 7 days)
       row 10     Posts by Platform table (title) → header 11, data 12..,
                  total row after
       row P      Posts by Status table → 4 data rows + total row
-      chart      bar "Posts by Platform" anchored at D3
+      chart      bar "Posts by Platform" anchored at D3 — only when
+                 the plan actually carries posts (a blank plan has
+                 nothing meaningful to chart)
     """
     p = coerce_content_calendar_params(params)
     calendar_name: str = p["calendar_name"]
@@ -288,9 +323,11 @@ def build_content_calendar_spec(params: dict) -> dict:
     platforms: List[str] = p["platforms"]
     posts: List[dict] = p["posts"]
     notes = p["notes"]
+    template_mode = not posts
 
     # ── geometry ────────────────────────────────────────────────────
-    n_rows = max(len(posts), MIN_PAD_ROWS)
+    # Blank plan → a fuller 10-row scaffold; with posts → pad to 8.
+    n_rows = MIN_TEMPLATE_ROWS if template_mode else max(len(posts), MIN_PAD_ROWS)
     r0 = 5  # first data row on the Posts sheet
     rN = 4 + n_rows  # last data row on the Posts sheet
 
@@ -339,6 +376,10 @@ def build_content_calendar_spec(params: dict) -> dict:
                 "text": (
                     f"Content plan for {month_name} — pick a Status for each "
                     "post; the Summary sheet updates automatically."
+                    if not template_mode
+                    else f"Blank content plan for {month_name} — type your "
+                    "posts into the rows below and pick a Status; the "
+                    "Summary sheet updates automatically."
                 ),
                 "italic": True,
                 "font_color": MUTED,
@@ -497,6 +538,9 @@ def build_content_calendar_spec(params: dict) -> dict:
 
     platform_chart = None
     if platforms:
+        # The platform table itself stays useful in template mode (all
+        # counts read 0 over the blank rows), so keep it whenever the
+        # request names channels.
         plat_first = row + 2
         plat_last = plat_first + len(platforms) - 1
         plat_total = plat_last + 1
@@ -569,7 +613,8 @@ def build_content_calendar_spec(params: dict) -> dict:
             ],
         }
     )
-    if platform_chart is not None:
+    if platform_chart is not None and posts:
+        # Chart only with meaningful data — a blank plan counts zeros.
         charts.append(platform_chart)
 
     summary_sheet: Dict[str, Any] = {
@@ -583,8 +628,13 @@ def build_content_calendar_spec(params: dict) -> dict:
             "All counts are live formulas over the Posts sheet. Posts by "
             "Platform / Status use COUNTIF; 'Posts in {month}' uses "
             "COUNTIFS with the month's date bounds and 'Posts in Next 7 "
-            "Days' counts dates from TODAY() through TODAY()+7. The bar "
-            "chart reads the platform table."
+            "Days' counts dates from TODAY() through TODAY()+7."
+            + (
+                " The bar chart reads the platform table."
+                if platforms and posts
+                else " The posts-by-platform chart appears once the plan "
+                "carries posts."
+            )
         ).format(month=month_name),
     }
     if charts:
