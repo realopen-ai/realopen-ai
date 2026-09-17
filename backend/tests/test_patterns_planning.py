@@ -230,6 +230,93 @@ class TestProjectPlanBuilder:
         errors, _ = eg.validate_workbook_spec(spec)
         assert errors == []
 
+    def test_template_mode_no_tasks_builds_blank_plan(self, tmp_path):
+        # TEMPLATE MODE — "create a project plan" with no tasks must
+        # build the blank task plan (10 scaffold rows with the same
+        # live guarded Duration / Days-Remaining formulas, dropdowns
+        # and zero-reading summary) instead of raising ValueError and
+        # falling back to the AI path.
+        spec = ep.build_project_plan_spec({})
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+        sheet = norm["sheets"][0]
+        assert sheet["name"] == "Plan"
+        assert norm["filename"] == "project_plan.xlsx"
+
+        table = sheet["tables"][0]
+        # 10 blank scaffold rows: header 5, data 6..15 — nothing invented
+        assert table["start_cell"] == "A5"
+        assert len(table["rows"]) == 10
+        assert table["rows"][0][:4] == [None] * 4
+        assert table["rows"][0][6:] == [None] * 3
+        # same guarded live formulas as data rows, pinned to the
+        # rendered scaffold rows
+        assert table["rows"][0][4] == '=IF(OR(C6="",D6=""),"",D6-C6+1)'
+        assert table["rows"][0][5] == '=IF(D6="","",D6-TODAY())'
+        assert table["rows"][9][4] == '=IF(OR(C15="",D15=""),"",D15-C15+1)'
+        assert table["rows"][9][5] == '=IF(D15="","",D15-TODAY())'
+
+        # dropdowns cover exactly the scaffold band
+        dv = {d["range"]: d for d in sheet["data_validation"]}
+        assert set(dv) == {"H6:H15", "I6:I15"}
+        assert dv["H6:H15"]["values"] == [
+            "Not Started",
+            "In Progress",
+            "Completed",
+            "Blocked",
+            "On Hold",
+        ]
+        assert dv["I6:I15"]["values"] == ["Yes", "No"]
+
+        # conditional formats cover the scaffold band too
+        cfs = {c["range"] for c in sheet["conditional_formats"]}
+        assert cfs == {"H6:H15", "F6:F15", "I6:I15", "G6:G15"}
+
+        # summary block: live tallies over the blanks read 0 / n/a;
+        # no deadline → no B3 block, summary label at row 18
+        blocks = {b["cell"]: b["text"] for b in sheet["text_blocks"]}
+        assert not [b for b in sheet["text_blocks"] if b["cell"] == "B3"]
+        assert blocks["A18"] == "Summary"
+        assert blocks["B19"] == "=COUNTA(A6:A15)"
+        assert blocks["B20"] == '=COUNTIF(H6:H15,"Completed")'
+        assert blocks["B22"] == ('=COUNTIFS(D6:D15,"<"&TODAY(),H6:H15,"<>Completed")')
+        assert blocks["B23"] == '=COUNTIF(I6:I15,"Yes")'
+        assert blocks["B24"] == '=IF(COUNT(G6:G15)=0,"n/a",AVERAGE(G6:G15))'
+        # nothing to chart with zero tasks
+        assert "charts" not in sheet
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "project_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Plan"]
+        ws = wb["Plan"]
+        assert ws.freeze_panes == "A6"
+        assert ws.auto_filter.ref == "A5:I15"
+        assert ws["E6"].value == '=IF(OR(C6="",D6=""),"",D6-C6+1)'
+        assert ws["F15"].value == '=IF(D15="","",D15-TODAY())'
+        assert len(ws.data_validations.dataValidation) == 2
+        assert len(list(ws.conditional_formatting)) == 4
+        assert not ws._charts
+
+    def test_template_mode_with_deadline_keeps_countdown(self):
+        # a deadline still renders its block + live countdown row even
+        # when the task list is empty
+        spec = ep.build_project_plan_spec(
+            {"project_name": "New App", "deadline": "2027-03-31", "tasks": []}
+        )
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+        sheet = norm["sheets"][0]
+        blocks = {b["cell"]: b["text"] for b in sheet["text_blocks"]}
+        assert blocks["A1"] == "New App — Project Plan"
+        assert blocks["B3"] == date(2027, 3, 31)
+        assert blocks["A25"] == "Days to Deadline"
+        assert blocks["B25"] == "=$B$3-TODAY()"
+        assert norm["filename"] == "New_App_project_plan.xlsx"
+
 
 class TestProjectPlanCoercion:
     def test_quoted_numbers_and_alias_keys(self):
@@ -289,14 +376,32 @@ class TestProjectPlanCoercion:
         assert p["tasks"][1]["progress"] == 0.0
 
     def test_missing_or_unusable_tasks_raise(self):
-        with pytest.raises(ValueError):
-            ep.coerce_project_plan_params({})
+        # structurally wrong input still refuses
         with pytest.raises(ValueError):
             ep.coerce_project_plan_params({"tasks": "all the things"})
         with pytest.raises(ValueError):
-            ep.coerce_project_plan_params({"tasks": [{"owner": "No name"}]})
-        with pytest.raises(ValueError):
             ep.coerce_project_plan_params(None)
+
+    def test_empty_tasks_build_blank_template(self):
+        # TEMPLATE MODE — no tasks is fine; never invents tasks
+        for params in (
+            {},
+            {"tasks": []},
+            {"tasks": [{"owner": "No name"}]},  # nameless entry → skipped
+            {"tasks": None, "project_name": None, "deadline": None},
+        ):
+            p = ep.coerce_project_plan_params(params)
+            assert p["tasks"] == []
+            assert p["project_name"] is None
+            assert p["deadline"] is None
+
+    def test_template_mode_accepts_scalars_without_tasks(self):
+        p = ep.coerce_project_plan_params(
+            {"project": "Website Relaunch", "due_date": "2026-09-30", "tasks": []}
+        )
+        assert p["tasks"] == []
+        assert p["project_name"] == "Website Relaunch"
+        assert p["deadline"] == "2026-09-30"
 
 
 class TestProjectPlanRouting:
@@ -322,6 +427,32 @@ class TestProjectPlanRouting:
         assert result["sheet_names"] == ["Plan"]
         assert result["chart_count"] == 1
         assert result["formula_count"] > 10  # 2/task + summary tallies
+        assert "project_plan template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params(self, tmp_path, monkeypatch):
+        # Same class of bug as meal_planner: the classifier returns
+        # project_plan with NO tasks ("create a project plan") — the
+        # pattern must build the blank task plan instead of falling
+        # back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "project_plan", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a project plan template")
+        assert result["pattern"] == "project_plan"
+        assert result["sheet_names"] == ["Plan"]
+        assert result["chart_count"] == 0
+        # guarded duration/days formulas over the 10 scaffold rows
+        assert result["formula_count"] >= 20
         assert "project_plan template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
