@@ -20,8 +20,17 @@ CALCULATION SEMANTICS (all LIVE formulas — nothing is frozen):
   planned(e)  = SUMIFS(duration, employee = e, status = "Planned")
   remaining(e)= entitlement + carried − booked (a blank entitlement
                 cell coerces to 0, so the row still computes)
-  duration(r) = IF(start or end blank, 0, end − start + 1) — inclusive
-                calendar days, safe on the blank filler rows
+  duration(r) = IF(start or end blank, "", end − start + 1) — inclusive
+                calendar days; a blank scaffold row stays blank
+
+TEMPLATE MODE: a request with no people yet ("create a leave tracker")
+builds the BLANK tracker — 8 blank employee rows on Balances and 10
+blank log rows, every formula already in place and guarded on the
+row's own key cell (`=IF($A5="","",…)`), dropdowns over all scaffold
+rows. Never invents employees or bookings (hard rule), never refuses
+for lack of data. Default reference values (Vacation / Sick / Unpaid
+leave types, Taken / Planned statuses) are vocabulary, not user data —
+they are always emitted.
 
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction. No
@@ -51,8 +60,9 @@ PATTERN_DESCRIPTION = (
     "Employee annual leave / vacation / PTO tracker: entitlements, "
     "carried-over days, booked days per person from a leave log, "
     "remaining balances and utilization. Use when a small team tracks "
-    "vacation days and who has booked what. Do not use it for staff "
-    "shift rosters or payroll."
+    "vacation days and who has booked what — a request with no "
+    "employees yet still gets a blank tracker template. Do not use it "
+    "for staff shift rosters or payroll."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -72,6 +82,7 @@ PATTERN_KEYWORDS = (
 MAX_EMPLOYEES = 30
 MAX_LOG_ROWS = 200
 MIN_LOG_ROWS = 10  # blank filler rows so a fresh log is ready for input
+MIN_EMPLOYEE_ROWS = 8  # blank Balances rows in template mode
 
 # Extra types offered in the Type dropdown on top of the request's own
 # words (deduped, comma-free — commas would corrupt the list source).
@@ -161,7 +172,13 @@ def _normalize_log_entry(entry: Any) -> Optional[dict]:
 
 
 def coerce_leave_tracker_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing employees and leave_log are FINE —
+    the builder emits the blank tracker (the "create a leave tracker"
+    case). ValueError only for structurally wrong params (non-object
+    params, non-array employees / leave_log).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -214,8 +231,9 @@ def coerce_leave_tracker_params(params: dict) -> dict:
             }
         )
 
-    if not employees:
-        raise ValueError("employees (or a leave_log naming people) required")
+    # Template mode: no employees and no log entries is FINE — the
+    # builder emits blank Balances rows + a blank log, every formula
+    # guarded (never invent people; hard rule).
 
     # Dropdown list: the request's own leave types + the standard ones,
     # comma/quote-free (commas corrupt Excel's inline list source).
@@ -248,11 +266,14 @@ def build_leave_tracker_spec(params: dict) -> dict:
     Balances sheet:
       row 1      title · row 2 usage hint
       row 4      headers (start_cell A4, no table title)
-      rows 5..   one row per employee: inputs A..D, live formulas E..I
+      rows 5..   one row per employee (8 blank scaffold rows when the
+                 request names nobody): inputs A..D, live guarded
+                 formulas E..I (`=IF($A5="","",…)`)
       row T      totals (SUM over the exact data rows)
     Leave Log sheet:
       row 4      headers
       rows 5..   one row per booking + blank fillers up to MIN_LOG_ROWS
+                 (10 blank rows in template mode)
       row T      total booked days (SUM over the exact data rows)
     """
     p = coerce_leave_tracker_params(params)
@@ -263,11 +284,13 @@ def build_leave_tracker_spec(params: dict) -> dict:
     notes = p["notes"]
 
     n_emp = len(employees)
+    n_emp_rows = n_emp or MIN_EMPLOYEE_ROWS  # template scaffold rows
     n_log = max(len(log), MIN_LOG_ROWS)
+    has_data = n_emp > 0  # charts only make sense with people
 
     # ── geometry (integers first — every formula is formatted from these)
     bal_r0 = 5  # first Balances data row
-    bal_rN = 4 + n_emp  # last Balances data row
+    bal_rN = 4 + n_emp_rows  # last Balances data row
     bal_total = bal_rN + 1  # Balances total row
     log_r0 = 5  # first Log data row
     log_rN = 4 + n_log  # last Log data row
@@ -279,30 +302,33 @@ def build_leave_tracker_spec(params: dict) -> dict:
 
     # ═════════════════════════════ Balances sheet ════════════════════
     bal_rows: List[List[Any]] = []
-    for i, emp in enumerate(employees):
+    for i in range(n_emp_rows):
         r = bal_r0 + i
+        emp = employees[i] if i < n_emp else None
         bal_rows.append(
             [
-                emp["name"],
-                emp["department"],
-                emp["entitlement"],
-                emp["carried"],
-                # Booked = every log row for this employee (Taken + Planned)
-                "=SUMIF({emp},$A{r},{dur})".format(
+                emp["name"] if emp else None,
+                emp["department"] if emp else None,
+                emp["entitlement"] if emp else None,
+                emp["carried"] if emp else None,
+                # Booked = every log row for this employee (Taken +
+                # Planned); blank until the row has a name
+                '=IF($A{r}="","",SUMIF({emp},$A{r},{dur}))'.format(
                     emp=log_emp_col, r=r, dur=log_dur_col
                 ),
                 # Taken / Planned split
-                '=SUMIFS({dur},{emp},$A{r},{status},"Taken")'.format(
+                '=IF($A{r}="","",SUMIFS({dur},{emp},$A{r},{status},"Taken"))'.format(
                     dur=log_dur_col, emp=log_emp_col, r=r, status=log_status_col
                 ),
-                '=SUMIFS({dur},{emp},$A{r},{status},"Planned")'.format(
+                '=IF($A{r}="","",SUMIFS({dur},{emp},$A{r},{status},"Planned"))'.format(
                     dur=log_dur_col, emp=log_emp_col, r=r, status=log_status_col
                 ),
-                # Remaining = entitlement + carried − booked
-                # (a blank entitlement cell coerces to 0 and still computes)
-                "=C{r}+D{r}-E{r}".format(r=r),
+                # Remaining = entitlement + carried − booked, blank
+                # until the row has a name (a blank entitlement cell
+                # coerces to 0 and still computes)
+                '=IF($A{r}="","",C{r}+D{r}-E{r})'.format(r=r),
                 # Utilization — division-by-zero guarded
-                "=IF((C{r}+D{r})>0,E{r}/(C{r}+D{r}),0)".format(r=r),
+                '=IF($A{r}="","",IF((C{r}+D{r})>0,E{r}/(C{r}+D{r}),0))'.format(r=r),
             ]
         )
 
@@ -378,33 +404,37 @@ def build_leave_tracker_spec(params: dict) -> dict:
                 ],
             }
         ],
-        "charts": [
-            {
-                "type": "bar",
-                "title": "Leave Days by Employee — {year}".format(year=year),
-                "anchor": "K3",
-                "width": 15,
-                "height": 9,
-                "categories_range": "Balances!$A${r0}:$A${rN}".format(
-                    r0=bal_r0, rN=bal_rN
-                ),
-                "series": [
-                    {
-                        "name": "Booked Days",
-                        "values_range": "Balances!$E${r0}:$E${rN}".format(
-                            r0=bal_r0, rN=bal_rN
-                        ),
-                    },
-                    {
-                        "name": "Remaining Days",
-                        "values_range": "Balances!$H${r0}:$H${rN}".format(
-                            r0=bal_r0, rN=bal_rN
-                        ),
-                    },
-                ],
-                "value_numfmt": QTY_FMT,
-            }
-        ],
+        "charts": (
+            [
+                {
+                    "type": "bar",
+                    "title": "Leave Days by Employee — {year}".format(year=year),
+                    "anchor": "K3",
+                    "width": 15,
+                    "height": 9,
+                    "categories_range": "Balances!$A${r0}:$A${rN}".format(
+                        r0=bal_r0, rN=bal_rN
+                    ),
+                    "series": [
+                        {
+                            "name": "Booked Days",
+                            "values_range": "Balances!$E${r0}:$E${rN}".format(
+                                r0=bal_r0, rN=bal_rN
+                            ),
+                        },
+                        {
+                            "name": "Remaining Days",
+                            "values_range": "Balances!$H${r0}:$H${rN}".format(
+                                r0=bal_r0, rN=bal_rN
+                            ),
+                        },
+                    ],
+                    "value_numfmt": QTY_FMT,
+                }
+            ]
+            if has_data
+            else []  # no people yet → nothing to chart (never invent)
+        ),
         "conditional_formats": [
             # Remaining < 0 → over-allocated (red); 0..5 days left (amber)
             {
@@ -433,16 +463,18 @@ def build_leave_tracker_spec(params: dict) -> dict:
         "protect": {"unlocked_ranges": ["A{r0}:D{rN}".format(r0=bal_r0, rN=bal_rN)]},
         "notes": notes
         or (
-            "Entitlement and Carried Over are the editable inputs (leave a "
-            "blank Entitlement until you know it — it counts as 0). Booked "
-            "sums every Leave Log row for the employee; Taken and Planned "
-            "split it by status; Remaining = Entitlement + Carried − Booked; "
-            "Utilization = Booked ÷ (Entitlement + Carried), guarded against "
-            "a zero denominator. Add bookings on the Leave Log tab — pick "
-            "the employee, type and status from the dropdowns; Duration = "
-            "End − Start + 1 (inclusive) and fills itself in. Remaining "
-            "turns red when someone is over-allocated and amber when five "
-            "days or fewer are left."
+            "Type people into the Employee column (blank rows are ready) "
+            "— their formulas fill in as you type. Entitlement and Carried "
+            "Over are the editable inputs (leave a blank Entitlement "
+            "until you know it — it counts as 0). Booked sums every "
+            "Leave Log row for the employee; Taken and Planned split it "
+            "by status; Remaining = Entitlement + Carried − Booked; "
+            "Utilization = Booked ÷ (Entitlement + Carried), guarded "
+            "against a zero denominator. Add bookings on the Leave Log "
+            "tab — pick the employee, type and status from the dropdowns; "
+            "Duration = End − Start + 1 (inclusive) and fills itself in. "
+            "Remaining turns red when someone is over-allocated and "
+            "amber when five days or fewer are left."
         ),
     }
 
@@ -457,9 +489,10 @@ def build_leave_tracker_spec(params: dict) -> dict:
                 entry["type"] if entry else None,
                 entry["start"] if entry else None,
                 entry["end"] if entry else None,
-                # Duration = End − Start + 1 (inclusive); blank-safe so the
-                # filler rows count 0 until the user fills them in
-                '=IF(OR(C{r}="",D{r}=""),0,D{r}-C{r}+1)'.format(r=r),
+                # Duration = End − Start + 1 (inclusive); blank while
+                # Start or End is missing so empty scaffold rows show
+                # nothing instead of a column of zeros
+                '=IF(OR(C{r}="",D{r}=""),"",D{r}-C{r}+1)'.format(r=r),
                 entry["status"] if entry else None,
             ]
         )
@@ -586,8 +619,8 @@ def build_leave_tracker_spec(params: dict) -> dict:
         },
         "notes": (
             "Duration = End − Start + 1 (inclusive calendar days) and "
-            "counts 0 while Start or End is blank, so empty rows never "
-            "inflate the totals. Employee names come live from the "
+            "stays blank while Start or End is missing, so empty rows "
+            "never inflate the totals. Employee names come live from the "
             "Balances tab; Type and Status are dropdowns. The total row "
             "sums all booked days; the Balances tab splits them into "
             "Taken vs Planned per employee."
