@@ -288,6 +288,93 @@ class TestContentCalendarBuilder:
         assert "charts" not in summary
         assert summary["tables"][0]["title"] == "Posts by Status"
 
+    def test_template_mode_no_posts_builds_blank_plan(self, tmp_path):
+        # TEMPLATE MODE — "create a content calendar" with no posts
+        # must build the blank plan (10 scaffold rows, status dropdown
+        # over the whole band, live zero counts) instead of raising
+        # ValueError and falling back to the AI path.
+        spec = ep.build_content_calendar_spec({})
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+
+        posts = norm["sheets"][0]
+        table = posts["tables"][0]
+        # 10 blank scaffold rows: header 4, data 5..14 — nothing invented
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 10
+        assert table["rows"][0] == [None] * 6
+        assert table["rows"][9] == [None] * 6
+
+        # status dropdown covers every scaffold row; no platform
+        # dropdown (no platforms — never invented)
+        ranges = {dv["range"]: dv for dv in posts["data_validation"]}
+        assert set(ranges) == {"E5:E14"}
+        assert ranges["E5:E14"]["values"] == [
+            "Idea",
+            "Drafting",
+            "Scheduled",
+            "Published",
+        ]
+
+        # conditional formats keep covering the blank band
+        cf_overdue, cf_status = posts["conditional_formats"]
+        assert cf_overdue["range"] == "A5:F14"
+        assert cf_status["range"] == "E5:E14"
+
+        # summary: live counts read 0 over the blank rows; status table
+        # only (no platforms); chart skipped — nothing to chart yet
+        summary = norm["sheets"][1]
+        blocks = {b["cell"]: b["text"] for b in summary["text_blocks"]}
+        assert blocks["B4"] == "=COUNTA(Posts!$B$5:$B$14)"
+        assert blocks["B5"] == '=COUNTIF(Posts!$E$5:$E$14,"Published")'
+        assert blocks["B8"] == (
+            '=COUNTIFS(Posts!$A$5:$A$14,">="&TODAY(),'
+            'Posts!$A$5:$A$14,"<="&TODAY()+7)'
+        )
+        status = summary["tables"][0]
+        assert status["title"] == "Posts by Status"
+        assert status["rows"][0] == ["Idea", "=COUNTIF(Posts!$E$5:$E$14,$A12)"]
+        assert status["total_row"] == ["Total", "=SUM(B12:B15)"]
+        assert "charts" not in summary
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "content_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Posts", "Summary"]
+        ws = wb["Posts"]
+        assert ws.auto_filter.ref == "A4:F14"
+        assert len(ws.data_validations.dataValidation) == 1
+        assert ws.data_validations.dataValidation[0].formula1 == (
+            '"Idea,Drafting,Scheduled,Published"'
+        )
+        assert not wb["Summary"]._charts
+
+    def test_template_mode_with_platforms_keeps_zero_counts(self):
+        # platforms given but no posts: the platform table + dropdown
+        # stay (COUNTIF legitimately reads 0 over the blank rows), the
+        # chart is still skipped (no meaningful data yet).
+        spec = ep.build_content_calendar_spec(
+            {"platforms": ["Instagram", "Blog"], "posts": []}
+        )
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+        posts = norm["sheets"][0]
+        ranges = {dv["range"]: dv for dv in posts["data_validation"]}
+        assert set(ranges) == {"C5:C14", "E5:E14"}
+        assert ranges["C5:C14"]["values"] == ["Instagram", "Blog"]
+
+        summary = norm["sheets"][1]
+        plat, status = summary["tables"]
+        assert plat["title"] == "Posts by Platform"
+        assert plat["rows"][0] == ["Instagram", "=COUNTIF(Posts!$C$5:$C$14,$A12)"]
+        assert plat["rows"][1] == ["Blog", "=COUNTIF(Posts!$C$5:$C$14,$A13)"]
+        assert plat["total_row"] == ["Total", "=SUM(B12:B13)"]
+        assert status["rows"][0] == ["Idea", "=COUNTIF(Posts!$E$5:$E$14,$A18)"]
+        assert "charts" not in summary
+
     def test_built_workbook(self, tmp_path):
         out = tmp_path / "content.xlsx"
         eg._build_xlsx(self.norm, out)
@@ -388,14 +475,27 @@ class TestContentCalendarCoercion:
         ]
 
     def test_missing_posts_raise(self):
-        with pytest.raises(ValueError):
-            ep.coerce_content_calendar_params({})
-        with pytest.raises(ValueError):
-            ep.coerce_content_calendar_params({"posts": []})
+        # structurally wrong input still refuses
         with pytest.raises(ValueError):
             ep.coerce_content_calendar_params({"posts": "none"})
         with pytest.raises(ValueError):
             ep.coerce_content_calendar_params(None)
+
+    def test_empty_posts_build_blank_template(self):
+        # TEMPLATE MODE — no posts is fine; never invents posts
+        for params in (
+            {},
+            {"posts": []},
+            {"posts": [{"owner": "Alex"}]},  # no title → entry skipped
+            {"posts": None, "platforms": None, "month_start": None},
+        ):
+            p = ep.coerce_content_calendar_params(params)
+            assert p["posts"] == []
+            assert p["platforms"] == []
+            assert p["calendar_name"] == "Content Calendar"
+            # month_start still defaults to the current month
+            today = date.today()
+            assert p["month_start"] == date(today.year, today.month, 1)
 
     def test_quoted_and_alias_keys(self):
         p = ep.coerce_content_calendar_params(
@@ -576,6 +676,38 @@ class TestMealPlannerBuilder:
         assert len(table["rows"]) == 8  # fully blank editable list
         assert table["rows"][0][5] == '=IF($B5="","",MAX(0,$B5-$E5))'
 
+    def test_template_mode_no_data_builds_blank_planner(self, tmp_path):
+        # The user-reported regression: "create a meal planner
+        # spreadsheet" with no dishes used to raise ValueError → AI
+        # path → small-model spec → validation failure. It must build
+        # the blank dated template instead.
+        spec = ep.build_meal_planner_spec({})
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+
+        plan = norm["sheets"][0]["tables"][0]
+        assert len(plan["rows"]) == 7  # Monday..Sunday, all dated
+        assert plan["rows"][0][0] == "Monday"
+        assert plan["rows"][6][0] == "Sunday"
+        # blank dish cells — nothing invented
+        assert all(r[c] is None for r in plan["rows"] for c in (2, 3, 4, 5))
+        # live coverage formulas survive on blank rows
+        assert plan["rows"][3][6] == '=SUMPRODUCT(--(C8:F8<>""))'
+
+        shop = norm["sheets"][1]["tables"][0]
+        assert len(shop["rows"]) == 8  # blank editable shopping rows
+        assert shop["rows"][5][5] == '=IF($B10="","",MAX(0,$B10-$E10))'
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "meal_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Plan", "Shopping List"]
+        shop_ws = wb["Shopping List"]
+        # unit dropdown covers the blank rows
+        assert len(shop_ws.data_validations.dataValidation) == 1
+
     def test_built_workbook(self, tmp_path):
         out = tmp_path / "meals.xlsx"
         eg._build_xlsx(self.norm, out)
@@ -693,15 +825,28 @@ class TestMealPlannerCoercion:
         assert p["items"][0]["quantity"] == 0.0
         assert p["items"][0]["have"] == 0.0
 
-    def test_missing_meals_raise(self):
-        with pytest.raises(ValueError):
-            ep.coerce_meal_planner_params({})
-        with pytest.raises(ValueError):
-            ep.coerce_meal_planner_params({"meals": []})
-        with pytest.raises(ValueError):
-            ep.coerce_meal_planner_params({"meals": [{"day": "Monday"}]})  # no dish
+    def test_empty_params_build_blank_template(self):
+        # TEMPLATE MODE — a bare "create a meal planner spreadsheet"
+        # request routes here with no data: the builder must produce
+        # the blank dated grid instead of refusing (the old refusal
+        # pushed these requests to the AI path, where small models
+        # hand-write invalid specs).
+        for params in (
+            {},
+            {"meals": []},
+            {"meals": [{"day": "Monday"}]},  # entry without a dish → skipped
+            {"week_start": None, "meals": None, "shopping_list": None},
+        ):
+            p = ep.coerce_meal_planner_params(params)
+            assert p["week_start"] is not None  # defaults to next Monday
+            assert all(cell == "" for row in p["grid"] for cell in row)
+            assert p["items"] == []
+
+    def test_structurally_wrong_params_still_raise(self):
         with pytest.raises(ValueError):
             ep.coerce_meal_planner_params({"meals": "none"})
+        with pytest.raises(ValueError):
+            ep.coerce_meal_planner_params({"shopping_list": "bread"})
         with pytest.raises(ValueError):
             ep.coerce_meal_planner_params(None)
 
@@ -915,6 +1060,102 @@ class TestWorkoutLogBuilder:
         assert len(norm["sheets"][1]["charts"]) == 1
         assert norm["sheets"][1]["charts"][0]["categories_range"] == "Calc!$A$4:$A$4"
 
+    def test_template_mode_no_sessions_builds_blank_log(self, tmp_path):
+        # TEMPLATE MODE — "create a workout log" with no sessions must
+        # build the blank training log (guarded live formulas on 10
+        # scaffold rows) instead of raising ValueError and falling
+        # back to the AI path.
+        spec = ep.build_workout_log_spec({})
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+
+        # no sessions → no dates to plot: Log + Summary only, no chart
+        assert [s["name"] for s in norm["sheets"]] == ["Log", "Summary"]
+        assert norm["filename"] == "workout_log.xlsx"
+
+        log = norm["sheets"][0]
+        table = log["tables"][0]
+        # 10 blank scaffold rows: header 4, data 5..14, total row 15
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 10
+        assert table["rows"][0][:5] == [None] * 5
+        assert table["rows"][9][:5] == [None] * 5
+        # guarded live formulas on every scaffold row — blank until
+        # the inputs exist, then they compute
+        assert table["rows"][0][5] == ('=IF(OR($C5="",$D5="",$E5=""),"",$C5*$D5*$E5)')
+        assert table["rows"][0][6] == '=IF(OR($D5="",$E5=""),"",$E5*(1+$D5/30))'
+        assert table["rows"][9][5] == (
+            '=IF(OR($C14="",$D14="",$E14=""),"",$C14*$D14*$E14)'
+        )
+        assert table["rows"][9][6] == '=IF(OR($D14="",$E14=""),"",$E14*(1+$D14/30))'
+        # totals SUM over the scaffold band (blank cells → 0)
+        assert table["total_row"] == [
+            "Total",
+            None,
+            "=SUM(C5:C14)",
+            "=SUM(D5:D14)",
+            None,
+            "=SUM(F5:F14)",
+            None,
+        ]
+
+        # PR conditional format covers the scaffold band with the
+        # blank-tolerant formula (ISNUMBER blocks the "" > 0 text
+        # quirk; IFERROR coerces empty-string e1RM cells to 0)
+        cf = log["conditional_formats"][0]
+        assert cf["range"] == "G5:G14"
+        assert cf["rules"][0]["value"] == (
+            "AND(ISNUMBER($G5),$G5>0,"
+            "$G5>=SUMPRODUCT(MAX(($B$5:$B$14=$B5)"
+            "*IFERROR($G$5:$G$14*1,0))))"
+        )
+
+        # Summary: five blank rows guarded on the exercise-name cell;
+        # the stats come alive as names are typed in
+        summary = norm["sheets"][1]
+        stable = summary["tables"][0]
+        assert stable["title"] == "Per-Exercise Summary"
+        assert len(stable["rows"]) == 5
+        first = stable["rows"][0]
+        assert first[0] is None
+        assert first[1] == '=IF($A6="","",COUNTIF(Log!$B$5:$B$14,$A6))'
+        assert first[2] == ('=IF($A6="","",SUMIF(Log!$B$5:$B$14,$A6,Log!$C$5:$C$14))')
+        assert first[3] == ('=IF($A6="","",SUMIF(Log!$B$5:$B$14,$A6,Log!$F$5:$F$14))')
+        assert first[4] == (
+            '=IF($A6="","",SUMPRODUCT(MAX((Log!$B$5:$B$14=$A6)'
+            "*IFERROR(Log!$G$5:$G$14*1,0))))"
+        )
+        assert first[5] == (
+            '=IF($A6="","",IF(SUMIF(Log!$B$5:$B$14,$A6,Log!$C$5:$C$14)=0,'
+            '"n/a",'
+            "SUMPRODUCT((Log!$B$5:$B$14=$A6)"
+            "*Log!$C$5:$C$14*Log!$E$5:$E$14)"
+            "/SUMIF(Log!$B$5:$B$14,$A6,Log!$C$5:$C$14)))"
+        )
+        assert stable["total_row"] == [
+            "Total",
+            "=SUM(B6:B10)",
+            "=SUM(C6:C10)",
+            "=SUM(D6:D10)",
+            None,
+            None,
+        ]
+        assert "charts" not in summary
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "workout_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Log", "Summary"]
+        ws = wb["Log"]
+        assert ws.freeze_panes == "A5"
+        assert ws.auto_filter.ref == "A4:G15"
+        assert ws["F5"].value == '=IF(OR($C5="",$D5="",$E5=""),"",$C5*$D5*$E5)'
+        assert ws["G14"].value == '=IF(OR($D14="",$E14=""),"",$E14*(1+$D14/30))'
+        assert len(list(ws.conditional_formatting)) == 1
+        assert not wb["Summary"]._charts
+
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
         eg._heal_off_by_one_formula_rows(self.norm)
@@ -984,14 +1225,32 @@ class TestWorkoutLogCoercion:
         assert p["sessions"][0]["weight"] == 0.0
 
     def test_missing_sessions_raise(self):
-        with pytest.raises(ValueError):
-            ep.coerce_workout_log_params({})
-        with pytest.raises(ValueError):
-            ep.coerce_workout_log_params({"sessions": []})
+        # structurally wrong input still refuses
         with pytest.raises(ValueError):
             ep.coerce_workout_log_params({"sessions": "none"})
         with pytest.raises(ValueError):
             ep.coerce_workout_log_params(None)
+
+    def test_empty_sessions_build_blank_template(self):
+        # TEMPLATE MODE — no logged sessions is fine; never invents
+        # exercises
+        for params in (
+            {},
+            {"sessions": []},
+            {"sessions": [{"sets": 3, "reps": 5}]},  # no exercise → skipped
+            {"sessions": None, "entries": None},
+        ):
+            p = ep.coerce_workout_log_params(params)
+            assert p["sessions"] == []
+            assert p["log_name"] == "Workout Log"
+
+    def test_template_mode_accepts_log_name_and_notes(self):
+        p = ep.coerce_workout_log_params(
+            {"log_name": "5x5 Strength", "notes": "leg day focus"}
+        )
+        assert p["sessions"] == []
+        assert p["log_name"] == "5x5 Strength"
+        assert p["notes"] == "leg day focus"
 
     def test_filename_from_log_name(self):
         spec = ep.build_workout_log_spec(
@@ -1097,6 +1356,78 @@ class TestLifestyleRouting:
         assert result["chart_count"] == 1
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
         assert "meal_planner template" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_content_calendar_routes_with_empty_params(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # content_calendar with NO posts ("create a content calendar")
+        # — the pattern must build the blank plan instead of falling
+        # back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "content_calendar", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a content calendar")
+        assert result["pattern"] == "content_calendar"
+        assert result["sheet_names"] == ["Posts", "Summary"]
+        assert result["chart_count"] == 0
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_meal_planner_routes_with_empty_params(self, tmp_path, monkeypatch):
+        # The user-reported bug: the classifier returns meal_planner
+        # with NO params (the request gave no dishes) — the pattern
+        # must still apply and build the blank template instead of
+        # falling back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "meal_planner", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a meal planner spreadsheet")
+        assert result["pattern"] == "meal_planner"
+        assert result["sheet_names"] == ["Plan", "Shopping List"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_workout_log_routes_with_empty_params(self, tmp_path, monkeypatch):
+        # Same class of bug as meal_planner: the classifier returns
+        # workout_log with NO sessions ("create a workout log") — the
+        # pattern must build the blank training log instead of falling
+        # back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "workout_log", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a workout log spreadsheet")
+        assert result["pattern"] == "workout_log"
+        # blank log → no dates to plot → no Calc sheet, no chart
+        assert result["sheet_names"] == ["Log", "Summary"]
+        assert result["chart_count"] == 0
+        assert "workout_log template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
     @pytest.mark.asyncio
     async def test_workout_log_routes_to_template(self, tmp_path, monkeypatch):
