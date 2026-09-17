@@ -30,7 +30,6 @@ from app.services import patterns as ep  # noqa: E402
 def _classify_response(payload):
     """Fake _call_llm returning a canned classifier JSON object."""
     if isinstance(payload, Exception):
-
         async def failing_llm(messages, model=None):
             raise payload
 
@@ -60,17 +59,17 @@ class TestStanzaRegistryConsistency:
         _, stanzas, _ = eg._parse_classifier_prompt()
         builders = set(ep.PATTERN_BUILDERS)
         stanza_names = set(stanzas) - {"none"}
-        assert (
-            stanza_names <= builders
-        ), f"stanzas without a registered builder: {sorted(stanza_names - builders)}"
+        assert stanza_names <= builders, (
+            f"stanzas without a registered builder: {sorted(stanza_names - builders)}"
+        )
 
     def test_every_pattern_has_a_stanza(self):
         _, stanzas, _ = eg._parse_classifier_prompt()
         stanza_names = set(stanzas) - {"none"}
         builders = set(ep.PATTERN_BUILDERS)
-        assert (
-            builders <= stanza_names
-        ), f"registered patterns without a prompt stanza: {sorted(builders - stanza_names)}"
+        assert builders <= stanza_names, (
+            f"registered patterns without a prompt stanza: {sorted(builders - stanza_names)}"
+        )
 
     def test_none_stanza_exists(self):
         _, stanzas, _ = eg._parse_classifier_prompt()
@@ -88,9 +87,9 @@ class TestStanzaRegistryConsistency:
 
     def test_every_pattern_has_a_description(self):
         for name, desc in ep.PATTERN_DESCRIPTIONS.items():
-            assert (
-                isinstance(desc, str) and desc.strip()
-            ), f"pattern {name!r} has no PATTERN_DESCRIPTION"
+            assert isinstance(desc, str) and desc.strip(), (
+                f"pattern {name!r} has no PATTERN_DESCRIPTION"
+            )
 
     def test_registry_is_large(self):
         # The whole point of two-stage routing: 30+ patterns.
@@ -260,9 +259,9 @@ class TestClassifierPromptAssembly:
         prompt = eg._classifier_system_prompt(shortlist)
         for name in shortlist:
             marker_line = f'- "{name}"'
-            assert (
-                prompt.count(marker_line) == 1
-            ), f"stanza {name!r} must appear exactly once"
+            assert prompt.count(marker_line) == 1, (
+                f"stanza {name!r} must appear exactly once"
+            )
         # "none" stanza line must also appear exactly once
         assert prompt.count('- "none"') == 1
 
@@ -294,7 +293,9 @@ class TestTryPatternSpecWiring:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_classifier_receives_only_shortlisted_stanzas(self, monkeypatch):
+    async def test_classifier_receives_only_shortlisted_stanzas(
+        self, monkeypatch
+    ):
         store: list = []
         monkeypatch.setattr(eg, "_call_llm", _capture_llm(store))
         result = await eg._try_pattern_spec(
@@ -387,7 +388,9 @@ class TestTryPatternSpecWiring:
                 }
             ),
         )
-        result = await eg._try_pattern_spec("break even analysis for my widget", "")
+        result = await eg._try_pattern_spec(
+            "break even analysis for my widget", ""
+        )
         assert result is not None
         normalized, name = result
         assert name == "break_even"
