@@ -22,6 +22,25 @@ One sheet ("Plan", navy):
              carry dates, else a progress bar chart, anchored right of
              the table
 
+TEMPLATE MODE: a request with no tasks ("create a project plan")
+builds the BLANK task plan — never invents tasks (hard rule), never
+refuses for lack of data. Ten blank scaffold rows carry the same
+live guarded Duration / Days-Remaining formulas (blank until both
+dates exist), and the Status + Milestone dropdowns, overdue /
+progress conditional formats and the Summary tallies all cover the
+scaffold band — the workbook comes alive row by row as tasks are
+typed in, with the counts legitimately reading 0 over the blanks.
+With no tasks there is nothing to chart, so the timeline / progress
+chart is skipped.
+
+FILL MODE: when the request states an objective/deadline but no
+  tasks, the router sets "fill": true and excel_gen drafts a starter
+  task breakdown via prompts/pattern_populator.md BEFORE calling
+  the builder. Drafted params flow through coerce_project_plan_params
+  like any other; a failed draft falls back to the extracted params
+  (blank task rows).
+
+
 Overdue detection is a formula-type conditional format: end date in
 the past AND status <> "Completed" paints the status cell red; the
 Days Remaining column turns red when negative and amber inside the
@@ -48,7 +67,8 @@ PATTERN_DESCRIPTION = (
     "Project plan / task schedule: one row per task with owner, start "
     "& end dates, live duration and days-remaining formulas, progress "
     "%, status colors, overdue detection, milestone tallies and a "
-    "duration timeline chart."
+    "duration timeline chart — a request with no tasks still gets a "
+    "blank task plan template."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -66,7 +86,13 @@ PATTERN_KEYWORDS = (
     "sprint",
 )
 
+# Fillable pattern: guidance-only requests (goals, split, frequency…)
+# may draft starter sessions via prompts/pattern_populator.md before
+# building — see PATTERN_FILLABLE in patterns/__init__.py.
+PATTERN_FILL = True
+
 MAX_TASKS = 200
+MIN_TASK_ROWS = 10  # blank scaffold rows in template mode
 
 # Design tokens (same palette as the converter).
 NAVY = "16304F"
@@ -196,8 +222,10 @@ def _normalize_task_entry(entry: Any) -> Optional[dict]:
 def coerce_project_plan_params(params: dict) -> dict:
     """Validate + normalize classifier params; raises ValueError.
 
-    Required: at least one task with a name (the stanza forbids
-    inventing tasks, so an empty list cannot be templated).
+    Template mode: empty/missing tasks are FINE — the builder emits
+    the blank task plan with scaffold rows (the "create a project
+    plan" case). ValueError only for structurally wrong params
+    (non-object params, non-array tasks).
     """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
@@ -210,17 +238,16 @@ def coerce_project_plan_params(params: dict) -> dict:
     deadline = to_iso_date(_pick(params, "deadline", "due_date", "target_date", "due"))
 
     raw_tasks = _pick(params, "tasks", "task_list", "items", "lines")
-    if raw_tasks is None:
-        raise ValueError("tasks are required — a project plan needs at least one task")
-    if not isinstance(raw_tasks, list):
-        raise ValueError("tasks must be an array")
     tasks: List[dict] = []
-    for entry in raw_tasks[:MAX_TASKS]:
-        normalized = _normalize_task_entry(entry)
-        if normalized is not None:
-            tasks.append(normalized)
-    if not tasks:
-        raise ValueError("no usable tasks — every entry needs a task name")
+    if raw_tasks is not None:
+        if not isinstance(raw_tasks, list):
+            raise ValueError("tasks must be an array")
+        for entry in raw_tasks[:MAX_TASKS]:
+            normalized = _normalize_task_entry(entry)
+            if normalized is not None:
+                tasks.append(normalized)
+    # Template mode: zero usable tasks is fine — blank scaffold rows
+    # (never invent tasks).
 
     notes = _pick(params, "notes", "note")
     notes = notes.strip()[:1000] if isinstance(notes, str) and notes.strip() else None
@@ -243,22 +270,27 @@ def build_project_plan_spec(params: dict) -> dict:
       row 2      usage hint
       row 3      Project Deadline label + date (deadline given only)
       row 5      headers A..I
-      rows 6..   one row per task; E/F are live formulas
+      rows 6..   one row per task; E/F are live formulas (template
+                 mode: blank scaffold rows padded to 10, same guarded
+                 E/F formulas, dropdowns + CF over the whole band)
       row+3..    Summary block (COUNTIF/COUNTIFS/AVERAGE tallies)
-      chart      anchored K5 (durations bar_h, or progress bar)
+      chart      anchored K5 (durations bar_h, or progress bar) —
+                 skipped entirely when there are no tasks
     """
     p = coerce_project_plan_params(params)
     project_name: Optional[str] = p["project_name"]
     deadline: Optional[str] = p["deadline"]
     tasks: List[dict] = p["tasks"]
     notes = p["notes"]
+    template_mode = not tasks
 
     display_title = f"{project_name} — Project Plan" if project_name else "Project Plan"
 
     # ── geometry (all formulas below reference THESE integers) ──────
     header_row = 5
     first = header_row + 1
-    last = first + len(tasks) - 1
+    n_rows = len(tasks) if tasks else MIN_TASK_ROWS
+    last = first + n_rows - 1
     s0 = last + 3  # Summary section label row
 
     task_rows: List[List[Any]] = []
@@ -279,6 +311,23 @@ def build_project_plan_spec(params: dict) -> dict:
                 "Yes" if t["milestone"] else "No",
             ]
         )
+    while len(task_rows) < n_rows:  # template scaffold rows
+        r = first + len(task_rows)
+        task_rows.append(
+            [
+                None,
+                None,
+                None,
+                None,
+                # Duration (days) — same live guard as data rows
+                '=IF(OR(C{r}="",D{r}=""),"",D{r}-C{r}+1)'.format(r=r),
+                # Days Remaining — same live guard as data rows
+                '=IF(D{r}="","",D{r}-TODAY())'.format(r=r),
+                None,
+                None,
+                None,
+            ]
+        )
 
     blocks: List[dict] = [
         {
@@ -294,6 +343,11 @@ def build_project_plan_spec(params: dict) -> dict:
                 "Enter each task once — Duration, Days Remaining and the "
                 "Summary update automatically. Pick Status and Milestone "
                 "from the dropdowns; overdue tasks turn red."
+                if not template_mode
+                else "Blank task plan — type your tasks into the rows below; "
+                "Duration, Days Remaining and the Summary update as the "
+                "dates come in. Pick Status and Milestone from the "
+                "dropdowns; overdue tasks turn red."
             ),
             "italic": True,
             "font_color": MUTED,
@@ -515,7 +569,14 @@ def build_project_plan_spec(params: dict) -> dict:
         )
 
     sheet_notes = notes or (
-        "One row per task. Duration = End - Start + 1 and Days Remaining "
+        "Blank task plan — one row per task. Duration = End - Start + 1 "
+        "and Days Remaining = End - TODAY() are live and stay blank until "
+        "both dates exist; Progress is a percent of 100. Status colors: "
+        "Completed green, In Progress amber, overdue (past end date, not "
+        "Completed) red. The Summary tallies read 0 until tasks are "
+        "typed in and update live from there."
+        if template_mode
+        else "One row per task. Duration = End - Start + 1 and Days Remaining "
         "= End - TODAY() are live; Progress is a percent of 100. Status "
         "colors: Completed green, In Progress amber, overdue (past end "
         "date, not Completed) red. The Summary tallies and the chart "
