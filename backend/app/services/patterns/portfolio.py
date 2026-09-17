@@ -61,6 +61,22 @@ PATTERN_DESCRIPTION = (
     "amortization schedules."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "portfolio",
+    "invest",
+    "stock",
+    "holding",
+    "share",
+    "ticker",
+    "crypto",
+    "etf",
+    "bond",
+    "dividend",
+    "position",
+)
+
 MAX_PORTFOLIO_HOLDINGS = 200
 MAX_PORTFOLIO_TRANSACTIONS = 500
 
