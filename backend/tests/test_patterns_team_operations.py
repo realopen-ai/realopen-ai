@@ -125,34 +125,40 @@ class TestLeaveTrackerBuilder:
         assert len(log_table["rows"]) == 10
 
         alice, bob, dana = bal_table["rows"]
-        # every ref points at the rows the converter actually renders
-        assert alice[4] == "=SUMIF('Leave Log'!$A$5:$A$14,$A5,'Leave Log'!$E$5:$E$14)"
+        # every ref points at the rows the converter actually renders;
+        # formulas guarded on the employee name so scaffold rows stay
+        # blank until a name is typed
+        assert alice[4] == (
+            '=IF($A5="","",SUMIF(\'Leave Log\'!$A$5:$A$14,$A5,'
+            "'Leave Log'!$E$5:$E$14))"
+        )
         assert alice[5] == (
-            "=SUMIFS('Leave Log'!$E$5:$E$14,"
+            '=IF($A5="","",SUMIFS(\'Leave Log\'!$E$5:$E$14,'
             "'Leave Log'!$A$5:$A$14,$A5,"
-            "'Leave Log'!$F$5:$F$14,\"Taken\")"
+            "'Leave Log'!$F$5:$F$14,\"Taken\"))"
         )
         assert alice[6] == (
-            "=SUMIFS('Leave Log'!$E$5:$E$14,"
+            '=IF($A5="","",SUMIFS(\'Leave Log\'!$E$5:$E$14,'
             "'Leave Log'!$A$5:$A$14,$A5,"
-            "'Leave Log'!$F$5:$F$14,\"Planned\")"
+            "'Leave Log'!$F$5:$F$14,\"Planned\"))"
         )
         # remaining = entitlement + carried − booked (live, blank-safe)
-        assert alice[7] == "=C5+D5-E5"
-        assert alice[8] == "=IF((C5+D5)>0,E5/(C5+D5),0)"
-        assert bob[7] == "=C6+D6-E6"
+        assert alice[7] == '=IF($A5="","",C5+D5-E5)'
+        assert alice[8] == '=IF($A5="","",IF((C5+D5)>0,E5/(C5+D5),0))'
+        assert bob[7] == '=IF($A6="","",C6+D6-E6)'
         # Dana has no stated entitlement — still a live formula
-        assert dana[7] == "=C7+D7-E7"
+        assert dana[7] == '=IF($A7="","",C7+D7-E7)'
         # total row pins to the exact data rows 5..7
         total = bal_table["total_row"]
         assert total[4] == "=SUM(E5:E7)"
         assert total[7] == "=SUM(H5:H7)"
         assert total[8] == "=IF((C8+D8)>0,E8/(C8+D8),0)"
 
-        # log duration = end − start + 1, blank-safe on the filler rows
-        assert log_table["rows"][0][4] == '=IF(OR(C5="",D5=""),0,D5-C5+1)'
-        assert log_table["rows"][3][4] == '=IF(OR(C8="",D8=""),0,D8-C8+1)'
-        assert log_table["rows"][9][4] == '=IF(OR(C14="",D14=""),0,D14-C14+1)'
+        # log duration = end − start + 1, guarded blank on the filler
+        # rows (blank, not a column of zeros)
+        assert log_table["rows"][0][4] == '=IF(OR(C5="",D5=""),"",D5-C5+1)'
+        assert log_table["rows"][3][4] == '=IF(OR(C8="",D8=""),"",D8-C8+1)'
+        assert log_table["rows"][9][4] == '=IF(OR(C14="",D14=""),"",D14-C14+1)'
         assert log_table["total_row"][4] == "=SUM(E5:E14)"
 
     def test_booked_days_math_independently(self):
@@ -198,14 +204,14 @@ class TestLeaveTrackerBuilder:
         eg._build_xlsx(self.norm, out)
         wb = load_workbook(out)
         bal, log = wb["Balances"], wb["Leave Log"]
-        # live formulas survive the round-trip
-        assert (
-            bal["E5"].value
-            == "=SUMIF('Leave Log'!$A$5:$A$14,$A5,'Leave Log'!$E$5:$E$14)"
+        # live formulas survive the round-trip (guarded on the name)
+        assert bal["E5"].value == (
+            '=IF($A5="","",SUMIF(\'Leave Log\'!$A$5:$A$14,$A5,'
+            "'Leave Log'!$E$5:$E$14))"
         )
-        assert bal["H5"].value == "=C5+D5-E5"
+        assert bal["H5"].value == '=IF($A5="","",C5+D5-E5)'
         assert bal["E8"].value == "=SUM(E5:E7)"
-        assert log["E5"].value == '=IF(OR(C5="",D5=""),0,D5-C5+1)'
+        assert log["E5"].value == '=IF(OR(C5="",D5=""),"",D5-C5+1)'
         assert log["E15"].value == "=SUM(E5:E14)"
         # dates render as real dates with the shared date format
         assert log["C5"].value.date() == date(2026, 3, 2)
@@ -226,6 +232,50 @@ class TestLeaveTrackerBuilder:
         assert len(bal.conditional_formatting._cf_rules) == 1
         # one chart on the main sheet
         assert len(bal._charts) == 1
+
+    def test_template_mode_no_data_builds_blank_tracker(self, tmp_path):
+        # "create a leave tracker" — no people, no bookings: the blank
+        # template must build instead of raising (a ValueError would
+        # send the request to the AI path).
+        spec = ep.build_leave_tracker_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+        assert not [w for w in warnings if "overlap" in w]
+        norm = eg._normalize_spec(spec)
+        bal, log = norm["sheets"]
+
+        # 8 blank employee rows with guarded live formulas in place
+        bal_table = bal["tables"][0]
+        assert len(bal_table["rows"]) == 8
+        assert all(r[0] is None for r in bal_table["rows"])  # no invented names
+        assert bal_table["rows"][0][4] == (
+            '=IF($A5="","",SUMIF(\'Leave Log\'!$A$5:$A$14,$A5,'
+            "'Leave Log'!$E$5:$E$14))"
+        )
+        assert bal_table["rows"][5][7] == '=IF($A10="","",C10+D10-E10)'
+        # total row sums the scaffold band (all blank → 0)
+        assert bal_table["total_row"][4] == "=SUM(E5:E12)"
+        # no people → no chart (never invents data to plot)
+        assert not bal.get("charts")
+
+        # 10 blank log rows, guarded duration + dropdowns over them
+        log_table = log["tables"][0]
+        assert len(log_table["rows"]) == 10
+        assert log_table["rows"][4][4] == '=IF(OR(C9="",D9=""),"",D9-C9+1)'
+        assert log_table["total_row"][4] == "=SUM(E5:E14)"
+        dvs = {d["range"] for d in log["data_validation"]}
+        assert dvs == {"A5:A14", "B5:B14", "F5:F14"}
+        types_dv = [d for d in log["data_validation"] if d["range"] == "B5:B14"][0]
+        assert types_dv["values"] == ["Vacation", "Sick", "Unpaid"]  # reference vocab
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "leave_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Balances", "Leave Log"]
+        assert len(wb["Leave Log"].data_validations.dataValidation) == 3
+        assert wb["Balances"]["E5"].value.startswith('=IF($A5="","",SUMIF')
 
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
@@ -310,15 +360,24 @@ class TestLeaveTrackerCoercion:
         )
         assert [e["name"] for e in p["employees"]] == ["Alice", "Bob"]
 
-    def test_missing_everything_raises(self):
+    def test_template_mode_empty_params_are_fine(self):
+        # blank-template mode: no employees and no log entries build the
+        # blank tracker instead of raising
+        p = ep.coerce_leave_tracker_params({})
+        assert p["employees"] == []
+        assert p["leave_log"] == []
+        assert p["year"] == date.today().year  # stanza default
+        assert p["types"] == ["Vacation", "Sick", "Unpaid"]
+        p = ep.coerce_leave_tracker_params({"employees": [], "leave_log": []})
+        assert p["employees"] == [] and p["leave_log"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_leave_tracker_params({})
+            ep.coerce_leave_tracker_params(["nope"])  # params not an object
         with pytest.raises(ValueError):
-            ep.coerce_leave_tracker_params({"employees": []})
+            ep.coerce_leave_tracker_params({"employees": "Alice"})  # not an array
         with pytest.raises(ValueError):
-            ep.coerce_leave_tracker_params({"leave_log": []})
-        with pytest.raises(ValueError):
-            ep.coerce_leave_tracker_params(["nope"])
+            ep.coerce_leave_tracker_params({"leave_log": {"a": 1}})  # not an array
 
     def test_log_entries_without_dates_dropped(self):
         p = ep.coerce_leave_tracker_params(
@@ -351,6 +410,29 @@ class TestLeaveTrackerRouting:
             "leave tracker for my team: vacation and PTO balances with "
             "carried over days"
         )
+        assert result["pattern"] == "leave_tracker"
+        assert result["sheet_names"] == ["Balances", "Leave Log"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # "create a leave tracker" — the classifier returns the pattern
+        # with NO params: the blank template must build and the AI path
+        # must never run.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "leave_tracker", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a leave tracker spreadsheet")
         assert result["pattern"] == "leave_tracker"
         assert result["sheet_names"] == ["Balances", "Leave Log"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
@@ -398,9 +480,10 @@ class TestTimesheetBuilder:
         assert table["headers"][8] == "Total Hours"
 
         row_a, row_b = table["rows"]
-        # row totals = SUM across the day columns
-        assert row_a[8] == "=SUM(B10:H10)"
-        assert row_b[8] == "=SUM(B11:H11)"
+        # row totals = guarded SUM across the day columns (blank until
+        # the row has any hours)
+        assert row_a[8] == '=IF(COUNT(B10:H10)=0,"",SUM(B10:H10))'
+        assert row_b[8] == '=IF(COUNT(B11:H11)=0,"",SUM(B11:H11))'
         # day not worked → blank cell (SUM-friendly), not 0
         assert row_a[6] is None and row_a[7] is None
         assert row_b[0] == "Project B" and row_b[5] is None
@@ -445,7 +528,9 @@ class TestTimesheetBuilder:
         for i, (row, expected) in enumerate(zip(rows, per_project)):
             hours = [v for v in row[1:8] if isinstance(v, (int, float))]
             assert sum(hours) == expected
-            assert row[8] == "=SUM(B{r}:H{r})".format(r=10 + i)
+            assert row[8] == '=IF(COUNT(B{r}:H{r})=0,"",SUM(B{r}:H{r}))'.format(
+                r=10 + i
+            )
 
         # overtime split on the grand total against the threshold
         reg = min(grand, 40)
@@ -465,7 +550,7 @@ class TestTimesheetBuilder:
         eg._build_xlsx(self.norm, out)
         wb = load_workbook(out)
         ws = wb["Timesheet"]
-        assert ws["I10"].value == "=SUM(B10:H10)"
+        assert ws["I10"].value == '=IF(COUNT(B10:H10)=0,"",SUM(B10:H10))'
         assert ws["B12"].value == "=SUM(B10:B11)"
         assert ws["B16"].value == "=MIN(B15,$B$6)"
         assert ws["B19"].value == "=B17*$B$5*$B$7"
@@ -492,7 +577,7 @@ class TestTimesheetBuilder:
         table = sheet["tables"][0]
         # no rate → no assumptions block → header at row 4, data row 5
         assert table["start_cell"] == "A4"
-        assert table["rows"][0][8] == "=SUM(B5:H5)"
+        assert table["rows"][0][8] == '=IF(COUNT(B5:H5)=0,"",SUM(B5:H5))'
         assert table["total_row"][8] == "=SUM(I5:I5)"
         blocks = {b["cell"]: b for b in sheet["text_blocks"]}
         assert "B5" not in blocks  # no rate cell
@@ -501,6 +586,57 @@ class TestTimesheetBuilder:
             sheet.get("charts")
             and sheet["charts"][0]["categories_range"] == "Timesheet!$A$5:$A$5"
         )
+
+    def test_template_mode_no_entries_builds_blank_timesheet(self, tmp_path):
+        # "create a timesheet" — no projects, no hours: the blank
+        # weekly timesheet must build instead of raising.
+        spec = ep.build_timesheet_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+        assert not [w for w in warnings if "overlap" in w]
+        norm = eg._normalize_spec(spec)
+        sheet = norm["sheets"][0]
+
+        # no rate → no assumptions / pay block, header row 4, 8 blank
+        # project rows 5..12 with guarded totals
+        table = sheet["tables"][0]
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 8
+        assert all(r[0] is None for r in table["rows"])  # no invented projects
+        assert all(r[1:8] == [None] * 7 for r in table["rows"])  # no invented hours
+        assert table["rows"][0][8] == '=IF(COUNT(B5:H5)=0,"",SUM(B5:H5))'
+        assert table["rows"][7][8] == '=IF(COUNT(B12:H12)=0,"",SUM(B12:H12))'
+        # day totals + grand total stay live over the scaffold band
+        assert table["total_row"][1] == "=SUM(B5:B12)"
+        assert table["total_row"][8] == "=SUM(I5:I12)"
+        blocks = {b["cell"] for b in sheet["text_blocks"]}
+        assert "B5" not in blocks and "A15" not in blocks  # no pay block
+        # nothing to chart yet
+        assert not sheet.get("charts")
+
+        # rate but no entries → pay block kept, totals compute 0
+        spec_pay = ep.build_timesheet_spec({"hourly_rate": 25, "currency": "USD"})
+        errors, _ = eg.validate_workbook_spec(spec_pay)
+        assert errors == []
+        pay_sheet = eg._normalize_spec(spec_pay)["sheets"][0]
+        pay_blocks = {b["cell"]: b for b in pay_sheet["text_blocks"]}
+        assert pay_blocks["B5"]["text"] == 25.0
+        pay_table = pay_sheet["tables"][0]
+        assert pay_table["start_cell"] == "A9"
+        assert len(pay_table["rows"]) == 8
+        assert pay_table["total_row"][8] == "=SUM(I10:I17)"
+        # pay summary sits below the scaffold band and stays live:
+        # total row 18 → PAY SUMMARY heading 20, first value rows 21/22
+        assert pay_blocks["B21"]["text"] == "=I18"
+        assert pay_blocks["B22"]["text"] == "=MIN(B21,$B$6)"
+
+        # the blank workbook still round-trips through openpyxl
+        out = tmp_path / "timesheet_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Timesheet"]
+        assert wb["Timesheet"]["I5"].value == '=IF(COUNT(B5:H5)=0,"",SUM(B5:H5))'
 
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
@@ -552,15 +688,26 @@ class TestTimesheetCoercion:
         assert p["entries"][0]["hours"][5] == 4.0
         assert p["entries"][0]["hours"][1] is None
 
-    def test_entries_required(self):
+    def test_template_mode_empty_entries_are_fine(self):
+        # blank-template mode: no entries → blank weekly timesheet
+        p = ep.coerce_timesheet_params({})
+        assert p["entries"] == []
+        assert p["hourly_rate"] is None  # no rate → no pay block
+        assert p["week_start"] == _monday_of(date.today()).isoformat()
+        p = ep.coerce_timesheet_params({"entries": []})
+        assert p["entries"] == []
+        # an entry without a project is unusable data, not structural
+        # garbage — dropped, template mode still applies
+        p = ep.coerce_timesheet_params({"entries": [{"hours": 8}]})
+        assert p["entries"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_timesheet_params({})
+            ep.coerce_timesheet_params("nope")  # params not an object
         with pytest.raises(ValueError):
-            ep.coerce_timesheet_params({"entries": []})
+            ep.coerce_timesheet_params({"entries": "Project A"})  # not an array
         with pytest.raises(ValueError):
-            ep.coerce_timesheet_params({"entries": [{"hours": 8}]})  # no project
-        with pytest.raises(ValueError):
-            ep.coerce_timesheet_params("nope")
+            ep.coerce_timesheet_params({"entries": {"project": "A"}})
 
     def test_currency_alias(self):
         p = ep.coerce_timesheet_params(
@@ -590,6 +737,29 @@ class TestTimesheetRouting:
         result = await eg.generate_spreadsheet(
             "timesheet for the hours I worked last week, with hourly rate"
         )
+        assert result["pattern"] == "timesheet"
+        assert result["sheet_names"] == ["Timesheet"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # "create a timesheet" — the classifier returns the pattern with
+        # NO params: the blank weekly template must build and the AI
+        # path must never run.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "timesheet", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create a weekly timesheet spreadsheet")
         assert result["pattern"] == "timesheet"
         assert result["sheet_names"] == ["Timesheet"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
@@ -655,13 +825,14 @@ class TestShiftScheduleBuilder:
         assert rota_table["headers"][0] == "Staff Member"
         assert rota_table["headers"][2] == "Mon 12 Jan"
 
-        # visible grid holds clean codes; weekly hours ← Calc sum cell
+        # visible grid holds clean codes; weekly hours ← guarded Calc
+        # sum cell (blank until the row has a staff member)
         alice = rota_table["rows"][0]
         assert alice[2:9] == ["M", "M", "E", "M", "M", "N", "O"]
-        assert alice[9] == "=Calc!J5"
+        assert alice[9] == '=IF($A5="","",Calc!J5)'
         bob = rota_table["rows"][1]
         assert bob[8] is None  # blank day omitted
-        assert bob[9] == "=Calc!J6"
+        assert bob[9] == '=IF($A6="","",Calc!J6)'
 
         # totals: per-day hours summed from Calc, week total from Rota
         total = rota_table["total_row"]
@@ -680,17 +851,20 @@ class TestShiftScheduleBuilder:
         ]
 
         # Calc: one row per staff, per-day VLOOKUP against the codes
+        # (guarded on the staff mirror in column B)
         calc_table = calc["tables"][0]
         assert calc_table["start_cell"] == "B4"
-        assert calc_table["rows"][0][0] == "=Rota!$A$5"
+        assert calc_table["rows"][0][0] == '=IF(Rota!$A$5="","",Rota!$A$5)'
         assert calc_table["rows"][0][1] == (
-            '=IF(Rota!C5="",0,IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$8,3,FALSE),0))'
+            '=IF($B5="","",IF(Rota!C5="",0,'
+            "IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$8,3,FALSE),0)))"
         )
         assert calc_table["rows"][2][7] == (
-            '=IF(Rota!I7="",0,IFERROR(VLOOKUP(Rota!I7,Codes!$A$5:$C$8,3,FALSE),0))'
+            '=IF($B7="","",IF(Rota!I7="",0,'
+            "IFERROR(VLOOKUP(Rota!I7,Codes!$A$5:$C$8,3,FALSE),0)))"
         )
-        assert calc_table["rows"][0][8] == "=SUM(C5:I5)"
-        assert calc_table["rows"][1][8] == "=SUM(C6:I6)"
+        assert calc_table["rows"][0][8] == '=IF($B5="","",SUM(C5:I5))'
+        assert calc_table["rows"][1][8] == '=IF($B6="","",SUM(C6:I6))'
 
         # day dropdowns read the codes block live
         dv = rota["data_validation"][0]
@@ -725,7 +899,7 @@ class TestShiftScheduleBuilder:
         calc = self.norm["sheets"][2]
         rows = calc["tables"][0]["rows"]
         for i, person in enumerate(SHIFT_PARAMS["staff"]):
-            assert rows[i][8] == "=SUM(C{r}:I{r})".format(r=5 + i)
+            assert rows[i][8] == '=IF($B{r}="","",SUM(C{r}:I{r}))'.format(r=5 + i)
 
     def test_custom_codes_and_blank_days(self):
         spec = ep.build_shift_schedule_spec(
@@ -750,7 +924,8 @@ class TestShiftScheduleBuilder:
         ]
         # VLOOKUP range computed from the ACTUAL number of code rows
         assert calc["tables"][0]["rows"][0][1] == (
-            '=IF(Rota!C5="",0,IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$7,3,FALSE),0))'
+            '=IF($B5="","",IF(Rota!C5="",0,'
+            "IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$7,3,FALSE),0)))"
         )
         # dropdown source follows the code list length too
         assert (
@@ -771,14 +946,16 @@ class TestShiftScheduleBuilder:
         rota, codes, calc = wb["Rota"], wb["Codes"], wb["Calc"]
         # visible grid: clean codes, weekly hours referencing Calc
         assert rota["C5"].value == "M"
-        assert rota["J5"].value == "=Calc!J5"
+        assert rota["J5"].value == '=IF($A5="","",Calc!J5)'
         assert rota["C8"].value == "=SUM(Calc!C5:C7)"
-        # hidden Calc sheet holds the VLOOKUP lattice
+        # hidden Calc sheet holds the guarded VLOOKUP lattice
         assert calc.sheet_state == "hidden"
+        assert calc["B5"].value == '=IF(Rota!$A$5="","",Rota!$A$5)'
         assert calc["C5"].value == (
-            '=IF(Rota!C5="",0,IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$8,3,FALSE),0))'
+            '=IF($B5="","",IF(Rota!C5="",0,'
+            "IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$8,3,FALSE),0)))"
         )
-        assert calc["J5"].value == "=SUM(C5:I5)"
+        assert calc["J5"].value == '=IF($B5="","",SUM(C5:I5))'
         # codes reference block + live dropdown
         assert codes["A5"].value == "M"
         assert codes["C5"].value == 8
@@ -790,6 +967,60 @@ class TestShiftScheduleBuilder:
         assert rota.freeze_panes == "C5"
         assert len(rota._charts) == 1
         assert len(rota.conditional_formatting._cf_rules) == 2
+
+    def test_template_mode_no_staff_builds_blank_rota(self, tmp_path):
+        # "make a shift schedule" — no staff: the blank rota must build
+        # with the DEFAULT reference codes still emitted.
+        spec = ep.build_shift_schedule_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+        assert not [w for w in warnings if "overlap" in w]
+        norm = eg._normalize_spec(spec)
+        rota, codes, calc = norm["sheets"]
+
+        # 8 blank staff rows × 7 day columns, guarded Weekly Hours
+        rota_table = rota["tables"][0]
+        assert len(rota_table["rows"]) == 8
+        assert all(r[0] is None for r in rota_table["rows"])  # no invented staff
+        assert all(r[2:9] == [None] * 7 for r in rota_table["rows"])
+        assert rota_table["rows"][3][9] == '=IF($A8="","",Calc!J8)'
+        assert rota_table["total_row"][2] == "=SUM(Calc!C5:C12)"
+        assert rota_table["total_row"][9] == "=SUM(J5:J12)"
+        # no staff → no chart
+        assert not rota.get("charts")
+
+        # Codes tab keeps the DEFAULT M/E/N/O reference codes
+        assert codes["tables"][0]["rows"] == [
+            ["M", "Morning", 8.0],
+            ["E", "Evening", 8.0],
+            ["N", "Night", 10.0],
+            ["O", "Off", 0.0],
+        ]
+
+        # day-cell dropdowns sourced from the codes over the scaffold
+        dv = rota["data_validation"][0]
+        assert dv["range"] == "C5:I12"
+        assert dv["source_range"] == "Codes!$A$5:$A$8"
+
+        # hidden Calc lattice extended over the scaffold rows, guarded
+        calc_rows = calc["tables"][0]["rows"]
+        assert len(calc_rows) == 8
+        assert calc_rows[6][0] == '=IF(Rota!$A$11="","",Rota!$A$11)'
+        assert calc_rows[6][1] == (
+            '=IF($B11="","",IF(Rota!C11="",0,'
+            "IFERROR(VLOOKUP(Rota!C11,Codes!$A$5:$C$8,3,FALSE),0)))"
+        )
+        assert calc_rows[6][8] == '=IF($B11="","",SUM(C11:I11))'
+
+        # the blank workbook still round-trips through openpyxl
+        out = tmp_path / "shift_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Rota", "Codes", "Calc"]
+        assert wb["Calc"].sheet_state == "hidden"
+        assert wb["Codes"]["A5"].value == "M"
+        assert len(wb["Rota"].data_validations.dataValidation) == 1
 
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
@@ -822,15 +1053,24 @@ class TestShiftScheduleCoercion:
         assert [s["name"] for s in p["staff"]] == ["Alice", "Bob"]
         assert all(s["days"] == [None] * 7 for s in p["staff"])
 
-    def test_staff_required(self):
+    def test_template_mode_empty_staff_is_fine(self):
+        # blank-template mode: no staff → blank rota, default codes
+        p = ep.coerce_shift_schedule_params({})
+        assert p["staff"] == []
+        assert [c[0] for c in p["shift_codes"]] == ["M", "E", "N", "O"]
+        assert p["week_start"] == _next_monday(date.today()).isoformat()
+        p = ep.coerce_shift_schedule_params({"staff": []})
+        assert p["staff"] == []
+        # a staff entry without a name is unusable data, not structural
+        # garbage — dropped, template mode still applies
+        p = ep.coerce_shift_schedule_params({"staff": [{"role": "Chef"}]})
+        assert p["staff"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_shift_schedule_params({})
+            ep.coerce_shift_schedule_params({"staff": "Alice"})  # not an array
         with pytest.raises(ValueError):
-            ep.coerce_shift_schedule_params({"staff": []})
-        with pytest.raises(ValueError):
-            ep.coerce_shift_schedule_params({"staff": [{"role": "Chef"}]})
-        with pytest.raises(ValueError):
-            ep.coerce_shift_schedule_params({"staff": "Alice"})
+            ep.coerce_shift_schedule_params("nope")  # params not an object
 
 
 class TestShiftScheduleRouting:
@@ -850,6 +1090,29 @@ class TestShiftScheduleRouting:
         result = await eg.generate_spreadsheet(
             "weekly shift rota roster for my cafe staff, morning and " "evening shifts"
         )
+        assert result["pattern"] == "shift_schedule"
+        assert result["sheet_names"] == ["Rota", "Codes", "Calc"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # "make a shift schedule" — the classifier returns the pattern
+        # with NO params: the blank rota (with the default codes) must
+        # build and the AI path must never run.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "shift_schedule", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("make a weekly shift schedule rota")
         assert result["pattern"] == "shift_schedule"
         assert result["sheet_names"] == ["Rota", "Codes", "Calc"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
