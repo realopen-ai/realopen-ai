@@ -527,15 +527,26 @@ class TestSubscriptionCoercion:
         )
         assert len(p["subscriptions"]) == 1
 
-    def test_no_subscriptions_raises(self):
-        with pytest.raises(ValueError):
-            ep.coerce_subscription_tracker_params({})
-        with pytest.raises(ValueError):
-            ep.coerce_subscription_tracker_params({"subscriptions": []})
+    def test_template_mode_empty_subscriptions_are_fine(self):
+        # blank-template mode: nothing listed → blank tracker
+        p = ep.coerce_subscription_tracker_params({})
+        assert p["subscriptions"] == []
+        p = ep.coerce_subscription_tracker_params({"subscriptions": []})
+        assert p["subscriptions"] == []
+        # entries without name or amount are unusable data, not
+        # structural garbage — dropped, template mode still applies
+        p = ep.coerce_subscription_tracker_params(
+            {"subscriptions": [{"name": "No amount"}, {"amount": 10}]}
+        )
+        assert p["subscriptions"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
             ep.coerce_subscription_tracker_params({"subscriptions": "Netflix"})
         with pytest.raises(ValueError):
-            ep.coerce_subscription_tracker_params(None)
+            ep.coerce_subscription_tracker_params(None)  # params not an object
+        with pytest.raises(ValueError):
+            ep.coerce_subscription_tracker_params(["nope"])
 
 
 # ── Subscription tracker: builder lattice + math ─────────────────────
@@ -573,17 +584,24 @@ class TestSubscriptionBuilder:
         assert rows[2][8] == "Cancelled"  # gym
         assert rows[3][4] == date(2026, 3, 1)  # Adobe renewal
 
-        # every formula pins to the rendered row
-        assert rows[0][5] == '=IF(E4="","n/a",E4-TODAY())'
-        assert rows[4][5] == '=IF(E8="","n/a",E8-TODAY())'
+        # every formula pins to the rendered row (guarded so scaffold
+        # rows stay blank until amount/cycle exist)
+        assert rows[0][5] == '=IF(E4="","",E4-TODAY())'
+        assert rows[4][5] == '=IF(E8="","",E8-TODAY())'
         assert rows[0][6] == (
-            '=C4*IF(D4="yearly",1/12,IF(D4="quarterly",1/3,' 'IF(D4="weekly",52/12,1)))'
+            '=IF(OR($C4="",$D4=""),"",'
+            '$C4*IF($D4="yearly",1/12,IF($D4="quarterly",1/3,'
+            'IF($D4="weekly",52/12,1))))'
         )
         assert rows[0][7] == (
-            '=C4*IF(D4="yearly",1,IF(D4="quarterly",4,' 'IF(D4="weekly",52,12)))'
+            '=IF(OR($C4="",$D4=""),"",'
+            '$C4*IF($D4="yearly",1,IF($D4="quarterly",4,'
+            'IF($D4="weekly",52,12))))'
         )
         assert rows[4][6] == (
-            '=C8*IF(D8="yearly",1/12,IF(D8="quarterly",1/3,' 'IF(D8="weekly",52/12,1)))'
+            '=IF(OR($C8="",$D8=""),"",'
+            '$C8*IF($D8="yearly",1/12,IF($D8="quarterly",1/3,'
+            'IF($D8="weekly",52/12,1))))'
         )
 
         # totals: SUMIF over the exact data rows keyed on the status
@@ -673,8 +691,8 @@ class TestSubscriptionBuilder:
         assert ws["C4"].number_format == '"$"#,##0.00'
         assert ws["E4"].value == datetime(2026, 2, 11)
         assert ws["E4"].number_format == "yyyy-mm-dd"
-        assert ws["F4"].value == '=IF(E4="","n/a",E4-TODAY())'
-        assert ws["G4"].value.startswith('=C4*IF(D4="yearly"')
+        assert ws["F4"].value == '=IF(E4="","",E4-TODAY())'
+        assert ws["G4"].value.startswith('=IF(OR($C4="",$D4=""),"",$C4*IF($D4="yearly"')
         assert ws["I6"].value == "Cancelled"
         assert ws["G9"].value == '=SUMIF($I4:$I8,"Active",$G4:$G8)'
         # summary table: title A11, header 12, data 13..18
@@ -696,8 +714,57 @@ class TestSubscriptionBuilder:
         main = sheet["tables"][0]
         assert main["start_cell"] == "A3"
         assert main["rows"][0][3] == "monthly"  # cycle default
-        assert main["rows"][0][5] == '=IF(E4="","n/a",E4-TODAY())'
+        assert main["rows"][0][5] == '=IF(E4="","",E4-TODAY())'
         assert sheet["charts"][0]["categories_range"] == "Subscriptions!A4:A4"
+
+    def test_template_mode_no_subscriptions_builds_blank_tracker(self, tmp_path):
+        # "track my subscriptions" with nothing listed: the blank
+        # tracker must build instead of raising.
+        spec = ep.build_subscription_tracker_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+        assert not [w for w in warnings if "overlap" in w]
+        norm = eg._normalize_spec(spec)
+        sheet = norm["sheets"][0]
+
+        # 8 blank rows, every formula guarded
+        main = sheet["tables"][0]
+        assert main["start_cell"] == "A3"
+        assert len(main["rows"]) == 8
+        assert all(r[0] is None for r in main["rows"])  # no invented subs
+        assert main["rows"][2][5] == '=IF(E6="","",E6-TODAY())'
+        assert main["rows"][2][6] == (
+            '=IF(OR($C6="",$D6=""),"",'
+            '$C6*IF($D6="yearly",1/12,IF($D6="quarterly",1/3,'
+            'IF($D6="weekly",52/12,1))))'
+        )
+        # totals over the scaffold band: SUMIF(Active) = 0
+        assert main["total_row"][6] == '=SUMIF($I4:$I11,"Active",$G4:$G11)'
+        assert main["total_row"][7] == '=SUMIF($I4:$I11,"Active",$H4:$H11)'
+        # nothing to chart yet
+        assert not sheet.get("charts")
+
+        # dropdown vocabularies (reference values, not user data)
+        dvs = {d["range"]: d["values"] for d in sheet["data_validation"]}
+        assert dvs["D4:D11"] == ["monthly", "quarterly", "yearly", "weekly"]
+        assert dvs["I4:I11"] == ["Active", "Cancelled"]
+
+        # guarded Spend Summary stays live below the blank rows
+        summary = sheet["tables"][1]
+        srows = {r[0]: r[1] for r in summary["rows"]}
+        assert srows["Total Monthly Spend (Active)"] == "=G12"
+        assert srows["Priciest Yearly Cost"] == (
+            '=IF(COUNT($H4:$H11)>0,MAX($H4:$H11),"n/a")'
+        )
+
+        # the blank workbook still round-trips through openpyxl
+        out = tmp_path / "subs_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Subscriptions"]
+        assert len(wb["Subscriptions"].data_validations.dataValidation) == 2
+        assert wb["Subscriptions"]["F4"].value == '=IF(E4="","",E4-TODAY())'
 
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
@@ -798,15 +865,26 @@ class TestExpenseReportCoercion:
         )
         assert p["expenses"][0]["amount"] == 50.0
 
-    def test_no_expenses_raises(self):
+    def test_template_mode_empty_expenses_are_fine(self):
+        # blank-template mode: no expenses yet → blank expense log
+        p = ep.coerce_expense_report_params({})
+        assert p["expenses"] == []
+        p = ep.coerce_expense_report_params({"expenses": []})
+        assert p["expenses"] == []
+        # an entry without an amount is unusable data, not structural
+        # garbage — dropped, template mode still applies
+        p = ep.coerce_expense_report_params(
+            {"expenses": [{"date": "2026-03-02", "description": "x"}]}
+        )
+        assert p["expenses"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_expense_report_params({})
+            ep.coerce_expense_report_params(None)  # params not an object
         with pytest.raises(ValueError):
-            ep.coerce_expense_report_params({"expenses": []})
+            ep.coerce_expense_report_params(["nope"])
         with pytest.raises(ValueError):
-            ep.coerce_expense_report_params({"expenses": [{"date": "2026-03-02"}]})
-        with pytest.raises(ValueError):
-            ep.coerce_expense_report_params(None)
+            ep.coerce_expense_report_params({"expenses": "dinner 30"})
 
 
 # ── Expense report: builder lattice + math ───────────────────────────
@@ -975,6 +1053,55 @@ class TestExpenseReportBuilder:
         assert sheet["tables"][0]["start_cell"] == "A4"
         assert sheet["tables"][0]["rows"][0][3] == 10.0
 
+    def test_template_mode_no_expenses_builds_blank_log(self, tmp_path):
+        # "create an expense report" — no expenses yet: the blank log
+        # must build instead of raising.
+        spec = ep.build_expense_report_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert not [w for w in warnings if "above the table" in w]
+        assert not [w for w in warnings if "overlap" in w]
+        norm = eg._normalize_spec(spec)
+        sheet = norm["sheets"][0]
+
+        # info block absent (nothing stated) → log anchored A4,
+        # 10 blank scaffold rows 5..14, total row 15 (=SUM over blanks)
+        log, reimb = sheet["tables"]  # By Category omitted (zero cats)
+        assert log["start_cell"] == "A4"
+        assert len(log["rows"]) == 10
+        assert all(all(v is None for v in r) for r in log["rows"])
+        assert log["total_row"][3] == "=SUM(D{first_row}:D{last_row})"
+        assert sheet["freeze_panes"] == "A5"
+
+        # reimbursement summary sits right below the log with guarded
+        # SUMIF/SUMIFS lattice over the blank rows (all zero)
+        assert reimb["start_cell"] == "A17"
+        rrows = {r[0]: r[1] for r in reimb["rows"]}
+        assert rrows["Total Expenses"] == "=D15"
+        assert rrows["Paid Personally (total)"] == (
+            '=SUMIF($E$5:$E$14,"Personal",$D$5:$D$14)'
+        )
+        assert rrows["Reimbursable (paid personally, billable)"] == (
+            '=SUMIFS($D$5:$D$14,$E$5:$E$14,"Personal",$F$5:$F$14,"Yes")'
+        )
+        assert rrows["Net Due to Employee"] == "=B22-B24"
+
+        # dropdowns over the scaffold rows; no category dropdown (no
+        # category list exists); no pie with zero categories
+        dvs = {d["range"]: d["values"] for d in sheet["data_validation"]}
+        assert dvs["E5:E14"] == ["Personal", "Company"]
+        assert dvs["F5:F14"] == ["Yes", "No"]
+        assert dvs["G5:G14"] == ["Yes", "No"]
+        assert not sheet.get("charts")
+
+        # the blank workbook still round-trips through openpyxl
+        out = tmp_path / "expense_template.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Expenses"]
+        assert wb["Expenses"]["D15"].value == "=SUM(D5:D14)"
+        assert len(wb["Expenses"].data_validations.dataValidation) == 3
+
     def test_heal_never_fires_on_template(self):
         before = [r for t in self.norm["sheets"][0]["tables"] for r in t["rows"]]
         eg._heal_off_by_one_formula_rows(self.norm)
@@ -1039,6 +1166,31 @@ class TestPatternRouting:
         assert "subscription_tracker template" in result["summary"]
 
     @pytest.mark.asyncio
+    async def test_subscription_tracker_routes_with_empty_params(
+        self, tmp_path, monkeypatch
+    ):
+        # "track my subscriptions" with nothing listed — the classifier
+        # returns the pattern with NO params: the blank tracker must
+        # build and the AI path must never run.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "subscription_tracker", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "track my subscriptions and recurring costs"
+        )
+        assert result["pattern"] == "subscription_tracker"
+        assert result["sheet_names"] == ["Subscriptions"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
     async def test_expense_report_routes_to_template(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             eg,
@@ -1063,6 +1215,27 @@ class TestPatternRouting:
         assert result["filename"] == "expense_report.xlsx"
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
         assert "expense_report template" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_expense_report_routes_with_empty_params(self, tmp_path, monkeypatch):
+        # "create an expense report" — the classifier returns the
+        # pattern with NO params: the blank expense log must build and
+        # the AI path must never run.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "expense_report", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet("create an expense report")
+        assert result["pattern"] == "expense_report"
+        assert result["sheet_names"] == ["Expenses"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
     def test_gate_regex_matches_recurring_cost_briefs(self):
         assert eg._PATTERN_GATE_RE.search("project my cash flow for 12 months")
