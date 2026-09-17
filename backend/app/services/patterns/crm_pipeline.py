@@ -30,6 +30,16 @@ counted exactly once and the stage totals always add up.
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction.
 No ROUND() anywhere — display rounding is the number format's job.
+
+TEMPLATE MODE: a request with no deals yet ("create a pipeline
+tracker") builds the BLANK pipeline — 8 empty scaffold rows with live
+guarded weighted-value / days-to-close formulas, never invented deals
+(hard rule), never a refusal for lack of data. The Stages reference
+sheet is STILL emitted with the standard six stages (Lead, Qualified,
+Proposal, Negotiation, Won, Lost — reference data, not user data), the
+stage dropdown still covers the scaffold rows, and the per-stage
+SUMIF summary legitimately reads 0 over blank rows. No chart until
+real deals exist.
 """
 
 from __future__ import annotations
@@ -57,7 +67,9 @@ PATTERN_DESCRIPTION = (
     "value and weighted value, total pipeline and expected value, a "
     "stage dropdown and a value-by-stage chart. Use for CRM / "
     "pipeline / leads / opportunities ('track my sales pipeline', "
-    "'deals in negotiation'). Do NOT use it for completed sales logs."
+    "'deals in negotiation'). A request with no deals yet still gets "
+    "a blank pipeline template with the standard six stages. Do NOT "
+    "use it for completed sales logs."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -80,6 +92,7 @@ DEFAULT_STAGES = ("Lead", "Qualified", "Proposal", "Negotiation", "Won", "Lost")
 
 MAX_DEALS = 500  # explicit log rows (matches MAX_ROWS_PER_TABLE)
 MAX_STAGES = 12  # cap on the user-provided stage list
+MIN_ROWS = 8  # blank scaffold rows in template mode (no deals given)
 
 _DATE_FMT = "yyyy-mm-dd"
 _INT_FMT = "#,##0"
@@ -169,7 +182,15 @@ def _normalize_stages(raw: Any) -> Optional[List[str]]:
 
 
 def coerce_crm_pipeline_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError for
+    STRUCTURALLY wrong input only (params not an object, deals/stages
+    not arrays, a non-empty deals array with no usable entries).
+
+    Template mode: deals missing or an empty array is FINE — the
+    builder emits the blank pipeline with scaffold rows and the
+    standard six stages (the "create a pipeline tracker" case); deals
+    are never invented.
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -183,9 +204,12 @@ def coerce_crm_pipeline_params(params: dict) -> dict:
         "records",
         "items",
     ):
-        if isinstance(params.get(key), list):
+        if key in params:
+            if not isinstance(params[key], list):
+                raise ValueError("deals must be an array")
             raw = params[key]
             break
+    # raw None (or []) → template mode — no deals to lay out yet.
 
     deals: List[dict] = []
     if raw is not None:
@@ -194,8 +218,14 @@ def coerce_crm_pipeline_params(params: dict) -> dict:
             if normalized is not None:
                 deals.append(normalized)
 
-    if not deals:
+    if raw and not deals:
+        # entries were given but none were usable — structural garbage,
+        # not the blank-template case.
         raise ValueError("no usable deals provided")
+
+    raw_stages = _pick(params, "stages", "stage_list")
+    if raw_stages is not None and not isinstance(raw_stages, list):
+        raise ValueError("stages must be an array")  # null → standard six
 
     pipeline_name = _pick(params, "pipeline_name", "name", "title")
     pipeline_name = _clean_text(pipeline_name, 100) or "Sales Pipeline"
@@ -206,7 +236,7 @@ def coerce_crm_pipeline_params(params: dict) -> dict:
     return {
         "pipeline_name": pipeline_name,
         "currency": _currency_fmt(_pick(params, "currency")),
-        "stages": _normalize_stages(_pick(params, "stages", "stage_list")),
+        "stages": _normalize_stages(raw_stages),
         "deals": deals,
         "notes": notes,
     }
@@ -262,8 +292,10 @@ def build_crm_pipeline_spec(params: dict) -> dict:
 
     # ── Pipeline log sheet ────────────────────────────────────────────
     n = len(deals)
+    template_mode = n == 0
+    n_rows = n if n else MIN_ROWS  # scaffold rows in template mode
     first = 4  # header on row 3 (A3, no table title)
-    last = first + n - 1
+    last = first + n_rows - 1
     total = last + 1  # noqa
 
     log_rows: List[List[Any]] = []
@@ -282,6 +314,26 @@ def build_crm_pipeline_spec(params: dict) -> dict:
                 f'=IF(H{r}="","",H{r}-TODAY())',  # days to close (live TODAY() math)
             ]
         )
+    if template_mode:
+        # Blank scaffold rows: Weighted Value / Days to Close are LIVE
+        # guarded formulas — weighted stays blank until a Value is typed
+        # (a blank Probability then counts as 1), days blank until an
+        # Expected Close date exists (never invented deals — hard rule).
+        for i in range(MIN_ROWS):
+            r = first + i
+            log_rows.append(
+                [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    f'=IF($D{r}="","",$D{r}*IF($E{r}="",1,$E{r}))',
+                    None,
+                    None,
+                    f'=IF($H{r}="","",$H{r}-TODAY())',
+                ]
+            )
 
     log_notes = (
         "Weighted Value = Value x Probability when a probability is "
@@ -293,6 +345,14 @@ def build_crm_pipeline_spec(params: dict) -> dict:
         "extend the list there and the dropdown grows with it. Won "
         "stages turn green and Lost stages red."
     )
+    if template_mode:
+        log_notes = (
+            "Blank pipeline template — type deals into the empty rows "
+            "(Stage comes from the dropdown) and Weighted Value / Days to "
+            "Close compute themselves. Deals without a stage are not "
+            "counted in any stage bucket of the Stages summary, so pick a "
+            "stage for every deal. " + log_notes
+        )
     if p["notes"]:
         log_notes = f"{p['notes']}\n{log_notes}"
 
@@ -500,7 +560,30 @@ def build_crm_pipeline_spec(params: dict) -> dict:
                 ],
             }
         ],
-        "charts": [
+        "notes": (
+            "Deal counts are COUNTIF and values are SUMIF over the "
+            "Pipeline sheet's exact logged rows, keyed on the stage "
+            "labels in column A — rename a stage here (or on a deal "
+            "row) and the summary follows. "
+            + (
+                "Template mode: the stage rows legitimately read 0 until "
+                "deals are logged on the Pipeline sheet (pick a stage from "
+                "the dropdown there). "
+                if template_mode
+                else "Deals without a stated stage sit in the Unassigned "
+                "bucket so the totals always cover every deal. "
+            )
+            + "The stage labels in column A are also the "
+            "dropdown list used by the Pipeline sheet's Stage column: "
+            "add a row here and the dropdown grows with it. Overdue "
+            "counts deals whose expected close date is already in the "
+            "past (live TODAY() comparison)."
+        ),
+    }
+    if not template_mode:
+        # No chart over six all-zero stages — it appears as soon as
+        # real deals exist.
+        stages_sheet["charts"] = [
             {
                 "type": "bar",
                 "title": "Pipeline Value by Stage",
@@ -520,20 +603,7 @@ def build_crm_pipeline_spec(params: dict) -> dict:
                 ],
                 "value_numfmt": money,
             }
-        ],
-        "notes": (
-            "Deal counts are COUNTIF and values are SUMIF over the "
-            "Pipeline sheet's exact logged rows, keyed on the stage "
-            "labels in column A — rename a stage here (or on a deal "
-            "row) and the summary follows. Deals without a stated stage "
-            "sit in the Unassigned bucket so the totals always cover "
-            "every deal. The stage labels in column A are also the "
-            "dropdown list used by the Pipeline sheet's Stage column: "
-            "add a row here and the dropdown grows with it. Overdue "
-            "counts deals whose expected close date is already in the "
-            "past (live TODAY() comparison)."
-        ),
-    }
+        ]
 
     return {
         "filename": "crm_pipeline.xlsx",
