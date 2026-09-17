@@ -5,29 +5,53 @@ Deterministic template for ONE team's week:
 
   Rota            Staff Member | Role | Mon..Sun (dates in the headers) |
                   Weekly Hours — the visible grid holds clean shift CODES
-                  (dropdown sourced from the Codes tab); Weekly Hours
-                  pulls the per-staff sum from the hidden Calc sheet.
+                  (dropdown sourced from the Codes tab; 8 blank staff
+                  rows when the request names nobody); Weekly Hours is
+                  guarded on the staff name and pulls the per-staff sum
+                  from the hidden Calc sheet.
   Codes           Code | Label | Hours — the editable shift-code
-                  reference block; the Rota dropdowns and the VLOOKUPs
+                  reference block (defaults M/E/N/O when the request
+                  gives no codes); the Rota dropdowns and the VLOOKUPs
                   read it live, so editing hours recalculates the rota.
-  Calc (hidden)   one row per staff member, aligned 1:1 with the Rota:
-                  per-day cells translate the code into hours via
-                  =IF(Rota!C5="",0,IFERROR(VLOOKUP(Rota!C5,
-                  Codes!$A$5:$C$8,3,FALSE),0)) and column J sums the
-                  week. SUMIF can't map code→hours across a row, so the
-                  translation lives here and the visible sheet stays
-                  clean codes.
+  Calc (hidden)   one row per staff member (scaffold rows included),
+                  aligned 1:1 with the Rota: column B mirrors the
+                  staff name (guarded), per-day cells translate the
+                  code into hours via =IF($B5="","",IF(Rota!C5="",0,
+                  IFERROR(VLOOKUP(Rota!C5,Codes!$A$5:$C$8,3,FALSE),0)))
+                  and column J sums the week. SUMIF can't map code→hours
+                  across a row, so the translation lives here and the
+                  visible sheet stays clean codes.
 
 CALCULATION SEMANTICS (all LIVE formulas — nothing is frozen):
 
-  hours(r, day) = IF(code blank, 0, IFERROR(VLOOKUP(code, Codes, 3), 0))
-  weekly(r)     = SUM(hours(r, Mon..Sun))          [on Calc, column J]
-  Rota!J(r)     = Calc!J(r)                        [clean reference]
+  mirror(r)     = IF(Rota staff blank, "", Rota staff)
+  hours(r, day) = IF(mirror blank, "", IF(code blank, 0,
+                   IFERROR(VLOOKUP(code, Codes, 3), 0)))
+  weekly(r)     = IF(mirror blank, "", SUM(hours(r, Mon..Sun)))  [Calc J]
+  Rota!J(r)     = IF(staff blank, "", Calc!J(r))
   day total     = SUM over the Calc day column
   weekly total  = SUM over the Rota's Weekly Hours column
 
 Default codes when shift_codes is null: M Morning 8h · E Evening 8h ·
 N Night 10h · O Off 0h.
+
+TEMPLATE MODE: a request with no staff yet ("make a shift schedule")
+builds the BLANK rota — 8 blank staff rows × 7 day columns with the
+code dropdowns over every cell, the Codes tab still emitted with the
+DEFAULT M/E/N/O reference codes (vocabulary, not user data), and the
+hidden Calc lattice extended over the scaffold rows with blank guards
+so the workbook is ready the moment names are typed. Never invents
+staff (hard rule); week_start null → next Monday (rotas plan the
+coming week); the chart appears only when there is staff to chart.
+
+FILL MODE: when the request names staff + constraints (opening
+  hours, availability, max hours) but no concrete codes, the router
+  sets "fill": true and excel_gen drafts a fair rota via
+  prompts/pattern_populator.md BEFORE calling the builder — staff
+  names still come only from the request. Drafted params flow
+  through coerce_shift_schedule_params like any other; a failed
+  draft falls back to the extracted params (blank rota).
+
 
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction. No
@@ -54,9 +78,10 @@ PATTERN_NAME = "shift_schedule"
 PATTERN_DESCRIPTION = (
     "Weekly staff shift roster / rota: a staff × days grid of shift "
     "codes with per-staff weekly hours, an editable shift-code reference "
-    "tab and dropdowns. Use for weekly rotas and duty rosters. Do not "
-    "use it for hours actually worked (timesheet) or leave balances "
-    "(leave_tracker)."
+    "tab and dropdowns. Use for weekly rotas and duty rosters — a "
+    "request with no staff yet still gets a blank rota template with "
+    "the default shift codes. Do not use it for hours actually worked "
+    "(timesheet) or leave balances (leave_tracker)."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -73,8 +98,14 @@ PATTERN_KEYWORDS = (
     "shift pattern",
 )
 
+# Fillable pattern: guidance-only requests (goals, split, frequency…)
+# may draft starter sessions via prompts/pattern_populator.md before
+# building — see PATTERN_FILLABLE in patterns/__init__.py.
+PATTERN_FILL = True
+
 MAX_STAFF = 30
 MAX_CODES = 12
+MIN_STAFF_ROWS = 8  # blank scaffold rows in template mode
 
 # Default shift codes when the request doesn't give its own
 # (documented in the pattern stanza: M/E/N/O).
@@ -222,7 +253,13 @@ def _normalize_staff_entry(entry: Any) -> Optional[dict]:
 
 
 def coerce_shift_schedule_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing staff is FINE — the builder emits the
+    blank rota with the default shift codes (the "make a shift
+    schedule" case). ValueError only for structurally wrong params
+    (non-object params, non-array staff).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -235,8 +272,8 @@ def coerce_shift_schedule_params(params: dict) -> dict:
             normalized = _normalize_staff_entry(entry)
             if normalized is not None:
                 staff.append(normalized)
-    if not staff:
-        raise ValueError("staff (one entry per person) required")
+    # Template mode: no staff is fine — blank rota rows + default
+    # codes (never invent staff; hard rule).
 
     week_start = to_iso_date(
         _pick(params, "week_start", "start_date", "week_of", "week_commencing")
@@ -272,13 +309,16 @@ def build_shift_schedule_spec(params: dict) -> dict:
     Rota sheet:
       row 1      title · row 2 usage hint
       row 4      headers (start_cell A4, no table title)
-      rows 5..   one row per staff member: codes Mon..Sun + Weekly Hours
+      rows 5..   one row per staff member (8 blank scaffold rows when
+                 the request names nobody): codes Mon..Sun + Weekly
+                 Hours (guarded on the staff name)
       row T      totals: per-day hours (summed from Calc) + week total
     Codes sheet:
       row 4      headers · rows 5.. one row per code (the VLOOKUP source)
     Calc sheet (hidden):
       row 4      headers (start_cell B4 — day columns align with Rota)
-      rows 5..   per-day code→hours translations + the weekly SUM
+      rows 5..   per-day code→hours translations (guarded on the staff
+                 mirror in column B) + the guarded weekly SUM
     """
     p = coerce_shift_schedule_params(params)
     team_name = p["team_name"]
@@ -288,13 +328,14 @@ def build_shift_schedule_spec(params: dict) -> dict:
     notes = p["notes"]
 
     n = len(staff)
+    n_rows = n or MIN_STAFF_ROWS  # template scaffold rows
     k = len(codes)
     week = date(*(int(x) for x in week_start.split("-")))
     days = [week + timedelta(days=i) for i in range(7)]
 
     # ── geometry (integers first — every formula is formatted from these)
     rota_r0 = 5  # first Rota/Calc data row (aligned 1:1)
-    rota_rN = 4 + n  # last Rota/Calc data row
+    rota_rN = 4 + n_rows  # last Rota/Calc data row
     rota_total = rota_rN + 1  # noqa: Rota totals row
     codes_r0 = 5  # first Codes data row
     codes_rN = 4 + k  # last Codes data row
@@ -309,15 +350,17 @@ def build_shift_schedule_spec(params: dict) -> dict:
 
     # ═════════════════════════════ Rota sheet ════════════════════════
     rota_rows: List[List[Any]] = []
-    for i, person in enumerate(staff):
+    for i in range(n_rows):
         r = rota_r0 + i
+        person = staff[i] if i < n else None
         rota_rows.append(
             [
-                person["name"],
-                person["role"],
-                *person["days"],
-                # Weekly Hours — the Calc sheet holds the code→hours sum
-                "=Calc!J{r}".format(r=r),
+                person["name"] if person else None,
+                person["role"] if person else None,
+                *(person["days"] if person else [None] * 7),
+                # Weekly Hours — guarded on the staff name; the Calc
+                # sheet holds the code→hours sum
+                '=IF($A{r}="","",Calc!J{r})'.format(r=r),
             ]
         )
 
@@ -438,29 +481,33 @@ def build_shift_schedule_spec(params: dict) -> dict:
                 ],
             },
         ],
-        "charts": [
-            {
-                "type": "bar",
-                "title": "Weekly Hours by Staff — Week of {week}".format(
-                    week=week.isoformat()
-                ),
-                "anchor": "L3",
-                "width": 15,
-                "height": 9,
-                "categories_range": "Rota!$A${r0}:$A${rN}".format(
-                    r0=rota_r0, rN=rota_rN
-                ),
-                "series": [
-                    {
-                        "name": "Weekly Hours",
-                        "values_range": "Rota!$J${r0}:$J${rN}".format(
-                            r0=rota_r0, rN=rota_rN
-                        ),
-                    }
-                ],
-                "value_numfmt": QTY_FMT,
-            }
-        ],
+        "charts": (
+            [
+                {
+                    "type": "bar",
+                    "title": "Weekly Hours by Staff — Week of {week}".format(
+                        week=week.isoformat()
+                    ),
+                    "anchor": "L3",
+                    "width": 15,
+                    "height": 9,
+                    "categories_range": "Rota!$A${r0}:$A${rN}".format(
+                        r0=rota_r0, rN=rota_rN
+                    ),
+                    "series": [
+                        {
+                            "name": "Weekly Hours",
+                            "values_range": "Rota!$J${r0}:$J${rN}".format(
+                                r0=rota_r0, rN=rota_rN
+                            ),
+                        }
+                    ],
+                    "value_numfmt": QTY_FMT,
+                }
+            ]
+            if n
+            else []  # no staff yet → nothing to chart (never invent)
+        ),
         "protect": {
             "unlocked_ranges": [
                 "A{r0}:B{rN}".format(r0=rota_r0, rN=rota_rN),
@@ -530,23 +577,27 @@ def build_shift_schedule_spec(params: dict) -> dict:
 
     # ═════════════════════════════ Calc sheet (hidden) ═══════════════
     calc_rows: List[List[Any]] = []
-    for i, person in enumerate(staff):
+    for i in range(n_rows):
         r = rota_r0 + i
         day_cells = [
-            # code → hours: blank counts 0, unknown codes count 0 (the
-            # dropdown keeps the grid to valid codes anyway)
-            '=IF(Rota!{L}{r}="",0,IFERROR(VLOOKUP(Rota!{L}{r},{codes},3,FALSE),0))'.format(
-                L=letter, r=r, codes=vlookup_range
-            )
+            # code → hours: no staff yet → blank; a blank day counts 0;
+            # unknown codes count 0 (the dropdown keeps the grid to
+            # valid codes anyway)
+            (
+                '=IF($B{r}="","",IF(Rota!{L}{r}="",0,IFERROR('
+                "VLOOKUP(Rota!{L}{r},{codes},3,FALSE),0)))"
+            ).format(r=r, L=letter, codes=vlookup_range)
             for letter in DAY_LETTERS
         ]
         calc_rows.append(
             [
-                # staff mirror for readability (rows align 1:1 with Rota)
-                "=Rota!$A${r}".format(r=r),
+                # staff mirror for readability (rows align 1:1 with
+                # Rota); guarded so a blank rota row reads ""
+                '=IF(Rota!$A${r}="","",Rota!$A${r})'.format(r=r),
                 *day_cells,
-                # weekly hours = SUM across the day columns
-                "=SUM(C{r}:I{r})".format(r=r),
+                # weekly hours = SUM across the day columns, blank
+                # until the row has a staff member
+                '=IF($B{r}="","",SUM(C{r}:I{r}))'.format(r=r),
             ]
         )
 
