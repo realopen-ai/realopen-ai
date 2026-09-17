@@ -83,6 +83,16 @@ PATTERN_DESCRIPTION = (
     "budgets, loans, invoices, investment portfolios or daily habits."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "inventory",
+    "belonging",
+    "collection",
+    "warranty",
+    "serial",
+)
+
 # Fixed layout geometry (rows never shift — formulas pin to these).
 MAX_ITEM_ROWS = 50  # Inventory data rows 5..54
 MAX_CATEGORY_ROWS = 20  # Categories rows 5..24
