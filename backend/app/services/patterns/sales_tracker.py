@@ -22,6 +22,15 @@ they already made and want them analyzed:
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction.
 No ROUND() anywhere — display rounding is the number format's job.
+
+TEMPLATE MODE: a request with no sales yet ("create a sales log")
+builds the BLANK log — 8 empty scaffold rows with live guarded
+Revenue / Profit / Margin formulas, never invented sales (hard rule),
+never a refusal for lack of data. The Analysis sheet carries the
+topline stats (legitimately 0 over blank rows) and a Revenue-by-Product
+scaffold table: type product names into its blank label rows and the
+SUMIFs aggregate the logged sales live. Charts and the channel/month
+breakdowns appear only when real sales exist.
 """
 
 from __future__ import annotations
@@ -50,8 +59,9 @@ PATTERN_DESCRIPTION = (
     "cost) and computed revenue, profit and margin, plus an analysis "
     "sheet with revenue by product, by channel and by month. Use when "
     "the user lists actual sales made and wants them tracked or "
-    "analyzed. Do NOT use it for CRM deal pipelines that haven't "
-    "closed or KPI target-vs-actual reports."
+    "analyzed. A request with no sales yet still gets a blank sales-log "
+    "template with live analysis formulas. Do NOT use it for CRM deal "
+    "pipelines that haven't closed or KPI target-vs-actual reports."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -68,6 +78,8 @@ PATTERN_KEYWORDS = (
 
 MAX_SALES = 500  # explicit log rows (matches MAX_ROWS_PER_TABLE)
 MAX_MONTHS = 36  # month buckets in the by-month breakdown
+MIN_ROWS = 8  # blank scaffold log rows in template mode
+MIN_BREAKDOWN_ROWS = 6  # blank scaffold rows in the product breakdown
 
 _DATE_FMT = "yyyy-mm-dd"
 _INT_FMT = "#,##0"
@@ -132,7 +144,14 @@ def _normalize_sale(entry: Any) -> Optional[dict]:
 
 
 def coerce_sales_tracker_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError for
+    STRUCTURALLY wrong input only (params not an object, sales not an
+    array, a non-empty sales array with no usable entries).
+
+    Template mode: sales missing or an empty array is FINE — the
+    builder emits the blank sales log with scaffold rows (the "create
+    a sales log" case); sales are never invented.
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -147,9 +166,12 @@ def coerce_sales_tracker_params(params: dict) -> dict:
         "orders",
         "items",
     ):
-        if isinstance(params.get(key), list):
+        if key in params:
+            if not isinstance(params[key], list):
+                raise ValueError("sales must be an array")
             raw = params[key]
             break
+    # raw None (or []) → template mode — no sales to lay out yet.
 
     sales: List[dict] = []
     if raw is not None:
@@ -158,7 +180,9 @@ def coerce_sales_tracker_params(params: dict) -> dict:
             if normalized is not None:
                 sales.append(normalized)
 
-    if not sales:
+    if raw and not sales:
+        # entries were given but none were usable — structural garbage,
+        # not the blank-template case.
         raise ValueError("no usable sales provided")
 
     period = _pick(params, "period_label", "period", "title", "label")
@@ -242,8 +266,10 @@ def build_sales_tracker_spec(params: dict) -> dict:
 
     # ── Sales log sheet ───────────────────────────────────────────────
     n = len(sales)
+    template_mode = n == 0
+    n_rows = n if n else MIN_ROWS  # scaffold rows in template mode
     first = 4  # header on row 3 (A3, no table title)
-    last = first + n - 1
+    last = first + n_rows - 1
     total = last + 1
 
     log_rows: List[List[Any]] = []
@@ -263,6 +289,26 @@ def build_sales_tracker_spec(params: dict) -> dict:
                 f'=IF(OR(G{r}="",H{r}=0),"",I{r}/H{r})',  # Margin % (guarded)
             ]
         )
+    if template_mode:
+        # Blank scaffold rows: Revenue / Profit / Margin are LIVE
+        # guarded formulas that stay blank until the row carries the
+        # inputs they read (never invented sales — hard rule).
+        for i in range(MIN_ROWS):
+            r = first + i
+            log_rows.append(
+                [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    f'=IF(OR($E{r}="",$F{r}=""),"",$E{r}*$F{r})',
+                    f'=IF(OR($G{r}="",$H{r}=""),"",$H{r}-$E{r}*$G{r})',
+                    f'=IF(OR($G{r}="",$H{r}="",$H{r}=0),"",$I{r}/$H{r})',
+                ]
+            )
 
     log_notes = (
         "Revenue = Quantity x Unit Price. Profit = Revenue - Quantity x "
@@ -273,6 +319,11 @@ def build_sales_tracker_spec(params: dict) -> dict:
         "recalculates every breakdown automatically as rows are edited or "
         "added inside the logged range."
     )
+    if template_mode:
+        log_notes = (
+            "Blank sales-log template — type sales into the empty rows and "
+            "Revenue / Profit / Margin compute themselves. " + log_notes
+        )
     if p["notes"]:
         log_notes = f"{p['notes']}\n{log_notes}"
 
@@ -397,6 +448,78 @@ def build_sales_tracker_spec(params: dict) -> dict:
         },
     ]
     topline_end = row
+
+    if template_mode:
+        # ── Template-mode Analysis ──────────────────────────────────
+        # Topline stats (live over the blank log rows → 0) + a guarded
+        # Revenue-by-Product scaffold: blank label rows whose SUMIFs
+        # aggregate the logged sales as soon as a product name is typed
+        # into column A. No charts, no channel/month breakdowns (there
+        # is nothing to chart and no channel/date vocabulary given).
+        anchor = topline_end + 2
+        prod_first = anchor + 2  # title row anchor, header anchor+1
+        prod_last = prod_first + MIN_BREAKDOWN_ROWS - 1
+        prod_total = prod_last + 1
+        crit = f"Sales!$B${first}:$B${last}"
+        units_rng = f"Sales!$E${first}:$E${last}"
+        rev_rng = f"Sales!$H${first}:$H${last}"
+
+        prod_rows: List[List[Any]] = []
+        for i in range(MIN_BREAKDOWN_ROWS):
+            r = prod_first + i
+            prod_rows.append(
+                [
+                    None,
+                    f'=IF($A{r}="","",SUMIF({crit},$A{r},{units_rng}))',
+                    f'=IF($A{r}="","",SUMIF({crit},$A{r},{rev_rng}))',
+                    f'=IF($A{r}="","",IF($C${prod_total}=0,0,C{r}/$C${prod_total}))',
+                ]
+            )
+
+        analysis_sheet: Dict[str, Any] = {
+            "name": "Analysis",
+            "tab_color": "1B3A5C",
+            "column_widths": {"A": 24, "B": 12, "C": 15, "D": 15, "E": 15},
+            "text_blocks": blocks,
+            "tables": [
+                {
+                    "start_cell": f"A{anchor}",
+                    "title": "Revenue by Product",
+                    "headers": [
+                        "Product",
+                        "Units Sold",
+                        "Revenue",
+                        "Share of Revenue",
+                    ],
+                    "rows": prod_rows,
+                    "number_formats": {
+                        "B": QTY_FMT,
+                        "C": money,
+                        "D": PCT_FMT,
+                    },
+                    "total_row": [
+                        "Total",
+                        f"=SUM(B{prod_first}:B{prod_last})",
+                        f"=SUM(C{prod_first}:C{prod_last})",
+                        f"=SUM(D{prod_first}:D{prod_last})",
+                    ],
+                }
+            ],
+            "notes": (
+                "Blank-template mode: the topline stats read 0 until sales "
+                "are logged on the Sales sheet. Type product names into the "
+                "blank rows of Revenue by Product and the live SUMIFs "
+                "aggregate every matching logged sale (units, revenue, "
+                "share). Log sales with a Unit Cost filled in and profit "
+                "columns appear on the Sales sheet; re-run with your sales "
+                "listed and the full channel / month breakdowns and charts "
+                "are generated."
+            ),
+        }
+        return {
+            "filename": "sales_tracker.xlsx",
+            "sheets": [sales_sheet, analysis_sheet],
+        }
 
     tables: List[dict] = []
     charts: List[dict] = []
