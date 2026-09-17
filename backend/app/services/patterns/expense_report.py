@@ -10,6 +10,16 @@ Contract (stanza "expense_report" in prompts/pattern_classifier.md):
   receipt true only when the user mentions having one. One entry per
   expense; date YYYY-MM-DD.
 
+TEMPLATE MODE: a request with no expenses yet ("create an expense
+report") builds the BLANK expense log — 10 blank dated rows with the
+Paid By / Billable / Receipt dropdowns already over them, a zero SUM
+total, and the Reimbursement Summary's live SUMIF/SUMIFS lattice over
+the blank rows (all zero until rows are filled). The per-category
+summary and the pie chart need categories, so they are simply omitted
+when there are none. Never invents expenses (hard rule), never refuses
+for lack of data; ValueError only for structurally wrong params
+(non-object params, non-array expenses).
+
 Layout (Expenses sheet):
   row 1    title text block ("Expense Report — <purpose>")
   rows 3+  info blocks: Employee / Purpose / Period (present ones only)
@@ -48,7 +58,9 @@ PATTERN_NAME = "expense_report"
 
 PATTERN_DESCRIPTION = (
     "Dated expense log for reimbursement: per-category totals, payer / "
-    "billable splits and the net amount due to or from the employee."
+    "billable splits and the net amount due to or from the employee — "
+    "a request with no expenses yet still gets a blank expense log "
+    "template."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -68,6 +80,7 @@ PATTERN_KEYWORDS = (
 
 MAX_EXPENSES = 300
 MAX_ABS_MONEY = 1e12
+MIN_LOG_ROWS = 10  # blank scaffold rows in template mode
 
 DEFAULT_CATEGORY = "Uncategorized"
 
@@ -170,7 +183,13 @@ def _normalize_expense(entry: Any) -> Optional[dict]:
 
 
 def coerce_expense_report_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing expenses are FINE — the builder emits
+    the blank expense log (the "create an expense report" case).
+    ValueError only for structurally wrong params (non-object params,
+    non-array expenses).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -187,14 +206,17 @@ def coerce_expense_report_params(params: dict) -> dict:
 
     raw = _pick(params, "expenses", "expense_log", "items", "lines", "expense_lines")
     expenses: List[dict] = []
-    if isinstance(raw, list):
+    if raw is None:
+        pass  # no expenses yet — template mode, blank log
+    elif not isinstance(raw, list):
+        raise ValueError("expenses must be an array")
+    else:
         for entry in raw[:MAX_EXPENSES]:
             exp = _normalize_expense(entry)
             if exp is not None:
                 expenses.append(exp)
-
-    if not expenses:
-        raise ValueError("no usable expense lines (date + amount required)")
+    # Template mode: zero usable expenses is fine — blank rows, the
+    # user fills the log (never invent expenses; hard rule).
 
     notes = _pick(params, "notes", "note")
     notes = notes.strip()[:1000] if isinstance(notes, str) and notes.strip() else ""
@@ -246,23 +268,28 @@ def build_expense_report_spec(params: dict) -> dict:
         info_row += 1
 
     # ── Expense log ───────────────────────────────────────────────────
+    # Template mode: no expenses yet → 10 blank scaffold rows (the
+    # dropdowns cover them; never invent expense lines).
+    n_log_rows = len(expenses) or MIN_LOG_ROWS
     log_anchor = info_row + 1
     log_first = log_anchor + 1  # no table title -> header ON the anchor
-    log_last = log_first + len(expenses) - 1
+    log_last = log_first + n_log_rows - 1
     log_total = log_last + 1
 
-    log_rows: List[List[Any]] = [
-        [
-            exp["date"],
-            exp["category"],
-            exp["description"] or None,
-            exp["amount"],
-            exp["paid_by"],
-            "Yes" if exp["billable"] else "No",
-            "Yes" if exp["receipt"] else "No",
-        ]
-        for exp in expenses
-    ]
+    log_rows: List[List[Any]] = []
+    for i in range(n_log_rows):
+        exp = expenses[i] if i < len(expenses) else None
+        log_rows.append(
+            [
+                exp["date"] if exp else None,
+                exp["category"] if exp else None,
+                (exp["description"] or None) if exp else None,
+                exp["amount"] if exp else None,
+                exp["paid_by"] if exp else None,
+                ("Yes" if exp["billable"] else "No") if exp else None,
+                ("Yes" if exp["receipt"] else "No") if exp else None,
+            ]
+        )
 
     log_table: Dict[str, Any] = {
         "start_cell": f"A{log_anchor}",
@@ -290,7 +317,8 @@ def build_expense_report_spec(params: dict) -> dict:
         ],
     }
 
-    # ── Per-category totals ───────────────────────────────────────────
+    # ── Per-category totals (omitted with zero categories — there is
+    # nothing to break down and no honest pie to draw) ────────────────
     categories: List[str] = []
     for exp in expenses:
         if exp["category"] not in categories:
@@ -315,17 +343,20 @@ def build_expense_report_spec(params: dict) -> dict:
             ]
         )
 
-    cat_table: Dict[str, Any] = {
-        "start_cell": f"A{cat_anchor}",
-        "title": "By Category",
-        "headers": ["Category", "Total", "Share"],
-        "rows": cat_rows,
-        "number_formats": {"B": money, "C": PCT_FMT},
-        "total_row": ["Total", "=SUM(B{first_row}:B{last_row})", ""],
-    }
+    cat_table: Optional[Dict[str, Any]] = None
+    if categories:
+        cat_table = {
+            "start_cell": f"A{cat_anchor}",
+            "title": "By Category",
+            "headers": ["Category", "Total", "Share"],
+            "rows": cat_rows,
+            "number_formats": {"B": money, "C": PCT_FMT},
+            "total_row": ["Total", "=SUM(B{first_row}:B{last_row})", ""],
+        }
 
     # ── Reimbursement summary ─────────────────────────────────────────
-    reimb_anchor = cat_total + 2
+    # directly below the log when the category table is omitted
+    reimb_anchor = cat_total + 2 if categories else log_total + 2
     reimb_first = reimb_anchor + 2  # table carries a title
     # Row offsets inside the reimbursement table (7 rows, indices 0..6):
     #   0 Total Expenses | 1 Paid Personally | 2 Paid by Company
@@ -381,12 +412,13 @@ def build_expense_report_spec(params: dict) -> dict:
     }
 
     notes = p["notes"] or (
-        "Template-built expense report — everything is live. Toggle "
-        "Paid By / Billable / Receipt with the dropdowns and the "
-        "category totals + reimbursement summary recompute: reimbursable "
-        "= paid personally AND billable; the company claws back "
-        "non-billable company-paid rows; the Net Due cell turns green "
-        "when the company owes you and red when you owe it."
+        "Template-built expense report — everything is live. Fill the "
+        "log rows (date, category, description, amount) and toggle Paid "
+        "By / Billable / Receipt with the dropdowns: the category totals "
+        "+ reimbursement summary recompute — reimbursable = paid "
+        "personally AND billable; the company claws back non-billable "
+        "company-paid rows; the Net Due cell turns green when the "
+        "company owes you and red when you owe it."
     )
 
     charts: List[dict] = []
@@ -422,12 +454,12 @@ def build_expense_report_spec(params: dict) -> dict:
             "G": 10,
         },
         "text_blocks": blocks,
-        "tables": [log_table, cat_table, reimb_table],
+        "tables": [t for t in (log_table, cat_table, reimb_table) if t],
         "data_validation": [
             {
                 "range": f"E{log_first}:E{log_last}",
                 "values": ["Personal", "Company"],
-                "allow_blank": False,
+                "allow_blank": True,  # scaffold rows start empty
                 "prompt_title": "Paid by",
                 "prompt": "Personal = you paid, Company = paid directly.",
                 "error_title": "Invalid payer",
@@ -437,7 +469,7 @@ def build_expense_report_spec(params: dict) -> dict:
             {
                 "range": f"F{log_first}:F{log_last}",
                 "values": ["Yes", "No"],
-                "allow_blank": False,
+                "allow_blank": True,  # scaffold rows start empty
                 "prompt_title": "Billable",
                 "prompt": "Yes = reimbursable / client-billable expense.",
                 "error_title": "Invalid value",
@@ -447,7 +479,7 @@ def build_expense_report_spec(params: dict) -> dict:
             {
                 "range": f"G{log_first}:G{log_last}",
                 "values": ["Yes", "No"],
-                "allow_blank": False,
+                "allow_blank": True,  # scaffold rows start empty
                 "prompt_title": "Receipt",
                 "prompt": "Do you have the receipt for this expense?",
                 "error_title": "Invalid value",
