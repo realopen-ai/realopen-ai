@@ -379,6 +379,92 @@ class TestSalesTrackerBuilder:
             "Share of Revenue",
         ]
 
+    def test_template_mode_no_sales_builds_blank_log(self, tmp_path):
+        # "create a sales log" with no sales must build the blank log
+        # with live analysis instead of raising → AI path → bad spec.
+        spec = ep.build_sales_tracker_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert warnings == []
+        norm = eg._normalize_spec(spec)
+        assert norm["filename"] == "sales_tracker.xlsx"
+
+        sales = _sheet(norm, "Sales")
+        table = sales["tables"][0]
+        assert table["start_cell"] == "A3"
+        assert len(table["rows"]) == 8  # blank scaffold rows 4..11
+        # nothing invented: date..unit cost all blank
+        assert all(r[:7] == [None] * 7 for r in table["rows"])
+        # guarded Revenue / Profit / Margin formulas on every scaffold row
+        assert table["rows"][0][7] == '=IF(OR($E4="",$F4=""),"",$E4*$F4)'
+        assert table["rows"][0][8] == '=IF(OR($G4="",$H4=""),"",$H4-$E4*$G4)'
+        assert table["rows"][0][9] == ('=IF(OR($G4="",$H4="",$H4=0),"",$I4/$H4)')
+        assert table["rows"][7][7] == '=IF(OR($E11="",$F11=""),"",$E11*$F11)'
+        # totals SUM over the scaffold band (blank → 0), guarded margin
+        assert table["total_row"][4] == "=SUM(E4:E11)"
+        assert table["total_row"][7] == "=SUM(H4:H11)"
+        assert table["total_row"][9] == '=IF(OR(H12=0,I12=0),"",I12/H12)'
+        # negative-profit CF still covers the blank band
+        cf = sales["conditional_formats"][0]
+        assert cf["range"] == "I4:I11"
+
+        # Analysis sheet: topline zeros + guarded product scaffold, no charts
+        ana = _sheet(norm, "Analysis")
+        blocks = {b["cell"]: b["text"] for b in ana["text_blocks"]}
+        assert blocks["B3"] == "=COUNTA(Sales!$B$4:$B$11)"
+        assert blocks["B4"] == "=SUM(Sales!$E$4:$E$11)"
+        assert blocks["B5"] == "=SUM(Sales!$H$4:$H$11)"
+        assert blocks["B6"] == "=IF($B$3=0,0,$B$5/$B$3)"
+        assert "Total Profit" not in blocks  # no costs anywhere
+        assert len(ana["tables"]) == 1
+        prod = ana["tables"][0]
+        assert prod["start_cell"] == "A8"  # title 8, header 9
+        assert prod["title"] == "Revenue by Product"
+        assert len(prod["rows"]) == 6  # blank label scaffold rows 10..15
+        assert all(r[0] is None for r in prod["rows"])
+        assert prod["rows"][0][1] == (
+            '=IF($A10="","",SUMIF(Sales!$B$4:$B$11,$A10,Sales!$E$4:$E$11))'
+        )
+        assert prod["rows"][0][2] == (
+            '=IF($A10="","",SUMIF(Sales!$B$4:$B$11,$A10,Sales!$H$4:$H$11))'
+        )
+        assert prod["rows"][5][3] == ('=IF($A15="","",IF($C$16=0,0,C15/$C$16))')
+        assert prod["total_row"][1] == "=SUM(B10:B15)"
+        assert "charts" not in ana
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "sales_blank.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Sales", "Analysis"]
+        ws = wb["Sales"]
+        assert ws["A4"].value is None
+        assert ws["H4"].value == '=IF(OR($E4="",$F4=""),"",$E4*$F4)'
+        assert ws["I4"].value == '=IF(OR($G4="",$H4=""),"",$H4-$E4*$G4)'
+        assert ws["J4"].value == '=IF(OR($G4="",$H4="",$H4=0),"",$I4/$H4)'
+        assert ws["H12"].value == "=SUM(H4:H11)"
+        assert ws.freeze_panes == "A4"
+        assert ws.auto_filter.ref == "A3:J12"
+        assert len(ws._charts) == 0
+        ana_ws = wb["Analysis"]
+        assert ana_ws["B3"].value == "=COUNTA(Sales!$B$4:$B$11)"
+        assert ana_ws["B10"].value == (
+            '=IF($A10="","",SUMIF(Sales!$B$4:$B$11,$A10,Sales!$E$4:$E$11))'
+        )
+        assert ana_ws["C10"].value == (
+            '=IF($A10="","",SUMIF(Sales!$B$4:$B$11,$A10,Sales!$H$4:$H$11))'
+        )
+        assert ana_ws["B16"].value == "=SUM(B10:B15)"
+        assert len(ana_ws._charts) == 0
+
+    def test_heal_never_fires_on_blank_template(self):
+        spec = ep.build_sales_tracker_spec({})
+        norm = eg._normalize_spec(spec)
+        before = [r for t in norm["sheets"][0]["tables"] for r in t["rows"]]
+        eg._heal_off_by_one_formula_rows(norm)
+        after = [r for t in norm["sheets"][0]["tables"] for r in t["rows"]]
+        assert before == after
+
 
 class TestSalesTrackerCoercion:
     def test_quoted_numbers_and_alias_keys(self):
@@ -439,15 +525,21 @@ class TestSalesTrackerCoercion:
         )
         assert len(p["sales"]) == 1
 
-    def test_missing_required_raises(self):
+    def test_missing_or_empty_sales_is_template_mode(self):
+        # "create a sales log" — no sales given: blank template mode,
+        # NOT a refusal (sales are never invented).
+        for params in ({}, {"sales": []}, {"period_label": "Q1"}):
+            p = ep.coerce_sales_tracker_params(params)
+            assert p["sales"] == []
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_sales_tracker_params({})
-        with pytest.raises(ValueError):
-            ep.coerce_sales_tracker_params({"sales": []})
-        with pytest.raises(ValueError):
-            ep.coerce_sales_tracker_params({"sales": [{"product": "Mug"}]})
+            ep.coerce_sales_tracker_params({"sales": "Widget"})
         with pytest.raises(ValueError):
             ep.coerce_sales_tracker_params("nope")
+        # entries given but none usable — structural garbage
+        with pytest.raises(ValueError):
+            ep.coerce_sales_tracker_params({"sales": [{"product": "Mug"}]})
 
     def test_currency_lowercase_resolved(self):
         p = ep.coerce_sales_tracker_params(
@@ -478,6 +570,35 @@ class TestSalesTrackerRouting:
         assert result["table_count"] == 4  # log + product + channel + month
         assert result["chart_count"] == 2
         assert result["formula_count"] > 40
+        assert "sales_tracker template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # sales_tracker with NO sales ("create a sales log") — the
+        # pattern must build the blank log instead of falling back to
+        # the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "sales_tracker", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "create a sales log spreadsheet to track my sales"
+        )
+        assert result["pattern"] == "sales_tracker"
+        assert result["sheet_names"] == ["Sales", "Analysis"]
+        assert result["chart_count"] == 0  # nothing to chart yet
+        assert result["filename"] == "sales_tracker.xlsx"
         assert "sales_tracker template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
@@ -749,6 +870,105 @@ class TestCrmPipelineBuilder:
             "Verbal OK",
         ]
 
+    def test_template_mode_no_deals_builds_blank_pipeline(self, tmp_path):
+        # "create a pipeline tracker" with no deals must build the
+        # blank pipeline with the standard six stages instead of
+        # raising → AI path → invalid spec.
+        spec = ep.build_crm_pipeline_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert warnings == []
+        norm = eg._normalize_spec(spec)
+        assert norm["filename"] == "crm_pipeline.xlsx"
+
+        pipe = _sheet(norm, "Pipeline")
+        table = pipe["tables"][0]
+        assert table["start_cell"] == "A3"
+        assert len(table["rows"]) == 8  # blank scaffold rows 4..11
+        # nothing invented: deal..expected close all blank
+        assert all(r[c] is None for r in table["rows"] for c in (0, 1, 2, 3, 4, 6, 7))
+        # guarded weighted-value formula on every scaffold row (blank
+        # probability counts as 1), days-to-close guarded on the date
+        assert table["rows"][0][5] == '=IF($D4="","",$D4*IF($E4="",1,$E4))'
+        assert table["rows"][0][8] == '=IF($H4="","",$H4-TODAY())'
+        assert table["rows"][7][5] == '=IF($D11="","",$D11*IF($E11="",1,$E11))'
+        # totals SUM over the scaffold band (blank → 0)
+        assert table["total_row"][3] == "=SUM(D4:D11)"
+        assert table["total_row"][5] == "=SUM(F4:F11)"
+        # stage dropdown covers the scaffold rows, fed by the Stages ref
+        dv = pipe["data_validation"][0]
+        assert dv["range"] == "C4:C11"
+        assert dv["source_range"] == "Stages!$A$9:$A$14"
+        # Won/Lost + overdue + negative-days CF still cover the band
+        by_range = {c["range"] for c in pipe["conditional_formats"]}
+        assert by_range == {"C4:C11", "H4:H11", "I4:I11"}
+
+        # Stages sheet STILL emitted: the standard six stages with
+        # COUNTIF/SUMIF rows that legitimately read 0 over blank deals
+        stages = _sheet(norm, "Stages")
+        blocks = {b["cell"]: b["text"] for b in stages["text_blocks"]}
+        assert blocks["B3"] == "=SUM(Pipeline!$D$4:$D$11)"
+        assert blocks["B4"] == "=SUM(Pipeline!$F$4:$F$11)"
+        assert blocks["B5"] == "=COUNTA(Pipeline!$A$4:$A$11)"
+        assert blocks["B6"] == '=COUNTIF(Pipeline!$I$4:$I$11,"<0")'
+        stage_table = stages["tables"][0]
+        assert stage_table["start_cell"] == "A8"
+        labels = [r[0] for r in stage_table["rows"]]
+        assert labels == [
+            "Lead",
+            "Qualified",
+            "Proposal",
+            "Negotiation",
+            "Won",
+            "Lost",
+        ]
+        lead = stage_table["rows"][0]
+        assert lead[1] == "=COUNTIF(Pipeline!$C$4:$C$11,$A9)"
+        assert lead[2] == ("=SUMIF(Pipeline!$C$4:$C$11,$A9,Pipeline!$D$4:$D$11)")
+        assert lead[3] == ("=SUMIF(Pipeline!$C$4:$C$11,$A9,Pipeline!$F$4:$F$11)")
+        assert lead[4] == "=IF($C$15=0,0,C9/$C$15)"
+        assert stage_table["total_row"][1] == "=SUM(B9:B14)"
+        # no chart over six all-zero stages
+        assert "charts" not in stages
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "crm_blank.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Pipeline", "Stages"]
+        ws = wb["Pipeline"]
+        assert ws["A4"].value is None
+        assert ws["F4"].value == '=IF($D4="","",$D4*IF($E4="",1,$E4))'
+        assert ws["I4"].value == '=IF($H4="","",$H4-TODAY())'
+        assert ws["D12"].value == "=SUM(D4:D11)"
+        assert ws.freeze_panes == "A4"
+        assert ws.auto_filter.ref == "A3:I12"
+        assert len(ws._charts) == 0
+        dvs = ws.data_validations.dataValidation
+        assert len(dvs) == 1
+        assert dvs[0].formula1 == "Stages!$A$9:$A$14"
+        assert str(dvs[0].sqref) == "C4:C11"
+        assert len(list(ws.conditional_formatting)) == 3
+        stages_ws = wb["Stages"]
+        assert stages_ws["A9"].value == "Lead"
+        assert stages_ws["A14"].value == "Lost"
+        assert stages_ws["B9"].value == "=COUNTIF(Pipeline!$C$4:$C$11,$A9)"
+        assert stages_ws["C15"].value == "=SUM(C9:C14)"
+        assert len(stages_ws._charts) == 0
+
+    def test_template_mode_honors_user_stage_list(self):
+        # stages given with no deals: the blank pipeline uses THEM as
+        # the dropdown source (user vocabulary beats the default six)
+        spec = ep.build_crm_pipeline_spec({"stages": ["Discovery", "Quote", "Commit"]})
+        errors, _ = eg.validate_workbook_spec(spec)
+        assert errors == []
+        norm = eg._normalize_spec(spec)
+        labels = [r[0] for r in _sheet(norm, "Stages")["tables"][0]["rows"]]
+        assert labels == ["Discovery", "Quote", "Commit"]
+        dv = _sheet(norm, "Pipeline")["data_validation"][0]
+        assert dv["range"] == "C4:C11"
+        assert dv["source_range"] == "Stages!$A$9:$A$11"
+
 
 class TestCrmPipelineCoercion:
     def test_probability_forms(self):
@@ -812,17 +1032,26 @@ class TestCrmPipelineCoercion:
         with pytest.raises(ValueError):
             ep.coerce_crm_pipeline_params({"stages": "not-a-list", "deals": []})
 
-    def test_unusable_deals_dropped_and_raises(self):
+    def test_missing_or_empty_deals_is_template_mode(self):
+        # "create a pipeline tracker" — no deals given: blank template
+        # mode, NOT a refusal (deals are never invented).
+        for params in ({}, {"deals": []}, {"pipeline_name": "Q1"}):
+            p = ep.coerce_crm_pipeline_params(params)
+            assert p["deals"] == []
+            assert p["stages"] is None  # → standard six at build time
+
+    def test_structurally_wrong_params_raise(self):
         with pytest.raises(ValueError):
-            ep.coerce_crm_pipeline_params({})
+            ep.coerce_crm_pipeline_params({"deals": "Acme"})
         with pytest.raises(ValueError):
-            ep.coerce_crm_pipeline_params({"deals": []})
+            ep.coerce_crm_pipeline_params("nope")
+        with pytest.raises(ValueError):
+            ep.coerce_crm_pipeline_params({"stages": "not-a-list", "deals": []})
+        # entries given but none usable — structural garbage
         with pytest.raises(ValueError):
             ep.coerce_crm_pipeline_params({"deals": [{"name": "No Value"}]})
         with pytest.raises(ValueError):
             ep.coerce_crm_pipeline_params({"deals": [{"value": 100}]})
-        with pytest.raises(ValueError):
-            ep.coerce_crm_pipeline_params("nope")
         # one good deal among junk survives
         p = ep.coerce_crm_pipeline_params(
             {"deals": [{"name": "A", "value": 5}, {"name": "B"}, "junk"]}
@@ -853,6 +1082,35 @@ class TestCrmPipelineRouting:
         assert result["table_count"] == 2
         assert result["chart_count"] == 1
         assert result["formula_count"] > 40
+        assert "crm_pipeline template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # crm_pipeline with NO deals ("create a pipeline tracker") — the
+        # pattern must build the blank pipeline (standard six stages
+        # still emitted) instead of falling back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "crm_pipeline", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "create a sales pipeline tracker for my deals and leads"
+        )
+        assert result["pattern"] == "crm_pipeline"
+        assert result["sheet_names"] == ["Pipeline", "Stages"]
+        assert result["chart_count"] == 0  # nothing to chart yet
+        assert result["filename"] == "crm_pipeline.xlsx"
         assert "crm_pipeline template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
