@@ -47,6 +47,17 @@ Each pattern module must expose:
                                the brief, so a pattern without keywords
                                is effectively unreachable via routing
     coerce_params(params) dict optional param normalizer (tests use it)
+    PATTERN_FILL        bool   optional — marks a "fillable" pattern:
+                               a request that states goals/preferences
+                               instead of concrete records may ask for
+                               DRAFTED starter content; excel_gen then
+                               runs the prompts/pattern_populator.md
+                               call to fill this pattern's list params
+                               before building. Only patterns where
+                               drafting is the point (planners, habit
+                               trackers…) should set it — never
+                               business-record patterns (invoices,
+                               payroll, sales…: fabricated facts).
 
 Pattern modules must NEVER import from excel_gen (no circular
 import) and must never write prompts in code — prompts live in
@@ -111,6 +122,15 @@ PATTERN_DESCRIPTIONS: Dict[str, str] = {}
 # keywords simply never enters the shortlist (the AI path handles it).
 PATTERN_KEYWORDS: Dict[str, Tuple[str, ...]] = {}
 
+# name → True for "fillable" patterns (module sets PATTERN_FILL = True).
+# A fillable pattern accepts a guidance-only request: excel_gen routes
+# such briefs with "fill": true, then drafts the pattern's list params
+# via prompts/pattern_populator.md BEFORE building, so the user gets a
+# populated starter sheet instead of a blank template. Fill failures
+# fall back to the plain extracted params (blank template) — never
+# worse than the no-fill behavior.
+PATTERN_FILLABLE: Dict[str, bool] = {}
+
 # Names never hoisted from a pattern module into this package's
 # namespace — they are per-module registry concepts.
 _REGISTRY_ATTRS = frozenset(
@@ -118,6 +138,7 @@ _REGISTRY_ATTRS = frozenset(
         "PATTERN_NAME",
         "PATTERN_DESCRIPTION",
         "PATTERN_KEYWORDS",
+        "PATTERN_FILL",
         "build_spec",
         "coerce_params",
     }
@@ -141,6 +162,8 @@ def _register_pattern_module(module: ModuleType, fallback_name: str) -> None:
         return  # not a pattern module — skip silently
     PATTERN_BUILDERS[name] = builder
     PATTERN_DESCRIPTIONS[name] = str(getattr(module, "PATTERN_DESCRIPTION", "") or "")
+    if getattr(module, "PATTERN_FILL", False):
+        PATTERN_FILLABLE[name] = True
     kws = getattr(module, "PATTERN_KEYWORDS", ())
     if isinstance(kws, (list, tuple)):
         PATTERN_KEYWORDS[name] = tuple(
