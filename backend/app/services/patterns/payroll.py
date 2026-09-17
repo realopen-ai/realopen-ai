@@ -26,6 +26,16 @@ Layout (Payroll sheet):
 
 Single sheet on purpose: the register's totals row IS the summary for
 one pay period; a gross-pay bar chart floats to the right of the table.
+
+TEMPLATE MODE: a request with no employees yet ("create a payroll
+register") builds the BLANK register — 8 empty scaffold rows with live
+guarded gross/tax/net formulas, never invented employees (hard rule),
+never a refusal for lack of data. The overtime-multiplier assumptions
+cell is still emitted (default 1.5) and the Basis dropdown still covers
+the scaffold rows; Gross / Tax / Net stay blank until a row carries an
+employee name and a rate (a blank tax rate still computes 0 tax), and
+the totals row legitimately reads 0 over blank rows. No chart until
+real employees exist.
 """
 
 from __future__ import annotations
@@ -51,7 +61,9 @@ PATTERN_NAME = "payroll"
 
 PATTERN_DESCRIPTION = (
     "Payroll register for one pay period: per-employee gross (hourly "
-    "with overtime or monthly salary), tax, deductions and net pay."
+    "with overtime or monthly salary), tax, deductions and net pay. A "
+    "request with no employees yet still gets a blank payroll template "
+    "with live guarded formulas and an Hourly/Monthly dropdown."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -67,6 +79,7 @@ PATTERN_KEYWORDS = (
 )
 
 MAX_EMPLOYEES = 200
+MIN_ROWS = 8  # blank scaffold rows in template mode (no employees given)
 
 DEFAULT_OT_MULTIPLIER = 1.5
 
@@ -90,9 +103,13 @@ def _normalize_basis(value: Any) -> Optional[str]:
 
 
 def coerce_payroll_params(params: dict) -> dict:
-    """Validate + normalize classifier output. Raises ValueError when
-    required params are missing (the employee list, a name, a rate, or
-    hours for an hourly employee).
+    """Validate + normalize classifier output. Raises ValueError for
+    STRUCTURALLY wrong input only (params not an object, employees not
+    an array, an entry without a name / rate / hours for hourly staff).
+
+    Template mode: employees missing or an empty array is FINE — the
+    builder emits the blank register with scaffold rows (the "create a
+    payroll register" case); employees are never invented.
 
     Accepts alias keys, quoted/currency numbers and percent strings.
     Semantics per the stanza: ``overtime_hours`` 0 when not stated;
@@ -105,14 +122,15 @@ def coerce_payroll_params(params: dict) -> dict:
 
     raw = None
     for key in ("employees", "staff", "employee_list", "staff_list"):
-        if isinstance(params.get(key), list):
+        if key in params:
+            if not isinstance(params[key], list):
+                raise ValueError("employees must be an array")
             raw = params[key]
             break
-    if raw is None:
-        raise ValueError("employees missing")
+    # raw None (or []) → template mode — no employees to lay out yet.
 
     employees: List[Dict[str, Any]] = []
-    for entry in raw[:MAX_EMPLOYEES]:
+    for entry in (raw or [])[:MAX_EMPLOYEES]:
         if not isinstance(entry, dict):
             continue
         name = _clean_str(
@@ -179,7 +197,9 @@ def coerce_payroll_params(params: dict) -> dict:
                 "deductions": deductions,
             }
         )
-    if not employees:
+    if raw and not employees:
+        # entries were given but none were usable — structural garbage,
+        # not the blank-template case.
         raise ValueError("no usable employees")
 
     multiplier = to_number(
@@ -217,6 +237,8 @@ def build_payroll_spec(params: dict) -> dict:
     money = p["currency"] or MONEY_FMT
 
     n = len(employees)
+    template_mode = n == 0
+    n_rows = n if n else MIN_ROWS  # scaffold rows in template mode
 
     # ── Params / assumptions block (rows 2..K) ─────────────────────────
     blocks: List[dict] = [
@@ -262,10 +284,11 @@ def build_payroll_spec(params: dict) -> dict:
     row += 1
 
     # ── Layout math (table) ────────────────────────────────────────────
-    # headers on row mult_row + 2, data below, total row after the data.
+    # headers on row mult_row + 2, data below (8 blank scaffold rows in
+    # template mode), total row after the data.
     header_row = mult_row + 2
     first_data = header_row + 1
-    last_data = header_row + n
+    last_data = header_row + n_rows
     total_row = last_data + 1  # noqa
 
     headers = [
@@ -311,6 +334,34 @@ def build_payroll_spec(params: dict) -> dict:
                 f"=G{r}-I{r}-J{r}",
             ]
         )
+    if template_mode:
+        # Blank scaffold rows: Gross / Tax / Net are LIVE guarded
+        # formulas that stay blank until the row carries an employee
+        # name AND a rate (blank basis then reads as the monthly
+        # salary branch; a blank tax rate computes 0 tax). Employees
+        # are never invented — hard rule.
+        for i in range(MIN_ROWS):
+            r = first_data + i
+            rows.append(
+                [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    (
+                        f'=IF(OR($A{r}="",$D{r}=""),"",'
+                        f'IF($C{r}="Hourly",'
+                        f"$D{r}*$E{r}+$F{r}*$D{r}*$B${mult_row},"
+                        f"$D{r}))"
+                    ),
+                    None,
+                    f'=IF($G{r}="","",IF($H{r}="",0,$G{r}*$H{r}))',
+                    None,
+                    f'=IF($G{r}="","",$G{r}-$I{r}-$J{r})',
+                ]
+            )
 
     net_cf = {
         "range": f"K{first_data}:K{last_data}",
@@ -333,6 +384,12 @@ def build_payroll_spec(params: dict) -> dict:
         "until you fill it. Net Pay = Gross - Tax - Deductions. Basis "
         "cells have an Hourly/Monthly dropdown."
     )
+    if template_mode:
+        how_to = (
+            "Blank payroll template — type employees into the empty rows "
+            "(Basis comes from the dropdown) and Gross / Tax / Net compute "
+            "themselves. " + how_to
+        )
     sheet_notes = f"{p['notes'][:1000]} " + how_to if p["notes"] else how_to
 
     payroll_sheet: Dict[str, Any] = {
@@ -392,7 +449,12 @@ def build_payroll_spec(params: dict) -> dict:
                 "error_style": "warning",
             }
         ],
-        "charts": [
+        "notes": sheet_notes,
+    }
+    if not template_mode:
+        # No chart over 8 blank employee names — it appears as soon as
+        # real employees exist.
+        payroll_sheet["charts"] = [
             {
                 "type": "bar",
                 "title": "Gross Pay by Employee",
@@ -408,9 +470,7 @@ def build_payroll_spec(params: dict) -> dict:
                 ],
                 "value_numfmt": money,
             }
-        ],
-        "notes": sheet_notes,
-    }
+        ]
 
     fname = "payroll"
     if p["pay_period"]:
