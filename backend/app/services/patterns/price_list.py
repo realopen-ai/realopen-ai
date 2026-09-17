@@ -26,6 +26,16 @@ Categories sheet (steel tab): one row per category with live
 COUNTIF/SUMIF/AVERAGEIF formulas over the Pricing table + a cost-vs-
 price bar chart; its column A doubles as the dropdown source for the
 Pricing category column.
+
+TEMPLATE MODE: a request with no products yet ("create a price list
+template") builds the BLANK pricing catalog — 8 empty scaffold rows
+with live guarded markup/margin formulas, never invented products
+(hard rule), never a refusal for lack of data. The Categories sheet is
+emitted as a default-free scaffold (blank category cells + guarded
+COUNTIF/SUMIF/AVERAGEIF rows) whose column A feeds the Pricing category
+dropdown live — type category names there and both the dropdown and the
+subtotals light up. The total row's guarded averages legitimately read
+"n/a" over blank rows; charts are skipped until real products exist.
 """
 
 from __future__ import annotations
@@ -50,7 +60,9 @@ PATTERN_NAME = "price_list"
 
 PATTERN_DESCRIPTION = (
     "Product price list / pricing catalog with cost, price, markup and "
-    "gross margin per product, optional VAT and category subtotals."
+    "gross margin per product, optional VAT and category subtotals. A "
+    "request with no products yet still gets a blank pricing template "
+    "with live guarded formulas and a category scaffold sheet."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -69,6 +81,7 @@ PATTERN_KEYWORDS = (
 
 MAX_PRODUCTS = 300
 MAX_CATEGORIES = 60
+MIN_ROWS = 8  # blank scaffold rows in template mode (no products given)
 
 # Margin traffic lights (design-system status colors).
 _MARGIN_LOW = 0.20  # below → amber, negative → red
@@ -82,8 +95,13 @@ def _clean_str(value: Any, cap: int) -> Optional[str]:
 
 
 def coerce_price_list_params(params: dict) -> dict:
-    """Validate + normalize classifier output. Raises ValueError when
-    required params are missing (products / a product without a name).
+    """Validate + normalize classifier output. Raises ValueError for
+    STRUCTURALLY wrong input only (params not an object, products not
+    an array, a product entry without a name).
+
+    Template mode: products missing or an empty array is FINE — the
+    builder emits the blank pricing template with scaffold rows (the
+    "create a price list" case); products are never invented.
 
     Accepts alias keys, quoted/currency numbers and percent strings;
     ``cost``/``price`` stay ``None`` individually when only one side is
@@ -94,14 +112,15 @@ def coerce_price_list_params(params: dict) -> dict:
 
     raw = None
     for key in ("products", "items", "product_list", "catalog"):
-        if isinstance(params.get(key), list):
+        if key in params:
+            if not isinstance(params[key], list):
+                raise ValueError("products must be an array")
             raw = params[key]
             break
-    if raw is None:
-        raise ValueError("products missing")
+    # raw None (or []) → template mode — no products to lay out yet.
 
     products: List[Dict[str, Any]] = []
-    for entry in raw[:MAX_PRODUCTS]:
+    for entry in (raw or [])[:MAX_PRODUCTS]:
         if isinstance(entry, str):
             entry = {"name": entry}
         if not isinstance(entry, dict):
@@ -132,7 +151,9 @@ def coerce_price_list_params(params: dict) -> dict:
                 "price": max(price, 0.0) if price is not None else None,
             }
         )
-    if not products:
+    if raw and not products:
+        # entries were given but none were usable — structural garbage,
+        # not the blank-template case.
         raise ValueError("no usable products")
 
     vat_rate = to_rate(_pick(params, "vat_rate", "vat", "tax_rate", "tax"))
@@ -187,15 +208,18 @@ def build_price_list_spec(params: dict) -> dict:
     money = p["currency"] or MONEY_FMT
 
     n = len(products)
+    template_mode = n == 0
+    n_rows = n if n else MIN_ROWS  # scaffold rows in template mode
     categories = _unique_categories(products)
     m = len(categories)
 
     # ── Layout math (Pricing sheet) ────────────────────────────────────
     # title row 1, optional VAT assumption row 2, blank 3, headers row 4,
-    # data 5..4+n, total row 5+n. Computed here, never hand-typed.
+    # data 5..4+n_rows (8 blank scaffold rows in template mode), total
+    # row after. Computed here, never hand-typed.
     header_row = 4
     first_data = header_row + 1
-    last_data = header_row + n
+    last_data = header_row + n_rows
     total_row = last_data + 1  # noqa
 
     headers = [
@@ -228,6 +252,24 @@ def build_price_list_spec(params: dict) -> dict:
         if vat_rate is not None:
             row.append(f'=IF(E{r}>0,E{r}*(1+$B$2),"n/a")')
         rows.append(row)
+    if template_mode:
+        # Blank scaffold rows: markup/margin/gross are LIVE guarded
+        # formulas that show "n/a" until the user types a cost/price
+        # (never invented products — hard rule).
+        for i in range(MIN_ROWS):
+            r = first_data + i
+            row = [
+                None,
+                None,
+                None,
+                None,
+                None,
+                f'=IF(OR($D{r}="",$D{r}=0,$E{r}=""),"n/a",($E{r}-$D{r})/$D{r})',
+                f'=IF(OR($E{r}="",$E{r}=0),"n/a",($E{r}-$D{r})/$E{r})',
+            ]
+            if vat_rate is not None:
+                row.append(f'=IF(OR($E{r}="",$E{r}=0),"n/a",$E{r}*(1+$B$2))')
+            rows.append(row)
 
     total_values: List[Any] = [
         "Total / Average",
@@ -297,6 +339,11 @@ def build_price_list_spec(params: dict) -> dict:
     sheet_notes = ""
     if p["notes"]:
         sheet_notes += f"{p['notes']} "
+    if template_mode:
+        sheet_notes += (
+            "Blank pricing template — type products into the empty rows "
+            "and the guarded formulas compute themselves. "
+        )
     sheet_notes += (
         "Markup % = (Net Price - Cost) / Cost and Margin % = (Net Price - "
         "Cost) / Net Price — both guarded, so a missing cost or price shows "
@@ -313,6 +360,10 @@ def build_price_list_spec(params: dict) -> dict:
         "Category cells use a dropdown fed by the Categories sheet, whose "
         "subtotals are live COUNTIF/SUMIF/AVERAGEIF formulas over this table."
     )
+
+    # Dropdown source: derived categories in data mode, the blank
+    # scaffold rows in template mode (same sheet, same mechanism).
+    cat_n = m if m else MIN_ROWS
 
     pricing_sheet: Dict[str, Any] = {
         "name": "Pricing",
@@ -342,11 +393,16 @@ def build_price_list_spec(params: dict) -> dict:
         "data_validation": [
             {
                 "range": f"C{first_data}:C{last_data}",
-                "source_range": f"Categories!$A$4:$A${3 + m}",
+                "source_range": f"Categories!$A$4:$A${3 + cat_n}",
                 "error_style": "warning",
             }
         ],
-        "charts": [
+        "notes": sheet_notes,
+    }
+    if not template_mode:
+        # No chart over 8 blank product names — it appears as soon as
+        # real products exist.
+        pricing_sheet["charts"] = [
             {
                 "type": "bar",
                 "title": "Gross Margin by Product",
@@ -362,32 +418,53 @@ def build_price_list_spec(params: dict) -> dict:
                 ],
                 "value_numfmt": "0.0%",
             }
-        ],
-        "notes": sheet_notes,
-    }
+        ]
     if vat_rate is not None:
         pricing_sheet["column_widths"]["H"] = 14
 
     # ── Categories sheet ───────────────────────────────────────────────
-    # title row 1, blank 2, headers row 3, data 4..3+m, total row 4+m.
+    # title row 1, blank 2, headers row 3, data 4..3+cat_n, total row
+    # after (blank scaffold rows in template mode).
     cat_header_row = 3
     cat_first = cat_header_row + 1
-    cat_last = cat_header_row + m
+    cat_last = cat_header_row + cat_n
 
     pricing_cat = f"Pricing!$C${first_data}:$C${last_data}"
     cat_rows: List[List[Any]] = []
-    for j, cat in enumerate(categories):
-        r = cat_first + j
-        cat_rows.append(
-            [
-                cat,
-                f"=COUNTIF({pricing_cat},$A{r})",
-                f"=SUMIF({pricing_cat},$A{r},Pricing!$D${first_data}:$D${last_data})",
-                f"=SUMIF({pricing_cat},$A{r},Pricing!$E${first_data}:$E${last_data})",
-                f"=IFERROR(AVERAGEIF({pricing_cat},$A{r},"
-                f'Pricing!$G${first_data}:$G${last_data}),"n/a")',
-            ]
-        )
+    if template_mode:
+        # Default-free scaffold: blank category cells + guarded live
+        # subtotals — type a category name in column A and the row (and
+        # the Pricing dropdown) lights up. No category is invented.
+        for i in range(MIN_ROWS):
+            r = cat_first + i
+            cat_rows.append(
+                [
+                    None,
+                    f'=IF($A{r}="","",COUNTIF({pricing_cat},$A{r}))',
+                    f'=IF($A{r}="","",'
+                    f"SUMIF({pricing_cat},$A{r},"
+                    f"Pricing!$D${first_data}:$D${last_data}))",
+                    f'=IF($A{r}="","",'
+                    f"SUMIF({pricing_cat},$A{r},"
+                    f"Pricing!$E${first_data}:$E${last_data}))",
+                    f'=IF($A{r}="","",'
+                    f"IFERROR(AVERAGEIF({pricing_cat},$A{r},"
+                    f'Pricing!$G${first_data}:$G${last_data}),"n/a"))',
+                ]
+            )
+    else:
+        for j, cat in enumerate(categories):
+            r = cat_first + j
+            cat_rows.append(
+                [
+                    cat,
+                    f"=COUNTIF({pricing_cat},$A{r})",
+                    f"=SUMIF({pricing_cat},$A{r},Pricing!$D${first_data}:$D${last_data})",
+                    f"=SUMIF({pricing_cat},$A{r},Pricing!$E${first_data}:$E${last_data})",
+                    f"=IFERROR(AVERAGEIF({pricing_cat},$A{r},"
+                    f'Pricing!$G${first_data}:$G${last_data}),"n/a")',
+                ]
+            )
 
     categories_sheet: Dict[str, Any] = {
         "name": "Categories",
@@ -433,7 +510,14 @@ def build_price_list_spec(params: dict) -> dict:
             "Every value is a live COUNTIF / SUMIF / AVERAGEIF formula over "
             "the Pricing sheet — add products or change categories there and "
             "this summary updates. Column A is the dropdown source for the "
-            "Pricing category column."
+            + (
+                "Pricing category column: type your category names into the "
+                "blank column-A rows and both the dropdown and the subtotals "
+                "light up (nothing is pre-filled — categories are yours to "
+                "define)."
+                if template_mode
+                else "Pricing category column."
+            )
         ),
     }
     if m >= 2:
