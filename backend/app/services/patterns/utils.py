@@ -16,7 +16,7 @@ every pattern (current and future) can rely on it.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 # ── Shared number formats ──────────────────────────────────────────────
@@ -159,6 +159,27 @@ def next_month(year: int, month: int) -> Tuple[int, int]:
 def first_of_next_month(today: Optional[date] = None) -> Tuple[int, int]:
     today = today or date.today()
     return next_month(today.year, today.month)
+
+
+def col_letter(idx: int) -> str:
+    """1-based column index → Excel column letters (1 → "A", 27 → "AA")."""
+    s = ""
+    n = int(idx)
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def monday_of(d: date) -> date:
+    """The Monday of the week containing d (d itself when already Monday)."""
+    return d - timedelta(days=d.weekday())
+
+
+def next_monday(today: Optional[date] = None) -> date:
+    """The Monday of NEXT week (never today)."""
+    today = today or date.today()
+    return today + timedelta(days=(7 - today.weekday()) or 7)
 
 
 # Private aliases for the moved helpers.
