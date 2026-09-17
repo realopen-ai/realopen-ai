@@ -233,7 +233,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 from app.config import settings
 from app.services import model_prefs
 from app.services import providers
-from app.services.patterns import PATTERN_BUILDERS
+from app.services.patterns import PATTERN_BUILDERS, PATTERN_KEYWORDS
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -2757,19 +2757,125 @@ async def _generate_workbook_json(
 
 # ── Deterministic template routing (patterns) ─────────────────────
 
-# Cheap pre-gate: skip the classifier call entirely when the brief
-# can't plausibly mention any templated document (no domain keyword,
-# no digits).
+# Two-stage routing (scales to 30+ patterns without drowning the
+# classifier in pattern noise — the enemy of small-model accuracy):
+#
+#   Stage 1  PURE PYTHON keyword matching over every pattern's
+#            PATTERN_KEYWORDS (words/stems like "budget", "amortiz"):
+#            the union regex is the cheap pre-gate, and the per-pattern
+#            hit counts produce a SHORTLIST (best-scoring first, capped
+#            at MAX_SHORTLIST) of the only patterns the brief can
+#            plausibly be.
+#   Stage 2  the classifier LLM call sees ONLY the shortlisted
+#            stanzas from prompts/pattern_classifier.md (plus the
+#            mandatory "none" stanza) — the prompt stays roughly the
+#            size it was with six patterns, no matter how many are
+#            registered.
+#
+# A brief with zero keyword hits cannot be a templated document → the
+# classifier call is skipped entirely (saves a round trip; the AI spec
+# path handles it). No extra LLM call, no embeddings, no latency.
+MAX_SHORTLIST = 10
+
+_ANY_DIGIT_RE = re.compile(r"\d")
+
+
+def _keyword_regex(keyword: str) -> re.Pattern:
+    """One routing keyword → a word-boundary regex.
+
+    Single words / stems match any English suffix ("budget" →
+    "budgets", "budgeting"; "amortiz" → "amortization"), so pattern
+    files list stems. Multi-word phrases ("shopping list") match
+    verbatim.
+    """
+    esc = re.escape(keyword.strip().lower())
+    if " " in esc:
+        return re.compile(rf"\b{esc}\b", re.IGNORECASE)
+    return re.compile(rf"\b{esc}\w*", re.IGNORECASE)
+
+
+# name → one compiled regex per routing keyword
+_PATTERN_KEYWORD_RES: Dict[str, List[re.Pattern]] = {
+    name: [_keyword_regex(kw) for kw in kws]
+    for name, kws in sorted(PATTERN_KEYWORDS.items())
+}
+
+# Union of EVERY pattern's routing keywords — the cheap pre-gate.
+# Built dynamically from the pattern registry (each pattern carries
+# its own keywords now); with no keyword-bearing patterns it becomes
+# a never-match regex instead of an accidental match-everything "".
+_GATE_ALTS = [
+    (
+        rf"\b{re.escape(kw.strip().lower())}\w*"
+        if " " not in kw.strip()
+        else rf"\b{re.escape(kw.strip().lower())}\b"
+    )
+    for kws in PATTERN_KEYWORDS.values()
+    for kw in kws
+]
 _PATTERN_GATE_RE = re.compile(
-    r"loan|mortgage|amortiz|repay|interest|installment|credit|debt|refund|"
-    r"invoice|bill|billing|quote|quotation|estimate|receipt|budget|expense|"
-    r"income|earning|salary|payroll|saving|finance|"
-    r"portfolio|invest|stock|holding|share|ticker|crypto|etf|bond|"
-    r"dividend|position|habit|streak|routine|"
-    r"inventory|belonging|collection|warranty|serial",
+    "|".join(sorted(set(_GATE_ALTS))) or r"(?!)",
     re.IGNORECASE,
 )
-_ANY_DIGIT_RE = re.compile(r"\d")
+
+
+def _shortlist_patterns(brief: str) -> List[str]:
+    """Patterns whose routing keywords hit the brief, best first.
+
+    Score = number of distinct keywords that matched. Capped so the
+    classifier prompt stays small; deterministic ordering (score desc,
+    then name) keeps routing reproducible.
+    """
+    scored: List[Tuple[int, str]] = []
+    for name, res in _PATTERN_KEYWORD_RES.items():
+        hits = sum(1 for rx in res if rx.search(brief))
+        if hits:
+            scored.append((-hits, name))
+    scored.sort()
+    return [name for _neg, name in scored[:MAX_SHORTLIST]]
+
+
+# ── Classifier prompt assembly (stanza markers in the .md) ──────────
+
+_STANZA_MARKER_RE = re.compile(
+    r"^[ \t]*<!--\s*stanza:\s*([A-Za-z0-9_]+)\s*-->[ \t]*\n(.*?)\n(?=^[ \t]*<!--|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_STANZA_END_RE = re.compile(r"^[ \t]*<!--\s*/stanzas\s*-->[ \t]*$", re.MULTILINE)
+
+
+def _parse_classifier_prompt() -> Tuple[str, Dict[str, str], str]:
+    """Split pattern_classifier.md → (header, {name: stanza}, footer).
+
+    The .md file stays the single source of prompt text (hard rule:
+    prompts live in prompts/*.md); this only SELECTS which stanzas a
+    given classifier call sees. A file without stanza markers is
+    returned whole as the header (legacy flat prompt).
+    """
+    raw = get_prompt("pattern_classifier")
+    matches = list(_STANZA_MARKER_RE.finditer(raw))
+    end = _STANZA_END_RE.search(raw)
+    if not matches or end is None:
+        return raw, {}, ""
+    stanzas: Dict[str, str] = {m.group(1): m.group(2).strip("\n") for m in matches}
+    header = raw[: matches[0].start()].rstrip() + "\n\n"
+    footer = "\n\n" + raw[end.end() :].lstrip("\n")
+    return header, stanzas, footer
+
+
+def _classifier_system_prompt(shortlist: List[str]) -> str:
+    """Header + shortlisted stanzas + the mandatory "none" + footer."""
+    header, stanzas, footer = _parse_classifier_prompt()
+    if not stanzas:
+        return header  # legacy flat prompt — no markers in the file
+    parts = [header]
+    for name in shortlist:
+        if name != "none" and name in stanzas:
+            parts.append(stanzas[name].rstrip() + "\n\n")
+    if "none" in stanzas:
+        parts.append(stanzas["none"].rstrip() + "\n\n")
+    parts.append(footer.lstrip("\n"))
+    return "".join(parts)
 
 
 async def _try_pattern_spec(
@@ -2791,15 +2897,25 @@ async def _try_pattern_spec(
     if not (_PATTERN_GATE_RE.search(brief) or _ANY_DIGIT_RE.search(brief)):
         return None
 
+    shortlist = _shortlist_patterns(brief)
+    if not shortlist:
+        # Passed the gate only via a bare digit and no pattern's
+        # routing vocabulary is present — not a templated document.
+        return None
+
     user_content = f"Request: {brief}"
     if requirements and requirements.strip():
         user_content += f"\n\nAdditional requirements: {requirements.strip()}"
     user_content += "\n\nRespond with the JSON routing object now."
 
     try:
+        _log("pattern shortlist: %s", ", ".join(shortlist))
         raw = await _call_llm(
             [
-                {"role": "system", "content": get_prompt("pattern_classifier")},
+                {
+                    "role": "system",
+                    "content": _classifier_system_prompt(shortlist),
+                },
                 {"role": "user", "content": user_content},
             ],
             model=model,
