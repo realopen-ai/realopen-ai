@@ -70,6 +70,14 @@ PATTERN_DESCRIPTION = (
     "invoices or investment portfolios."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "habit",
+    "streak",
+    "routine",
+)
+
 MAX_HABITS = 10
 MONTH_WINDOW = 24  # months a requested month_start may sit away from today
 
