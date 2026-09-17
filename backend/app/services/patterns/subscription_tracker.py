@@ -14,7 +14,8 @@ prompts/pattern_classifier.md):
 
 Layout (Subscriptions sheet):
   row 1   title text block
-  row 3   main table header; one row per subscription
+  row 3   main table header; one row per subscription (8 blank
+          scaffold rows when the request lists none)
           Name | Category | Amount | Cycle | Next Renewal |
           Days to Renewal | Monthly Equivalent | Yearly Equivalent | Status
   total   SUMIF over Status="Active" for the two equivalent columns
@@ -22,11 +23,24 @@ Layout (Subscriptions sheet):
           renewal via TODAY()-based MIN)
 
 Live math:
-  monthly equivalent = amount x cycle factor (nested IF on the cycle
-  cell — edit the cycle dropdown and the equivalents recompute)
-  yearly  equivalent = amount x the yearly factor
-  days to renewal    = E{r}-TODAY() with a blank guard
+  monthly equivalent = IF(amount or cycle blank, "",
+                          amount × cycle factor (nested IF on the cycle
+                          cell — edit the cycle dropdown and the
+                          equivalents recompute))
+  yearly  equivalent = same guard, amount × the yearly factor
+  days to renewal    = IF(E{r}="","",E{r}-TODAY())
   totals             = SUMIF keyed on the Status dropdown
+
+TEMPLATE MODE: a request with no subscriptions yet ("track my
+subscriptions" with nothing listed) builds the BLANK tracker — 8 blank
+rows with the cycle (monthly / quarterly / yearly / weekly) and status
+(Active / Cancelled) dropdowns over them and every formula guarded
+(=IF(…="","",…)) so blank rows stay blank. The dropdown vocabularies
+are reference values, not user data — always emitted. Totals compute 0,
+the guarded summary shows "n/a" / "no renewal dates" until real rows
+exist, and the chart is skipped (never invents subscriptions; hard
+rule). ValueError only for structurally wrong params (non-object
+params, non-array subscriptions).
 
 No ROUND() anywhere — display rounding is the number format's job.
 """
@@ -49,7 +63,9 @@ PATTERN_NAME = "subscription_tracker"
 
 PATTERN_DESCRIPTION = (
     "Recurring subscriptions / memberships tracker with billing cycles, "
-    "next renewals, live monthly & yearly equivalents and totals."
+    "next renewals, live monthly & yearly equivalents and totals — a "
+    "request with no subscriptions yet still gets a blank tracker "
+    "template."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -68,6 +84,7 @@ PATTERN_KEYWORDS = (
 
 MAX_SUBSCRIPTIONS = 200
 MAX_ABS_MONEY = 1e12
+MIN_SUB_ROWS = 8  # blank scaffold rows in template mode
 
 CYCLES = ("monthly", "quarterly", "yearly", "weekly")
 
@@ -187,20 +204,29 @@ def _normalize_subscription(entry: Any) -> Optional[dict]:
 
 
 def coerce_subscription_tracker_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing subscriptions are FINE — the builder
+    emits the blank tracker (the "track my subscriptions" case).
+    ValueError only for structurally wrong params (non-object params,
+    non-array subscriptions).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
     raw = _pick(params, "subscriptions", "subs", "subscription_list", "recurring_costs")
     subs: List[dict] = []
-    if isinstance(raw, list):
+    if raw is None:
+        pass  # nothing listed yet — template mode, blank rows
+    elif not isinstance(raw, list):
+        raise ValueError("subscriptions must be an array")
+    else:
         for entry in raw[:MAX_SUBSCRIPTIONS]:
             sub = _normalize_subscription(entry)
             if sub is not None:
                 subs.append(sub)
-
-    if not subs:
-        raise ValueError("no usable subscriptions (name + amount required)")
+    # Template mode: zero usable subscriptions is fine — blank rows,
+    # the user fills them in (never invent subscriptions; hard rule).
 
     notes = _pick(params, "notes", "note")
     notes = notes.strip()[:1000] if isinstance(notes, str) and notes.strip() else ""
@@ -220,34 +246,43 @@ def build_subscription_tracker_spec(params: dict) -> dict:
     money = p["currency"] or MONEY_FMT
 
     # Layout math: main table anchored at A3 with NO table title →
-    # header row 3, data 4..(3+n), total row right after the data.
+    # header row 3, data 4..(3+n) (8 blank scaffold rows when nothing
+    # is listed), total row right after the data.
+    n = len(subs)
+    n_rows = n or MIN_SUB_ROWS
     header_row = 3
     first = header_row + 1
-    last = first + len(subs) - 1
+    last = first + n_rows - 1
     total_row = last + 1
 
     rows: List[List[Any]] = []
-    for sub in subs:
-        r = first + len(rows)
+    for i in range(n_rows):
+        r = first + i
+        sub = subs[i] if i < n else None
         rows.append(
             [
-                sub["name"],
-                sub["category"] or None,
-                sub["amount"],
-                sub["cycle"],
-                sub["next_renewal"],
-                f'=IF(E{r}="","n/a",E{r}-TODAY())',
+                sub["name"] if sub else None,
+                (sub["category"] or None) if sub else None,
+                sub["amount"] if sub else None,
+                sub["cycle"] if sub else None,
+                sub["next_renewal"] if sub else None,
+                # days to renewal — blank until a renewal date exists
+                f'=IF(E{r}="","",E{r}-TODAY())',
+                # monthly equivalent — blank until amount AND cycle
+                # exist, then the nested-IF cycle factor
                 (
-                    f'=C{r}*IF(D{r}="yearly",1/12,'
-                    f'IF(D{r}="quarterly",1/3,'
-                    f'IF(D{r}="weekly",52/12,1)))'
+                    f'=IF(OR($C{r}="",$D{r}=""),"",'
+                    f'$C{r}*IF($D{r}="yearly",1/12,'
+                    f'IF($D{r}="quarterly",1/3,'
+                    f'IF($D{r}="weekly",52/12,1))))'
                 ),
                 (
-                    f'=C{r}*IF(D{r}="yearly",1,'
-                    f'IF(D{r}="quarterly",4,'
-                    f'IF(D{r}="weekly",52,12)))'
+                    f'=IF(OR($C{r}="",$D{r}=""),"",'
+                    f'$C{r}*IF($D{r}="yearly",1,'
+                    f'IF($D{r}="quarterly",4,'
+                    f'IF($D{r}="weekly",52,12))))'
                 ),
-                "Active" if sub["active"] else "Cancelled",
+                ("Active" if sub["active"] else "Cancelled") if sub else None,
             ]
         )
 
@@ -331,10 +366,11 @@ def build_subscription_tracker_spec(params: dict) -> dict:
     }
 
     notes = p["notes"] or (
-        "Template-built subscription tracker — everything is live. Edit "
-        "any amount or pick another cycle/status from the dropdowns: "
-        "monthly/yearly equivalents recompute per row, totals count "
-        "Active subscriptions only, days-to-renewal follow TODAY()."
+        "Template-built subscription tracker — everything is live. Type "
+        "subscriptions into the blank rows and pick a cycle / status "
+        "from the dropdowns: monthly/yearly equivalents recompute per "
+        "row (blank until amount and cycle exist), totals count Active "
+        "subscriptions only, days-to-renewal follow TODAY()."
     )
 
     sheet_spec: Dict[str, Any] = {
@@ -361,28 +397,32 @@ def build_subscription_tracker_spec(params: dict) -> dict:
             }
         ],
         "tables": [main_table, summary_table],
-        "charts": [
-            {
-                "type": "bar",
-                "title": "Yearly Cost by Subscription",
-                "anchor": "K3",
-                "width": 16,
-                "height": 9,
-                "categories_range": f"Subscriptions!A{first}:A{last}",
-                "series": [
-                    {
-                        "name": "Yearly Equivalent",
-                        "values_range": f"Subscriptions!H{first}:H{last}",
-                    }
-                ],
-                "value_numfmt": money,
-            }
-        ],
+        "charts": (
+            [
+                {
+                    "type": "bar",
+                    "title": "Yearly Cost by Subscription",
+                    "anchor": "K3",
+                    "width": 16,
+                    "height": 9,
+                    "categories_range": f"Subscriptions!A{first}:A{last}",
+                    "series": [
+                        {
+                            "name": "Yearly Equivalent",
+                            "values_range": f"Subscriptions!H{first}:H{last}",
+                        }
+                    ],
+                    "value_numfmt": money,
+                }
+            ]
+            if n
+            else []  # nothing listed yet → nothing to chart (never invent)
+        ),
         "data_validation": [
             {
                 "range": f"D{first}:D{last}",
                 "values": list(CYCLES),
-                "allow_blank": False,
+                "allow_blank": True,  # scaffold rows start empty
                 "prompt_title": "Billing cycle",
                 "prompt": "monthly / quarterly / yearly / weekly.",
                 "error_title": "Invalid cycle",
@@ -395,7 +435,7 @@ def build_subscription_tracker_spec(params: dict) -> dict:
             {
                 "range": f"I{first}:I{last}",
                 "values": ["Active", "Cancelled"],
-                "allow_blank": False,
+                "allow_blank": True,  # scaffold rows start empty
                 "prompt_title": "Status",
                 "prompt": "Active counts toward the totals; Cancelled does not.",
                 "error_title": "Invalid status",
