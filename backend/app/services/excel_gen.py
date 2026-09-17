@@ -233,7 +233,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 from app.config import settings
 from app.services import model_prefs
 from app.services import providers
-from app.services.patterns import PATTERN_BUILDERS, PATTERN_KEYWORDS
+from app.services.patterns import PATTERN_BUILDERS, PATTERN_FILLABLE, PATTERN_KEYWORDS
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -2529,6 +2529,305 @@ def _expand_total_row_shortcut(table: dict) -> None:
         table["total_row"] = out
 
 
+# ── data_validation shape healing ────────────────────────────────────
+#
+# Small models keep inventing a MAP form for data_validation (observed
+# in production: gpt-oss-20b wrote {"Meal Type": {"list":
+# "Breakfast,Lunch,Dinner,Snack"}} on a meal-planner brief). The intent
+# — a dropdown on a column — is perfectly clear, so it is converted
+# instead of failing the whole spec through three retry rounds.
+
+# A pair key that already looks like "B4" / "B4:B31" / "B$4:$B$31".
+_DV_RANGE_KEY_RE = re.compile(r"^[A-Za-z]{1,3}\$?\d+(?::[A-Za-z]{1,3}\$?\d+)?$")
+# A pair key that is a bare column letter ("B").
+_DV_COLUMN_KEY_RE = re.compile(r"^[A-Za-z]{1,3}$")
+
+
+def _sheet_table_columns(sheet: dict) -> List[dict]:
+    """Resolution map for data_validation keys: one record per table
+    column — {"header": lower-case header, "col": letter, "r1": first
+    data row, "r2": last data row} (r2 stretched over 10 rows when the
+    table has no data rows yet, so blank templates get dropdowns too).
+    """
+    out: List[dict] = []
+    tables = sheet.get("tables")
+    if not isinstance(tables, list):
+        return out
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        headers = table.get("headers")
+        if not isinstance(headers, list):
+            continue
+        start = table.get("start_cell")
+        if not is_valid_cell(start):
+            start = "A1"
+        try:
+            start_row, start_col = cell_to_indices(start)
+        except ValueError:
+            continue
+        if isinstance(table.get("title"), str) and str(table.get("title")).strip():
+            first_data = start_row + 2
+        else:
+            first_data = start_row + 1
+        rows = table.get("rows")
+        n_rows = len(rows) if isinstance(rows, list) else 0
+        last_data = first_data + max(n_rows, 1) - 1
+        if n_rows == 0:
+            last_data = first_data + 9  # blank template — cover 10 rows
+        for i, h in enumerate(headers):
+            if isinstance(h, str) and h.strip():
+                out.append(
+                    {
+                        "header": h.strip().lower(),
+                        "col": get_column_letter(start_col + i),
+                        "r1": first_data,
+                        "r2": last_data,
+                    }
+                )
+    return out
+
+
+def _dv_scalar_values(raw: Any) -> Optional[List[str]]:
+    """Model value shapes → a clean values list for a DV entry.
+
+    Accepts a comma-joined string ("Yes,No"), an array of scalars, or
+    None. Values containing commas/quotes are dropped (Excel list
+    syntax cannot carry them); the joined list is trimmed to Excel's
+    255-character limit. Returns None when nothing usable remains.
+    """
+    candidates: List[Any]
+    if isinstance(raw, str):
+        candidates = [p.strip() for p in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        candidates = list(raw)
+    else:
+        return None
+    out: List[str] = []
+    for v in candidates:
+        if isinstance(v, bool):
+            out.append("TRUE" if v else "FALSE")
+        elif isinstance(v, (int, float)):
+            f = float(v)
+            out.append(str(int(f)) if f.is_integer() else str(f))
+        elif isinstance(v, str):
+            s = v.strip()
+            if s and "," not in s and '"' not in s:
+                out.append(s)
+    while out and len('","'.join(out)) + 2 > 250:
+        out.pop()
+    return out or None
+
+
+def _dv_source_ref(value: dict) -> Optional[str]:
+    """A range-source dropdown ref from a model entry, when present."""
+    for key in ("source_range", "source", "range_ref"):
+        raw = value.get(key)
+        if isinstance(raw, str):
+            ref = raw.strip().lstrip("=")
+            if _SOURCE_RANGE_RE.match(ref):
+                return ref
+    return None
+
+
+def _dv_payload_values(payload: dict) -> Optional[List[str]]:
+    """values / list / options keys of a payload dict → clean list."""
+    raw = payload.get("values")
+    if raw is None:
+        raw = payload.get("list")
+    if raw is None:
+        raw = payload.get("options")
+    return _dv_scalar_values(raw)
+
+
+# Presentation fields copied verbatim when a healed entry carries them.
+_DV_PRESENTATION_FIELDS = (
+    "allow_blank",
+    "error_style",
+    "prompt_title",
+    "prompt",
+    "error_title",
+    "error",
+)
+
+
+def _coerce_dv_pair(key: Any, value: Any, columns: List[dict]) -> Optional[dict]:
+    """One (key, value) pair from a model → a proper DV entry or None.
+
+    key   a header name ("Meal Type"), a bare column letter ("B"), or
+          a cell/range ref ("B4", "B4:B31")
+    value {"list": "a,b"} | {"values": [...]} | {"source_range": …} |
+          ["a","b"] | "a,b" (plus optional presentation fields)
+    """
+    if not isinstance(key, str):
+        return None
+    k = key.strip()
+    if not k:
+        return None
+
+    entry: Dict[str, Any] = {}
+    inner_range: Optional[str] = None
+    if isinstance(value, dict):
+        source = _dv_source_ref(value)
+        values = _dv_payload_values(value)
+        if source:
+            entry["source_range"] = source
+        elif values:
+            entry["values"] = values
+        else:
+            return None
+        rng = value.get("range")
+        if isinstance(rng, str) and _DV_RANGE_KEY_RE.match(rng.strip()):
+            inner_range = rng.strip()
+        for f in _DV_PRESENTATION_FIELDS:
+            if f in value:
+                entry[f] = value[f]
+    else:
+        values = _dv_scalar_values(value)
+        if not values:
+            return None
+        entry["values"] = values
+
+    # Resolve the target range: an explicit inner range wins, then a
+    # header-name match, then range-shaped keys, then bare letters.
+    if inner_range is not None:
+        entry["range"] = inner_range
+    else:
+        hit = next((c for c in columns if c["header"] == k.lower()), None)
+        if hit is not None:
+            entry["range"] = f"{hit['col']}{hit['r1']}:{hit['col']}{hit['r2']}"
+        elif _DV_RANGE_KEY_RE.match(k):
+            if ":" in k:
+                entry["range"] = k
+            else:
+                col = k.split("$")[0].upper()
+                span = next((c for c in columns if c["col"] == col), None)
+                r1, r2 = (span["r1"], span["r2"]) if span else (2, 51)
+                entry["range"] = f"{col}{r1}:{col}{r2}"
+        elif _DV_COLUMN_KEY_RE.match(k):
+            col = k.upper()
+            span = next((c for c in columns if c["col"] == col), None)
+            r1, r2 = (span["r1"], span["r2"]) if span else (2, 51)
+            entry["range"] = f"{col}{r1}:{col}{r2}"
+        else:
+            return None
+    return entry
+
+
+def _coerce_data_validation_shape(sheet: dict) -> None:
+    """Heal model-invented data_validation shapes (in place).
+
+    Handled forms — all resolve to the documented array of
+    {"range", "values" | "source_range"} objects:
+
+      {"Meal Type": {"list": "Breakfast,Lunch,Dinner,Snack"}}  ← map
+      {"B": {"list": "Yes,No"}} / {"B4:B31": {"values": [...]}}}
+      {"Meal Type": ["a", "b"]} or "a,b,c"                      ← values
+      [{"Meal Type": {...}}]                                    ← list of maps
+      [{"range": "B4:B31", "list": "a,b"}]                      ← list vs values
+      [{"column": "Status", "values": [...]}]                   ← column key
+
+    A correct array passes through untouched (idempotent). Entries
+    whose key/value cannot be resolved are DROPPED with a log line —
+    a missing dropdown beats a dead workbook (the alternative is a
+    spec that fails validation three times over).
+    """
+    dv = sheet.get("data_validation")
+    if dv is None:
+        return
+
+    columns = _sheet_table_columns(sheet)
+    entries: List[dict] = []
+    pairs: List[Tuple[Any, Any]] = []
+    changed = False
+
+    if isinstance(dv, dict):
+        changed = True
+        pairs = list(dv.items())
+    elif isinstance(dv, list):
+        for e in dv:
+            if not isinstance(e, dict):
+                changed = True  # garbage element — dropped
+                continue
+            rng = e.get("range")
+            rng_ok = isinstance(rng, str) and bool(rng.strip())
+            has_values = isinstance(e.get("values"), list) and bool(e.get("values"))
+            has_source = isinstance(e.get("source_range"), str) and bool(
+                e.get("source_range").strip()
+            )
+            if (
+                rng_ok
+                and (has_values or has_source)
+                and "list" not in e
+                and "options" not in e
+            ):
+                entries.append(e)  # already correct — keep untouched
+                continue
+            # Needs healing — find the range key.
+            key: Optional[str] = rng if rng_ok else None
+            if key is None:
+                for f in ("cell", "column", "col", "header", "field"):
+                    v = e.get(f)
+                    if isinstance(v, str) and v.strip():
+                        key = v.strip()
+                        break
+            if key is not None:
+                pairs.append((key, e))
+                changed = True
+                continue
+            if len(e) == 1:
+                k, v = next(iter(e.items()))
+                if isinstance(k, str) and isinstance(v, (dict, list, str)):
+                    pairs.append((k.strip(), v))
+                    changed = True
+                    continue
+            changed = True  # no way to resolve a range — dropped
+    else:
+        # Completely wrong type (string/number) — drop the field.
+        _log("data_validation healing: dropped non-array/non-map value")
+        sheet.pop("data_validation", None)
+        return
+
+    for key, value in pairs:
+        entry = _coerce_dv_pair(key, value, columns)
+        if entry is not None:
+            entries.append(entry)
+        else:
+            _log("data_validation healing: dropped unresolvable entry %r", key)
+
+    if changed:
+        sheet["data_validation"] = entries[:MAX_VALIDATIONS_PER_SHEET]
+
+
+def _drop_wrong_typed_optional_arrays(sheet: dict) -> None:
+    """Optional array fields the model emitted in a non-array shape
+    (observed: conditional_formats as a map) are dropped instead of
+    failing validation — cosmetic features must never kill a workbook.
+    `tables` is deliberately NOT dropped: a map-shaped tables field is
+    a structural failure the repair round should fix (silently
+    producing an empty sheet would be worse). Fields that are valid
+    lists are left to the validator.
+    """
+    for field in (
+        "conditional_formats",
+        "charts",
+        "text_blocks",
+        "merged_cells",
+        "formulas",
+    ):
+        v = sheet.get(field)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            # formulas may legitimately be a map {"B10": "=SUM(...)"} —
+            # the normalizer accepts both; only the other fields are
+            # strictly arrays. Leave maps for formulas untouched.
+            if field == "formulas" and isinstance(v, dict):
+                continue
+            _log("%s healing: dropped non-array value", field)
+            sheet.pop(field, None)
+
+
 def _expand_freeze_header(sheet: dict) -> None:
     """Expand `freeze_header: true` → freeze_panes (in place).
 
@@ -2571,6 +2870,12 @@ def _post_process_spec(spec: Any) -> Any:
       row with =SUM() formulas (see _expand_total_row_shortcut)
     - ``freeze_header: true`` → freeze_panes below the first table's
       title + header rows
+    - model-invented ``data_validation`` shapes (maps keyed by
+      column/header) → the documented array form
+      (see _coerce_data_validation_shape)
+    - non-array ``conditional_formats`` / ``charts`` / ``text_blocks``
+      / ``merged_cells`` → dropped (cosmetic fields must never kill a
+      workbook)
 
     Malformed input passes through unchanged so the validator can
     report the real problems. Idempotent on already-expanded specs.
@@ -2584,6 +2889,8 @@ def _post_process_spec(spec: Any) -> Any:
         if not isinstance(sheet, dict):
             continue
         _expand_freeze_header(sheet)
+        _coerce_data_validation_shape(sheet)
+        _drop_wrong_typed_optional_arrays(sheet)
         tables = sheet.get("tables")
         if not isinstance(tables, list):
             continue
@@ -2844,15 +3151,17 @@ _STANZA_MARKER_RE = re.compile(
 _STANZA_END_RE = re.compile(r"^[ \t]*<!--\s*/stanzas\s*-->[ \t]*$", re.MULTILINE)
 
 
-def _parse_classifier_prompt() -> Tuple[str, Dict[str, str], str]:
-    """Split pattern_classifier.md → (header, {name: stanza}, footer).
+def _parse_stanza_prompt(prompt_name: str) -> Tuple[str, Dict[str, str], str]:
+    """Split a stanza-marked prompt file → (header, {name: stanza}, footer).
 
-    The .md file stays the single source of prompt text (hard rule:
-    prompts live in prompts/*.md); this only SELECTS which stanzas a
-    given classifier call sees. A file without stanza markers is
-    returned whole as the header (legacy flat prompt).
+    Shared by the classifier (pattern_classifier.md) and the fill-mode
+    populator (pattern_populator.md): the .md file stays the single
+    source of prompt text (hard rule: prompts live in prompts/*.md);
+    this only SELECTS which stanzas a given call sees. A file without
+    stanza markers is returned whole as the header (legacy flat
+    prompt).
     """
-    raw = get_prompt("pattern_classifier")
+    raw = get_prompt(prompt_name)
     matches = list(_STANZA_MARKER_RE.finditer(raw))
     end = _STANZA_END_RE.search(raw)
     if not matches or end is None:
@@ -2861,6 +3170,11 @@ def _parse_classifier_prompt() -> Tuple[str, Dict[str, str], str]:
     header = raw[: matches[0].start()].rstrip() + "\n\n"
     footer = "\n\n" + raw[end.end() :].lstrip("\n")
     return header, stanzas, footer
+
+
+def _parse_classifier_prompt() -> Tuple[str, Dict[str, str], str]:
+    """pattern_classifier.md → (header, stanzas, footer)."""
+    return _parse_stanza_prompt("pattern_classifier")
 
 
 def _classifier_system_prompt(shortlist: List[str]) -> str:
@@ -2878,6 +3192,113 @@ def _classifier_system_prompt(shortlist: List[str]) -> str:
     return "".join(parts)
 
 
+# ── Fill mode (guidance → drafted starter content) ─────────────────
+
+
+def _populator_system_prompt(pattern: str) -> str:
+    """Header + the ONE routed pattern's stanza + footer.
+
+    Same small-prompt discipline as the classifier: the populator
+    call sees only the stanza of the pattern that was routed, never
+    the whole pattern_populator.md. Empty string when the pattern has
+    no stanza there (not fillable) — the caller skips the call.
+    """
+    header, stanzas, footer = _parse_stanza_prompt("pattern_populator")
+    if not stanzas or pattern not in stanzas:
+        return ""
+    return "".join(
+        (
+            header,
+            stanzas[pattern].rstrip() + "\n\n",
+            footer.lstrip("\n"),
+        )
+    )
+
+
+async def _populate_pattern_params(
+    pattern: str,
+    params: dict,
+    brief: str,
+    requirements: str,
+    model: Optional[str] = None,
+) -> dict:
+    """Draft starter params for a fillable pattern from the user's
+    guidance (raises on any failure — the caller falls back).
+
+    One small LLM call with prompts/pattern_populator.md (ONLY the
+    routed pattern's stanza): the request + today's date + the
+    classifier's verbatim extraction go in; a COMPLETE params object
+    comes back. The returned dict is the extraction MERGED with the
+    drafts ({**params, **filled}): keys the populator restates win,
+    keys it omits keep the extracted value — so a populator that
+    drafts only meals can never lose an extracted shopping list.
+    """
+    system = _populator_system_prompt(pattern)
+    if not system:
+        raise ValueError(f"no populator stanza for pattern {pattern!r}")
+
+    user_content = f"Today's date: {_date.today().isoformat()}\n\nRequest: {brief}"
+    if requirements and requirements.strip():
+        user_content += f"\n\nAdditional requirements: {requirements.strip()}"
+    user_content += (
+        "\n\nExtracted parameters (verbatim from the request):\n"
+        + json.dumps(params, ensure_ascii=False, default=str)
+    )
+    user_content += "\n\nRespond with the JSON object now."
+
+    raw = await _call_llm(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ],
+        model=model,
+    )
+    parsed = _extract_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("populator response is not a JSON object")
+    filled = parsed.get("params")
+    if not isinstance(filled, dict):
+        raise ValueError("populator response has no params object")
+
+    merged = dict(params)
+    merged.update(filled)
+    return merged
+
+
+def _build_pattern_spec(
+    builder,
+    pattern: str,
+    build_params: dict,
+    fallback_params: Optional[dict] = None,
+) -> Optional[dict]:
+    """Run a pattern builder, with one fallback param set.
+
+    The fill path passes the populated params as build_params and
+    the classifier's own extraction as fallback_params: when the
+    populated params fail to build, the extraction — which is what
+    produced the blank/partial template so far — is the safety net.
+    Returns the raw spec dict, or None (AI path fallback). Never
+    raises: patterns must never break the tool.
+    """
+    attempts: List[dict] = [build_params]
+    if fallback_params is not None and fallback_params is not build_params:
+        attempts.append(fallback_params)
+    last_error: Optional[BaseException] = None
+    for attempt_params in attempts:
+        try:
+            return builder(attempt_params)
+        except Exception as e:  # noqa: BLE001 — defensive by contract
+            last_error = e
+            if attempt_params is not attempts[-1]:
+                _log(
+                    "pattern %r params failed (%s) — retrying with extracted params",
+                    pattern,
+                    e,
+                )
+    _log("pattern %r not applied (%s) — falling back to AI spec", pattern, last_error)
+    return None
+
+
 async def _try_pattern_spec(
     brief: str, requirements: str, model: Optional[str] = None
 ) -> Optional[Tuple[dict, str]]:
@@ -2889,6 +3310,19 @@ async def _try_pattern_spec(
     patterns package (app/services/patterns/), where every formula
     reference is computed from the actual layout rows: off-by-N row
     math is impossible.
+
+    FILL MODE: when the classifier answers a FILLABLE pattern
+    (registry PATTERN_FILLABLE — the planner/tracker patterns whose
+    content is meant to be drafted, never business records) with
+    "fill": true, the request stated guidance (goals, preferences,
+    constraints) instead of complete records: a SECOND small LLM
+    call (prompts/pattern_populator.md) drafts starter list params
+    from that guidance before the builder runs — "create a meal
+    planner, my goal is weight loss, more protein" returns a
+    POPULATED week, not a blank grid. Any populate failure (LLM
+    down, unparseable, params the builder rejects) falls back to
+    the classifier's own extraction, i.e. the blank/partial template
+    fill mode replaced — never worse than before.
 
     Returns (normalized_spec, pattern_name), or None when no pattern
     matches / params are insufficient / anything fails — the caller
@@ -2936,17 +3370,30 @@ async def _try_pattern_spec(
     if not isinstance(params, dict):
         params = {}
 
-    try:
-        spec = builder(params)
-    except ValueError as e:
-        _log(
-            "pattern %r not applied (%s) — falling back to AI spec",
-            pattern,
-            e,
-        )
-        return None
-    except Exception as e:  # defensive: patterns must never break the tool
-        _log("pattern %r build error (%s) — falling back to AI spec", pattern, e)
+    # ── fill mode: guidance → drafted starter params ─────────────
+    # "fill" arrives as a JSON boolean, but small models sometimes
+    # stringify it — accept "true"/"yes"/"1" and reject everything
+    # else (a stringified "false" must NOT read as truthy).
+    fill_flag = parsed.get("fill")
+    if isinstance(fill_flag, str):
+        fill_flag = fill_flag.strip().lower() in ("true", "yes", "1")
+    build_params = params
+    if fill_flag and pattern in PATTERN_FILLABLE:
+        try:
+            _log("pattern %r fill requested — drafting starter content", pattern)
+            build_params = await _populate_pattern_params(
+                pattern, params, brief, requirements, model=model
+            )
+        except Exception as e:  # noqa: BLE001 — fill must never break routing
+            _log(
+                "pattern %r populate failed (%s) — building with extracted params",
+                pattern,
+                e,
+            )
+            build_params = params
+
+    spec = _build_pattern_spec(builder, pattern, build_params, params)
+    if spec is None:
         return None
 
     errors, warnings = validate_workbook_spec(spec)
