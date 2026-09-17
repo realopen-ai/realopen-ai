@@ -318,6 +318,90 @@ class TestPriceListBuilder:
         dv = norm["sheets"][0]["data_validation"][0]
         assert dv["source_range"] == "Categories!$A$4:$A$4"
 
+    def test_template_mode_no_products_builds_blank_catalog(self, tmp_path):
+        # "create a price list" with no products must build the blank
+        # pricing template instead of raising → AI path → invalid spec.
+        spec = ep.build_price_list_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert warnings == []
+        norm = eg._normalize_spec(spec)
+        assert norm["filename"] == "price_list.xlsx"
+
+        sheet = norm["sheets"][0]
+        table = sheet["tables"][0]
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 8  # blank scaffold rows 5..12
+        # nothing invented: sku/name/category/cost/price all blank
+        assert all(r[:5] == [None] * 5 for r in table["rows"])
+        # guarded markup/margin formulas on every scaffold row
+        assert table["rows"][0][5] == (
+            '=IF(OR($D5="",$D5=0,$E5=""),"n/a",($E5-$D5)/$D5)'
+        )
+        assert table["rows"][0][6] == '=IF(OR($E5="",$E5=0),"n/a",($E5-$D5)/$E5)'
+        assert table["rows"][7][5] == (
+            '=IF(OR($D12="",$D12=0,$E12=""),"n/a",($E12-$D12)/$D12)'
+        )
+        # guarded average total row over the scaffold band
+        assert table["total_row"][3] == "=SUM(D5:D12)"
+        assert table["total_row"][5] == ('=IF(COUNT(F5:F12)>0,AVERAGE(F5:F12),"n/a")')
+        assert table["total_row"][6] == ('=IF(COUNT(G5:G12)>0,AVERAGE(G5:G12),"n/a")')
+        # no VAT given → no Gross Price column, no B2 assumption
+        assert table["headers"] == [
+            "SKU",
+            "Product",
+            "Category",
+            "Cost",
+            "Net Price",
+            "Markup %",
+            "Margin %",
+        ]
+        blocks = {b["cell"] for b in sheet["text_blocks"]}
+        assert "B2" not in blocks
+        # no charts when there are no products
+        assert "charts" not in sheet
+        # dropdown covers the scaffold rows, fed by the category scaffold
+        dv = sheet["data_validation"][0]
+        assert dv["range"] == "C5:C12"
+        assert dv["source_range"] == "Categories!$A$4:$A$11"
+        # margin traffic lights still cover the blank band
+        cf = sheet["conditional_formats"][0]
+        assert cf["range"] == "G5:G12"
+
+        # Categories sheet: default-free scaffold (blank labels +
+        # guarded live subtotals) — no category is invented
+        cats = norm["sheets"][1]
+        cat_table = cats["tables"][0]
+        assert len(cat_table["rows"]) == 8
+        assert all(r[0] is None for r in cat_table["rows"])
+        assert cat_table["rows"][0][1] == (
+            '=IF($A4="","",COUNTIF(Pricing!$C$5:$C$12,$A4))'
+        )
+        assert cat_table["rows"][3][4] == (
+            '=IF($A7="","",IFERROR(AVERAGEIF(Pricing!$C$5:$C$12,$A7,'
+            'Pricing!$G$5:$G$12),"n/a"))'
+        )
+        assert cat_table["total_row"][1] == "=SUM(B4:B11)"
+        assert "charts" not in cats
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "price_blank.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Pricing", "Categories"]
+        ws = wb["Pricing"]
+        assert ws["B5"].value is None
+        assert ws["F5"].value == '=IF(OR($D5="",$D5=0,$E5=""),"n/a",($E5-$D5)/$D5)'
+        assert ws["G5"].number_format == "0.00%"
+        assert ws["D13"].value == "=SUM(D5:D12)"
+        assert len(ws._charts) == 0
+        (dv,) = ws.data_validations.dataValidation
+        assert dv.formula1 == "Categories!$A$4:$A$11"
+        assert str(dv.sqref) == "C5:C12"
+        cats_ws = wb["Categories"]
+        assert cats_ws["A4"].value is None
+        assert cats_ws["B4"].value == '=IF($A4="","",COUNTIF(Pricing!$C$5:$C$12,$A4))'
+
 
 class TestPriceListCoercion:
     def test_quoted_numbers_and_percent_strings(self):
@@ -372,9 +456,22 @@ class TestPriceListCoercion:
                 {"products": [{"sku": "X-1", "cost": 1, "price": 2}]}
             )
 
-    def test_products_missing_raises(self):
+    def test_products_missing_or_empty_is_template_mode(self):
+        # "create a price list template" — no products given: blank
+        # template mode, NOT a refusal (products are never invented).
+        for params in ({}, {"products": []}, {"list_name": "Bakery"}):
+            p = ep.coerce_price_list_params(params)
+            assert p["products"] == []
+            assert p["list_name"] in ("Price List", "Bakery")
+
+    def test_products_not_array_raises(self):
         with pytest.raises(ValueError):
-            ep.coerce_price_list_params({"list_name": "X"})
+            ep.coerce_price_list_params({"products": "Widget"})
+        with pytest.raises(ValueError):
+            ep.coerce_price_list_params("nope")
+        # entries given but none usable — structural garbage
+        with pytest.raises(ValueError):
+            ep.coerce_price_list_params({"products": [None, 42]})
 
     def test_empty_product_rows_raise(self):
         with pytest.raises(ValueError):
@@ -435,6 +532,35 @@ class TestPriceListRouting:
         assert result["chart_count"] == 2
         assert result["formula_count"] > 20
         assert result["filename"] == "bakery_price_list.xlsx"
+        assert "price_list template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # price_list with NO products ("create a price list template")
+        # — the pattern must build the blank template instead of
+        # falling back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "price_list", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "create a price list template for my products"
+        )
+        assert result["pattern"] == "price_list"
+        assert result["sheet_names"] == ["Pricing", "Categories"]
+        assert result["chart_count"] == 0  # nothing to chart yet
+        assert result["filename"] == "price_list.xlsx"
         assert "price_list template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
@@ -760,6 +886,90 @@ class TestReceivablesBuilder:
         summary = eg._normalize_spec(spec)["sheets"][1]
         assert len(summary["charts"]) == 1  # aging chart only
 
+    def test_template_mode_no_invoices_builds_blank_tracker(self, tmp_path):
+        # "create a receivables tracker" with no invoices must build
+        # the blank tracker instead of raising → AI path → invalid spec.
+        spec = ep.build_receivables_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert warnings == []
+        norm = eg._normalize_spec(spec)
+        assert norm["filename"] == "receivables.xlsx"
+
+        sheet = norm["sheets"][0]
+        blocks = {b["cell"]: b["text"] for b in sheet["text_blocks"]}
+        # as-of anchor kept and live (=TODAY() when as_of_date null)
+        assert blocks["A2"] == "As Of"
+        assert blocks["B2"] == "=TODAY()"
+        table = sheet["tables"][0]
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 8  # blank scaffold rows 5..12
+        # nothing invented: customer..paid all blank
+        assert all(r[:6] == [None] * 6 for r in table["rows"])
+        # guarded live formulas on every scaffold row
+        assert table["rows"][0][6] == '=IF($E5="","",E5-F5)'
+        assert table["rows"][0][7] == '=IF($D5="","",MAX(0,$B$2-$D5))'
+        assert table["rows"][0][8] == (
+            '=IF(OR($A5="",$E5=""),"",'
+            'IF(F5>=E5,"Paid",'
+            'IF(F5>0,"Partial",'
+            'IF(AND(D5<>"",D5<$B$2),"Overdue","Current"))))'
+        )
+        assert table["rows"][7][7] == '=IF($D12="","",MAX(0,$B$2-$D12))'
+        # totals SUM over the scaffold band (blank → 0)
+        assert table["total_row"][4] == "=SUM(E5:E12)"
+        assert table["total_row"][6] == "=SUM(G5:G12)"
+        # status conditional format covers the scaffold rows
+        cf = sheet["conditional_formats"][0]
+        assert cf["range"] == "I5:I12"
+
+        # Summary: aging buckets over the blank rows read 0; no
+        # customer rollup (none invented), no charts
+        summary = norm["sheets"][1]
+        assert len(summary["tables"]) == 1
+        aging = summary["tables"][0]
+        assert aging["start_cell"] == "A3"
+        assert [r[0] for r in aging["rows"]] == [
+            "Current (not due)",
+            "1-30 days",
+            "31-60 days",
+            "61-90 days",
+            "Over 90 days",
+        ]
+        assert aging["rows"][0][1] == "=COUNTIF(Receivables!$H$5:$H$12,0)"
+        assert aging["rows"][0][2] == (
+            "=SUMIF(Receivables!$H$5:$H$12,0,Receivables!$G$5:$G$12)"
+        )
+        assert aging["rows"][1][1] == (
+            '=COUNTIFS(Receivables!$H$5:$H$12,">=1",' 'Receivables!$H$5:$H$12,"<=30")'
+        )
+        assert aging["total_row"][1] == "=SUM(B4:B8)"
+        assert "charts" not in summary
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "receivables_blank.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Receivables", "Summary"]
+        ws = wb["Receivables"]
+        assert ws["A5"].value is None
+        assert ws["G5"].value == '=IF($E5="","",E5-F5)'
+        assert ws["H5"].value == '=IF($D5="","",MAX(0,$B$2-$D5))'
+        assert ws["I5"].value == (
+            '=IF(OR($A5="",$E5=""),"",'
+            'IF(F5>=E5,"Paid",'
+            'IF(F5>0,"Partial",'
+            'IF(AND(D5<>"",D5<$B$2),"Overdue","Current"))))'
+        )
+        assert ws["B2"].value == "=TODAY()"
+        assert ws["E13"].value == "=SUM(E5:E12)"
+        assert len(ws._charts) == 0
+        cf_ranges = {str(c.sqref) for c in ws.conditional_formatting}
+        assert cf_ranges == {"I5:I12"}
+        summary_ws = wb["Summary"]
+        assert summary_ws["A4"].value == "Current (not due)"
+        assert summary_ws["B4"].value == "=COUNTIF(Receivables!$H$5:$H$12,0)"
+
 
 class TestReceivablesCoercion:
     def test_quoted_numbers(self):
@@ -815,9 +1025,22 @@ class TestReceivablesCoercion:
         )
         assert p["as_of_date"] is None
 
-    def test_invoices_missing_raises(self):
+    def test_invoices_missing_or_empty_is_template_mode(self):
+        # "create a receivables tracker" — no invoices given: blank
+        # template mode, NOT a refusal (invoices are never invented).
+        for params in ({}, {"invoices": []}, {"currency": "USD"}):
+            p = ep.coerce_receivables_params(params)
+            assert p["invoices"] == []
+            assert p["as_of_date"] is None  # → live =TODAY() anchor
+
+    def test_invoices_not_array_raises(self):
         with pytest.raises(ValueError):
-            ep.coerce_receivables_params({"currency": "USD"})
+            ep.coerce_receivables_params({"invoices": "INV-1"})
+        with pytest.raises(ValueError):
+            ep.coerce_receivables_params("nope")
+        # entries given but none usable — structural garbage
+        with pytest.raises(ValueError):
+            ep.coerce_receivables_params({"invoices": ["junk", 42]})
 
     def test_invoice_without_customer_raises(self):
         with pytest.raises(ValueError):
@@ -867,6 +1090,35 @@ class TestReceivablesRouting:
         assert result["table_count"] == 3
         assert result["chart_count"] == 2
         assert result["formula_count"] > 30
+        assert result["filename"] == "receivables.xlsx"
+        assert "receivables template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # receivables with NO invoices ("create a receivables tracker")
+        # — the pattern must build the blank tracker instead of
+        # falling back to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "receivables", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "create a receivables tracker for my unpaid customer invoices"
+        )
+        assert result["pattern"] == "receivables"
+        assert result["sheet_names"] == ["Receivables", "Summary"]
+        assert result["chart_count"] == 0  # nothing to chart yet
         assert result["filename"] == "receivables.xlsx"
         assert "receivables template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
@@ -1108,6 +1360,87 @@ class TestPayrollBuilder:
         resolved = _resolve_formulas(cells)
         assert resolved["G5"] == pytest.approx(18 * 160 + 5 * 18 * 2)
 
+    def test_template_mode_no_employees_builds_blank_register(self, tmp_path):
+        # "create a payroll register" with no employees must build the
+        # blank register instead of raising → AI path → invalid spec.
+        spec = ep.build_payroll_spec({})
+        errors, warnings = eg.validate_workbook_spec(spec)
+        assert errors == []
+        assert warnings == []
+        norm = eg._normalize_spec(spec)
+        assert norm["filename"] == "payroll.xlsx"
+
+        sheet = norm["sheets"][0]
+        assert sheet["name"] == "Payroll"
+        # assumptions block keeps the overtime multiplier (row 2)
+        blocks = {b["cell"]: b["text"] for b in sheet["text_blocks"]}
+        assert blocks["A1"] == "Payroll Register"
+        assert blocks["A2"] == "Overtime Multiplier"
+        assert blocks["B2"] == 1.5
+
+        table = sheet["tables"][0]
+        # headers row 4, blank scaffold rows 5..12, total 13
+        assert table["start_cell"] == "A4"
+        assert len(table["rows"]) == 8
+        # nothing invented: employee..deductions all blank
+        assert all(
+            r[c] is None for r in table["rows"] for c in (0, 1, 2, 3, 4, 5, 7, 9)
+        )
+        # guarded gross/tax/net formulas on every scaffold row —
+        # gross reads the overtime-multiplier assumption cell $B$2
+        assert table["rows"][0][6] == (
+            '=IF(OR($A5="",$D5=""),"",'
+            'IF($C5="Hourly",'
+            "$D5*$E5+$F5*$D5*$B$2,"
+            "$D5))"
+        )
+        assert table["rows"][0][8] == '=IF($G5="","",IF($H5="",0,$G5*$H5))'
+        assert table["rows"][0][10] == '=IF($G5="","",$G5-$I5-$J5)'
+        assert table["rows"][7][6] == (
+            '=IF(OR($A12="",$D12=""),"",'
+            'IF($C12="Hourly",'
+            "$D12*$E12+$F12*$D12*$B$2,"
+            "$D12))"
+        )
+        # totals SUM over the scaffold band (blank → 0)
+        assert table["total_row"][4] == "=SUM(E5:E12)"
+        assert table["total_row"][6] == "=SUM(G5:G12)"
+        assert table["total_row"][10] == "=SUM(K5:K12)"
+
+        # Hourly/Monthly dropdown + negative-net CF cover the scaffold
+        dv = sheet["data_validation"][0]
+        assert dv["range"] == "C5:C12"
+        assert dv["values"] == ["Hourly", "Monthly"]
+        cf = sheet["conditional_formats"][0]
+        assert cf["range"] == "K5:K12"
+        # no chart when there are no employees
+        assert "charts" not in sheet
+
+        # the workbook still round-trips through openpyxl
+        out = tmp_path / "payroll_blank.xlsx"
+        eg._build_xlsx(norm, out)
+        wb = load_workbook(out)
+        assert wb.sheetnames == ["Payroll"]
+        ws = wb["Payroll"]
+        assert ws["A5"].value is None
+        assert ws["B2"].value == 1.5
+        assert ws["G5"].value == (
+            '=IF(OR($A5="",$D5=""),"",'
+            'IF($C5="Hourly",'
+            "$D5*$E5+$F5*$D5*$B$2,"
+            "$D5))"
+        )
+        assert ws["I5"].value == '=IF($G5="","",IF($H5="",0,$G5*$H5))'
+        assert ws["K5"].value == '=IF($G5="","",$G5-$I5-$J5)'
+        assert ws["G13"].value == "=SUM(G5:G12)"
+        assert ws.freeze_panes == "A5"
+        assert len(ws._charts) == 0
+        (dv,) = ws.data_validations.dataValidation
+        assert dv.formula1 == '"Hourly,Monthly"'
+        assert str(dv.sqref) == "C5:C12"
+        cf_ranges = {str(c.sqref) for c in ws.conditional_formatting}
+        assert cf_ranges == {"K5:K12"}
+
 
 class TestPayrollCoercion:
     def test_quoted_numbers_and_percent_strings(self):
@@ -1185,9 +1518,22 @@ class TestPayrollCoercion:
         assert p["employees"][0]["pay_basis"] == "hourly"
         assert p["employees"][1]["pay_basis"] == "monthly"
 
-    def test_employees_missing_raises(self):
+    def test_employees_missing_or_empty_is_template_mode(self):
+        # "create a payroll register" — no employees given: blank
+        # template mode, NOT a refusal (employees are never invented).
+        for params in ({}, {"employees": []}, {"pay_period": "March 2026"}):
+            p = ep.coerce_payroll_params(params)
+            assert p["employees"] == []
+            assert p["overtime_multiplier"] == 1.5  # documented default
+
+    def test_employees_not_array_raises(self):
         with pytest.raises(ValueError):
-            ep.coerce_payroll_params({"pay_period": "March 2026"})
+            ep.coerce_payroll_params({"employees": "Alice"})
+        with pytest.raises(ValueError):
+            ep.coerce_payroll_params("nope")
+        # entries given but none usable — structural garbage
+        with pytest.raises(ValueError):
+            ep.coerce_payroll_params({"employees": ["junk", 7]})
 
     def test_employee_without_name_raises(self):
         with pytest.raises(ValueError):
@@ -1242,6 +1588,35 @@ class TestPayrollRouting:
         assert result["chart_count"] == 1
         assert result["formula_count"] > 10
         assert result["filename"] == "payroll_march_2026.xlsx"
+        assert "payroll template" in result["summary"]
+        assert (tmp_path / f"{result['report_id']}.xlsx").exists()
+
+    @pytest.mark.asyncio
+    async def test_routes_with_empty_params_to_blank_template(
+        self, tmp_path, monkeypatch
+    ):
+        # Same class of bug as meal_planner: the classifier returns
+        # payroll with NO employees ("create a payroll register") — the
+        # pattern must build the blank register instead of falling back
+        # to the AI path.
+        monkeypatch.setattr(
+            eg,
+            "_call_llm",
+            _classify_response({"pattern": "payroll", "params": {}}),
+        )
+
+        async def must_not_run(brief, requirements, model=None):
+            raise AssertionError("AI path must not run when pattern matches")
+
+        monkeypatch.setattr(eg, "_generate_workbook_json", must_not_run)
+        monkeypatch.setattr(eg, "_get_reports_dir", lambda: tmp_path)
+        result = await eg.generate_spreadsheet(
+            "create a payroll register spreadsheet for my staff"
+        )
+        assert result["pattern"] == "payroll"
+        assert result["sheet_names"] == ["Payroll"]
+        assert result["chart_count"] == 0  # nothing to chart yet
+        assert result["filename"] == "payroll.xlsx"
         assert "payroll template" in result["summary"]
         assert (tmp_path / f"{result['report_id']}.xlsx").exists()
 
