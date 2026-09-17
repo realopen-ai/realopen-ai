@@ -21,11 +21,34 @@ entries (one row per exercise performed):
                   SUMIF(Log date column, date, volume column) — the
                   helper lattice the volume-by-date chart reads
 
+TEMPLATE MODE: a request with no logged sessions ("create a workout
+log") builds the BLANK training log — never invents exercises (hard
+rule), never refuses for lack of data. The Log sheet carries ten
+blank scaffold rows whose Volume and Est. 1RM formulas are guarded
+(`IF any input blank → ""`), so cells stay empty until the user
+types numbers and then compute live. The Summary sheet keeps its
+per-exercise table with five blank rows — type an exercise name in
+column A and its COUNTIF/SUMIF/PR formulas activate (each guarded on
+the name cell, and the Best-e1RM SUMPRODUCT coerces the scaffold's
+empty-string e1RM cells to 0 with IFERROR so half-filled logs never
+yield #VALUE!). With no sessions there are no dates to plot, so the
+volume-by-date chart and the hidden Calc sheet are omitted.
+
+FILL MODE: when the request states goals instead of logged sessions
+  (split, frequency, strength/hypertrophy goal), the router sets
+  "fill": true and excel_gen drafts a starter training week via
+  prompts/pattern_populator.md BEFORE calling the builder. Drafted
+  params flow through coerce_workout_log_params like any other; a
+  failed draft falls back to the extracted params (blank log).
+
+
 CALCULATION SEMANTICS (all LIVE formulas — nothing frozen at build
 time; log a new set and every stat updates):
 
-  volume     = Sets × Reps × Weight
-  e1RM       = Weight × (1 + Reps / 30)          (Epley)
+  volume     = Sets × Reps × Weight          (blank until all three
+                                            are entered — template)
+  e1RM       = Weight × (1 + Reps / 30)      (Epley; blank until
+                                            reps & weight exist)
   sessions   = COUNTIF(log exercise column, exercise)
   total sets = SUMIF(exercise column, exercise, sets column)
   total vol  = SUMIF(exercise column, exercise, volume column)
@@ -70,7 +93,9 @@ PATTERN_DESCRIPTION = (
     "1RM (Epley) formulas, personal-record highlighting, a per-exercise "
     "summary with total volume / best e1RM / average weight and a "
     "volume-by-date line chart. Use when the user logs actual workouts "
-    "with numbers. Do not use it for ✓/✗ habit trackers without numbers."
+    "with numbers — a request with no logged sessions still gets a "
+    "blank training log template. Do not use it for ✓/✗ habit trackers "
+    "without numbers."
 )
 
 # Routing keywords/stems — drive the cheap pre-gate and the classifier
@@ -88,8 +113,15 @@ PATTERN_KEYWORDS = (
     "rep max",
 )
 
+# Fillable pattern: guidance-only requests (goals, split, frequency…)
+# may draft starter sessions via prompts/pattern_populator.md before
+# building — see PATTERN_FILLABLE in patterns/__init__.py.
+PATTERN_FILL = True
+
 MAX_SESSIONS = 300  # log rows accepted from the request
 MAX_EXERCISES = 40  # distinct exercises on the summary sheet
+MIN_LOG_ROWS = 10  # blank scaffold rows in template mode
+MIN_SUMMARY_ROWS = 5  # blank per-exercise rows in template mode
 DEFAULT_LOG_NAME = "Workout Log"
 
 _DATE_FMT = "yyyy-mm-dd"
@@ -155,7 +187,13 @@ def _normalize_session(entry: Any, today: date) -> Optional[dict]:
 
 
 def coerce_workout_log_params(params: dict) -> dict:
-    """Validate + normalize classifier params; raises ValueError."""
+    """Validate + normalize classifier params; raises ValueError.
+
+    Template mode: empty/missing sessions are FINE — the builder
+    emits the blank training log with scaffold rows (the "create a
+    workout log" case). ValueError only for structurally wrong
+    params (non-object params, non-array sessions).
+    """
     if not isinstance(params, dict):
         raise ValueError("params must be an object")
 
@@ -174,8 +212,8 @@ def coerce_workout_log_params(params: dict) -> dict:
             normalized = _normalize_session(entry, today)
             if normalized is not None:
                 sessions.append(normalized)
-    if not sessions:
-        raise ValueError("workout_log needs at least one session entry")
+    # Template mode: zero usable sessions is fine — blank scaffold
+    # log rows (never invent exercises).
 
     # Deterministic log order: chronological, then alphabetical.
     sessions.sort(key=lambda s: (s["date"], s["exercise"]))
@@ -204,24 +242,29 @@ def build_workout_log_spec(params: dict) -> dict:
       row 4      headers: Date | Exercise | Sets | Reps | Weight |
                  Volume | Est. 1RM
       rows 5..   one row per session entry; F = C×D×E, G = E×(1+D/30)
+                 (template mode: 10 blank scaffold rows with guarded
+                 F/G formulas)
       total row  sums for Sets / Reps / Volume
     Summary sheet:
       row 1      title text block
       row 2      usage hint
       row 4      Per-Exercise table title → header 5, data 6..,
-                 total row after; chart anchored at H4
+                 total row after; chart anchored at H4 (template mode:
+                 5 blank rows with name-guarded formulas, no chart)
     Calc sheet (hidden):
       row 1      note; table at A3 → header 3, data 4.. — one row per
                  distinct session date with SUMIF volume by date
+                 (omitted entirely in template mode — nothing to plot)
     """
     p = coerce_workout_log_params(params)
     log_name: str = p["log_name"]
     sessions: List[dict] = p["sessions"]
     notes = p["notes"]
+    template_mode = not sessions
 
     # ── geometry ────────────────────────────────────────────────────
     r0 = 5  # first log data row
-    rN = 4 + len(sessions)  # last log data row
+    rN = 4 + (len(sessions) if sessions else MIN_LOG_ROWS)  # last row
     log_total = rN + 1  # noqa: log totals row
 
     # Distinct exercises in order of first appearance (user emphasis).
@@ -249,6 +292,21 @@ def build_workout_log_spec(params: dict) -> dict:
                 "=C{r}*D{r}*E{r}".format(r=r),
                 # Est. 1RM — Epley: weight × (1 + reps / 30)
                 "=E{r}*(1+D{r}/30)".format(r=r),
+            ]
+        )
+    while len(log_rows) < rN - r0 + 1:  # template scaffold rows
+        r = r0 + len(log_rows)
+        log_rows.append(
+            [
+                None,
+                None,
+                None,
+                None,
+                None,
+                # Volume — blank until sets, reps AND weight exist
+                '=IF(OR($C{r}="",$D{r}="",$E{r}=""),"",$C{r}*$D{r}*$E{r})'.format(r=r),
+                # Est. 1RM — blank until reps & weight exist
+                '=IF(OR($D{r}="",$E{r}=""),"",$E{r}*(1+$D{r}/30))'.format(r=r),
             ]
         )
 
@@ -279,6 +337,10 @@ def build_workout_log_spec(params: dict) -> dict:
                     "One row per exercise performed — Volume and the "
                     "estimated 1RM compute automatically; your best-ever "
                     "sets are highlighted green."
+                    if not template_mode
+                    else "Blank training log — type your sets, reps and "
+                    "weight into the rows below; Volume and the "
+                    "estimated 1RM compute as you go."
                 ),
                 "italic": True,
                 "font_color": MUTED,
@@ -330,15 +392,27 @@ def build_workout_log_spec(params: dict) -> dict:
                 # PR: e1RM at (or above) the best e1RM ever logged for
                 # that row's exercise → green. SUMPRODUCT(MAX(...))
                 # filters the e1RM column by exercise without needing
-                # an array-entered formula.
+                # an array-entered formula. Template mode adds two
+                # safeguards: ISNUMBER blocks the text-comparison
+                # quirk ("" > 0 is TRUE in Excel) on blank rows, and
+                # IFERROR(…*1, 0) coerces the scaffold's empty-string
+                # e1RM cells to 0 so half-filled logs still highlight.
                 "range": f"G{r0}:G{rN}",
                 "rules": [
                     {
                         "type": "formula",
                         "formula": (
-                            "AND($G{r0}>0,$G{r0}>="
-                            "SUMPRODUCT(MAX(($B${r0}:$B${rN}=$B{r0})"
-                            "*$G${r0}:$G${rN})))"
+                            (
+                                "AND(ISNUMBER($G{r0}),$G{r0}>0,"
+                                "$G{r0}>=SUMPRODUCT(MAX(($B${r0}:$B${rN}=$B{r0})"
+                                "*IFERROR($G${r0}:$G${rN}*1,0))))"
+                            )
+                            if template_mode
+                            else (
+                                "AND($G{r0}>0,$G{r0}>="
+                                "SUMPRODUCT(MAX(($B${r0}:$B${rN}=$B{r0})"
+                                "*$G${r0}:$G${rN})))"
+                            )
                         ).format(r0=r0, rN=rN),
                         "fill": CF_GREEN_FILL,
                         "font_color": CF_GREEN_TEXT,
@@ -350,7 +424,16 @@ def build_workout_log_spec(params: dict) -> dict:
         ],
         "notes": notes
         or (
-            "Log each exercise you perform with its sets, reps and "
+            "Blank training log — log each exercise with its date, sets, "
+            "reps and weight; Volume = Sets × Reps × Weight and the "
+            "estimated 1RM (Epley: Weight × (1 + Reps/30)) compute as "
+            "soon as the numbers are in, and stay blank until then. A "
+            "set whose estimated 1RM ties your best for that exercise "
+            "is highlighted green. On the Summary sheet, type the "
+            "exercises you want to track into the blank rows — their "
+            "totals update live from this sheet."
+            if template_mode
+            else "Log each exercise you perform with its sets, reps and "
             "weight. Volume = Sets × Reps × Weight; Est. 1RM uses the "
             "Epley formula Weight × (1 + Reps/30). A set whose estimated "
             "1RM ties your best for that exercise is highlighted green. "
@@ -362,7 +445,8 @@ def build_workout_log_spec(params: dict) -> dict:
 
     # ═════════════════════════════ Summary sheet ════════════════════
     s0 = 6  # first summary data row (title 4, header 5)
-    sN = s0 + len(exercises) - 1  # last summary data row
+    n_sum_rows = len(exercises) if exercises else MIN_SUMMARY_ROWS
+    sN = s0 + n_sum_rows - 1  # last summary data row
     sum_total = sN + 1  # noqa: summary totals row
 
     exercise_rows: List[List[Any]] = []
@@ -394,10 +478,38 @@ def build_workout_log_spec(params: dict) -> dict:
                 ),
             ]
         )
+    while len(exercise_rows) < n_sum_rows:  # template scaffold rows
+        r = s0 + len(exercise_rows)
+        exercise_rows.append(
+            [
+                None,
+                # Every stat guards on the exercise-name cell — blank
+                # until the user types one. IFERROR(…*1, 0) coerces the
+                # scaffold's empty-string e1RM cells to 0 so a
+                # half-filled Log sheet never yields #VALUE!.
+                '=IF($A{r}="","",COUNTIF(Log!$B${r0}:$B${rN},$A{r}))'.format(
+                    r0=r0, rN=rN, r=r
+                ),
+                '=IF($A{r}="","",SUMIF(Log!$B${r0}:$B${rN},$A{r},'
+                "Log!$C${r0}:$C${rN}))".format(r0=r0, rN=rN, r=r),
+                '=IF($A{r}="","",SUMIF(Log!$B${r0}:$B${rN},$A{r},'
+                "Log!$F${r0}:$F${rN}))".format(r0=r0, rN=rN, r=r),
+                '=IF($A{r}="","",SUMPRODUCT(MAX((Log!$B${r0}:$B${rN}=$A{r})'
+                "*IFERROR(Log!$G${r0}:$G${rN}*1,0))))".format(r0=r0, rN=rN, r=r),
+                '=IF($A{r}="","",IF(SUMIF(Log!$B${r0}:$B${rN},$A{r},'
+                'Log!$C${r0}:$C${rN})=0,"n/a",'
+                "SUMPRODUCT((Log!$B${r0}:$B${rN}=$A{r})"
+                "*Log!$C${r0}:$C${rN}*Log!$E${r0}:$E${rN})"
+                "/SUMIF(Log!$B${r0}:$B${rN},$A{r},Log!$C${r0}:$C${rN})))".format(
+                    r0=r0, rN=rN, r=r
+                ),
+            ]
+        )
 
     # ═════════════════════════════ Calc sheet (hidden) ══════════════
     # One row per distinct session date: SUMIF of volume by date —
-    # the lattice the volume-by-date line chart reads.
+    # the lattice the volume-by-date line chart reads. Template mode
+    # has no dates to plot, so the sheet and chart are skipped.
     calc_rows: List[List[Any]] = []
     for i, day in enumerate(distinct_dates):
         r = 4 + i
@@ -443,6 +555,32 @@ def build_workout_log_spec(params: dict) -> dict:
         ),
     }
 
+    # Volume-by-date line chart over the Calc lattice — only when
+    # there are sessions to plot (a blank log has nothing to chart).
+    charts: List[dict] = []
+    if not template_mode:
+        charts.append(
+            {
+                "type": "line",
+                "title": "Total Volume by Date",
+                "anchor": "H4",
+                "width": 16,
+                "height": 9,
+                "categories_range": "Calc!$A${first}:$A${last}".format(
+                    first=calc_first, last=calc_last
+                ),
+                "series": [
+                    {
+                        "name": "Total Volume",
+                        "values_range": "Calc!$B${first}:$B${last}".format(
+                            first=calc_first, last=calc_last
+                        ),
+                    }
+                ],
+                "value_numfmt": _VOL_FMT,
+            }
+        )
+
     summary_sheet: Dict[str, Any] = {
         "name": "Summary",
         "tab_color": STEEL,
@@ -468,6 +606,10 @@ def build_workout_log_spec(params: dict) -> dict:
                 "text": (
                     "Per-exercise totals and personal records — everything "
                     "updates live from the Log sheet."
+                    if not template_mode
+                    else "Type the exercises you want to track in the blank "
+                    "rows below — their totals update live from the Log "
+                    "sheet as you fill it in."
                 ),
                 "italic": True,
                 "font_color": MUTED,
@@ -510,27 +652,7 @@ def build_workout_log_spec(params: dict) -> dict:
                 ],
             }
         ],
-        "charts": [
-            {
-                "type": "line",
-                "title": "Total Volume by Date",
-                "anchor": "H4",
-                "width": 16,
-                "height": 9,
-                "categories_range": "Calc!$A${first}:$A${last}".format(
-                    first=calc_first, last=calc_last
-                ),
-                "series": [
-                    {
-                        "name": "Total Volume",
-                        "values_range": "Calc!$B${first}:$B${last}".format(
-                            first=calc_first, last=calc_last
-                        ),
-                    }
-                ],
-                "value_numfmt": _VOL_FMT,
-            }
-        ],
+        "charts": charts,
         "notes": (
             "Sessions, Total Sets and Total Volume are COUNTIF/SUMIF over "
             "the Log sheet. Best e1RM is the highest estimated 1RM logged "
@@ -538,12 +660,25 @@ def build_workout_log_spec(params: dict) -> dict:
             "Avg Weight / Set = Σ(sets × weight) ÷ Σsets for the exercise. "
             "The line chart plots total volume per session date (computed "
             "on the hidden Calc sheet)."
+            if not template_mode
+            else "Blank per-exercise summary — type an exercise name in "
+            "column A and its row comes alive: Sessions, Total Sets and "
+            "Total Volume are COUNTIF/SUMIF over the Log sheet, Best e1RM "
+            "is the highest estimated 1RM logged for it, and Avg Weight / "
+            "Set = Σ(sets × weight) ÷ Σsets. Rows stay blank (and never "
+            "error) while the Log sheet is still empty. The volume-by-date "
+            "chart appears once you rebuild with logged sessions."
         ),
     }
 
+    sheets: List[Dict[str, Any]] = [log_sheet, summary_sheet]
+    if not template_mode:
+        # No sessions → no dates to plot: skip the hidden Calc lattice.
+        sheets.append(calc_sheet)
+
     return {
         "filename": "{slug}.xlsx".format(slug=_slug(log_name)),
-        "sheets": [log_sheet, summary_sheet, calc_sheet],
+        "sheets": sheets,
     }
 
 
