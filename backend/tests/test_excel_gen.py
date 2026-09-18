@@ -1030,6 +1030,231 @@ class TestNormalization:
         assert len(charts[0]["series"]) == 1
 
 
+class TestDataValidationHealing:
+    """Model-invented data_validation shapes heal into the array form.
+
+    Root cause of a production failure: gpt-oss-20b emitted
+    {"Meal Type": {"list": "Breakfast,Lunch,Dinner,Snack"}} — a MAP
+    keyed by header — which fails validation ('data_validation' must
+    be an array) through all three retry rounds. The intent (a
+    dropdown on a column) is unambiguous, so _post_process_spec
+    converts it before validation instead.
+    """
+
+    def _sheet(self, dv, headers=("Day of Week", "Meal Type", "Notes"), n_rows=3):
+        rows = [["Sunday", "Breakfast", "x"]] * n_rows
+        return {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [
+                        {
+                            "start_cell": "A2",
+                            "title": "Meal Schedule",
+                            "headers": list(headers),
+                            "rows": rows,
+                        }
+                    ],
+                    "data_validation": dv,
+                }
+            ]
+        }
+
+    def test_production_map_form_heals(self):
+        # The exact production shape: map keyed by HEADER NAME, value
+        # {"list": "comma-joined options"}.
+        spec = self._sheet({"Meal Type": {"list": "Breakfast,Lunch,Dinner,Snack"}})
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        # title on row 2, header row 3, data rows 4-6 → column B
+        assert dv == [
+            {"values": ["Breakfast", "Lunch", "Dinner", "Snack"], "range": "B4:B6"}
+        ]
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+
+    def test_bare_column_letter_key(self):
+        spec = self._sheet({"B": {"list": "Yes,No"}})
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["data_validation"][0]["range"] == "B4:B6"
+
+    def test_range_key_used_verbatim(self):
+        spec = self._sheet({"B4:B31": {"values": ["Yes", "No"]}})
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"range": "B4:B31", "values": ["Yes", "No"]}]
+
+    def test_list_and_string_value_forms(self):
+        for value in (["Breakfast", "Lunch"], "Breakfast,Lunch"):
+            spec = self._sheet({"Meal Type": value})
+            healed = excel_gen._post_process_spec(spec)
+            dv = healed["sheets"][0]["data_validation"]
+            assert dv == [{"values": ["Breakfast", "Lunch"], "range": "B4:B6"}]
+
+    def test_list_of_single_key_maps(self):
+        spec = self._sheet([{"Meal Type": {"list": "Breakfast,Lunch"}}])
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"values": ["Breakfast", "Lunch"], "range": "B4:B6"}]
+
+    def test_array_entry_with_list_key_instead_of_values(self):
+        spec = self._sheet([{"range": "B4:B31", "list": "a,b"}])
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"range": "B4:B31", "values": ["a", "b"]}]
+
+    def test_array_entry_with_column_key(self):
+        spec = self._sheet([{"column": "Meal Type", "values": ["X", "Y"]}])
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"values": ["X", "Y"], "range": "B4:B6"}]
+
+    def test_source_range_payload(self):
+        spec = self._sheet(
+            {"Meal Type": {"source": "Categories!$A$5:$A$24"}},
+            headers=("Item", "Meal Type"),
+        )
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"source_range": "Categories!$A$5:$A$24", "range": "B4:B6"}]
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+
+    def test_inner_range_wins_over_key(self):
+        spec = self._sheet({"Meal Type": {"range": "D2:D9", "list": "a,b"}})
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"range": "D2:D9", "values": ["a", "b"]}]
+
+    def test_correct_array_passes_through_untouched(self):
+        correct = [
+            {
+                "range": "C4:C31",
+                "values": ["Yes", "No"],
+                "error_style": "warning",
+            }
+        ]
+        spec = self._sheet(correct)
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["data_validation"] == correct
+
+    def test_unresolvable_keys_dropped_not_fatal(self):
+        spec = self._sheet({"Frobnicate": {"list": "a,b"}})
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["data_validation"] == []
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+
+    def test_empty_map_and_garbage_scalar(self):
+        spec = self._sheet({})
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["data_validation"] == []
+
+        spec = self._sheet("nonsense")
+        healed = excel_gen._post_process_spec(spec)
+        assert "data_validation" not in healed["sheets"][0]
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+
+    def test_values_sanitized(self):
+        # values with embedded commas/quotes are dropped; empty strings
+        # dropped; numbers stringified; bools TRUE/FALSE.
+        spec = self._sheet(
+            {"Meal Type": {"values": ["OK", "has,comma", 'has"quote', "", 2, True]}}
+        )
+        healed = excel_gen._post_process_spec(spec)
+        dv = healed["sheets"][0]["data_validation"]
+        assert dv == [{"values": ["OK", "2", "TRUE"], "range": "B4:B6"}]
+
+    def test_production_spec_end_to_end(self):
+        # The full production spec (abridged rows) that failed: heal →
+        # validate → normalize → build, all clean.
+        spec = {
+            "filename": "Meal_Planner_2025.xlsx",
+            "sheets": [
+                {
+                    "name": "Weekly Planner",
+                    "tab_color": "00A86B",
+                    "freeze_panes": "A4",
+                    "tables": [
+                        {
+                            "start_cell": "A2",
+                            "title": "Meal Schedule",
+                            "headers": [
+                                "Day of Week",
+                                "Meal Type",
+                                "Meals Eaten",
+                                "Planned Meals",
+                                "Notes",
+                            ],
+                            "rows": [["Sunday", "Breakfast", False, "Oatmeal", ""]],
+                        }
+                    ],
+                    "formulas": [{"cell": "E5", "formula": "=COUNTIF(C4:C31,TRUE)"}],
+                    "data_validation": {
+                        "Meal Type": {"list": "Breakfast,Lunch,Dinner,Snack"}
+                    },
+                }
+            ],
+        }
+        healed = excel_gen._post_process_spec(spec)
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+        norm = excel_gen._normalize_spec(healed)
+        dv = norm["sheets"][0]["data_validation"]
+        assert dv[0]["values"] == ["Breakfast", "Lunch", "Dinner", "Snack"]
+        assert dv[0]["range"] == "B4"  # single data row collapses to one cell
+
+    def test_non_array_cosmetic_fields_dropped(self):
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [{"headers": ["A"], "rows": [[1]]}],
+                    "conditional_formats": {"F5:F12": {"color": "red"}},
+                    "charts": {"type": "bar"},
+                    "text_blocks": {"cell": "A9"},
+                    "merged_cells": "A1:B1",
+                }
+            ]
+        }
+        healed = excel_gen._post_process_spec(spec)
+        sheet = healed["sheets"][0]
+        assert "conditional_formats" not in sheet
+        assert "charts" not in sheet
+        assert "text_blocks" not in sheet
+        assert "merged_cells" not in sheet
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert errors == []
+
+    def test_formulas_map_form_not_dropped(self):
+        # formulas may legitimately be a map {"B10": "=SUM(...)"} —
+        # the normalizer accepts both forms.
+        spec = {
+            "sheets": [
+                {
+                    "name": "S",
+                    "tables": [{"headers": ["A"], "rows": [[1]]}],
+                    "formulas": {"D2": "=SUM(A2:A5)"},
+                }
+            ]
+        }
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["formulas"] == {"D2": "=SUM(A2:A5)"}
+
+    def test_tables_not_dropped_when_wrong_type(self):
+        # A map-shaped `tables` is a structural failure for the repair
+        # round — silently producing an empty sheet would be worse.
+        spec = {"sheets": [{"name": "S", "tables": {"headers": ["A"], "rows": [[1]]}}]}
+        healed = excel_gen._post_process_spec(spec)
+        assert healed["sheets"][0]["tables"] == {
+            "headers": ["A"],
+            "rows": [[1]],
+        }
+        errors, _ = excel_gen.validate_workbook_spec(healed)
+        assert any("tables" in e for e in errors)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 5. Converter e2e
 # ─────────────────────────────────────────────────────────────────────

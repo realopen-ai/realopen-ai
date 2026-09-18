@@ -45,6 +45,18 @@ PATTERN_DESCRIPTION = (
     "subtotal / discount / tax / total."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "invoice",
+    "bill",
+    "billing",
+    "quote",
+    "quotation",
+    "estimate",
+    "receipt",
+)
+
 MAX_INVOICE_ITEMS = 200
 
 

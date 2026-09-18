@@ -41,6 +41,13 @@ build time; marking a day updates everything):
   month stats = scoped to the tracker's FIRST month block (labeled
                 with the month name); streaks span the whole tracker
 
+FILL MODE: when the request states goals instead of habits ("track
+  water, sleep and reading"), the router sets "fill": true and
+  excel_gen drafts starter habit rows via prompts/pattern_populator.md
+  BEFORE calling the builder. Drafted params flow through
+  coerce_habit_tracker_params like any other; a failed draft falls
+  back to the extracted params (generic blank slots).
+
 Every formula reference is computed from the actual layout rows this
 module emits, so off-by-N row math is impossible by construction. No
 ROUND() anywhere — display rounding is the number format's job.
@@ -69,6 +76,19 @@ PATTERN_DESCRIPTION = (
     "routines or streaks. Do not use it for financial budgets, loans, "
     "invoices or investment portfolios."
 )
+
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "habit",
+    "streak",
+    "routine",
+)
+
+# Fillable pattern: guidance-only requests (goals, split, frequency…)
+# may draft starter sessions via prompts/pattern_populator.md before
+# building — see PATTERN_FILLABLE in patterns/__init__.py.
+PATTERN_FILL = True
 
 MAX_HABITS = 10
 MONTH_WINDOW = 24  # months a requested month_start may sit away from today

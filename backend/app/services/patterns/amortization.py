@@ -45,6 +45,21 @@ PATTERN_DESCRIPTION = (
     "into interest + principal over time with a running balance."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "loan",
+    "mortgage",
+    "amortiz",
+    "repay",
+    "interest",
+    "installment",
+    "credit",
+    "debt",
+    "refund",
+    "payment schedule",
+)
+
 MAX_TERM_MONTHS = 600  # 50 years
 
 

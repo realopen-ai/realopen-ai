@@ -28,6 +28,18 @@ PATTERN_DESCRIPTION = (
     "rate, plus an expense-mix pie chart."
 )
 
+# Routing keywords/stems — drive the cheap pre-gate and the classifier
+# shortlist (see excel_gen._shortlist_patterns).
+PATTERN_KEYWORDS = (
+    "budget",
+    "expense",
+    "income",
+    "earning",
+    "saving",
+    "financ",
+    "spending",
+)
+
 MAX_BUDGET_LINES = 300
 
 

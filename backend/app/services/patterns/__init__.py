@@ -40,7 +40,24 @@ Each pattern module must expose:
                                required parameters are missing — the
                                caller then falls back to the
                                AI-generated spec path
+    PATTERN_KEYWORDS   tuple  optional routing keywords/stems ("loan",
+                               "amortiz", "payslip"…) — with 30+
+                               patterns the classifier LLM only sees a
+                               SHORTLIST of stanzas whose keywords hit
+                               the brief, so a pattern without keywords
+                               is effectively unreachable via routing
     coerce_params(params) dict optional param normalizer (tests use it)
+    PATTERN_FILL        bool   optional — marks a "fillable" pattern:
+                               a request that states goals/preferences
+                               instead of concrete records may ask for
+                               DRAFTED starter content; excel_gen then
+                               runs the prompts/pattern_populator.md
+                               call to fill this pattern's list params
+                               before building. Only patterns where
+                               drafting is the point (planners, habit
+                               trackers…) should set it — never
+                               business-record patterns (invoices,
+                               payroll, sales…: fabricated facts).
 
 Pattern modules must NEVER import from excel_gen (no circular
 import) and must never write prompts in code — prompts live in
@@ -49,10 +66,13 @@ app/prompts/*.md.
 ADDING A NEW PATTERN
 ────────────────────
 1. Create ``<name>.py`` in this folder with PATTERN_NAME,
-   PATTERN_DESCRIPTION, build_spec (+ optional coerce_params).
-2. Add the routing stanza to prompts/pattern_classifier.md.
-3. Mention the domain keywords in excel_gen's _PATTERN_GATE_RE if
-   the brief wouldn't otherwise pass the cheap pre-gate.
+   PATTERN_DESCRIPTION, PATTERN_KEYWORDS, build_spec (+ optional
+   coerce_params).
+2. Add the routing stanza to prompts/pattern_classifier.md between
+   ``<!-- stanza: <name> -->`` markers (see that file's header).
+3. Pick routing keywords that cover the phrases a user would use for
+   this document — they drive both the cheap pre-gate and the
+   classifier shortlist.
 
 Nothing else changes — this __init__ discovers the module at import
 time and registers it in PATTERN_BUILDERS, exactly like the agent
@@ -64,7 +84,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from types import ModuleType
-from typing import Callable, Dict
+from typing import Callable, Dict, Tuple
 
 # Shared helpers re-exported at the package root so pattern modules,
 # excel_gen and tests can import everything from one place.
@@ -96,12 +116,29 @@ PATTERN_BUILDERS: Dict[str, Callable[[dict], dict]] = {}
 # name → one-line routing description
 PATTERN_DESCRIPTIONS: Dict[str, str] = {}
 
+# name → tuple of routing keywords (lowercase words or stems; used by
+# excel_gen's cheap pre-gate + the shortlist that decides which pattern
+# stanzas the classifier LLM sees). Optional — a pattern without
+# keywords simply never enters the shortlist (the AI path handles it).
+PATTERN_KEYWORDS: Dict[str, Tuple[str, ...]] = {}
+
+# name → True for "fillable" patterns (module sets PATTERN_FILL = True).
+# A fillable pattern accepts a guidance-only request: excel_gen routes
+# such briefs with "fill": true, then drafts the pattern's list params
+# via prompts/pattern_populator.md BEFORE building, so the user gets a
+# populated starter sheet instead of a blank template. Fill failures
+# fall back to the plain extracted params (blank template) — never
+# worse than the no-fill behavior.
+PATTERN_FILLABLE: Dict[str, bool] = {}
+
 # Names never hoisted from a pattern module into this package's
 # namespace — they are per-module registry concepts.
 _REGISTRY_ATTRS = frozenset(
     {
         "PATTERN_NAME",
         "PATTERN_DESCRIPTION",
+        "PATTERN_KEYWORDS",
+        "PATTERN_FILL",
         "build_spec",
         "coerce_params",
     }
@@ -125,6 +162,13 @@ def _register_pattern_module(module: ModuleType, fallback_name: str) -> None:
         return  # not a pattern module — skip silently
     PATTERN_BUILDERS[name] = builder
     PATTERN_DESCRIPTIONS[name] = str(getattr(module, "PATTERN_DESCRIPTION", "") or "")
+    if getattr(module, "PATTERN_FILL", False):
+        PATTERN_FILLABLE[name] = True
+    kws = getattr(module, "PATTERN_KEYWORDS", ())
+    if isinstance(kws, (list, tuple)):
+        PATTERN_KEYWORDS[name] = tuple(
+            str(k).strip().lower() for k in kws if str(k).strip()
+        )
     for attr in dir(module):
         if attr.startswith("_") or attr in _REGISTRY_ATTRS:
             continue
