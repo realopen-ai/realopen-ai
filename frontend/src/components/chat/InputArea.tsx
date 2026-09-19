@@ -12,10 +12,18 @@ import {
   X,
   Image as ImageIcon,
   FileText,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chatStore";
 import { t } from "@/store/settingsStore";
+import { useVoiceStore, type VoiceUiState } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 
 // ─── Slash Command Definitions ────────────────────────────────────
@@ -201,11 +209,273 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
   };
 }
 
+// ─── Voice: mic button + status strip ──────────────────────────────
+
+/** Animated equalizer bars — shown while the assistant is speaking. */
+function VoiceEqBars({ className }: { className?: string }) {
+  return (
+    <span className={cn("voice-eq-bars", className)} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+/** Map a voice error code to an actionable, localized message. */
+function voiceErrorMessage(code: string, message: string): string {
+  switch (code) {
+    case "mic_denied":
+      return t("voice.error.micDenied");
+    case "mic_unavailable":
+      return t("voice.error.micUnavailable");
+    case "not_ready":
+      return t("voice.error.notReady");
+    case "runtime_missing":
+      return t("voice.error.runtimeMissing", { name: message });
+    case "connection_closed":
+    case "connection_failed":
+      return t("voice.error.connection");
+    default:
+      return t("voice.error.default", { message });
+  }
+}
+
+/** Mic button — one visual per voice state, with per-state tooltip and
+ *  aria-label. Clicking while the assistant speaks = interrupt (barge-in).
+ *  The button is never disabled by streaming — voice stays usable while
+ *  text chat is streaming (mixed modality). */
+function VoiceMicButton({
+  voiceState,
+  disabled,
+  disabledReason,
+  onToggle,
+}: {
+  voiceState: VoiceUiState;
+  disabled: boolean;
+  disabledReason: string | null;
+  onToggle: () => void;
+}) {
+  const isActive = voiceState !== "inactive" && voiceState !== "error";
+
+  const stateTooltipKey = (() => {
+    switch (voiceState) {
+      case "connecting":
+        return "voice.button.connecting";
+      case "listening":
+        return "voice.button.listening";
+      case "processing":
+        return "voice.button.processing";
+      case "speaking":
+        return "voice.button.speaking";
+      case "interrupting":
+        return "voice.button.interrupting";
+      case "stopping":
+        return "voice.button.stopping";
+      case "error":
+        return "voice.button.error";
+      default:
+        return "voice.button.start";
+    }
+  })();
+
+  const tooltip = disabled
+    ? (disabledReason ?? t("voice.button.setupRequired"))
+    : t(stateTooltipKey);
+
+  const buttonBody = (() => {
+    switch (voiceState) {
+      case "connecting":
+      case "stopping":
+      case "processing":
+        return <Loader2 className="w-4.5 h-4.5 animate-spin" />;
+      case "speaking":
+        return <VoiceEqBars className="h-4.5 w-4.5" />;
+      case "listening":
+        return (
+          <span className="relative flex items-center justify-center w-4.5 h-4.5">
+            {/* pulsing ring — listening indicator */}
+            <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+            <Mic className="relative w-4 h-4" />
+          </span>
+        );
+      case "interrupting":
+        return <MicOff className="w-4.5 h-4.5" />;
+      default:
+        return <Mic className="w-4.5 h-4.5" />;
+    }
+  })();
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={tooltip}
+          aria-pressed={isActive}
+          onClick={onToggle}
+          disabled={disabled}
+          className={cn(
+            "h-8 w-8 shrink-0 transition-all",
+            // Default / inactive
+            voiceState === "inactive" &&
+              "text-muted-foreground/50 hover:text-muted-foreground",
+            // Listening — emerald, active
+            voiceState === "listening" &&
+              "text-emerald-500 hover:text-emerald-400",
+            // Processing / connecting / stopping — primary
+            (voiceState === "connecting" ||
+              voiceState === "processing" ||
+              voiceState === "stopping") &&
+              "text-primary hover:text-primary",
+            // Speaking — animated bars, primary
+            voiceState === "speaking" && "text-primary hover:text-primary/80",
+            // Interrupting / error — red flash
+            (voiceState === "interrupting" || voiceState === "error") &&
+              "text-red-500 hover:text-red-400 voice-error-flash",
+            // Disabled — visually muted
+            disabled && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          {buttonBody}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Voice status strip — state label + live partial transcript + inline
+ *  error alert. Rendered above the input while voice is active; the error
+ *  alert also renders while INACTIVE when a voiceError is set (e.g. mic
+ *  permission denied during connect — the session tears down to inactive
+ *  but the actionable message must stay visible until dismissed). Never
+ *  blocks the normal UI (textarea + send remain fully usable). */
+function VoiceStatusStrip({ onInterrupt }: { onInterrupt: () => void }) {
+  const voiceState = useVoiceStore((s) => s.voiceState);
+  const partialTranscript = useVoiceStore((s) => s.partialTranscript);
+  const voiceError = useVoiceStore((s) => s.voiceError);
+  const clearVoiceError = useVoiceStore((s) => s.clearVoiceError);
+
+  if (voiceState === "inactive" && !voiceError) return null;
+  const showStateRow = voiceState !== "inactive";
+
+  const stateLabelKey = (() => {
+    switch (voiceState) {
+      case "connecting":
+        return "voice.state.connecting";
+      case "listening":
+        return "voice.state.listening";
+      case "processing":
+        return "voice.state.processing";
+      case "speaking":
+        return "voice.state.speaking";
+      case "interrupting":
+        return "voice.state.interrupted";
+      case "stopping":
+        return "voice.state.stopping";
+      case "error":
+        return "voice.state.error";
+      default:
+        return "voice.state.inactive";
+    }
+  })();
+
+  const stateColor = (() => {
+    switch (voiceState) {
+      case "listening":
+        return "text-emerald-500";
+      case "processing":
+      case "connecting":
+      case "speaking":
+        return "text-primary";
+      case "interrupting":
+      case "error":
+        return "text-red-500";
+      default:
+        return "text-muted-foreground";
+    }
+  })();
+
+  const errorMessage = voiceError
+    ? voiceErrorMessage(voiceError.code, voiceError.message)
+    : null;
+
+  return (
+    <div className="mb-1.5 px-1 space-y-1">
+      {/* State + partial transcript (only while a session is active) */}
+      {showStateRow && (
+        <div className="flex items-center gap-2 min-w-0" role="status">
+          {voiceState === "speaking" ? (
+            <VoiceEqBars className="h-3 w-3 text-primary" />
+          ) : (
+            <span
+              className={cn(
+                "w-2 h-2 rounded-full shrink-0",
+                voiceState === "listening" && "bg-emerald-500 animate-pulse",
+                voiceState === "processing" && "bg-primary animate-pulse",
+                voiceState === "connecting" && "bg-primary/60 animate-pulse",
+                voiceState === "stopping" && "bg-muted-foreground/50",
+                voiceState === "interrupting" && "bg-red-500",
+                voiceState === "error" && "bg-red-500",
+              )}
+            />
+          )}
+          <span className={cn("text-[11px] font-medium shrink-0", stateColor)}>
+            {t(stateLabelKey)}
+          </span>
+          {/* Live partial transcript (subtle, typewriter-ish) */}
+          {(voiceState === "listening" || voiceState === "processing") && (
+            <span
+              className="text-[11px] text-muted-foreground/70 truncate"
+              aria-live="polite"
+            >
+              {partialTranscript
+                ? `“${partialTranscript}”`
+                : t("voice.partial.placeholder")}
+            </span>
+          )}
+          {/* Interrupt affordance while the assistant speaks */}
+          {voiceState === "speaking" && (
+            <button
+              onClick={onInterrupt}
+              className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0 transition-colors"
+            >
+              {t("voice.interrupt")}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Inline error alert with actionable text */}
+      {errorMessage && (
+        <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-2.5 py-1.5 animate-fade-in">
+          <MicOff className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-red-500 leading-relaxed flex-1">
+            {errorMessage}
+          </p>
+          <button
+            onClick={clearVoiceError}
+            aria-label={t("voice.error.dismiss")}
+            className="text-red-500/60 hover:text-red-500 shrink-0 p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Input Area ───────────────────────────────────────────────────
 
 export function InputArea({
   onSend,
   isStreaming,
+  onToggleVoice,
+  onInterruptSpeaking,
 }: {
   onSend: (
     message: string,
@@ -217,11 +487,26 @@ export function InputArea({
     },
   ) => void;
   isStreaming: boolean;
+  /** Toggle voice mode (connect+start / stop; interrupt while speaking). */
+  onToggleVoice: () => void;
+  /** Explicit barge-in affordance while the assistant speaks. */
+  onInterruptSpeaking: () => void;
 }) {
   const [input, setInput] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [attachments, setAttachments] = useState<AttachedFile[]>([]);
+
+  // ── Voice state (global store — one session per ChatArea) ──
+  const voiceState = useVoiceStore((s) => s.voiceState);
+  const readiness = useVoiceStore((s) => s.readiness);
+  const voiceSetupDisabled = readiness !== null && !readiness.ready;
+  const missingItems = readiness?.missing ?? [];
+  const voiceDisabledReason = voiceSetupDisabled
+    ? missingItems.length > 0
+      ? `${t("voice.button.setupRequired")} — ${missingItems.join(", ")}`
+      : t("voice.button.setupRequired")
+    : null;
   const models = useChatStore((s) => s.models);
   const selectedModel = useChatStore((s) => s.selectedModel);
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
@@ -436,6 +721,10 @@ export function InputArea({
           />
         )}
 
+        {/* Voice status strip — state label + live partial transcript +
+            inline error alert. Only visible while voice is active. */}
+        <VoiceStatusStrip onInterrupt={onInterruptSpeaking} />
+
         {/* Input Container */}
         <div className="input-glow rounded-2xl border border-border bg-card transition-all">
           {/* Attachment Previews */}
@@ -511,6 +800,15 @@ export function InputArea({
             >
               <Globe className="w-4.5 h-4.5" />
             </Button>
+
+            {/* Voice mic button — state-colored; while the assistant speaks,
+                clicking it = interrupt. Never disabled by streaming. */}
+            <VoiceMicButton
+              voiceState={voiceState}
+              disabled={voiceSetupDisabled}
+              disabledReason={voiceDisabledReason}
+              onToggle={onToggleVoice}
+            />
 
             <Button
               onClick={handleSend}
