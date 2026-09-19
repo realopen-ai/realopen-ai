@@ -23,6 +23,21 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Create .env file if it doesn't exist
+create_env_file() {
+    local env_file="${PROJECT_ROOT}/.env"
+
+    if [[ -f "$env_file" ]]; then
+        ok ".env file already exists"
+        return 0
+    fi
+
+    cp "$PROJECT_ROOT/.env.example" "$env_file"
+    ok "Created .env from .env.example"
+}
+
 # Start Ollama Service
 start_ollama() {
     if curl -s http://localhost:11434/api/version &> /dev/null; then
@@ -52,6 +67,7 @@ start_ollama() {
 }
 
 main() {
+    create_env_file
     start_ollama
 }
 
