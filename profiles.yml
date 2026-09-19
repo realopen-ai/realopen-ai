@@ -3,6 +3,11 @@
 # Edit this file to add/remove/change models per hardware profile.
 # No need to touch setup.sh, backend code, or frontend code.
 #
+# Voice (ASR + TTS) models are configured in the top-level `voice:` section
+# near the end of this file — same single source of truth, same override
+# mechanism (any hardware profile may override fields with its own
+# `voice:` block).
+#
 # Profile naming convention:
 #   cpu_small / cpu_medium                    — CPU-only (Windows/Linux, no GPU)
 #   nvidia_small / nvidia_medium / nvidia_large / nvidia_xlarge — NVIDIA GPU (CUDA)
@@ -13,6 +18,9 @@
 #   label:        Human-readable label shown in the UI (sidebar, welcome screen)
 #   engine:       Inference engine — always "ollama" (Ollama supports both
 #                 GGUF+Metal and MLX-format models on macOS)
+#   voice:        Optional per-profile ASR/TTS overrides (merged over the
+#                 top-level `voice:` defaults below). Any key may be
+#                 overridden: provider, model, revision, language, voice, ...
 #
 # Model fields:
 #   id:          Ollama model tag (used in `ollama pull <id>`)
@@ -23,6 +31,19 @@
 #                model with role="default" in the current hardware profile.
 #   description: Human-readable label shown in the UI
 #   size:        Approximate disk/RAM usage (informational)
+#
+# Voice fields (top-level `voice:` below):
+#   provider:    Implementation capability — qwen3-asr | pocket-tts
+#                (the setup system picks the matching installer; changing
+#                this value changes what gets installed, zero code edits)
+#   model:       Provider-specific model identifier (HF repo id for qwen3-asr)
+#   revision:    HF revision/branch for ASR snapshots (default: main)
+#   language:    Pocket TTS language bundle (e.g. english_2026-04)
+#   voice:       Pocket TTS default speaker name
+#   type:        asr | tts
+#   role:        default_asr | default_tts — resolved like Ollama model roles
+#   description: Human-readable label shown in the UI
+#   size:        Approximate disk usage (informational)
 # =============================================================================
 
 profiles:
@@ -354,3 +375,30 @@ profiles:
         role: default_embedding
         description: "Nomic Embed Text — high-performing open embedding model"
         size: "274 MB"
+
+# ── Voice models (ASR + TTS) ──────────────────────────────────────────────
+# Same single-source-of-truth file as the Ollama models above: ASR/TTS
+# model selection lives ONLY here. These defaults apply to every hardware
+# profile; any profile may override fields with its own `voice:` block:
+#   profiles:
+#     apple_large:
+#       voice:
+#         asr: { runtime: mlx }
+voice:
+  asr:
+    provider: qwen3-asr
+    model: Qwen/Qwen3-ASR-0.6B
+    revision: main
+    type: asr
+    role: default_asr
+    description: "Qwen3-ASR 0.6B — streaming speech recognition (cross-platform)"
+    size: "~1.4 GB"
+  tts:
+    provider: pocket-tts
+    model: pocket-tts
+    language: english_2026-04
+    voice: mary
+    type: tts
+    role: default_tts
+    description: "Pocket TTS — streaming neural speech synthesis"
+    size: "~600 MB"
