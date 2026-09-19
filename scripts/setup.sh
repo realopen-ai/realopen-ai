@@ -181,6 +181,19 @@ get_profile_label() {
     python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" label 2>/dev/null || echo "$profile"
 }
 
+# Voice (ASR/TTS) models for a profile — resolved from profiles.yml
+# (single source of truth: changing profiles.yml changes what gets installed,
+# no script edits needed).
+get_voice_models() {
+    local profile=$1
+    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" voice-models 2>/dev/null || echo ""
+}
+
+get_voice_summary() {
+    local profile=$1
+    python3 "$PROJECT_ROOT/scripts/profile-helper.py" "$profile" voice-summary 2>/dev/null || echo ""
+}
+
 # Prerequisite Checks
 check_prerequisites() {
     echo ""
@@ -333,6 +346,7 @@ detect_and_configure() {
     local profile_label=$(get_profile_label "$profile")
     local default_model=$(get_default_model "$profile")
     local all_models=$(get_all_models "$profile")
+    local voice_models=$(get_voice_models "$profile")
 
     # Determine platform display string
     local platform_display="$platform"
@@ -375,6 +389,13 @@ detect_and_configure() {
     while IFS= read -r model; do
         printf "  │    - %-40s│\n" "$model"
     done <<< "$all_models"
+    if [[ -n "$voice_models" ]]; then
+        echo "  ├──────────────────────────────────────────────┤"
+        echo "  │  Voice models (ASR + TTS):                   │"
+        while IFS= read -r model; do
+            printf "  │    - %-40s│\n" "$model"
+        done <<< "$voice_models"
+    fi
     echo "  └──────────────────────────────────────────────┘"
     echo ""
 
@@ -468,6 +489,38 @@ pull_models() {
     fi
 }
 
+# ─── Install Voice Models (ASR + TTS from profiles.yml) ────────────
+# Runs the host-side stdlib-only installer. Voice models land in
+# $DATA_DIR/models/voice (persisted Docker bind mount) with a manifest so
+# the web wizard (and the backend) see them as installed/idempotent.
+# Failures are tolerated with a warning — the web setup wizard can retry.
+install_voice_models() {
+    echo ""
+
+    local profile
+    profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "cpu_small")
+
+    info "Installing voice models (ASR + TTS) for profile '$profile'..."
+
+    # Show the plan (resolved from profiles.yml — single source of truth)
+    local voice_summary
+    voice_summary=$(get_voice_summary "$profile")
+    if [[ -n "$voice_summary" ]]; then
+        echo "$voice_summary"
+    else
+        warn "No voice models configured in profiles.yml — skipping."
+        return 0
+    fi
+
+    if python3 "$PROJECT_ROOT/scripts/install-voice-models.py" --profile "$profile" --data-dir "$DATA_DIR"; then
+        ok "Voice models installed to $DATA_DIR/models/voice"
+    else
+        warn "Voice model installation reported failures."
+        warn "You can retry from the web setup wizard, or run:"
+        warn "  python3 scripts/install-voice-models.py --profile $profile"
+    fi
+}
+
 # ─── Check if setup is needed ────────────────────────────────────────
 
 is_setup_needed() {
@@ -500,6 +553,7 @@ main() {
     create_env_file
     detect_and_configure
     pull_models
+    install_voice_models
 
     echo ""
     echo "╔═══════════════════════════════════════════╗"
@@ -516,7 +570,7 @@ main() {
     local profile
     profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "cpu_small")
     local marker="$DATA_DIR/.setup-complete"
-    echo "{\"profile\": \"${profile}\", \"enabled_modules\": [\"assistant\"], \"source\": \"cli\"}" > "$marker"
+    echo "{\"profile\": \"${profile}\", \"enabled_modules\": [\"assistant\"], \"source\": \"cli\", \"voice\": true}" > "$marker"
     ok "Created data/.setup-complete marker"
 }
 
