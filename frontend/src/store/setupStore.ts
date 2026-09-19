@@ -24,6 +24,35 @@ export type SetupStep =
   | "installing"
   | "done";
 
+/** Provider of a setup artifact (models + voice models + runtimes). */
+export type PullProvider = "ollama" | "qwen3-asr" | "pocket-tts" | "pip";
+
+/** Kind of a setup artifact — ollama LLM models, voice models (ASR/TTS)
+ *  or voice runtime packages (ffmpeg & co). */
+export type PullKind = "ollama" | "voice_model" | "voice_runtime";
+
+/** Per-row install state — unified list covering ollama models AND voice
+ *  models/runtimes (ASR, TTS, runtime packages). */
+export interface PullRow {
+  model: string;
+  module?: string;
+  provider?: PullProvider;
+  kind?: PullKind;
+  status: "pending" | "running" | "done" | "error";
+  /** Real percentage — only set when the backend sends pull_progress
+   *  events with actual percent values (NO fake percentages). */
+  percent?: number;
+  /** Whether real percentages have been received for this row. */
+  hasPercent: boolean;
+  /** Latest streamed status text (pull_status events). */
+  statusText?: string;
+  /** Latest streamed output text (pull_status events). */
+  outputText?: string;
+  error?: string;
+  /** pull_done with already_installed — the artifact was present. */
+  alreadyInstalled?: boolean;
+}
+
 export interface PullProgress {
   currentModel: string;
   currentModule: string;
@@ -33,6 +62,7 @@ export interface PullProgress {
   status: string;
   errors: string[];
   completed: string[];
+  rows: PullRow[];
 }
 
 // ─── Store ───────────────────────────────────────────────────────
@@ -91,7 +121,23 @@ const initialPullProgress: PullProgress = {
   status: "",
   errors: [],
   completed: [],
+  rows: [],
 };
+
+/** Find-or-create a row by model name inside a pullProgress update. */
+function upsertRow(
+  rows: PullRow[],
+  model: string,
+  patch: Partial<PullRow>,
+): PullRow[] {
+  const idx = rows.findIndex((r) => r.model === model);
+  if (idx === -1) {
+    return [...rows, { model, status: "running", hasPercent: false, ...patch }];
+  }
+  const next = [...rows];
+  next[idx] = { ...next[idx], ...patch };
+  return next;
+}
 
 export const useSetupStore = create<SetupState>((set, get) => ({
   setupComplete: false,
@@ -244,6 +290,12 @@ export const useSetupStore = create<SetupState>((set, get) => ({
               currentModule: event.module ?? "",
               currentIndex: event.index ?? 0,
               status: "pulling",
+              rows: upsertRow(s.pullProgress.rows, event.model ?? "", {
+                module: event.module,
+                provider: event.provider,
+                kind: event.kind,
+                status: "running",
+              }),
             },
           }));
         } else if (evt === "pull_progress") {
@@ -252,6 +304,31 @@ export const useSetupStore = create<SetupState>((set, get) => ({
               ...s.pullProgress,
               percent: event.percent ?? 0,
               status: event.status ?? "pulling",
+              rows:
+                event.model != null
+                  ? upsertRow(s.pullProgress.rows, event.model, {
+                      percent: event.percent ?? 0,
+                      hasPercent: true,
+                    })
+                  : s.pullProgress.rows,
+            },
+          }));
+        } else if (evt === "pull_status") {
+          // Streamed status/output lines WITHOUT percentages — typical for
+          // voice model/runtime installs (pip, HF downloads). The row keeps
+          // an indeterminate animated bar (no fake percentages).
+          set((s) => ({
+            pullProgress: {
+              ...s.pullProgress,
+              rows:
+                event.model != null
+                  ? upsertRow(s.pullProgress.rows, event.model, {
+                      provider: event.provider,
+                      kind: event.kind,
+                      statusText: event.status,
+                      outputText: event.output,
+                    })
+                  : s.pullProgress.rows,
             },
           }));
         } else if (evt === "pull_done") {
@@ -261,6 +338,12 @@ export const useSetupStore = create<SetupState>((set, get) => ({
               ...s.pullProgress,
               completed: [...completed],
               percent: 100,
+              rows: upsertRow(s.pullProgress.rows, event.model ?? "", {
+                status: "done",
+                percent: 100,
+                hasPercent: true,
+                alreadyInstalled: event.already_installed ?? false,
+              }),
             },
           }));
         } else if (evt === "pull_error") {
@@ -269,6 +352,10 @@ export const useSetupStore = create<SetupState>((set, get) => ({
             pullProgress: {
               ...s.pullProgress,
               errors: [...errors],
+              rows: upsertRow(s.pullProgress.rows, event.model ?? "", {
+                status: "error",
+                error: event.error,
+              }),
             },
           }));
         } else if (evt === "pull_all_done") {
