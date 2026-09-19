@@ -31,15 +31,13 @@ from app.services import conversations as conv_service
 from app.services import model_prefs
 from app.services import providers
 from app.services import rag as rag_service
-from app.services.title_generator import maybe_generate_and_save_title
+from app.services.blocks import BlockBuilder as _BlockBuilder
+from app.services.conversations import persist_message_standalone
 from app.services.conversations import DEFAULT_TITLE
-from app.services.memory_extractor import (
-    get_messages_since_watermark,
-    update_watermark,
-)
+from app.services.memory_extractor import maybe_run_memory_extraction
+from app.services.title_generator import maybe_generate_and_save_title
 from app.services.conversation_memory import maybe_summarize_conversation
 from app.services.background_queue import (
-    enqueue_extraction_job,
     mark_stream_active,
     mark_stream_idle,
 )
@@ -223,157 +221,33 @@ async def _persist_message(
 ) -> uuid.UUID | None:
     """Persist a message using an independent DB session with explicit commit.
 
-    This is safe to call from inside a StreamingResponse generator because
-    it creates its own session — it does not depend on the request-scoped
-    get_db() session which is closed by the time generate() runs.
+    Thin alias over the shared ``persist_message_standalone`` in
+    app/services/conversations.py (moved here so the voice WebSocket
+    session can reuse the exact same persistence path). Behavior is
+    identical to the previous inline implementation.
 
     Returns the new message's ID on success, or None on failure.
     """
-    try:
-        async with async_session_factory() as session:
-            msg = await conv_service.add_message(
-                session, conv_id, role, content, model=model, **kwargs
-            )
-            await session.commit()
+    msg_id = await persist_message_standalone(conv_id, role, content, model, **kwargs)
+    if msg_id is not None:
         _log(
             "   ✅ %s message committed to DB (conv_id=%s, content_len=%d, msg_id=%s)",
             role,
             conv_id,
             len(content),
-            msg.id,
+            msg_id,
         )
-        return msg.id
-    except Exception as e:
-        _log("  ❌ Failed to persist %s message: %s", role, e)
-        return None
-
-
-# ─── Block builder (reconstructs ordered blocks from SSE events) ──────
-
-
-class _BlockBuilder:
-    """Reconstructs the ordered `blocks` array from SSE events.
-
-    Both the /chat/stream and /chat/stream/multipart generate() functions
-    use this to accumulate blocks in chronological order as the agent
-    emits events. The resulting blocks list is persisted to the DB and
-    also matches what the frontend reconstructs independently.
-
-    Block types:
-      - thinking: {type, content, duration}
-      - text:     {type, content}
-      - tool_call: {type, tool_call: {id, type, status, title, ...}}
-      - error:    {type, content}
-    """
-
-    def __init__(self):
-        self.blocks: list[dict] = []
-        self._current_text: dict | None = None
-        self._current_thinking: dict | None = None
-        self._tool_call_blocks: dict[str, dict] = {}  # tc_id -> block ref
-        self.generation_duration: int = 0
-        self.deliverables: list[dict] = []  # report/file deliverables for DB
-
-    def _close_text(self):
-        self._current_text = None
-
-    def _close_thinking(self):
-        self._current_thinking = None
-
-    def on_thinking_start(self):
-        """Open a new thinking block (closes any open text block)."""
-        self._close_text()
-        self._current_thinking = {"type": "thinking", "content": "", "duration": None}
-        self.blocks.append(self._current_thinking)
-
-    def on_thinking_token(self, token: str):
-        if self._current_thinking is not None:
-            self._current_thinking["content"] += token
-
-    def on_thinking_done(self, duration: int):
-        if self._current_thinking is not None:
-            self._current_thinking["duration"] = duration
-        self._close_thinking()
-
-    def on_message_token(self, token: str):
-        """Append a text token. Opens a new text block if needed."""
-        if self._current_thinking is not None:
-            # thinking_done should have fired, but just in case
-            self._close_thinking()
-        if self._current_text is None:
-            self._current_text = {"type": "text", "content": ""}
-            self.blocks.append(self._current_text)
-        self._current_text["content"] += token
-
-    def on_tool_call_start(self, tc: dict):
-        """Create a new tool_call block (closes any open text/thinking)."""
-        self._close_text()
-        self._close_thinking()
-        tc_id = tc.get("id", "")
-        block = {"type": "tool_call", "tool_call": dict(tc)}
-        self.blocks.append(block)
-        if tc_id:
-            self._tool_call_blocks[tc_id] = block
-
-    def on_tool_call_update(self, tc_id: str, updates: dict):
-        """Update an existing tool_call block by ID."""
-        block = self._tool_call_blocks.get(tc_id)
-        if block is not None:
-            block["tool_call"].update(updates)
-        # Extract deliverables from genResults (reports, presentations,
-        # excel workbooks, etc.)
-        gen_results = updates.get("genResults")
-        if isinstance(gen_results, list):
-            for gr in gen_results:
-                if isinstance(gr, dict) and gr.get("type") in (
-                    "report",
-                    "presentation",
-                    "excel",
-                ):
-                    # Add to the deliverables list for DB persistence
-                    self.deliverables.append(
-                        {
-                            "type": gr.get("type", "report"),
-                            "format": gr.get("format", "pdf"),
-                            "filename": gr.get("filename", "report"),
-                            "file_path": gr.get("file_path", ""),
-                            "download_url": gr.get("download_url", ""),
-                            "thumbnail_url": gr.get("thumbnail_url"),
-                            "report_id": gr.get("report_id", ""),
-                            "created_at": gr.get("created_at", int(time.time())),
-                        }
-                    )
-
-    def on_rag_sources(self, tc_id: str, sources: list):
-        """Attach RAG sources to a tool_call block by ID."""
-        block = self._tool_call_blocks.get(tc_id)
-        if block is not None:
-            block["tool_call"]["sources"] = sources
-
-    def on_generation_done(self, duration: int):
-        self.generation_duration += duration
-
-    def on_error(self, error: str):
-        """Append an error block."""
-        self._close_text()
-        self._close_thinking()
-        self.blocks.append({"type": "error", "content": error})
-
-    def get_text_content(self) -> str:
-        """Concatenation of all text block contents (for the `content`
-        column + tsvector search)."""
-        return "".join(
-            b.get("content", "") for b in self.blocks if b.get("type") == "text"
-        )
-
-    def to_db_blocks(self) -> list[dict]:
-        """Return the blocks list for DB persistence (strips any internal
-        state). Called after the stream completes."""
-        # Close any dangling open blocks
-        return self.blocks
+    else:
+        _log("  ❌ Failed to persist %s message", role)
+    return msg_id
 
 
 # ─── Memory extraction helper ──────────────────────────────────────────
+#
+# The implementation moved to app/services/memory_extractor.py (public
+# function ``maybe_run_memory_extraction``) so the voice WebSocket session
+# shares the exact same post-turn behavior. The private alias below keeps
+# every internal reference in this module unchanged.
 
 
 async def _maybe_run_memory_extraction(
@@ -383,81 +257,13 @@ async def _maybe_run_memory_extraction(
 ) -> tuple[int, bool, bool]:
     """Check the conversation watermark and enqueue memory extraction if due.
 
-    Returns (added_count, did_run, pending). When did_run is False, the
-    caller should not emit any extraction-related SSE events.
-
-    KV-CACHE DESIGN:
-    The watermark check (fast DB read) runs inline. The actual LLM
-    extraction is ENQUEUED to the background queue, which waits for the
-    chat stream to go idle before running — protecting the KV cache on
-    local 4-slot backends (llama.cpp). This means the SSE stream can
-    close immediately after [DONE] without waiting for extraction.
-
-    The returned ``pending`` flag is True when extraction was enqueued
-    but hasn't completed yet (fire-and-forget). The frontend can use this
-    to show a "memory update queued" indicator.
+    Thin alias over the shared ``maybe_run_memory_extraction`` in
+    app/services/memory_extractor.py — same behavior, same return shape
+    (added_count, did_run, pending).
     """
-    interval = settings.MEMORY_EXTRACTION_INTERVAL
-    if interval <= 0:
-        return 0, False, False
-
-    try:
-        async with async_session_factory() as db:
-            new_messages, _watermark = await get_messages_since_watermark(
-                db, str(conv_id)
-            )
-            if len(new_messages) < interval:
-                _log(
-                    "   🧠 memory extraction skipped: %d new messages < interval %d",
-                    len(new_messages),
-                    interval,
-                )
-                return 0, False, False
-
-            # Build extraction context: last N request messages + the
-            # just-generated assistant response.
-            ctx_window = settings.MEMORY_EXTRACTION_CONTEXT_WINDOW
-            recent_request = (
-                request_messages[-(ctx_window - 1) :]
-                if len(request_messages) > (ctx_window - 1)
-                else request_messages
-            )
-            extraction_messages = list(recent_request) + [
-                {"role": "assistant", "content": full_assistant_content}
-            ]
-
-            # Get the latest message ID to use as the new watermark.
-            # new_messages is ordered ascending by created_at — last is newest.
-            latest_message_id = new_messages[-1].id
-
-            _log(
-                "   🧠 memory extraction DUE: %d new messages >= interval %d — "
-                "enqueuing with %d context messages",
-                len(new_messages),
-                interval,
-                len(extraction_messages),
-            )
-
-        # Advance the watermark IMMEDIATELY (before extraction runs) so
-        # that if the user sends another message while extraction is
-        # queued, we don't re-enqueue the same messages.
-        try:
-            async with async_session_factory() as db:
-                await update_watermark(db, str(conv_id), latest_message_id)
-                await db.commit()
-        except Exception as e:
-            _log("   ⚠️  failed to advance memory watermark: %s", e)
-
-        # Enqueue the extraction job (fire-and-forget). The background
-        # queue waits for the chat stream to go idle before running.
-        enqueue_extraction_job(str(conv_id), extraction_messages)
-
-        # Return pending=True since we don't have the count yet.
-        return 0, True, True
-
-    except Exception as e:
-        _log("   ⚠️  memory extraction helper failed: %s", e)
-        return 0, False, False
+    return await maybe_run_memory_extraction(
+        conv_id, full_assistant_content, request_messages
+    )
 
 
 @router.post("/chat/stream")
