@@ -16,9 +16,17 @@ import {
   Puzzle,
   Zap,
   ArrowRight,
+  Volume2,
+  AudioLines,
+  Package,
 } from "lucide-react";
-import { useSetupStore, type SetupStep } from "@/store/setupStore";
+import {
+  useSetupStore,
+  type SetupStep,
+  type PullRow,
+} from "@/store/setupStore";
 import type { SetupModule } from "@/api/setupClient";
+import { t } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 
 // ─── Step indicator ──────────────────────────────────────────────
@@ -790,6 +798,131 @@ function ReviewStep() {
 
 // ─── Installing Step ──────────────────────────────────────────────
 
+/** Provider icon for a setup row — voice artifacts get distinct icons
+ *  (ASR = speaker, TTS = waveform, runtime = package); ollama models keep
+ *  the previous neutral look. */
+function PullRowIcon({ row }: { row: PullRow }) {
+  if (row.kind === "voice_model" || row.provider === "qwen3-asr") {
+    return <Volume2 className="w-3.5 h-3.5 text-primary shrink-0" />;
+  }
+  if (row.provider === "pocket-tts") {
+    return <AudioLines className="w-3.5 h-3.5 text-primary shrink-0" />;
+  }
+  if (row.kind === "voice_runtime") {
+    return <Package className="w-3.5 h-3.5 text-primary shrink-0" />;
+  }
+  return <Bot className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />;
+}
+
+/** Provider label for voice rows (ASR model / TTS model / Voice runtime). */
+function pullRowProviderLabel(row: PullRow): string | null {
+  if (row.provider === "qwen3-asr" || row.kind === "voice_model") {
+    // Distinguish ASR vs TTS by provider when possible.
+    if (row.provider === "pocket-tts") return t("setup.voice.provider.tts");
+    return t("setup.voice.provider.asr");
+  }
+  if (row.provider === "pocket-tts") return t("setup.voice.provider.tts");
+  if (row.kind === "voice_runtime") return t("setup.voice.provider.runtime");
+  return null;
+}
+
+/** One install row of the unified list (ollama models + voice models +
+ *  voice runtimes). Real percent bar when pull_progress provides one;
+ *  indeterminate animated bar + streamed status/output text when only
+ *  pull_status events arrive (NO fake percentages); done rows with a
+ *  check mark (incl. "already installed"); error rows with retry hint. */
+function InstallRow({ row }: { row: PullRow }) {
+  const providerLabel = pullRowProviderLabel(row);
+  const isVoice = row.kind === "voice_model" || row.kind === "voice_runtime";
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-2.5 py-2",
+        row.status === "error"
+          ? "border-red-500/30 bg-red-500/5"
+          : row.status === "done"
+            ? "border-emerald-500/20 bg-emerald-500/5"
+            : "border-border/60 bg-secondary/30",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <PullRowIcon row={row} />
+        <span className="text-[11.5px] font-medium text-foreground truncate flex-1">
+          {row.model}
+        </span>
+        {/* Provider chip for voice artifacts */}
+        {providerLabel && (
+          <span
+            className={cn(
+              "text-[9px] px-1.5 py-0.5 rounded-full shrink-0 uppercase tracking-wide",
+              isVoice
+                ? "bg-primary/10 text-primary"
+                : "bg-secondary text-muted-foreground",
+            )}
+          >
+            {providerLabel}
+          </span>
+        )}
+        {/* Terminal state indicator */}
+        {row.status === "done" && (
+          <span className="flex items-center gap-1 shrink-0">
+            <Check className="w-3.5 h-3.5 text-emerald-500" />
+            {row.alreadyInstalled && (
+              <span className="text-[9.5px] text-muted-foreground/70">
+                {t("setup.installing.alreadyInstalled")}
+              </span>
+            )}
+          </span>
+        )}
+        {row.status === "error" && (
+          <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+        )}
+        {/* Live percentage when real numbers arrive */}
+        {row.status === "running" && row.hasPercent && (
+          <span className="text-[10px] font-medium text-foreground shrink-0">
+            {row.percent ?? 0}%
+          </span>
+        )}
+      </div>
+
+      {/* Progress bar — real percent when available, indeterminate
+          animated bar otherwise (never a fake percentage). */}
+      {row.status === "running" && (
+        <div className="mt-1.5 w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+          {row.hasPercent ? (
+            <div
+              className="h-full bg-primary/70 rounded-full transition-all duration-200"
+              style={{ width: `${row.percent ?? 0}%` }}
+            />
+          ) : (
+            <div className="h-full w-full rounded-full voice-indeterminate-bar text-primary/50" />
+          )}
+        </div>
+      )}
+
+      {/* Streamed status / output text (pull_status events) */}
+      {row.status === "running" && (row.statusText || row.outputText) && (
+        <p className="mt-1.5 text-[10px] text-muted-foreground/70 truncate">
+          {row.outputText || row.statusText}
+        </p>
+      )}
+
+      {/* Error details + retry hint */}
+      {row.status === "error" && (
+        <div className="mt-1">
+          {row.error && (
+            <p className="text-[10px] text-red-500 truncate">{row.error}</p>
+          )}
+          <p className="text-[10px] text-muted-foreground/60">
+            {t("setup.installing.retryHint")}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InstallingStep() {
   const pullModels = useSetupStore((s) => s.pullModels);
   const isPulling = useSetupStore((s) => s.isPulling);
@@ -803,15 +936,25 @@ function InstallingStep() {
     }
   }, []);
 
+  // Completion gate: the backend's `pull_all_done` (status === "done")
+  // fires only after every artifact — including voice models and voice
+  // runtimes — reached a terminal state (pull_done or pull_error). We
+  // additionally verify on the frontend that every known row is terminal
+  // before enabling the finish transition (mirrors existing error
+  // handling: errors stay visible but do not block completion).
+  const allRowsTerminal =
+    pullProgress.rows.length === 0 ||
+    pullProgress.rows.every((r) => r.status === "done" || r.status === "error");
+
   useEffect(() => {
-    if (pullProgress.status === "done" && !isPulling) {
+    if (pullProgress.status === "done" && !isPulling && allRowsTerminal) {
       const timer = setTimeout(() => {
         completeSetup();
         setStep("done");
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [pullProgress.status, isPulling]);
+  }, [pullProgress.status, isPulling, allRowsTerminal]);
 
   const totalPercent =
     pullProgress.totalModels > 0
@@ -820,6 +963,8 @@ function InstallingStep() {
         )
       : 0;
 
+  const showRows = pullProgress.rows.length > 0;
+
   return (
     <div className="py-8">
       <div className="flex flex-col items-center text-center">
@@ -827,21 +972,21 @@ function InstallingStep() {
           <Download className="w-8 h-8 text-primary animate-bounce" />
         </div>
         <h3 className="text-[18px] font-semibold text-foreground mb-2">
-          Downloading Models
+          {t("setup.installing.title")}
         </h3>
         <p className="text-[13px] text-muted-foreground mb-6 max-w-sm">
-          We&apos;re downloading the AI models needed for your configuration.
-          This may take a while depending on your internet speed.
+          {t("setup.installing.subtitle")}
         </p>
 
-        {/* Overall progress */}
+        {/* Overall progress — SAME progress for models AND voice deps */}
         <div className="w-full max-w-sm mb-4">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[12px] text-muted-foreground">
-              Overall Progress
+              {t("setup.installing.overallProgress")}
             </span>
             <span className="text-[12px] font-medium text-foreground">
-              {pullProgress.completed.length}/{pullProgress.totalModels} models
+              {pullProgress.completed.length}/{pullProgress.totalModels}{" "}
+              {t("setup.installing.completed").toLowerCase()}
             </span>
           </div>
           <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
@@ -852,8 +997,18 @@ function InstallingStep() {
           </div>
         </div>
 
-        {/* Current model progress */}
-        {pullProgress.currentModel && isPulling && (
+        {/* Unified install rows — ollama models + voice models/runtimes */}
+        {showRows && (
+          <div className="w-full max-w-sm mb-4 space-y-1.5 max-h-64 overflow-y-auto text-left">
+            {pullProgress.rows.map((row) => (
+              <InstallRow key={row.model} row={row} />
+            ))}
+          </div>
+        )}
+
+        {/* Current model progress (legacy view before any rows arrive,
+            and for backends that only emit aggregate progress) */}
+        {!showRows && pullProgress.currentModel && isPulling && (
           <div className="w-full max-w-sm mb-4">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[12px] text-muted-foreground truncate max-w-50">
@@ -872,11 +1027,11 @@ function InstallingStep() {
           </div>
         )}
 
-        {/* Completed models */}
-        {pullProgress.completed.length > 0 && (
+        {/* Completed models (compact list, kept for quick scanning) */}
+        {!showRows && pullProgress.completed.length > 0 && (
           <div className="w-full max-w-sm mt-2">
             <p className="text-[11px] text-muted-foreground/50 uppercase tracking-wider mb-1">
-              Completed
+              {t("setup.installing.completed")}
             </p>
             <div className="space-y-1 max-h-30 overflow-y-auto">
               {pullProgress.completed.map((m) => (
@@ -895,7 +1050,7 @@ function InstallingStep() {
         {pullProgress.errors.length > 0 && (
           <div className="w-full max-w-sm mt-3">
             <p className="text-[11px] text-red-500/70 uppercase tracking-wider mb-1">
-              Errors
+              {t("setup.installing.errors")}
             </p>
             {pullProgress.errors.map((e, i) => (
               <p key={i} className="text-[11px] text-red-500">
