@@ -351,6 +351,9 @@ export interface MessageDTO {
   imageCount: number;
   documentCount: number;
   createdAt: number;
+  /** How the message was produced: spoken ("voice") or typed ("text").
+   * Null for messages created before the voice feature. */
+  modality?: "voice" | "text" | null;
   /** Ordered rendering blocks (thinking/text/tool_call/error) for
    * assistant messages. NULL for user/system messages. */
   blocks?: BackendBlock[] | null;
