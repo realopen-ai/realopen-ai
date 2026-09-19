@@ -3,7 +3,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import make_asgi_app
@@ -22,10 +22,23 @@ from app.api.workspace import router as workspace_router
 from app.api.deps import router as deps_router
 from app.api.providers import router as providers_router
 from app.api.tools import router as tools_router
+from app.api.voice import router as voice_router
 from app.core.logger import is_debug
 from app.core.middleware import DebugLoggingMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Voice chat (real-time WebSocket pipeline). The import is guarded so the
+# app still boots when the voice package (or one of its imports) is
+# unavailable — the /ws/voice route is simply not registered and text chat
+# is unaffected.
+try:
+    from app.voice.manager import voice_manager
+except Exception as _voice_import_error:  # noqa: BLE001 — voice is optional
+    logger.warning(
+        "Voice package unavailable — /ws/voice disabled: %s", _voice_import_error
+    )
+    voice_manager = None
 
 
 def _get_data_dir() -> Path:
@@ -339,3 +352,27 @@ app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
 app.include_router(providers_router, prefix="/api", tags=["providers"])
 app.include_router(tools_router, prefix="/api", tags=["tools"])
+app.include_router(voice_router, prefix="/api", tags=["voice"])
+
+
+# ── Voice chat WebSocket (protocol v1) ─────────────────────────────
+if voice_manager is not None:
+
+    @app.websocket("/ws/voice")
+    async def voice_ws(websocket: WebSocket, conversation_id: str = Query(...)) -> None:
+        """Real-time voice session for one conversation.
+
+        The URL carries the conversation id (the registry key for the
+        one-session-per-conversation invariant); the ``start`` handshake
+        re-validates it. See app/voice/session.py for the frame contract.
+        """
+        await websocket.accept()
+        session = await voice_manager.get_or_create(conversation_id, websocket)
+        if session is None:
+            # Rejected (session_exists / invalid id) — the error frame and
+            # close were sent by the manager.
+            return
+        try:
+            await session.handle(websocket)
+        finally:
+            voice_manager.remove(conversation_id)
