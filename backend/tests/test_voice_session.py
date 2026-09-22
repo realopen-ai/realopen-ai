@@ -12,7 +12,7 @@ Strategy (no external services, no real WS server):
 - persistence / memory extraction / stream markers are monkeypatched with
   recorders (DB optional).
 
-Coverage:
+Coverage per the task spec:
 - full happy-path frame sequence (ready → asr_partial → asr_final →
   user_message → agent_event(s) → tts_start → tts_chunk+0x03 (adjacency!) →
   tts_end → assistant_message → state LISTENING) and persistence calls with
@@ -133,6 +133,7 @@ class ScriptedAsr:
         self.current: Optional[bytearray] = None
         self.cancel_count = 0
         self.start_count = 0
+        self.partial_count = 0
 
     async def start_stream(self) -> None:
         self.start_count += 1
@@ -144,6 +145,7 @@ class ScriptedAsr:
             self.current += pcm
 
     async def get_partial(self) -> str:
+        self.partial_count += 1
         return self.partial
 
     async def finish_stream(self) -> str:
@@ -196,6 +198,7 @@ def make_agent_stream(events: List[dict], delay: float = 0.0, record=None):
         conversation_id=None,
         on_tool_call_start=None,
         on_tool_call_update=None,
+        **kwargs,
     ):
         if record is not None:
             record.append(
@@ -203,6 +206,9 @@ def make_agent_stream(events: List[dict], delay: float = 0.0, record=None):
                     "messages": messages,
                     "model": model,
                     "conversation_id": conversation_id,
+                    "think": kwargs.get("think"),
+                    "max_output_tokens": kwargs.get("max_output_tokens"),
+                    "interaction_mode": kwargs.get("interaction_mode"),
                 }
             )
         try:
@@ -314,6 +320,16 @@ def env(monkeypatch):
     monkeypatch.setattr(vs, "create_aec", lambda mode=None: PassThroughAec())
     monkeypatch.setattr(models_store, "asr_ready", lambda: True)
     monkeypatch.setattr(models_store, "tts_ready", lambda: True)
+    monkeypatch.setattr(
+        models_store,
+        "voice_dependency_status",
+        lambda: {
+            "asr": {"valid": True},
+            "tts": {"valid": True},
+            "runtime": [],
+            "ready": True,
+        },
+    )
     monkeypatch.setattr(vs, "ASR_PARTIAL_INTERVAL_S", 0)
     # Fast VAD silence (90 ms → 3 frames) for quick utterance ends.
     monkeypatch.setattr(settings, "VOICE_VAD_SILENCE_MS", 90)
@@ -441,6 +457,9 @@ async def test_full_voice_turn_happy_path(env):
     assert len(env.agent_calls) == 1
     call = env.agent_calls[0]
     assert call["conversation_id"] == str(env.conv_id)
+    assert call["think"] is False
+    assert call["max_output_tokens"] is None
+    assert call["interaction_mode"] == "voice"
     assert call["messages"][-1] == {"role": "user", "content": "hello world"}
     forwarded = [f["event"] for f in ws.frames_of("agent_event")]
     for ev in assistant_events():
@@ -506,6 +525,51 @@ async def test_full_voice_turn_happy_path(env):
     await finish(task, ws)
 
 
+@pytest.mark.asyncio
+async def test_queued_mic_tail_is_quarantined_after_final_asr(env, monkeypatch):
+    """Stale frames queued during final ASR must not create a second turn."""
+    monkeypatch.setattr(vs, "POST_FINAL_MIC_QUARANTINE_S", 10.0)
+    ws = FakeWebSocket()
+    task = await start_session(env, ws)
+    feed_speech(ws, messages=4)
+    feed_silence(ws, messages=2)
+    assert await wait_until(lambda: len(ws.frames_of("asr_final")) == 1)
+
+    # This represents mic tail/noise already queued while final ASR ran.
+    feed_speech(ws, messages=4)
+    feed_silence(ws, messages=2)
+    await asyncio.sleep(0.1)
+    assert len(ws.frames_of("asr_final")) == 1
+    assert env.asr.start_count == 1
+    await finish(task, ws)
+
+
+@pytest.mark.asyncio
+async def test_vad_end_preempts_expensive_partial_decode(env):
+    """Trailing silence finalizes directly instead of retranscribing first."""
+    ws = FakeWebSocket()
+    task = await start_session(env, ws)
+
+    feed_speech(ws, messages=4)
+    assert await wait_until(lambda: env.asr.partial_count > 0)
+    partials_before_silence = env.asr.partial_count
+
+    # The first silence chunk is not yet enough once VAD hangover is
+    # accounted for, so it may legitimately request another partial.
+    feed_silence(ws, messages=1)
+    assert await wait_until(
+        lambda: env.asr.partial_count > partials_before_silence
+        or bool(ws.frames_of("asr_final"))
+    )
+    partials_before_end = env.asr.partial_count
+
+    feed_silence(ws, messages=1)
+    assert await wait_until(lambda: bool(ws.frames_of("asr_final")))
+    assert env.asr.partial_count == partials_before_end
+
+    await finish(task, ws)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Barge-in
 # ══════════════════════════════════════════════════════════════════════
@@ -541,9 +605,12 @@ async def test_barge_in_cancels_tts_and_captures_new_utterance(env, monkeypatch)
     assert ok, f"never reached SPEAKING; sent={ws.frame_types()}"
     gid = ws.frames_of("tts_start")[0]["generation_id"]
 
-    # Barge-in: speak loudly over the TTS (server VAD path).
+    # Barge-in: the browser's AEC-aware VAD sends an explicit interrupt.
     binary_before = len(ws.binary_frames())
     assert binary_before >= 1
+    feed_speech(ws, messages=3)
+    ws.client_json({"type": "interrupt"})
+    # The user keeps speaking after the interrupt control frame.
     feed_speech(ws, messages=3)
 
     ok = await wait_until(lambda: ws.frames_of("interrupted"))
@@ -669,7 +736,16 @@ async def test_oversize_and_bad_prefix_frames(env):
 
 @pytest.mark.asyncio
 async def test_not_ready_rejects_start(env, monkeypatch):
-    monkeypatch.setattr(models_store, "asr_ready", lambda: False)
+    monkeypatch.setattr(
+        models_store,
+        "voice_dependency_status",
+        lambda: {
+            "asr": {"valid": False},
+            "tts": {"valid": True},
+            "runtime": [],
+            "ready": False,
+        },
+    )
     ws = FakeWebSocket()
     session = VoiceSession(env.conv_id, ws)
     task = asyncio.create_task(session.handle(ws))

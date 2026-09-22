@@ -1,5 +1,8 @@
 """Acoustic echo cancellation (AEC).
 
+REAL echo cancellation — the microphone is NEVER muted or dropped while
+the assistant speaks, and no transcript string comparisons are involved.
+
 Two-stage architecture (documented per the task spec):
 
   Stage 1 (browser): getUserMedia applies WebRTC AEC3 in the browser

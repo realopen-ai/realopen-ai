@@ -86,6 +86,12 @@ def create_tts_engine(spec: Any) -> TtsProvider:
     duck-typed: ``provider`` / ``model`` / ``language`` / ``voice``.
     """
     provider = str(getattr(spec, "provider", "") or "").strip().lower()
+    from app.config import settings
+
+    if settings.VOICE_RUNTIME_URL:
+        from app.voice.remote import RemoteTtsEngine
+
+        return RemoteTtsEngine(spec)
     if provider == "pocket-tts":
         from app.voice.tts.pocket import PocketTtsEngine
 

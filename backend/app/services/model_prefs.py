@@ -1,6 +1,6 @@
 """Per-task model preferences (Settings ▸ AI ▸ Models).
 
-Six user-facing "task slots" control which model runs which job:
+User-facing "task slots" control which model runs which job:
 
     chat               → the main chat / agent loop
     vision             → image understanding (vision tool, RAG OCR)
@@ -33,6 +33,11 @@ from app.services import providers
 # ─── Task slot definitions ──────────────────────────────────────────
 
 TASK_SLOTS: Dict[str, Dict[str, Any]] = {
+    "voice": {
+        "label": "Voice assistant",
+        "fallback_role": "role_voice",
+        "local_only": False,
+    },
     "chat": {
         "label": "Chat / Agent",
         "fallback_role": "default",
@@ -205,7 +210,6 @@ async def set_task_model(task: str, model: Optional[str]) -> Dict[str, Any]:
 
 async def task_row(task: str) -> Dict[str, Any]:
     """One task's status for the API: current model + default + flags."""
-    pref = get_prefs().get(task)
     effective = await resolve_task_model(task)
     default = default_task_model(task)
     return {

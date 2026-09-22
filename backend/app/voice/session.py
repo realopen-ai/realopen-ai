@@ -46,6 +46,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.agent.service import run_agent_stream
+from app.services import model_prefs, voice_settings
 from app.config import settings
 from app.services.background_queue import mark_stream_active, mark_stream_idle
 from app.services.blocks import BlockBuilder
@@ -85,6 +86,12 @@ ASR_PARTIAL_INTERVAL_S = 0.7
 
 # Upper bound for a single final ASR transcription.
 ASR_FINAL_TIMEOUT_S = 30.0
+
+# Drop mic frames briefly after final ASR returns. Those frames were captured
+# while inference blocked this session's receive loop and are stale tail/noise,
+# not a new user utterance. Without this quarantine they can form a 90 ms VAD
+# onset and Qwen commonly hallucinates a one-word turn such as "The.".
+POST_FINAL_MIC_QUARANTINE_S = 0.75
 
 # How long the TTS worker waits on the sentence queue before re-checking
 # the chunker flush timeout.
@@ -202,6 +209,7 @@ class VoiceSession:
         self._mic_leftover = b""  # sub-10ms mic tail carried between frames
         self._last_partial_emit = 0.0
         self._last_partial_text = ""
+        self._ignore_mic_until = 0.0
 
         # Agent-turn state.
         self.current_agent_task: Optional[asyncio.Task] = None
@@ -214,6 +222,8 @@ class VoiceSession:
         self._current_transcript = ""
         self._history_messages: List[Dict[str, str]] = []
         self._stream_marked = False
+        self._client_playback_ack = False
+        self._playback_done = asyncio.Event()
 
         # Housekeeping.
         self._send_lock = asyncio.Lock()
@@ -304,6 +314,9 @@ class VoiceSession:
             await self._handle_stop()
         elif mtype == "interrupt":
             await self._handle_barge_in()
+        elif mtype == "playback_end":
+            if str(payload.get("generation_id") or "") == str(self.generation_id or ""):
+                self._playback_done.set()
         elif mtype == "ping":
             await self._send_json({"type": "pong"})
         else:
@@ -357,6 +370,7 @@ class VoiceSession:
                 "voice: client declared format=%r (protocol v1 is pcm_s16le)",
                 payload.get("format"),
             )
+        self._client_playback_ack = payload.get("playback_ack") is True
 
         # Voice model selection — profiles.yml only (settings resolver).
         config = settings.get_voice_config()
@@ -366,19 +380,33 @@ class VoiceSession:
                 "Voice models are not configured (profiles.yml `voice:` section).",
             )
             return
-        # Setup-wizard readiness (models installed + manifest valid).
-        if not models_store.asr_ready():
+        # One canonical readiness gate: persisted packages + HF cache for both
+        # models. This deliberately rejects legacy custom-download manifests.
+        dependency_status = models_store.voice_dependency_status()
+        use_host_runtime = bool(settings.VOICE_RUNTIME_URL)
+        if not use_host_runtime and not dependency_status["asr"]["valid"]:
             await self._fatal_close(
                 "voice_not_ready",
                 "Voice ASR model is not installed or does not match the "
                 "configured selection — run the setup wizard.",
             )
             return
-        if not models_store.tts_ready():
+        if not use_host_runtime and not dependency_status["tts"]["valid"]:
             await self._fatal_close(
                 "voice_not_ready",
                 "Voice TTS model is not installed or does not match the "
                 "configured selection — run the setup wizard.",
+            )
+            return
+        if not use_host_runtime and dependency_status.get("runtime"):
+            missing = ", ".join(
+                str(item.get("description") or item.get("id"))
+                for item in dependency_status["runtime"]
+            )
+            await self._fatal_close(
+                "voice_not_ready",
+                f"Voice runtime packages are missing or outdated: {missing}. "
+                "Run the setup wizard.",
             )
             return
 
@@ -409,6 +437,51 @@ class VoiceSession:
             }
         )
         await self._apply_state(VoiceState.LISTENING, "start")
+
+        # Eager background warm-up: load the ASR/TTS models NOW (mic-click
+        # time) instead of on the first turn. Loads are disk-bound (the
+        # setup wizard installed the assets), bounded by the TTS load
+        # timeout, and failures surface as error frames immediately —
+        # never as a mid-turn hang. The client is already usable (ready
+        # was sent); the first utterance simply benefits from a warm cache.
+        if settings.VOICE_EAGER_WARMUP:
+            warm_task = asyncio.create_task(self._warm_up_engines())
+            self._tasks.append(warm_task)
+
+    async def _warm_up_engines(self) -> None:
+        """Background model preloading (session start). Best-effort —
+        recoverable failures emit an error frame but keep the session.
+        Duck-typed: engines without a warm_up are skipped (the base
+        AsrProvider default is a no-op; test doubles may omit it)."""
+        # ASR first (the user will speak before TTS is needed).
+        if self.asr is not None:
+            warm = getattr(self.asr, "warm_up", None)
+            if callable(warm):
+                try:
+                    await warm()
+                except asyncio.CancelledError:
+                    raise
+                except AsrError as e:
+                    await self._send_error(e.code, e.message, fatal=e.fatal)
+                except Exception as e:  # noqa: BLE001 — surfaced to the client
+                    await self._send_error("asr_model_error", str(e), fatal=False)
+        if self.tts is not None:
+            # On unified-memory hosts, loading Torch/Pocket TTS alongside MLX
+            # before the user speaks makes ASR several times slower. Remote
+            # TTS loads lazily while the agent begins generating, hiding most
+            # of its one-time cost without penalizing speech recognition.
+            if settings.VOICE_RUNTIME_URL:
+                return
+            warm = getattr(self.tts, "warm_up", None)
+            if callable(warm):
+                try:
+                    await warm()
+                except asyncio.CancelledError:
+                    raise
+                except TtsError as e:
+                    await self._send_error(e.code, e.message, fatal=e.fatal)
+                except Exception as e:  # noqa: BLE001 — surfaced to the client
+                    await self._send_error("tts_model_error", str(e), fatal=False)
 
     async def _handle_stop(self) -> None:
         """User toggled voice off — wind down and close."""
@@ -461,6 +534,13 @@ class VoiceSession:
         """The per-mic-frame pipeline (see module docstring)."""
         if self.aec is None or self.preroll is None or self.tracker is None:
             return
+        if (
+            time.monotonic() < self._ignore_mic_until
+            and self.state_machine.state != VoiceState.SPEAKING
+        ):
+            # Clear rather than retain stale sub-frame data or pre-roll.
+            self._mic_leftover = b""
+            return
         data = self._mic_leftover + pcm
         frames, self._mic_leftover = split_even_frames(data, MIC_FRAME_BYTES)
         if not frames:
@@ -486,7 +566,6 @@ class VoiceSession:
                 if e.fatal:
                     await self._fatal_close(e.code, e.message)
                     return
-            await self._maybe_emit_partial()
 
         events = self.tracker.feed_pcm(cleaned_all)
         for event in events:
@@ -497,10 +576,25 @@ class VoiceSession:
             if self._closed:
                 return
 
+        # Give VAD end/max-length priority over an expensive full-buffer
+        # partial decode. In particular, a trailing-silence chunk must
+        # finalize the utterance immediately instead of waiting behind a
+        # partial transcription of audio that is already complete.
+        if self._utterance_active:
+            await self._maybe_emit_partial()
+
     # ── utterance lifecycle ──────────────────────────────────────────
 
     async def _on_utterance_start(self) -> None:
         """VAD confirmed speech onset."""
+        if self.state_machine.state == VoiceState.SPEAKING:
+            # Speaker echo is not a trustworthy barge-in signal. The browser
+            # has hardware AEC plus its own VAD and sends an explicit
+            # ``interrupt`` for real user speech. Keep the pre-roll so those
+            # first syllables seed the utterance immediately after interrupt.
+            self.tracker.reset()
+            self._utterance_active = False
+            return
         # Speech onset while the assistant is busy = barge-in (the
         # interrupt cancels the turn first; the new utterance — already
         # captured in the pre-roll — is seeded right after).
@@ -570,6 +664,13 @@ class VoiceSession:
             if e.fatal:
                 await self._fatal_close(e.code, e.message)
                 return
+        # ASR is a blocking turn boundary for this receive loop. Reset all
+        # capture state and quarantine the frames that accumulated behind it;
+        # otherwise the old tail can immediately seed a phantom utterance.
+        self.tracker.reset()
+        self.preroll.clear()
+        self._mic_leftover = b""
+        self._ignore_mic_until = time.monotonic() + POST_FINAL_MIC_QUARANTINE_S
         if not transcript:
             # Nothing intelligible was said — stay LISTENING.
             return
@@ -676,9 +777,15 @@ class VoiceSession:
 
             async for sse in run_agent_stream(
                 messages=messages,
-                model="default",
+                model=await model_prefs.resolve_task_model("voice"),
                 images=None,
                 conversation_id=conv_id_str,
+                # Same default agent/tool loop, with spoken-response behavior
+                # and no hidden reasoning delay. Length is prompt-adaptive,
+                # not hard-truncated: detailed questions can stay detailed.
+                think=False,
+                interaction_mode="voice",
+                interaction_instructions=voice_settings.persona_prompt(),
             ):
                 parsed = _parse_sse(sse)
                 if parsed is None:
@@ -825,12 +932,14 @@ class VoiceSession:
         sample_rate = settings.VOICE_TTS_SAMPLE_RATE
         seq = 0
         try:
+            self._playback_done.clear()
             await self.tts.warm_up()
             await self._send_json(
                 {
                     "type": "tts_start",
                     "generation_id": generation_id,
                     "sample_rate": sample_rate,
+                    "speed": voice_settings.get()["speed"],
                 }
             )
             assert self._tts_queue is not None
@@ -867,6 +976,15 @@ class VoiceSession:
                     "sample_rate": sample_rate,
                 }
             )
+            if self._client_playback_ack and seq:
+                try:
+                    await asyncio.wait_for(self._playback_done.wait(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "voice: browser playback acknowledgement timed out "
+                        "for generation %s",
+                        generation_id,
+                    )
         except asyncio.CancelledError:
             raise
         except TtsError as e:
@@ -918,6 +1036,9 @@ class VoiceSession:
         return to LISTENING with the new utterance already captured."""
         if not self.state_machine.in_state(*INTERRUPTIBLE_STATES):
             return  # nothing to interrupt
+        # An explicit browser interrupt is a trusted new-speech signal and
+        # overrides the post-ASR stale-frame quarantine.
+        self._ignore_mic_until = 0.0
         generation_id = self.generation_id
         await self._apply_state(VoiceState.INTERRUPTING, "barge_in", generation_id)
         # Snapshot mutable turn state BEFORE cancelling (the tasks' own

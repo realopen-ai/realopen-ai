@@ -6,9 +6,16 @@ object with ``provider`` / ``model`` / ``revision`` / ``runtime`` fields).
 Nothing here hardcodes a model id.
 
 Providers (``spec.provider``):
-    "qwen3-asr" → :class:`Qwen3AsrEngine` (transformers, cross-platform)
-                   or :class:`MlxQwen3AsrEngine` when ``spec.runtime == "mlx"``
-                   (macOS-only accelerator behind the same interface).
+    "qwen3-asr" → :class:`MlxQwen3AsrEngine` when the runtime resolves to
+                   MLX — explicit ``spec.runtime == "mlx"`` OR (default
+                   "auto") ``mlx_qwen3_asr`` importable (Apple-Silicon host
+                   running outside Docker)
+                   :class:`Qwen3AsrEngine` otherwise (transformers /
+                   qwen-asr, cross-platform — the Docker path).
+
+Both engines resolve weights through the persisted HF hub cache
+(``data/huggingface/hub``, warmed once by the setup wizard) and load
+offline — see ``app/voice/hf_cache``.
 
 Engine contract (:class:`AsrProvider`) — all audio is s16le mono 16 kHz:
 
@@ -83,9 +90,41 @@ class AsrProvider:
         """Drop buffered audio and reset (barge-in / stop)."""
         raise NotImplementedError
 
+    async def warm_up(self) -> None:
+        """Preload the model (no-op by default).
+
+        Called eagerly at voice-session start so the first utterance never
+        pays model-load latency; engines with lazy model caches override.
+        """
+        return
+
     def status(self) -> dict:
         """Readiness summary for the `ready` frame + logs."""
         raise NotImplementedError
+
+
+def _prefer_mlx_runtime(spec: Any) -> bool:
+    """Whether the MLX engine should serve this spec.
+
+    profiles.yml stays the source of truth: an explicit ``runtime`` value
+    (``mlx`` / ``transformers`` / ``qwen-asr``) is honored verbatim. The
+    default ``auto`` prefers the native MLX runtime exactly when the
+    package is importable (Apple-Silicon host; MLX has no Linux wheels, so
+    Docker deployments fall through to the transformers engine). The probe
+    is find_spec-only — never imports MLX.
+    """
+    runtime = str(getattr(spec, "runtime", None) or "").strip().lower()
+    if runtime == "mlx":
+        return True
+    if runtime in ("transformers", "qwen-asr", "qwen_asr", "torch", "cpu"):
+        return False
+    # "auto" / unset: native runtime when present.
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("mlx_qwen3_asr") is not None
+    except Exception:  # noqa: BLE001 — broken parent package etc.
+        return False
 
 
 def create_asr_engine(spec: Any) -> AsrProvider:
@@ -96,11 +135,16 @@ def create_asr_engine(spec: Any) -> AsrProvider:
     ``model``, ``revision`` and optionally ``runtime`` are read.
     """
     provider = str(getattr(spec, "provider", "") or "").strip().lower()
+    from app.config import settings
+
+    if settings.VOICE_RUNTIME_URL:
+        from app.voice.remote import RemoteAsrEngine
+
+        return RemoteAsrEngine(spec)
     if provider == "qwen3-asr":
-        # Platform-specific accelerator hint (task §12): the MLX build is
-        # only selected when profiles.yml explicitly requests it.
-        runtime = str(getattr(spec, "runtime", None) or "").strip().lower()
-        if runtime == "mlx":
+        # Platform-specific accelerator (task §12): explicit runtime hint
+        # from profiles.yml, else auto-detect the native MLX build.
+        if _prefer_mlx_runtime(spec):
             from app.voice.asr.mlx_engine import MlxQwen3AsrEngine
 
             return MlxQwen3AsrEngine(spec)

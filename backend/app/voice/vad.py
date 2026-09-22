@@ -35,6 +35,11 @@ VAD_FRAME_SAMPLES = 480  # @16 kHz
 VAD_FRAME_BYTES = 960  # s16le mono
 
 
+def _is_digital_silence(frame: bytes) -> bool:
+    """True when the frame is all zeros (exact digital silence)."""
+    return not any(frame)
+
+
 # ── Provider interface ───────────────────────────────────────────────
 
 
@@ -80,6 +85,12 @@ class WebRtcVad(VADProvider):
             f"WebRtcVad requires exactly 30ms frames @16kHz "
             f"({VAD_FRAME_BYTES} bytes), got {len(frame)}"
         )
+        # webrtcvad classifies pure digital-zero frames as SPEECH (a known
+        # quirk of its AGC/NS preprocessing). Exact digital silence is
+        # silence — override it so quiet mics / AEC-cleaned gaps actually
+        # END utterances (and synthetic test silence behaves sanely).
+        if _is_digital_silence(frame):
+            return False
         try:
             return self._vad.is_speech(frame, sample_rate=16000)
         except Exception:
@@ -157,6 +168,11 @@ class EnergyVad(VADProvider):
             "margin_db": self._margin,
         }
 
+    @property
+    def raw_speech(self) -> bool:
+        """Instantaneous decision without hangover, used for onset gating."""
+        return self._last_raw
+
 
 def create_vad() -> VADProvider:
     """webrtcvad if importable, else the numpy EnergyVad."""
@@ -194,7 +210,7 @@ class UtteranceTracker:
         self,
         vad: VADProvider,
         silence_ms: Optional[int] = None,
-        start_frames: int = 3,
+        start_frames: Optional[int] = None,
         max_utterance_ms: Optional[int] = None,
     ):
         self._vad = vad
@@ -203,6 +219,8 @@ class UtteranceTracker:
             (settings.VOICE_VAD_SILENCE_MS if silence_ms is None else silence_ms)
             // VAD_FRAME_MS,
         )
+        if start_frames is None:
+            start_frames = max(1, settings.VOICE_VAD_START_MS // VAD_FRAME_MS)
         self._start_frames = max(1, start_frames)
         if max_utterance_ms is None:
             max_utterance_ms = settings.VOICE_MAX_UTTERANCE_SEC * 1000
@@ -228,11 +246,15 @@ class UtteranceTracker:
         events: List[str] = []
         speech = bool(self._vad.is_speech(frame))
         self._in_speech = speech
+        # Do not count EnergyVad's synthetic hangover toward onset. One
+        # keyboard click plus two hangover frames used to satisfy the old
+        # three-frame threshold and open a phantom utterance.
+        onset_speech = bool(getattr(self._vad, "raw_speech", speech))
 
         if self._utterance_active:
             self._utterance_frames += 1
 
-        if speech:
+        if onset_speech if not self._utterance_active else speech:
             self._speech_run += 1
             self._silence_run = 0
         else:
@@ -287,6 +309,19 @@ class UtteranceTracker:
             self._silence_run = 0
             return True
         return False
+
+    def reset(self) -> None:
+        """Forget all detection state and any partial input frame.
+
+        Used after a finalized utterance so mic frames queued during ASR
+        cannot inherit onset/hangover state from the previous utterance.
+        """
+        self._in_speech = False
+        self._utterance_active = False
+        self._speech_run = 0
+        self._silence_run = 0
+        self._utterance_frames = 0
+        self._leftover = b""
 
     def status(self) -> dict:
         return {

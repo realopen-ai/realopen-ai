@@ -69,6 +69,12 @@ profiles:
         description: "Qwen3 4B — reused for background memory extraction / audit"
         size: "2.5 GB"
 
+      - id: qwen3.5:0.8b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 0.8B — low-latency voice assistant model"
+        size: "~0.8 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -97,6 +103,12 @@ profiles:
         role: default_utility
         description: "Qwen3 4B — lighter model for background memory extraction / audit"
         size: "2.5 GB"
+
+      - id: qwen3.5:2b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B — responsive voice assistant model"
+        size: "1.9 GB"
 
       - id: moondream:1.8b
         type: vision
@@ -129,6 +141,12 @@ profiles:
         description: "Qwen3 4B — lighter model for background memory extraction / audit"
         size: "2.5 GB"
 
+      - id: qwen3.5:2b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B — responsive voice assistant model"
+        size: "1.9 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -157,6 +175,12 @@ profiles:
         role: default_utility
         description: "Qwen3 4B — lighter model for background memory extraction / audit"
         size: "2.5 GB"
+
+      - id: qwen3.5:2b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B — responsive voice assistant model"
+        size: "1.9 GB"
 
       - id: llava:7b
         type: vision
@@ -193,6 +217,12 @@ profiles:
         description: "Qwen3 8B — lighter model for background memory extraction / audit"
         size: "5.2 GB"
 
+      - id: qwen3.5:2b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B — responsive voice assistant model"
+        size: "1.9 GB"
+
       - id: llava:13b
         type: vision
         role: default_vision
@@ -227,6 +257,12 @@ profiles:
         role: default_utility
         description: "Qwen3 8B — lighter model for background memory extraction / audit"
         size: "5.2 GB"
+
+      - id: qwen3.5:2b-q4_K_M
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B — responsive voice assistant model"
+        size: "1.9 GB"
 
       - id: llava:34b
         type: vision
@@ -265,6 +301,12 @@ profiles:
         description: "Qwen3.5 4B MLX — reused for background memory extraction / audit"
         size: "2.5 GB"
 
+      - id: qwen3.5:0.8b-nvfp4
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 0.8B NVFP4 — low-latency voice model for Apple Silicon"
+        size: "1.0 GB"
+
       - id: moondream:1.8b
         type: vision
         role: default_vision
@@ -292,6 +334,12 @@ profiles:
         type: chat
         role: default_utility
         description: "Qwen3.5 4B MLX — reused for background memory extraction / audit"
+        size: "2.5 GB"
+
+      - id: qwen3.5:2b-nvfp4
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B NVFP4 — responsive voice model for Apple Silicon"
         size: "2.5 GB"
 
       - id: moondream:1.8b
@@ -322,6 +370,12 @@ profiles:
         role: default_utility
         description: "Qwen3 8B — lighter model for background memory extraction / audit"
         size: "5.2 GB"
+
+      - id: qwen3.5:2b-nvfp4
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B NVFP4 — responsive voice model for Apple Silicon"
+        size: "2.5 GB"
 
       - id: llava:13b
         type: vision
@@ -358,6 +412,12 @@ profiles:
         description: "Qwen3 9B — lighter model for background memory extraction / audit"
         size: "5.2 GB"
 
+      - id: qwen3.5:2b-nvfp4
+        type: chat
+        role: role_voice
+        description: "Qwen3.5 2B NVFP4 — responsive voice model for Apple Silicon"
+        size: "2.5 GB"
+
       - id: llava:34b
         type: vision
         role: default_vision
@@ -389,6 +449,7 @@ voice:
     provider: qwen3-asr
     model: Qwen/Qwen3-ASR-0.6B
     revision: main
+    language: English
     type: asr
     role: default_asr
     description: "Qwen3-ASR 0.6B — streaming speech recognition (cross-platform)"

@@ -155,7 +155,11 @@ async def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
     return tools
 
 
-async def _build_system_prompt(tool_names: Set[str]) -> str:
+async def _build_system_prompt(
+    tool_names: Set[str],
+    interaction_mode: str = "text",
+    interaction_instructions: str = "",
+) -> str:
     """Build a compact system prompt with only the selected tools.
 
     Async because some tools have dynamic descriptions that query the DB.
@@ -175,7 +179,12 @@ async def _build_system_prompt(tool_names: Set[str]) -> str:
             lines.append(f"- **{tool.name}**: {desc}")
     schema_text = "\n".join(lines) if lines else "(no tools available)"
 
-    return format_prompt("agent_system", tool_schemas=schema_text)
+    prompt = format_prompt("agent_system", tool_schemas=schema_text)
+    if interaction_mode == "voice":
+        prompt += "\n\n" + format_prompt("voice_mode")
+        if interaction_instructions.strip():
+            prompt += "\n\nVoice persona:\n" + interaction_instructions.strip()
+    return prompt
 
 
 # ── Tool parsing (multi-format) ──
@@ -417,6 +426,10 @@ async def run_agent_stream(
     conversation_id: Optional[str] = None,
     on_tool_call_start=None,
     on_tool_call_update=None,
+    think: Optional[bool] = None,
+    max_output_tokens: Optional[int] = None,
+    interaction_mode: str = "text",
+    interaction_instructions: str = "",
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
@@ -439,7 +452,9 @@ async def run_agent_stream(
     # This can halve per-turn latency on small models where the system
     # prompt is ~1-2k tokens — without this, every turn re-processes the
     # full prompt from scratch because the datetime changed.
-    system_prompt = await _build_system_prompt(selected_tools)
+    system_prompt = await _build_system_prompt(
+        selected_tools, interaction_mode, interaction_instructions
+    )
 
     # Build the list of dynamic context messages (appended after convo).
     context_messages: List[Dict[str, Any]] = []
@@ -648,11 +663,17 @@ async def run_agent_stream(
                 providers.provider_of(resolved_model),
                 resolved_model,
             )
+            latency_options: Dict[str, Any] = {}
+            if think is not None:
+                latency_options["think"] = think
+            if max_output_tokens is not None:
+                latency_options["options"] = {"num_predict": max_output_tokens}
             async for chunk in providers.stream_chat(
                 resolved_model,
                 ollama_messages,
                 tools=ollama_tools if use_native_tools else None,
                 timeout=1200.0,
+                **latency_options,
             ):
                 # Thinking tokens
                 thinking = chunk.get("thinking", "")
