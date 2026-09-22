@@ -84,6 +84,16 @@ const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 
+const activeControllers = new Set<AbortController>();
+
+/** Stop user-visible text generation without treating it as a timeout. */
+export function stopActiveStream(): void {
+  for (const controller of activeControllers) {
+    controller.abort("user_stop");
+  }
+  activeControllers.clear();
+}
+
 /**
  * Stream chat via the JSON endpoint.
  */
@@ -98,6 +108,7 @@ export async function streamChat(
   },
 ): Promise<void> {
   const controller = new AbortController();
+  activeControllers.add(controller);
   // Safety net: absolute maximum time for the entire request
   const maxTimeoutId = setTimeout(
     () => controller.abort(),
@@ -159,7 +170,9 @@ export async function streamChat(
     await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChat complete");
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (controller.signal.reason === "user_stop") {
+      callbacks.onDone();
+    } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
         "Request timed out. The AI may be loading - please try again.",
       );
@@ -171,6 +184,7 @@ export async function streamChat(
   } finally {
     clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
+    activeControllers.delete(controller);
   }
 }
 
@@ -192,6 +206,7 @@ export async function streamChatWithFiles(
   },
 ): Promise<void> {
   const controller = new AbortController();
+  activeControllers.add(controller);
   const maxTimeoutId = setTimeout(
     () => controller.abort(),
     STREAM_MAX_TIMEOUT_MS,
@@ -258,7 +273,9 @@ export async function streamChatWithFiles(
     await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChatWithFiles complete");
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (controller.signal.reason === "user_stop") {
+      callbacks.onDone();
+    } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
         "Request timed out. The AI may be loading - please try again.",
       );
@@ -270,6 +287,7 @@ export async function streamChatWithFiles(
   } finally {
     clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
+    activeControllers.delete(controller);
   }
 }
 
@@ -317,214 +335,12 @@ async function parseSSEStream(
 
       try {
         const parsed = JSON.parse(data);
-        const eventType = parsed.event;
         eventCount++;
 
-        // ── Message token ──
-        if (eventType === "message" && parsed.message?.content) {
-          callbacks.onToken(parsed.message.content);
-        }
-
-        // ── Thinking start ──
-        if (eventType === "thinking_start") {
-          log("   🧠 thinking_start event received");
-          callbacks.onThinkingStart();
-        }
-
-        // ── Thinking token ──
-        if (eventType === "thinking" && parsed.thinking) {
-          callbacks.onThinkingToken(parsed.thinking);
-        }
-
-        // ── Thinking done ──
-        if (eventType === "thinking_done") {
-          const dur = parsed.thinkingDuration;
-          log(`   🧠 thinking_done event received  duration=${dur}s`);
-          if (dur != null) {
-            callbacks.onThinkingDone(dur);
-          }
-        }
-
-        // ── Generation done (metadata for DB persistence) ──
-        if (eventType === "generation_done") {
-          log(
-            `   ⏱️ generation_done event  thinkingDuration=${parsed.thinkingDuration}  generationDuration=${parsed.generationDuration}`,
-          );
-          callbacks.onGenerationDone({
-            thinkingDuration: parsed.thinkingDuration ?? undefined,
-            generationDuration: parsed.generationDuration ?? 0,
-          });
-        }
-
-        // ── Memory extraction start ──
-        if (eventType === "memory_extraction_start") {
-          log("   🧠 memory_extraction_start event received");
-          callbacks.onMemoryExtractionStart?.();
-        }
-
-        // ── Memory extraction done ──
-        if (eventType === "memory_extraction_done") {
-          const count = parsed.count ?? 0;
-          const ran = parsed.ran ?? true;
-          const pending = parsed.pending ?? false;
-          log(
-            `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}  pending=${pending}`,
-          );
-          callbacks.onMemoryExtractionDone?.({ count, ran, pending });
-        }
-
-        // ── Conversation auto-title (LLM-generated from the first message) ──
-        if (eventType === "conversation_title" && parsed.title) {
-          log(`   🏷️ conversation_title event received  title=${parsed.title}`);
-          callbacks.onConversationTitle?.(parsed.title as string);
-        }
-
-        // ── RAG sources (agent's rag_search tool returned chunks) ──
-        if (eventType === "rag_sources" && parsed.sources) {
-          const sources = parsed.sources as RetrievedSourceDTO[];
-          const tcId = parsed.tool_call_id as string | undefined;
-          log(
-            `   🔎 rag_sources event received  sources=${sources.length}  tool_call_id=${tcId ?? "(none)"}`,
-          );
-          if (callbacks.onRagSources) {
-            callbacks.onRagSources(sources, tcId ?? "");
-          }
-        }
-
-        // ── Deliverables (reports, presentations) ──
-        if (eventType === "deliverables" && parsed.deliverables) {
-          const deliverables = parsed.deliverables as Array<{
-            type: string;
-            format: string;
-            filename: string;
-            file_path: string;
-            download_url: string;
-            report_id?: string;
-            created_at?: number;
-          }>;
-          const tcId = parsed.tool_call_id as string | undefined;
-          log(
-            `   📦 deliverables event received  count=${deliverables.length}  tool_call_id=${tcId ?? "(none)"}`,
-          );
-          if (callbacks.onDeliverables) {
-            callbacks.onDeliverables(deliverables, tcId ?? "");
-          }
-        }
-
-        // ── Document digestion progress (chat-upload docs) ──
-        if (eventType === "document_digest_progress") {
-          log(
-            `   📄 document_digest_progress  stage=${parsed.stage}  percent=${parsed.percent}  file=${parsed.filename}`,
-          );
-          callbacks.onDocumentDigestProgress?.({
-            stage: parsed.stage,
-            percent: parsed.percent,
-            details: parsed.details,
-            filename: parsed.filename,
-            document_id: parsed.document_id,
-            total_chunks: parsed.total_chunks,
-            total_images: parsed.total_images,
-          });
-        }
-
-        if (eventType === "document_digest_done") {
-          log(
-            `   📄✅ document_digest_done  file=${parsed.filename}  chunks=${parsed.total_chunks}`,
-          );
-          callbacks.onDocumentDigestDone?.({
-            filename: parsed.filename,
-            document_id: parsed.document_id,
-            total_chunks: parsed.total_chunks,
-            total_images: parsed.total_images,
-          });
-        }
-
-        if (eventType === "document_digest_error") {
-          log(
-            `   📄❌ document_digest_error  file=${parsed.filename}  error=${parsed.error}`,
-          );
-          callbacks.onDocumentDigestError?.({
-            filename: parsed.filename,
-            error: parsed.error,
-          });
-        }
-
-        // ── Tool call event ──
-        if (eventType === "tool_call" && parsed.tool_call) {
-          const tc = parsed.tool_call;
-          const tcId = tc.id ?? `tc-${Date.now()}`;
-
-          if (tc.status === "running") {
-            log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
-            // Build the full ToolCallResult and start a new tool_call block.
-            // The backend-provided ID is used directly (no frontend remapping)
-            // so subsequent updates and rag_sources events can match by ID.
-            callbacks.onToolCallStart({
-              id: tcId,
-              type: tc.type,
-              status: "running",
-              title: tc.title ?? tc.type,
-              startedAt: Date.now(),
-              query: tc.query,
-              language: tc.language,
-              code: tc.code,
-              imageDescription: tc.imageDescription,
-              webResults: tc.webResults,
-              genResults: tc.genResults,
-              output: tc.output,
-              exitCode: tc.exitCode,
-            });
-            // If the backend already sent results in the start event, mark as completed
-            if (tc.webResults && tc.webResults.length > 0) {
-              callbacks.onToolCallUpdate(tcId, {
-                status: "completed",
-                completedAt: Date.now(),
-                webResults: tc.webResults,
-              });
-            }
-            // Similarly for genResults
-            if (tc.genResults && tc.genResults.length > 0) {
-              callbacks.onToolCallUpdate(tcId, {
-                status: "completed",
-                completedAt: Date.now(),
-                genResults: tc.genResults,
-              });
-            }
-          } else if (tc.status === "completed" || tc.status === "error") {
-            log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
-
-            const updates: Partial<ToolCallResult> = {
-              status: tc.status,
-            };
-            if (tc.completedAt) updates.completedAt = tc.completedAt;
-            if (tc.webResults) updates.webResults = tc.webResults;
-            if (tc.genResults) updates.genResults = tc.genResults;
-            if (tc.output) updates.output = tc.output;
-            if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
-            if (tc.imageDescription)
-              updates.imageDescription = tc.imageDescription;
-            if (tc.error) updates.error = tc.error;
-
-            callbacks.onToolCallUpdate(tcId, updates);
-          }
-        }
-
-        // ── Done event ──
-        if (eventType === "done") {
-          log("   SSE done event received");
-          callbacks.onDone();
-          return;
-        }
-
-        // ── Error event ──
-        if (eventType === "error" && parsed.error) {
-          dbgError(`   ❌ SSE error event: ${parsed.error}`);
-          callbacks.onError(
-            typeof parsed.error === "string"
-              ? parsed.error
-              : (parsed.error.message ?? "Unknown error"),
-          );
-        }
+        // Dispatch the parsed event to the callbacks. Returns true when
+        // the event terminates the stream ("done").
+        const terminated = dispatchAgentEvent(parsed, callbacks);
+        if (terminated) return;
       } catch {
         /* skip malformed JSON */
       }
@@ -534,6 +350,236 @@ async function parseSSEStream(
   // If we reach here, stream ended without [DONE]
   log("   SSE stream ended without [DONE] — calling onDone() manually");
   callbacks.onDone();
+}
+
+/**
+ * Dispatch ONE parsed agent event to the stream callbacks.
+ *
+ * This is the single source of truth for the backend agent-event format:
+ *   message / thinking_start / thinking / thinking_done /
+ *   generation_done / memory_extraction_start / memory_extraction_done /
+ *   conversation_title / rag_sources / deliverables /
+ *   document_digest_progress / document_digest_done /
+ *   document_digest_error / tool_call / done / error.
+ *
+ * It is used by BOTH transport layers:
+ *   • the SSE /api/chat/stream parser above (text chat), and
+ *   • the voice WebSocket client, whose `agent_event` frames carry the
+ *     exact same event payloads (see voice/useVoiceSession.ts).
+ *
+ * @returns true if the event terminates the generation ("done").
+ */
+export function dispatchAgentEvent(
+  parsed: unknown,
+  callbacks: StreamCallbacks,
+): boolean {
+  const p = parsed as Record<string, any>;
+  const eventType = p.event;
+
+  // ── Message token ──
+  if (eventType === "message" && p.message?.content) {
+    callbacks.onToken(p.message.content);
+  }
+
+  // ── Thinking start ──
+  if (eventType === "thinking_start") {
+    log("   🧠 thinking_start event received");
+    callbacks.onThinkingStart();
+  }
+
+  // ── Thinking token ──
+  if (eventType === "thinking" && p.thinking) {
+    callbacks.onThinkingToken(p.thinking);
+  }
+
+  // ── Thinking done ──
+  if (eventType === "thinking_done") {
+    const dur = p.thinkingDuration;
+    log(`   🧠 thinking_done event received  duration=${dur}s`);
+    if (dur != null) {
+      callbacks.onThinkingDone(dur);
+    }
+  }
+
+  // ── Generation done (metadata for DB persistence) ──
+  if (eventType === "generation_done") {
+    log(
+      `   ⏱️ generation_done event  thinkingDuration=${p.thinkingDuration}  generationDuration=${p.generationDuration}`,
+    );
+    callbacks.onGenerationDone({
+      thinkingDuration: p.thinkingDuration ?? undefined,
+      generationDuration: p.generationDuration ?? 0,
+    });
+  }
+
+  // ── Memory extraction start ──
+  if (eventType === "memory_extraction_start") {
+    log("   🧠 memory_extraction_start event received");
+    callbacks.onMemoryExtractionStart?.();
+  }
+
+  // ── Memory extraction done ──
+  if (eventType === "memory_extraction_done") {
+    const count = p.count ?? 0;
+    const ran = p.ran ?? true;
+    const pending = p.pending ?? false;
+    log(
+      `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}  pending=${pending}`,
+    );
+    callbacks.onMemoryExtractionDone?.({ count, ran, pending });
+  }
+
+  // ── Conversation auto-title (LLM-generated from the first message) ──
+  if (eventType === "conversation_title" && p.title) {
+    log(`   🏷️ conversation_title event received  title=${p.title}`);
+    callbacks.onConversationTitle?.(p.title as string);
+  }
+
+  // ── RAG sources (agent's rag_search tool returned chunks) ──
+  if (eventType === "rag_sources" && p.sources) {
+    const sources = p.sources as RetrievedSourceDTO[];
+    const tcId = p.tool_call_id as string | undefined;
+    log(
+      `   🔎 rag_sources event received  sources=${sources.length}  tool_call_id=${tcId ?? "(none)"}`,
+    );
+    if (callbacks.onRagSources) {
+      callbacks.onRagSources(sources, tcId ?? "");
+    }
+  }
+
+  // ── Deliverables (reports, presentations) ──
+  if (eventType === "deliverables" && p.deliverables) {
+    const deliverables = p.deliverables as Array<{
+      type: string;
+      format: string;
+      filename: string;
+      file_path: string;
+      download_url: string;
+      report_id?: string;
+      created_at?: number;
+    }>;
+    const tcId = p.tool_call_id as string | undefined;
+    log(
+      `   📦 deliverables event received  count=${deliverables.length}  tool_call_id=${tcId ?? "(none)"}`,
+    );
+    if (callbacks.onDeliverables) {
+      callbacks.onDeliverables(deliverables, tcId ?? "");
+    }
+  }
+
+  // ── Document digestion progress (chat-upload docs) ──
+  if (eventType === "document_digest_progress") {
+    log(
+      `   📄 document_digest_progress  stage=${p.stage}  percent=${p.percent}  file=${p.filename}`,
+    );
+    callbacks.onDocumentDigestProgress?.({
+      stage: p.stage,
+      percent: p.percent,
+      details: p.details,
+      filename: p.filename,
+      document_id: p.document_id,
+      total_chunks: p.total_chunks,
+      total_images: p.total_images,
+    });
+  }
+
+  if (eventType === "document_digest_done") {
+    log(
+      `   📄✅ document_digest_done  file=${p.filename}  chunks=${p.total_chunks}`,
+    );
+    callbacks.onDocumentDigestDone?.({
+      filename: p.filename,
+      document_id: p.document_id,
+      total_chunks: p.total_chunks,
+      total_images: p.total_images,
+    });
+  }
+
+  if (eventType === "document_digest_error") {
+    log(`   📄❌ document_digest_error  file=${p.filename}  error=${p.error}`);
+    callbacks.onDocumentDigestError?.({
+      filename: p.filename,
+      error: p.error,
+    });
+  }
+
+  // ── Tool call event ──
+  if (eventType === "tool_call" && p.tool_call) {
+    const tc = p.tool_call;
+    const tcId = tc.id ?? `tc-${Date.now()}`;
+
+    if (tc.status === "running") {
+      log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
+      // Build the full ToolCallResult and start a new tool_call block.
+      // The backend-provided ID is used directly (no frontend remapping)
+      // so subsequent updates and rag_sources events can match by ID.
+      callbacks.onToolCallStart({
+        id: tcId,
+        type: tc.type,
+        status: "running",
+        title: tc.title ?? tc.type,
+        startedAt: Date.now(),
+        query: tc.query,
+        language: tc.language,
+        code: tc.code,
+        imageDescription: tc.imageDescription,
+        webResults: tc.webResults,
+        genResults: tc.genResults,
+        output: tc.output,
+        exitCode: tc.exitCode,
+      });
+      // If the backend already sent results in the start event, mark as completed
+      if (tc.webResults && tc.webResults.length > 0) {
+        callbacks.onToolCallUpdate(tcId, {
+          status: "completed",
+          completedAt: Date.now(),
+          webResults: tc.webResults,
+        });
+      }
+      // Similarly for genResults
+      if (tc.genResults && tc.genResults.length > 0) {
+        callbacks.onToolCallUpdate(tcId, {
+          status: "completed",
+          completedAt: Date.now(),
+          genResults: tc.genResults,
+        });
+      }
+    } else if (tc.status === "completed" || tc.status === "error") {
+      log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
+
+      const updates: Partial<ToolCallResult> = {
+        status: tc.status,
+      };
+      if (tc.completedAt) updates.completedAt = tc.completedAt;
+      if (tc.webResults) updates.webResults = tc.webResults;
+      if (tc.genResults) updates.genResults = tc.genResults;
+      if (tc.output) updates.output = tc.output;
+      if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
+      if (tc.imageDescription) updates.imageDescription = tc.imageDescription;
+      if (tc.error) updates.error = tc.error;
+
+      callbacks.onToolCallUpdate(tcId, updates);
+    }
+  }
+
+  // ── Done event ──
+  if (eventType === "done") {
+    log("   done event received");
+    callbacks.onDone();
+    return true;
+  }
+
+  // ── Error event ──
+  if (eventType === "error" && p.error) {
+    dbgError(`   ❌ error event: ${p.error}`);
+    callbacks.onError(
+      typeof p.error === "string"
+        ? p.error
+        : (p.error.message ?? "Unknown error"),
+    );
+  }
+
+  return false;
 }
 
 // ─── Demo Mode ──────────────────────────────────────────────────

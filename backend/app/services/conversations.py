@@ -5,6 +5,7 @@ Handles CRUD operations for conversations and messages using
 SQLAlchemy async sessions.
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -13,6 +14,8 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message, Document
+
+logger = logging.getLogger(__name__)
 
 # Default title applied to freshly created conversations. The auto-titling
 # service (services/title_generator.py) replaces it with a short LLM-
@@ -160,6 +163,7 @@ async def add_message(
     blocks: Optional[list] = None,
     generation_duration: Optional[int] = None,
     deliverables: Optional[list] = None,
+    modality: Optional[str] = None,
 ) -> Message:
     """Add a message to a conversation.
 
@@ -171,6 +175,10 @@ async def add_message(
     `deliverables` is an optional array of file metadata for generated
     deliverables (reports, etc.) — persisted so the frontend can render
     download badges that survive page refresh.
+
+    `modality` marks the input/output source of the message — "text"
+    (default, NULL) or "voice". It is metadata only: voice messages are
+    normal messages everywhere else. See migration c4e8f2a1b6d3.
     """
     msg = Message(
         id=uuid.uuid4(),
@@ -186,6 +194,7 @@ async def add_message(
         blocks=blocks,
         generation_duration=generation_duration,
         deliverables=deliverables,
+        modality=modality,
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -210,6 +219,46 @@ async def get_messages(
         .limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def persist_message_standalone(
+    conv_id: uuid.UUID,
+    role: str,
+    content: str,
+    model: Optional[str] = None,
+    **kwargs,
+) -> Optional[uuid.UUID]:
+    """Persist a message using an independent DB session with explicit commit.
+
+    This is safe to call from inside a StreamingResponse generator or a
+    WebSocket session task because it creates its own session — it does not
+    depend on any request-scoped get_db() session.
+
+    Shared by the text-chat streaming endpoints (previously the private
+    ``_persist_message`` in app/api/chat.py) and the voice WebSocket session
+    (app/voice/session.py).
+
+    Returns the new message's ID on success, or None on failure.
+    """
+    from app.db.session import async_session_factory
+
+    try:
+        async with async_session_factory() as session:
+            msg = await add_message(
+                session, conv_id, role, content, model=model, **kwargs
+            )
+            await session.commit()
+        logger.debug(
+            "%s message committed to DB (conv_id=%s, content_len=%d, msg_id=%s)",
+            role,
+            conv_id,
+            len(content),
+            msg.id,
+        )
+        return msg.id
+    except Exception as e:
+        logger.error("Failed to persist %s message: %s", role, e)
+        return None
 
 
 async def save_document(
@@ -301,5 +350,10 @@ async def message_to_dict(msg: Message) -> dict:
         result["deliverables"] = msg.deliverables
     else:
         result["deliverables"] = None
+
+    # modality — "voice" for messages captured/spoken through the voice
+    # pipeline, NULL (omitted) for regular text messages.
+    if getattr(msg, "modality", None):
+        result["modality"] = msg.modality
 
     return result

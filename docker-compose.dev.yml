@@ -40,7 +40,7 @@ services:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    mem_limit: 1g
+    mem_limit: 4g
 
   # Frontend: Vite dev server with HMR
   frontend:

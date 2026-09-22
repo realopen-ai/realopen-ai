@@ -258,7 +258,7 @@ export function AiTab() {
         )}
 
         <div className="rounded-xl border border-border divide-y divide-border/60">
-          {tasks.map((slot) => {
+          {tasks.filter((slot) => slot.task !== "voice").map((slot) => {
             const label = t(`settings.ai.tasks.${slot.task}`);
             const error = taskErrors[slot.task];
             return (

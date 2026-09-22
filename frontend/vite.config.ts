@@ -33,6 +33,13 @@ export default defineConfig({
         target: "http://backend:8000",
         changeOrigin: true,
       },
+      // Voice WebSocket — the backend's /ws/voice endpoint (nginx already
+      // proxies /ws in production; this entry makes it work in Docker dev).
+      "/ws": {
+        target: "http://backend:8000",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

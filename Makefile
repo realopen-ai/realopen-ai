@@ -22,6 +22,10 @@ detect-hardware:
 startup:
 	@bash scripts/startup.sh
 
+.PHONY: voice-install
+voice-install:
+	@cd backend && poetry run python ../scripts/install-voice-models.py
+
 # ── Development mode (hot reload, debug ports exposed) ──
 .PHONY: dev
 dev: startup detect-hardware

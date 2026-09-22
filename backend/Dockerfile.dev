@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+ENV HF_HOME=/app/data/huggingface \
+    REALOPEN_DATA_DIR=/app/data \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
 # Runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl \
@@ -33,5 +38,6 @@ RUN mkdir -p /opt/optional
 
 EXPOSE 8000
 
-# Hot reload via uvicorn --reload
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"]
+# Hot reload via uvicorn --reload. Voice sessions use an application-level
+# heartbeat, so keep uvicorn's transport ping from expiring during inference.
+CMD ["sh", "-c", "alembic upgrade head && cd /app/app && PYTHONPATH=/app uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir . --ws-ping-interval 3600 --ws-ping-timeout 3600"]

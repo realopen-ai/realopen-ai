@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import {
   Send,
-  Loader2,
   Paperclip,
   Globe,
   ChevronDown,
@@ -12,10 +11,18 @@ import {
   X,
   Image as ImageIcon,
   FileText,
+  PhoneCall,
+  Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chatStore";
 import { t } from "@/store/settingsStore";
+import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 
 // ─── Slash Command Definitions ────────────────────────────────────
@@ -206,6 +213,8 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
 export function InputArea({
   onSend,
   isStreaming,
+  onStartVoice,
+  onStopResponse,
 }: {
   onSend: (
     message: string,
@@ -217,11 +226,26 @@ export function InputArea({
     },
   ) => void;
   isStreaming: boolean;
+  /** Open the call surface and immediately connect/start listening. */
+  onStartVoice: () => void;
+  /** Stop the current text or voice response, preserving partial output. */
+  onStopResponse: () => void;
 }) {
   const [input, setInput] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [attachments, setAttachments] = useState<AttachedFile[]>([]);
+
+  // ── Voice state (global store — one session per ChatArea) ──
+  const voiceState = useVoiceStore((s) => s.voiceState);
+  const readiness = useVoiceStore((s) => s.readiness);
+  const voiceSetupDisabled = readiness !== null && !readiness.ready;
+  const missingItems = readiness?.missing ?? [];
+  const voiceDisabledReason = voiceSetupDisabled
+    ? missingItems.length > 0
+      ? `${t("voice.button.setupRequired")} — ${missingItems.join(", ")}`
+      : t("voice.button.setupRequired")
+    : null;
   const models = useChatStore((s) => s.models);
   const selectedModel = useChatStore((s) => s.selectedModel);
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
@@ -436,6 +460,25 @@ export function InputArea({
           />
         )}
 
+        {voiceState === "inactive" && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                onClick={onStartVoice}
+                disabled={voiceSetupDisabled}
+                aria-label={voiceDisabledReason ?? t("voice.call.start")}
+                className="absolute -top-14 right-0 z-10 h-11 w-11 rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:scale-105 hover:bg-primary/90 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <PhoneCall className="h-4.5 w-4.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              {voiceDisabledReason ?? t("voice.call.start")}
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         {/* Input Container */}
         <div className="input-glow rounded-2xl border border-border bg-card transition-all">
           {/* Attachment Previews */}
@@ -513,20 +556,26 @@ export function InputArea({
             </Button>
 
             <Button
-              onClick={handleSend}
+              onClick={isStreaming ? onStopResponse : handleSend}
               disabled={
-                isStreaming || (!input.trim() && attachments.length === 0)
+                !isStreaming && !input.trim() && attachments.length === 0
               }
+              aria-label={
+                isStreaming ? t("input.stopResponse") : t("input.send")
+              }
+              title={isStreaming ? t("input.stopResponse") : t("input.send")}
               size="icon"
               className={cn(
                 "h-8 w-8 rounded-xl shrink-0 transition-all",
-                (input.trim() || attachments.length > 0) && !isStreaming
+                isStreaming
                   ? "bg-primary hover:bg-primary/90 text-primary-foreground"
-                  : "bg-secondary text-muted-foreground/40",
+                  : input.trim() || attachments.length > 0
+                    ? "bg-primary hover:bg-primary/90 text-primary-foreground"
+                    : "bg-secondary text-muted-foreground/40",
               )}
             >
               {isStreaming ? (
-                <Loader2 className="w-4.5 h-4.5 animate-spin" />
+                <Square className="w-3.5 h-3.5 fill-current" />
               ) : (
                 <Send className="w-4.5 h-4.5" />
               )}

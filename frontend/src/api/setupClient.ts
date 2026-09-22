@@ -62,9 +62,48 @@ export interface SetupModule {
   >;
 }
 
+/** One side (ASR or TTS) of the voice dependency summary returned by
+ *  GET /api/setup/status → `voice` (see backend setup.py /
+ *  voice_model_installer.voice_status_summary). */
+export interface VoiceSideStatus {
+  provider?: string | null;
+  model?: string | null;
+  revision?: string | null;
+  language?: string | null;
+  voice?: string | null;
+  description?: string | null;
+  size?: string | null;
+  configured?: boolean;
+  installed?: boolean;
+  valid?: boolean;
+  /** Why the model is not installed (when applicable). */
+  reason?: string | null;
+}
+
+/** One voice runtime pip package of the summary. */
+export interface VoiceRuntimeStatus {
+  id?: string;
+  display?: string;
+  installed?: boolean;
+}
+
+/** Voice dependency summary — `configured / installed / valid / ready`
+ * with per-side (asr/tts) and per-runtime-package detail. `asr`/`tts`
+ * are null when voice is not configured at all. */
+export interface VoiceSetupSummary {
+  configured?: boolean;
+  ready?: boolean;
+  asr?: VoiceSideStatus | null;
+  tts?: VoiceSideStatus | null;
+  runtime?: VoiceRuntimeStatus[];
+  /** Present only when the summary itself failed to build. */
+  error?: string;
+}
+
 export interface SetupStatus {
   setup_complete: boolean;
   profile: string | null;
+  voice?: VoiceSetupSummary | null;
 }
 
 export interface ApplySetupResponse {
@@ -92,6 +131,10 @@ export interface PullModelEvent {
   percent?: number;
   error?: string;
   reason?: string;
+  provider?: "ollama" | "qwen3-asr" | "pocket-tts" | "pip";
+  kind?: "ollama" | "voice_model" | "voice_runtime";
+  output?: string;
+  already_installed?: boolean;
 }
 
 // ─── API Functions ────────────────────────────────────────────────

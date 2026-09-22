@@ -90,6 +90,12 @@ class Message(Base):
     # created_at}. NULL when no deliverables were produced. See migration
     # f3c8d1e5b4a2.
     deliverables = Column(JSONB, nullable=True)
+    # Input/output modality of this message — "voice" for messages captured
+    # from the microphone / spoken through the voice pipeline; NULL (= "text")
+    # for all pre-existing rows. Metadata only: a voice message is a normal
+    # message everywhere else (same blocks, same search, same UI).
+    # See migration c4e8f2a1b6d3.
+    modality = Column(String(20), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

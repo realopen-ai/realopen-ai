@@ -128,6 +128,158 @@ def load_profiles(profiles_path: Optional[str] = None) -> Dict[str, ProfileConfi
     return profiles
 
 
+def _find_profiles_yaml() -> Optional[Path]:
+    """Locate profiles.yml using the same candidates as load_profiles()."""
+    candidates = [
+        Path("/app/profiles.yml"),  # Inside Docker container
+        Path(__file__).parent.parent.parent
+        / "profiles.yml",  # Dev: backend/../profiles.yml
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _load_raw_profiles_data() -> dict:
+    """Load profiles.yml as a RAW dict (including the top-level `voice:`
+    section that load_profiles() intentionally discards).
+
+    Returns {} when the file is missing or unparsable — callers treat that
+    as "voice not configured".
+    """
+    path = _find_profiles_yaml()
+    if path is None:
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else {}
+    except (yaml.YAMLError, OSError) as e:
+        logger.warning("Failed to parse profiles.yml for voice config: %s", e)
+        return {}
+
+
+# ─── Voice Model Config ───────────────────────────────────────────────
+
+
+class VoiceModelConfig:
+    """A single ASR or TTS model entry from the top-level `voice:` section
+    of profiles.yml (optionally overridden per hardware profile).
+
+    Mirrors ModelConfig (the Ollama model entry) but carries the extra
+    fields voice providers need (revision / language / voice / runtime).
+    """
+
+    def __init__(self, data: dict):
+        self.provider: str = data.get("provider", "")
+        self.model: str = data.get("model", "")
+        self.revision: Optional[str] = data.get("revision")
+        self.language: Optional[str] = data.get("language")
+        self.voice: Optional[str] = data.get("voice")
+        self.type: str = data.get("type", "")
+        self.role: str = data.get("role", "")
+        self.description: str = data.get("description", "")
+        self.size: str = data.get("size", "")
+        self.runtime: Optional[str] = data.get("runtime")
+        # Any provider-specific extra fields (forwarded verbatim)
+        known = {
+            "provider",
+            "model",
+            "revision",
+            "language",
+            "voice",
+            "type",
+            "role",
+            "description",
+            "size",
+            "runtime",
+        }
+        self.extra: dict = {k: v for k, v in data.items() if k not in known}
+
+    def to_dict(self) -> dict:
+        d = {
+            "provider": self.provider,
+            "model": self.model,
+            "type": self.type,
+            "role": self.role,
+            "description": self.description,
+            "size": self.size,
+        }
+        for key in ("revision", "language", "voice", "runtime"):
+            value = getattr(self, key)
+            if value is not None:
+                d[key] = value
+        if self.extra:
+            d["extra"] = self.extra
+        return d
+
+
+class VoiceConfig:
+    """Resolved voice configuration (ASR + TTS) for one profile."""
+
+    def __init__(
+        self, asr: Optional[VoiceModelConfig], tts: Optional[VoiceModelConfig]
+    ):
+        self.asr = asr
+        self.tts = tts
+
+    @property
+    def configured(self) -> bool:
+        """True when BOTH providers are configured in profiles.yml."""
+        return bool(self.asr and self.asr.provider) and bool(
+            self.tts and self.tts.provider
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "asr": self.asr.to_dict() if self.asr else None,
+            "tts": self.tts.to_dict() if self.tts else None,
+        }
+
+
+def _merge_voice_model(
+    base: Optional[dict], override: Optional[dict]
+) -> Optional[dict]:
+    """Deep per-field merge of a voice model entry: profile value beats
+    top-level default. Returns None when neither is a dict."""
+    if not isinstance(base, dict) and not isinstance(override, dict):
+        return None
+    merged = dict(base) if isinstance(base, dict) else {}
+    if isinstance(override, dict):
+        for k, v in override.items():
+            if v is not None:
+                merged[k] = v
+    return merged
+
+
+def load_voice_config(profile_name: Optional[str] = None) -> VoiceConfig:
+    """Resolve the voice configuration from profiles.yml.
+
+    Resolution order (deep per-field, profile value beats default):
+      1. Top-level `voice:` defaults (asr / tts dicts)
+      2. `profiles.<name>.voice:` overrides for the given (or current)
+         hardware profile
+
+    Returns a VoiceConfig with asr/tts set to None when the corresponding
+    section is absent.
+    """
+    data = _load_raw_profiles_data()
+    voice_defaults = data.get("voice") or {}
+
+    profile_name = profile_name or settings.HARDWARE_PROFILE
+    profile_section = (data.get("profiles") or {}).get(profile_name) or {}
+    profile_voice = profile_section.get("voice") or {}
+
+    asr = _merge_voice_model(voice_defaults.get("asr"), profile_voice.get("asr"))
+    tts = _merge_voice_model(voice_defaults.get("tts"), profile_voice.get("tts"))
+
+    return VoiceConfig(
+        asr=VoiceModelConfig(asr) if asr else None,
+        tts=VoiceModelConfig(tts) if tts else None,
+    )
+
+
 # ─── Module Config ───────────────────────────────────────────────────
 
 
@@ -577,13 +729,76 @@ class Settings(BaseSettings):
     # Poll interval (seconds) for the background queue's idle check.
     MEMORY_BG_QUEUE_POLL: float = 0.25
 
-    # ── KV-cache-aware system prompt ────────────────────────────────────
+    # ── KV-cache-aware system prompt ────────────────────────────────────────
     # When true, the agent builds a STABLE system prefix (agent persona +
     # tool list + untrusted-context policy) and appends DYNAMIC content
     # (memories, RAG, cross-session, current datetime) as tail user-role
     # context messages. This lets Ollama/llama.cpp reuse their cached
     # prompt prefix across turns, halving per-turn latency on small models.
     KV_CACHE_AWARE_PROMPT: bool = True
+
+    # ── Voice chat (runtime/user behavior — model selection lives in ──
+    # profiles.yml's top-level `voice:` section, resolved via
+    # settings.get_voice_config(); see app/voice/).
+    # Master switch: when false the /ws/voice endpoint refuses sessions
+    # (text chat is unaffected).
+    VOICE_ENABLED: bool = True
+    # Optional host-native inference service. Docker uses this URL to reach
+    # MLX/Metal on Apple Silicon (or the native Torch backend on Linux/
+    # Windows) instead of running accelerator-blind inference in-container.
+    VOICE_RUNTIME_URL: str = ""
+    # Input (mic + far-end reference) sample rate. Protocol v1 fixes this
+    # at 16000 Hz mono PCM s16le.
+    VOICE_SAMPLE_RATE: int = 16000
+    # TTS output sample rate. Protocol v1 fixes this at 24000 Hz mono
+    # PCM s16le (0x03 frames).
+    VOICE_TTS_SAMPLE_RATE: int = 24000
+    # WebRTC VAD aggressiveness 0-3 (3 = most aggressive filtering).
+    VOICE_VAD_MODE: int = 3
+    # Sustained raw speech required before capture starts. This exceeds the
+    # fallback VAD's short hangover so a keyboard click cannot open a turn.
+    VOICE_VAD_START_MS: int = 240
+    # Silence (ms) after detected speech before an utterance is ended.
+    VOICE_VAD_SILENCE_MS: int = 1400
+    # Rolling mic pre-roll (ms) retained before the VAD trigger so the
+    # first syllables of a barge-in utterance are never lost.
+    VOICE_PREROLL_MS: int = 400
+    # AEC backend: "auto" (WebRTC when importable, else NLMS), "nlms",
+    # "webrtc", or "none" (pass-through — debugging only).
+    VOICE_AEC: str = "auto"
+    # Sentence chunker: minimum chars before a timeout flush may fire,
+    # maximum chars before an immediate flush, and the flush timeout.
+    VOICE_TTS_MIN_CHARS: int = 40
+    VOICE_TTS_MAX_CHARS: int = 280
+    VOICE_TTS_FLUSH_MS: int = 1500
+    # Hard cap on a single user utterance (seconds) — VAD force-ends.
+    VOICE_MAX_UTTERANCE_SEC: int = 30
+    # Idle timeout for a voice WebSocket session (seconds).
+    VOICE_SESSION_IDLE_SEC: int = 600
+    # Upper bound for one TTS model load (seconds). Local disk loads of
+    # validated assets finish well below this; a load that exceeds it is
+    # almost certainly a stuck download attempt (assets missing → the
+    # setup wizard should have materialized them) and surfaces as a clear
+    # recoverable TtsError instead of an infinite mid-turn hang.
+    VOICE_TTS_LOAD_TIMEOUT_SEC: int = 300
+    # Upper bound for one ASR model load (seconds) — same rationale as the
+    # TTS bound: warm-cache/local loads finish well below it; a load that
+    # exceeds it is a stuck network attempt and surfaces as a clear
+    # recoverable AsrError instead of an infinite mid-turn hang.
+    VOICE_ASR_LOAD_TIMEOUT_SEC: int = 300
+    # Eagerly warm up the ASR/TTS engines in the background right after
+    # the voice session starts (mic click), so first-utterance/first-reply
+    # latency is model-load-free and load failures surface immediately
+    # instead of mid-turn. Models were installed by the setup wizard, so
+    # these loads are disk-bound, not network-bound.
+    VOICE_EAGER_WARMUP: bool = True
+    # ASR compute dtype: "auto" (default — bfloat16 on CPU, float16 when a
+    # CUDA device is visible; the official qwen-asr runtime handles both),
+    # or an explicit "bfloat16" | "float16" | "float32". fp32 doubles the
+    # resident size (≈1.5 GB → 3 GB for Qwen3-ASR-0.6B) and starves small
+    # machines — the cause of the original "app hangs while loading
+    # weights" bug on low-RAM hosts.
+    VOICE_ASR_DTYPE: str = "auto"
 
     model_config = {
         "env_file": ".env",
@@ -597,6 +812,10 @@ class Settings(BaseSettings):
     _modules: Optional[Dict[str, ModuleConfig]] = PrivateAttr(default=None)
     _enabled_modules_set: Optional[Set[str]] = PrivateAttr(default=None)
     _toggle_lock: threading.Lock = PrivateAttr()
+    # Resolved voice configs, keyed by profile name. Cleared wherever
+    # _profiles is cleared (profiles.yml reload points) — see
+    # app/api/setup.py::_apply_profile_and_modules.
+    _voice_config: Optional[Dict[str, VoiceConfig]] = PrivateAttr(default=None)
 
     def model_post_init(self, __context) -> None:
         """Initialize non-picklable private attributes after Pydantic init."""
@@ -607,6 +826,24 @@ class Settings(BaseSettings):
         if self._profiles is None:
             self._profiles = load_profiles()
         return self._profiles
+
+    def get_voice_config(self, profile: Optional[str] = None) -> VoiceConfig:
+        """Resolve the ASR + TTS voice configuration from profiles.yml.
+
+        Uses the top-level `voice:` defaults merged with the optional
+        `profiles.<name>.voice:` overrides for the given profile (defaults
+        to the current HARDWARE_PROFILE). Cached per profile name with the
+        same invalidation pattern as get_profiles() — the cache is cleared
+        wherever ``settings._profiles`` is cleared.
+        """
+        if self._voice_config is None:
+            self._voice_config = {}
+        name = profile or self.HARDWARE_PROFILE
+        cached = self._voice_config.get(name)
+        if cached is None:
+            cached = load_voice_config(name)
+            self._voice_config[name] = cached
+        return cached
 
     def get_current_profile(self) -> ProfileConfig:
         """Get the ProfileConfig for the current HARDWARE_PROFILE.

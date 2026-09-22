@@ -75,6 +75,7 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - SEARXNG_BASE_URL=http://searxng:8080
       - REDIS_URL=redis://redis:6379/0
+      - VOICE_RUNTIME_URL=${VOICE_RUNTIME_URL:-http://host.docker.internal:8766}
       - ENABLED_MODULES=${ENABLED_MODULES:-assistant}
     depends_on:
       postgres:
@@ -88,8 +89,8 @@ services:
       - apt-cache:/var/cache/apt
       - apt-lists:/var/lib/apt/lists
     restart: unless-stopped
-    mem_limit: 512m
-    cpus: 1.0
+    mem_limit: 4g
+    cpus: 4.0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

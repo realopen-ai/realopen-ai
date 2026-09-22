@@ -762,3 +762,107 @@ async def update_watermark(
         conv.memory_watermark_message_id = message_id
         conv.updated_at = datetime.utcnow()
         await db.flush()
+
+
+# ---------------------------------------------------------------------------
+# Shared turn-completion helper (used by BOTH text chat and voice)
+# ---------------------------------------------------------------------------
+
+
+def _extract_log(msg: str, *args) -> None:
+    """Debug print for the extraction trigger helper."""
+    try:
+        formatted = msg % args if args else msg
+    except (TypeError, ValueError):
+        formatted = f"{msg} {args}"
+    print(f"[memory] {formatted}", flush=True)
+
+
+async def maybe_run_memory_extraction(
+    conv_id: uuid.UUID,
+    full_assistant_content: str,
+    request_messages: list,
+) -> tuple:
+    """Check the conversation watermark and enqueue memory extraction if due.
+
+    Returns (added_count, did_run, pending). When did_run is False, the
+    caller should not emit any extraction-related events.
+
+    Moved verbatim (logic unchanged) from the private
+    ``_maybe_run_memory_extraction`` in app/api/chat.py so the voice
+    WebSocket session can share the exact same post-turn behavior.
+
+    KV-CACHE DESIGN:
+    The watermark check (fast DB read) runs inline. The actual LLM
+    extraction is ENQUEUED to the background queue, which waits for the
+    chat stream to go idle before running — protecting the KV cache on
+    local 4-slot backends (llama.cpp). This means the SSE stream can
+    close immediately after [DONE] without waiting for extraction.
+
+    The returned ``pending`` flag is True when extraction was enqueued
+    but hasn't completed yet (fire-and-forget). The frontend can use this
+    to show a "memory update queued" indicator.
+    """
+    from app.services.background_queue import enqueue_extraction_job
+
+    interval = settings.MEMORY_EXTRACTION_INTERVAL
+    if interval <= 0:
+        return 0, False, False
+
+    try:
+        async with async_session_factory() as db:
+            new_messages, _watermark = await get_messages_since_watermark(
+                db, str(conv_id)
+            )
+            if len(new_messages) < interval:
+                _extract_log(
+                    "memory extraction skipped: %d new messages < interval %d",
+                    len(new_messages),
+                    interval,
+                )
+                return 0, False, False
+
+            # Build extraction context: last N request messages + the
+            # just-generated assistant response.
+            ctx_window = settings.MEMORY_EXTRACTION_CONTEXT_WINDOW
+            recent_request = (
+                request_messages[-(ctx_window - 1) :]
+                if len(request_messages) > (ctx_window - 1)
+                else request_messages
+            )
+            extraction_messages = list(recent_request) + [
+                {"role": "assistant", "content": full_assistant_content}
+            ]
+
+            # Get the latest message ID to use as the new watermark.
+            # new_messages is ordered ascending by created_at — last is newest.
+            latest_message_id = new_messages[-1].id
+
+            _extract_log(
+                "memory extraction DUE: %d new messages >= interval %d — "
+                "enqueuing with %d context messages",
+                len(new_messages),
+                interval,
+                len(extraction_messages),
+            )
+
+        # Advance the watermark IMMEDIATELY (before extraction runs) so
+        # that if the user sends another message while extraction is
+        # queued, we don't re-enqueue the same messages.
+        try:
+            async with async_session_factory() as db:
+                await update_watermark(db, str(conv_id), latest_message_id)
+                await db.commit()
+        except Exception as e:
+            _extract_log("failed to advance memory watermark: %s", e)
+
+        # Enqueue the extraction job (fire-and-forget). The background
+        # queue waits for the chat stream to go idle before running.
+        enqueue_extraction_job(str(conv_id), extraction_messages)
+
+        # Return pending=True since we don't have the count yet.
+        return 0, True, True
+
+    except Exception as e:
+        _extract_log("memory extraction helper failed: %s", e)
+        return 0, False, False

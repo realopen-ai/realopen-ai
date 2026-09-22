@@ -14,7 +14,14 @@ Profile commands:
     description      Print the profile description
     label            Print the human-readable profile label
     engine           Print the inference engine for the profile
-    validate         Check that profiles.yml is valid
+    validate         Check that profiles.yml is valid (includes the voice
+                     section when present)
+    voice-config     Print the merged voice (ASR/TTS) config for a profile
+                     as JSON (top-level `voice:` defaults merged with the
+                     optional `profiles.<name>.voice:` overrides)
+    voice-models     Print the voice model IDs for a profile (one per line,
+                     ASR first, then TTS)
+    voice-summary    Print a human-readable summary of the voice models
 
 Module commands (use "modules" as first arg):
     list             List all module names (one per line)
@@ -182,6 +189,34 @@ def load_modules(modules_path: str) -> dict:
     return parse_yaml_simple(text)
 
 
+VALID_ASR_PROVIDERS = {"qwen3-asr"}
+VALID_TTS_PROVIDERS = {"pocket-tts"}
+
+
+def merge_voice_config(data: dict, profile_name: str) -> dict:
+    """Merge the top-level `voice:` defaults with the optional per-profile
+    override `profiles.<name>.voice:` (shallow merge per side: asr / tts).
+
+    profiles.yml is the single source of truth for ASR/TTS selection — this
+    function is the host-side (stdlib-only) equivalent of the backend's
+    voice config resolver.
+    """
+    base = data.get("voice") or {}
+    if not isinstance(base, dict):
+        base = {}
+    profile = (data.get("profiles") or {}).get(profile_name) or {}
+    override = profile.get("voice") if isinstance(profile, dict) else None
+    if not isinstance(override, dict):
+        override = {}
+
+    merged = {}
+    for side in ("asr", "tts"):
+        side_cfg = dict(base.get(side) or {})
+        side_cfg.update(override.get(side) or {})
+        merged[side] = side_cfg
+    return merged
+
+
 def handle_profile_command(profile_name: str, command: str) -> None:
     """Handle profile-related commands."""
     script_dir = Path(__file__).parent
@@ -241,6 +276,52 @@ def handle_profile_command(profile_name: str, command: str) -> None:
         print(profile.get("engine", "ollama"))
         return
 
+    elif command == "voice-config":
+        # Merged voice (ASR/TTS) config for this profile as JSON.
+        # Empty JSON object when profiles.yml has no `voice:` section.
+        merged = merge_voice_config(data, profile_name)
+        print(json.dumps(merged, indent=2))
+        return
+
+    elif command == "voice-models":
+        # Voice model IDs, one per line (ASR first, then TTS).
+        merged = merge_voice_config(data, profile_name)
+        for side in ("asr", "tts"):
+            cfg = merged.get(side) or {}
+            if isinstance(cfg, dict) and cfg.get("model"):
+                print(cfg["model"])
+        return
+
+    elif command == "voice-summary":
+        # Human-readable summary (used by setup.sh).
+        merged = merge_voice_config(data, profile_name)
+        if not merged.get("asr") and not merged.get("tts"):
+            print("No voice models configured (no `voice:` section in profiles.yml)")
+            return
+        for side, label in (("asr", "ASR"), ("tts", "TTS")):
+            cfg = merged.get(side) or {}
+            if not cfg:
+                print(f"{label}: (not configured)")
+                continue
+            model = cfg.get("model", "?")
+            provider = cfg.get("provider", "?")
+            extra = cfg.get("revision") or cfg.get("language") or ""
+            voice = cfg.get("voice", "")
+            desc = cfg.get("description", "")
+            size = cfg.get("size", "")
+            line = f"{label}: {model}"
+            if extra:
+                line += f" @ {extra}"
+            if voice:
+                line += f" (voice: {voice})"
+            line += f"  [{provider}]"
+            print(line)
+            if desc:
+                print(f"       {desc}")
+            if size:
+                print(f"       approx. size: {size}")
+        return
+
     elif command == "validate":
         # Basic validation
         errors = []
@@ -280,6 +361,70 @@ def handle_profile_command(profile_name: str, command: str) -> None:
                         has_default = True
             if not has_default:
                 errors.append(f"Profile '{pname}': no model with role='default'")
+
+        # Check the voice section (when present) — provider IDs are
+        # capability strings; the *selection* itself comes from this file.
+        voice_base = data.get("voice")
+        if voice_base is not None:
+            if not isinstance(voice_base, dict):
+                errors.append("voice: section must be a mapping (asr/tts)")
+            else:
+                for side in ("asr", "tts"):
+                    side_cfg = voice_base.get(side)
+                    if side_cfg is None:
+                        errors.append(f"voice: missing '{side}' section")
+                        continue
+                    if not isinstance(side_cfg, dict):
+                        errors.append(f"voice.{side}: must be a mapping")
+                        continue
+                    if not side_cfg.get("model"):
+                        errors.append(f"voice.{side}: missing 'model'")
+                    if not side_cfg.get("type"):
+                        errors.append(f"voice.{side}: missing 'type'")
+                    if not side_cfg.get("role"):
+                        errors.append(f"voice.{side}: missing 'role'")
+                asr_cfg = voice_base.get("asr") or {}
+                tts_cfg = voice_base.get("tts") or {}
+                if isinstance(asr_cfg, dict) and asr_cfg.get("provider") not in VALID_ASR_PROVIDERS:
+                    errors.append(
+                        "voice.asr: unsupported provider "
+                        f"'{asr_cfg.get('provider')}'. Supported: "
+                        + ", ".join(sorted(VALID_ASR_PROVIDERS))
+                    )
+                if isinstance(tts_cfg, dict) and tts_cfg.get("provider") not in VALID_TTS_PROVIDERS:
+                    errors.append(
+                        "voice.tts: unsupported provider "
+                        f"'{tts_cfg.get('provider')}'. Supported: "
+                        + ", ".join(sorted(VALID_TTS_PROVIDERS))
+                    )
+
+            # Per-profile voice overrides must also be mappings with valid sides.
+            for pname, pdata in profiles.items():
+                if not isinstance(pdata, dict):
+                    continue
+                p_voice = pdata.get("voice")
+                if p_voice is None:
+                    continue
+                if not isinstance(p_voice, dict):
+                    errors.append(f"Profile '{pname}': voice override must be a mapping")
+                    continue
+                for side in ("asr", "tts"):
+                    side_cfg = p_voice.get(side)
+                    if side_cfg is None:
+                        continue
+                    if not isinstance(side_cfg, dict):
+                        errors.append(
+                            f"Profile '{pname}': voice.{side} override must be a mapping"
+                        )
+                    elif side_cfg.get("provider") is not None:
+                        valid = (
+                            VALID_ASR_PROVIDERS if side == "asr" else VALID_TTS_PROVIDERS
+                        )
+                        if side_cfg["provider"] not in valid:
+                            errors.append(
+                                f"Profile '{pname}': voice.{side} unsupported provider "
+                                f"'{side_cfg['provider']}'"
+                            )
 
         # Check all required profiles exist
         for required in VALID_PROFILES:

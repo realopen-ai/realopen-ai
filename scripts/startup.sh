@@ -23,6 +23,22 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export HF_HOME="${HF_HOME:-${PROJECT_ROOT}/data/huggingface}"
+
+# Create .env file if it doesn't exist
+create_env_file() {
+    local env_file="${PROJECT_ROOT}/.env"
+
+    if [[ -f "$env_file" ]]; then
+        ok ".env file already exists"
+        return 0
+    fi
+
+    cp "$PROJECT_ROOT/.env.example" "$env_file"
+    ok "Created .env from .env.example"
+}
+
 # Start Ollama Service
 start_ollama() {
     if curl -s http://localhost:11434/api/version &> /dev/null; then
@@ -51,8 +67,41 @@ start_ollama() {
     fi
 }
 
+start_voice_runtime() {
+    local url="http://127.0.0.1:8766"
+    local log_file="${PROJECT_ROOT}/data/voice-runtime.log"
+    local pid_file="${PROJECT_ROOT}/data/voice-runtime.pid"
+
+    if curl -fsS "${url}/health" &> /dev/null; then
+        ok "Native voice runtime is running"
+        return 0
+    fi
+    if ! command -v poetry &> /dev/null; then
+        warn "Poetry is unavailable; native voice runtime was not started"
+        return 0
+    fi
+
+    info "Starting native voice runtime (platform accelerator enabled)..."
+    (
+        cd "${PROJECT_ROOT}/backend"
+        nohup poetry run python ../scripts/voice-runtime-server.py \
+            > "${log_file}" 2>&1 &
+        echo $! > "${pid_file}"
+    )
+    for _ in {1..20}; do
+        if curl -fsS "${url}/health" &> /dev/null; then
+            ok "Native voice runtime is running"
+            return 0
+        fi
+        sleep 0.5
+    done
+    warn "Native voice runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
+}
+
 main() {
+    create_env_file
     start_ollama
+    start_voice_runtime
 }
 
 main "$@"

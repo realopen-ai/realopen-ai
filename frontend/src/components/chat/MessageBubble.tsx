@@ -21,6 +21,7 @@ import {
   AlertCircle,
   Download,
   FileType,
+  Mic,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +29,7 @@ import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
+import { t } from "@/store/settingsStore";
 import {
   FileViewerModal,
   type ViewerFormat,
@@ -1164,9 +1166,20 @@ export function MessageBubble({
               </span>
             </div>
           )}
-          {/* Image/document indicators */}
-          {(message.hasImage || message.hasDocument) && (
+          {/* Image/document indicators + voice-modality badge */}
+          {(message.hasImage ||
+            message.hasDocument ||
+            message.modality === "voice") && (
             <div className="flex gap-1.5 mb-1.5 justify-end">
+              {message.modality === "voice" && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-[10px] text-primary"
+                  title={t("voice.message.voiceSent")}
+                >
+                  <Mic className="w-2.5 h-2.5" />
+                  {t("voice.message.voiceSent")}
+                </span>
+              )}
               {message.hasImage && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-[10px] text-blue-400">
                   📷 {message.imageCount} image
@@ -1320,6 +1333,14 @@ export function MessageBubble({
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          {message.modality === "voice" && (
+            <span
+              className="ml-1.5 inline-flex items-center select-none text-muted-foreground/50"
+              title={t("voice.message.voiceSent")}
+            >
+              <Mic className="w-3 h-3" />
+            </span>
+          )}
           {responseTime && (
             <span className="text-[11px] text-muted-foreground/60 ml-1.5 select-none">
               {responseTime}

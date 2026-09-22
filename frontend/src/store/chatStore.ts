@@ -87,6 +87,7 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   model?: string;
+  modality?: "voice" | "text";
   /** Ordered rendering blocks for assistant messages. NULL/undefined for
    * user/system messages. Each block is rendered in order to show the
    * chronological flow of a multi-round agent turn. */
@@ -321,8 +322,11 @@ function dtoToConversation(dto: ConversationDTO): Conversation {
  *
  * The backend stores blocks as a JSONB array; we add frontend-generated
  * IDs for React keys (the DB uses array index as implicit order).
+ *
+ * Exported so the voice pipeline can convert the `assistant_message`
+ * WebSocket event (same DTO message shape) into final Message fields.
  */
-function dtoToMessage(dto: MessageDTO): Message {
+export function dtoToMessage(dto: MessageDTO): Message {
   // Convert backend blocks (raw JSON) to frontend MessageBlock[] with IDs.
   const blocks: MessageBlock[] | undefined = dto.blocks
     ? dto.blocks.map((b, i) => {
@@ -365,6 +369,7 @@ function dtoToMessage(dto: MessageDTO): Message {
     role: dto.role,
     content: dto.content,
     model: dto.model ?? undefined,
+    modality: (dto.modality as "voice" | "text" | undefined) ?? undefined,
     blocks,
     isStreaming: false,
     createdAt: dto.createdAt,

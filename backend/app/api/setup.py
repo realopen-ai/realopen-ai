@@ -6,12 +6,31 @@ Provides endpoints for the web-based setup wizard:
 - Get hardware info (from data/hardware.json written by host detection script)
 - Get available profiles and modules
 - Apply configuration (profile + modules + .env update)
-- Pull models with real-time SSE progress
+- Pull models with real-time SSE progress (Ollama models + voice runtime
+  packages + voice ASR/TTS models — one provider-aware sequential plan)
 - Mark setup as complete
 
 All persistent data files are stored in the data/ directory:
 - data/hardware.json   — hardware detection results
 - data/.setup-complete — marker file indicating setup is done
+- data/models/voice/   — ASR/TTS models + .manifest.json (voice installer)
+
+SSE event protocol (identical names for every provider; every event carries
+`provider` + `kind`):
+- pull_start_all {total}
+- pull_start  {model, module, provider, kind, index, total_models}
+- pull_progress {model, module, provider, kind, index, total_models,
+                 status, completed, total, percent}   (byte-accurate only)
+- pull_status  {model, module, provider, kind, index?, total_models?,
+                status, output}                       (indeterminate stages)
+- pull_done    {model, module, provider, kind, index, total_models,
+                already_installed?}
+- pull_error   {model, module, provider, kind, error, index?, total_models?}
+- pull_all_done {total}
+- setup_error  {error}
+
+`kind` is "ollama" | "voice_runtime" | "voice_model"; `provider` is
+"ollama" | "pip" | "qwen3-asr" | "pocket-tts" (from profiles.yml).
 """
 
 import json
@@ -26,6 +45,7 @@ from pydantic import BaseModel
 
 from app.agent.base import get_tool_registry
 from app.config import settings, VALID_PROFILES
+from app.services import voice_model_installer
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +156,9 @@ def _apply_profile_and_modules(profile: str, enabled_modules: List[str]) -> None
     # Clear cached profile data so it reloads with the new profile
     settings._profiles = None
     settings._modules = None
+    # Voice config cache is derived from profiles.yml too — clear it so
+    # the new profile's `voice:` overrides (if any) take effect.
+    settings._voice_config = None
 
     # Update enabled modules
     # Always include required modules
@@ -185,7 +208,18 @@ def _apply_module_tools_for_setup(enabled_modules: List[str]) -> None:
 
 
 def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
-    """Get the full list of models that need to be pulled for a given profile + modules."""
+    """Get the full list of models that need to be pulled for a given profile + modules.
+
+    The plan is provider-aware and sequential:
+      1. Ollama models (profile + optional modules)   — kind "ollama"
+      2. Voice runtime pip packages (missing only)     — kind "voice_runtime"
+      3. Voice ASR + TTS models (from profiles.yml)    — kind "voice_model"
+
+    Voice entries are appended when voice is enabled for the profile (see
+    voice_model_installer.voice_enabled_for_profile — with no `voice` module
+    defined in modules.yml, voice is a core capability and is always set up,
+    per the "setup wizard must download ASR/TTS" requirement).
+    """
     models = []
 
     # Required module models (from profiles.yml)
@@ -199,6 +233,8 @@ def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
                     "description": m.description,
                     "size": m.size,
                     "module": "assistant",
+                    "provider": "ollama",
+                    "kind": "ollama",
                 }
             )
 
@@ -215,8 +251,17 @@ def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
                         "description": m.description,
                         "size": m.size,
                         "module": module_name,
+                        "provider": "ollama",
+                        "kind": "ollama",
                     }
                 )
+
+    # Voice runtime packages (one per missing pip package) + voice models,
+    # resolved from the profiles.yml `voice:` section (single source of
+    # truth — changing profiles.yml changes what gets installed).
+    if voice_model_installer.voice_enabled_for_profile(profile, enabled_modules):
+        models.extend(voice_model_installer.voice_runtime_entries(profile))
+        models.extend(voice_model_installer.voice_model_entries(profile))
 
     return models
 
@@ -230,11 +275,31 @@ async def get_setup_status():
 
     Returns setup_complete=true if the data/.setup-complete marker exists,
     meaning the user has already gone through the setup wizard.
+
+    Also includes a "voice" summary (configured / installed / valid / ready)
+    so the wizard can show voice dependency readiness. Prefers the voice
+    core's models_store.voice_dependency_status() when present, falling
+    back to the installer's own summary — lazy imports keep setup working
+    even when the voice package isn't fully present.
     """
     is_complete = _is_setup_complete()
+
+    voice_summary = None
+    try:
+        from app.voice.models_store import voice_dependency_status  # noqa: PLC0415
+
+        voice_summary = voice_dependency_status()
+    except Exception:
+        try:
+            voice_summary = voice_model_installer.voice_status_summary()
+        except Exception as e:
+            logger.warning("voice status summary failed: %s", e)
+            voice_summary = {"configured": False, "ready": False, "error": str(e)}
+
     return {
         "setup_complete": is_complete,
         "profile": settings.HARDWARE_PROFILE if is_complete else None,
+        "voice": voice_summary,
     }
 
 
@@ -405,7 +470,18 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
 
     Streams SSE events with real-time progress for each model being pulled.
     This is the same streaming mechanism used by /modules/install but pulls
-    ALL models (profile + module) in sequence.
+    ALL models (profile + module + voice) in sequence.
+
+    Single sequential, provider-aware plan with consistent indexing:
+      1. Ollama models          (kind "ollama",      provider "ollama")
+      2. Voice runtime packages (kind "voice_runtime", provider "pip")
+      3. Voice ASR + TTS models (kind "voice_model",  provider from profiles.yml)
+
+    Event names are unchanged from the original Ollama-only stream so the
+    current frontend keeps working; every event now also carries
+    ``provider`` + ``kind``. Ollama reachability is only required when the
+    plan actually contains Ollama models (voice-only plans proceed even
+    with Ollama down).
     """
     # Validate profile
     if request.profile not in VALID_PROFILES:
@@ -417,28 +493,28 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
     if not models_to_pull:
         return {"status": "no_models", "message": "No models to pull"}
 
+    ollama_models = [m for m in models_to_pull if m.get("kind", "ollama") == "ollama"]
+    has_voice_entries = any(
+        m.get("kind") in ("voice_model", "voice_runtime") for m in models_to_pull
+    )
+
     async def _stream_pull():
-        """Stream Ollama pull progress as SSE events."""
+        """Stream model pull progress as SSE events (Ollama + voice)."""
         total_models = len(models_to_pull)
 
-        # First, check if Ollama is reachable
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/version")
-                if resp.status_code != 200:
-                    payload = {
-                        "event": "setup_error",
-                        "error": "Ollama is not reachable. Please start Ollama first.",
-                    }
-                    yield f"data: {json.dumps(payload)}\n\n"
-                    return
-        except Exception as e:
-            payload = {
-                "event": "setup_error",
-                "error": f"Cannot connect to Ollama: {e}",
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
-            return
+        # Probe Ollama once, but do not let an unrelated service prevent the
+        # independent voice packages/models later in the plan from installing.
+        ollama_error = None
+        if ollama_models:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/version")
+                    if resp.status_code != 200:
+                        ollama_error = (
+                            "Ollama is not reachable. Please start Ollama first."
+                        )
+            except Exception as e:
+                ollama_error = f"Cannot connect to Ollama: {e}"
 
         # Emit total count
         yield f"data: {json.dumps({'event': 'pull_start_all', 'total': total_models})}\n\n"
@@ -446,16 +522,40 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
         for i, model_info in enumerate(models_to_pull):
             model_id = model_info["id"]
             module_name = model_info["module"]
+            kind = model_info.get("kind", "ollama")
+            provider = model_info.get("provider", "ollama")
+
+            # Voice entries are installed by the provider-aware installer
+            # (delegated below, after the Ollama loop, to keep the original
+            # sequential order: ollama → voice runtime → voice models).
+            if kind != "ollama":
+                continue
 
             # Emit start event for this model
             payload = {
                 "event": "pull_start",
                 "model": model_id,
                 "module": module_name,
+                "provider": provider,
+                "kind": kind,
                 "index": i,
                 "total_models": total_models,
             }
             yield f"data: {json.dumps(payload)}\n\n"
+
+            if ollama_error:
+                payload = {
+                    "event": "pull_error",
+                    "model": model_id,
+                    "module": module_name,
+                    "provider": provider,
+                    "kind": kind,
+                    "index": i,
+                    "total_models": total_models,
+                    "error": ollama_error,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                continue
 
             try:
                 async with httpx.AsyncClient(timeout=1800.0) as client:
@@ -469,6 +569,9 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                             payload = {
                                 "event": "pull_error",
                                 "model": model_id,
+                                "module": module_name,
+                                "provider": provider,
+                                "kind": kind,
                                 "error": error_text.decode()[:200],
                             }
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -491,6 +594,8 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                                         "event": "pull_progress",
                                         "model": model_id,
                                         "module": module_name,
+                                        "provider": provider,
+                                        "kind": kind,
                                         "status": status,
                                         "completed": completed,
                                         "total": total,
@@ -504,6 +609,8 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                                         "event": "pull_done",
                                         "model": model_id,
                                         "module": module_name,
+                                        "provider": provider,
+                                        "kind": kind,
                                         "index": i,
                                         "total": total_models,
                                     }
@@ -513,6 +620,8 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                                         "event": "pull_status",
                                         "model": model_id,
                                         "module": module_name,
+                                        "provider": provider,
+                                        "kind": kind,
                                         "status": status,
                                     }
                                     yield f"data: {json.dumps(payload)}\n\n"
@@ -523,6 +632,9 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 payload = {
                     "event": "pull_error",
                     "model": model_id,
+                    "module": module_name,
+                    "provider": provider,
+                    "kind": kind,
                     "error": "Cannot connect to Ollama. Is it running?",
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
@@ -530,6 +642,9 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 payload = {
                     "event": "pull_error",
                     "model": model_id,
+                    "module": module_name,
+                    "provider": provider,
+                    "kind": kind,
                     "error": "Model pull timed out",
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
@@ -537,9 +652,30 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 payload = {
                     "event": "pull_error",
                     "model": model_id,
+                    "module": module_name,
+                    "provider": provider,
+                    "kind": kind,
                     "error": str(e)[:200],
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
+
+        # Voice dependencies (runtime pip packages + ASR/TTS models).
+        # The installer yields the same event dicts (with provider/kind);
+        # indexes continue after the Ollama entries for one sequential plan.
+        if has_voice_entries:
+            voice_stream = voice_model_installer.stream_install_voice_dependencies(
+                request.profile,
+                request.enabled_modules,
+                index_offset=len(ollama_models),
+                total_models=total_models,
+            )
+            try:
+                async for event in voice_stream:
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                # Client disconnect → close the inner generator (kills pip
+                # subprocesses and closes HTTP download streams).
+                await voice_stream.aclose()
 
         # All models done
         yield f"data: {json.dumps({'event': 'pull_all_done', 'total': total_models})}\n\n"

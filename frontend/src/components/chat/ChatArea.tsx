@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { InputArea } from "@/components/chat/InputArea";
+import { VoiceCallPanel } from "@/components/chat/VoiceCallPanel";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import {
   useChatStore,
@@ -13,11 +14,24 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
-import { Brain, Check } from "lucide-react";
-import { streamChat, streamChatWithFiles, streamChatDemo } from "@/api/stream";
+import { Brain, Check, Mic } from "lucide-react";
+import {
+  streamChat,
+  streamChatWithFiles,
+  streamChatDemo,
+  stopActiveStream,
+  type StreamCallbacks,
+} from "@/api/stream";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
+import {
+  useVoiceSession,
+  type BuildStreamCallbacksOptions,
+} from "@/voice/useVoiceSession";
+import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
+import { responseTransportForStop } from "@/voice/responseControl";
+import { cn } from "@/lib/utils";
 
 const log = createDebugLogger("ChatArea");
 
@@ -56,6 +70,24 @@ export function ChatArea() {
       : undefined,
   );
   const messages = conv?.messages ?? [];
+
+  // ── Voice session state (reactive, for indicators) ──
+  const voiceState = useVoiceStore((s) => s.voiceState);
+  const partialTranscript = useVoiceStore((s) => s.partialTranscript);
+  const interruptFlashAt = useVoiceStore((s) => s.interruptFlashAt);
+  const [flashActive, setFlashActive] = useState(false);
+  useEffect(() => {
+    if (interruptFlashAt == null) {
+      setFlashActive(false);
+      return;
+    }
+    setFlashActive(true);
+    const timer = setTimeout(
+      () => setFlashActive(false),
+      Math.max(0, INTERRUPT_FLASH_MS - (Date.now() - interruptFlashAt)),
+    );
+    return () => clearTimeout(timer);
+  }, [interruptFlashAt]);
 
   // ── Sync URL conversation ID with store on mount / URL change ──
   useEffect(() => {
@@ -117,100 +149,25 @@ export function ChatArea() {
     return () => clearTimeout(timeout);
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
 
-  // ── Handle sending a message ──
-  const handleSend = useCallback(
-    async (
-      content: string,
-      options?: {
-        modelOverride?: string;
-        shrug?: boolean;
-        images?: File[];
-        documents?: File[];
-      },
-    ) => {
-      const store = useChatStore.getState();
-
-      // Determine which conversation to use
-      let convId = effectiveConvId;
-      const isFromHomePage = !urlConvId && !pendingConvId;
-
-      if (!convId) {
-        log("No active conversation — creating one...");
-        convId = await store.createConversation();
-        log(`Created conversation: ${convId}`);
-
-        // Track this as a pending conversation (created from home page)
-        // We'll redirect after streaming completes
-        if (isFromHomePage) {
-          setPendingConvId(convId);
-        }
-      }
-
-      log(
-        `handleSend  content=${content.slice(0, 60)}  modelOverride=${options?.modelOverride}  images=${options?.images?.length ?? 0}  docs=${options?.documents?.length ?? 0}`,
-      );
-
-      // Use model override if provided, otherwise use selected model
-      const modelForMessage = options?.modelOverride ?? store.selectedModel;
-
-      // Build messages array for the API BEFORE adding new messages to the store.
-      const convBeforeSend = useChatStore
-        .getState()
-        .conversations.find((c) => c.id === convId);
-      const allMessages = [
-        ...(convBeforeSend?.messages ?? []).map((m) => ({
-          role: m.role,
-          content: m.content,
-        })),
-        { role: "user" as const, content },
-      ];
-
-      // Now add the user and assistant messages to the store for UI display
-      // Capture the user message ID so we can attach document digestion
-      // progress events to it later (real-time inline progress indicator).
-      const userMsgId = store.addMessage(convId, {
-        role: "user",
-        content,
-        shrugOverlay: options?.shrug,
-        hasImage: !!(options?.images && options.images.length > 0),
-        hasDocument: !!(options?.documents && options.documents.length > 0),
-        imageCount: options?.images?.length ?? 0,
-        documentCount: options?.documents?.length ?? 0,
-      });
-      const assistantMsgId = store.addMessage(convId, {
-        role: "assistant",
-        content: "",
-        model: modelForMessage,
-      });
-      store.setStreaming(convId, assistantMsgId, true);
-
-      // Optimistic preview title from the first user message — shows
-      // instantly in the sidebar while the backend generates the real LLM
-      // title (the `conversation_title` SSE event replaces this preview
-      // once it arrives).
-      const currentConv = useChatStore
-        .getState()
-        .conversations.find((c) => c.id === convId);
-      if (
-        currentConv &&
-        currentConv.messages.length <= 2 &&
-        (!currentConv.title || currentConv.title === "New Chat")
-      ) {
-        const title =
-          content.length > 40 ? content.slice(0, 40) + "..." : content;
-        useChatStore.setState((s) => ({
-          conversations: s.conversations.map((c) =>
-            c.id === convId ? { ...c, title } : c,
-          ),
-        }));
-      }
+  // ── Shared stream callbacks (used by BOTH text chat and voice) ──
+  // Extracted from handleSend so the voice pipeline (useVoiceSession) can
+  // drive the EXACT same store updates — voice responses render identically
+  // to text responses (thinking blocks, text tokens, tool_call blocks,
+  // rag sources, deliverables, generation duration, navigation).
+  const buildStreamCallbacks = useCallback(
+    (
+      convId: string,
+      assistantMsgId: string,
+      opts: BuildStreamCallbacksOptions,
+    ): StreamCallbacks => {
+      const { userMsgId, content, isFromHomePage } = opts;
 
       // Capture values for the closure — these won't change after this point
       const capturedConvId = convId;
       const capturedIsFromHomePage = isFromHomePage;
       const capturedGeneration = ++streamGenerationRef.current;
 
-      const callbacks = {
+      return {
         onToken: (token: string) =>
           useChatStore
             .getState()
@@ -350,24 +307,29 @@ export function ChatArea() {
           }
           // Inline progress on the user's message bubble
           // so the user sees feedback directly in the conversation.
-          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
-            filename: p.filename ?? "document",
-            stage: p.stage as
-              | "started"
-              | "extracting_text"
-              | "extracting_images"
-              | "chunking"
-              | "describing_images"
-              | "embedding"
-              | "persisting"
-              | "done"
-              | "error",
-            percent: p.percent,
-            details: p.details,
-            documentId: p.document_id,
-            totalChunks: p.total_chunks,
-            totalImages: p.total_images,
-          });
+          // (Voice turns never upload documents → userMsgId is undefined.)
+          if (userMsgId) {
+            useChatStore
+              .getState()
+              .addDigestProgress(capturedConvId, userMsgId, {
+                filename: p.filename ?? "document",
+                stage: p.stage as
+                  | "started"
+                  | "extracting_text"
+                  | "extracting_images"
+                  | "chunking"
+                  | "describing_images"
+                  | "embedding"
+                  | "persisting"
+                  | "done"
+                  | "error",
+                percent: p.percent,
+                details: p.details,
+                documentId: p.document_id,
+                totalChunks: p.total_chunks,
+                totalImages: p.total_images,
+              });
+          }
         },
         onDocumentDigestDone: (doc: {
           filename: string;
@@ -378,26 +340,34 @@ export function ChatArea() {
             `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
           );
           // Final "done" item so the inline indicator shows completion
-          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
-            filename: doc.filename,
-            stage: "done",
-            percent: 100,
-            details: `${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
-            totalChunks: doc.total_chunks,
-            totalImages: doc.total_images,
-          });
+          if (userMsgId) {
+            useChatStore
+              .getState()
+              .addDigestProgress(capturedConvId, userMsgId, {
+                filename: doc.filename,
+                stage: "done",
+                percent: 100,
+                details: `${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
+                totalChunks: doc.total_chunks,
+                totalImages: doc.total_images,
+              });
+          }
         },
         onDocumentDigestError: (info: { filename?: string; error: string }) => {
           addTerminalLine(
             `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
           );
-          useChatStore.getState().addDigestProgress(capturedConvId, userMsgId, {
-            filename: info.filename ?? "document",
-            stage: "error",
-            percent: 100,
-            details: info.error,
-            error: info.error,
-          });
+          if (userMsgId) {
+            useChatStore
+              .getState()
+              .addDigestProgress(capturedConvId, userMsgId, {
+                filename: info.filename ?? "document",
+                stage: "error",
+                percent: 100,
+                details: info.error,
+                error: info.error,
+              });
+          }
         },
         onToolCallStart: (toolCall: ToolCallResult) => {
           const s = useChatStore.getState();
@@ -482,6 +452,109 @@ export function ChatArea() {
           }
         },
       };
+    },
+    [navigate, addTerminalLine, setRightPanelOpen, setRightPanelTab],
+  );
+
+  // ── Handle sending a message ──
+  const handleSend = useCallback(
+    async (
+      content: string,
+      options?: {
+        modelOverride?: string;
+        shrug?: boolean;
+        images?: File[];
+        documents?: File[];
+      },
+    ) => {
+      const store = useChatStore.getState();
+
+      // Determine which conversation to use
+      let convId = effectiveConvId;
+      const isFromHomePage = !urlConvId && !pendingConvId;
+
+      if (!convId) {
+        log("No active conversation — creating one...");
+        convId = await store.createConversation();
+        log(`Created conversation: ${convId}`);
+
+        // Track this as a pending conversation (created from home page)
+        // We'll redirect after streaming completes
+        if (isFromHomePage) {
+          setPendingConvId(convId);
+        }
+      }
+
+      log(
+        `handleSend  content=${content.slice(0, 60)}  modelOverride=${options?.modelOverride}  images=${options?.images?.length ?? 0}  docs=${options?.documents?.length ?? 0}`,
+      );
+
+      // Use model override if provided, otherwise use selected model
+      const modelForMessage = options?.modelOverride ?? store.selectedModel;
+
+      // Build messages array for the API BEFORE adding new messages to the store.
+      const convBeforeSend = useChatStore
+        .getState()
+        .conversations.find((c) => c.id === convId);
+      const allMessages = [
+        ...(convBeforeSend?.messages ?? []).map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+        { role: "user" as const, content },
+      ];
+
+      // Now add the user and assistant messages to the store for UI display
+      // Capture the user message ID so we can attach document digestion
+      // progress events to it later (real-time inline progress indicator).
+      const userMsgId = store.addMessage(convId, {
+        role: "user",
+        content,
+        shrugOverlay: options?.shrug,
+        hasImage: !!(options?.images && options.images.length > 0),
+        hasDocument: !!(options?.documents && options.documents.length > 0),
+        imageCount: options?.images?.length ?? 0,
+        documentCount: options?.documents?.length ?? 0,
+      });
+      const assistantMsgId = store.addMessage(convId, {
+        role: "assistant",
+        content: "",
+        model: modelForMessage,
+      });
+      store.setStreaming(convId, assistantMsgId, true);
+
+      // Optimistic preview title from the first user message — shows
+      // instantly in the sidebar while the backend generates the real LLM
+      // title (the `conversation_title` SSE event replaces this preview
+      // once it arrives).
+      const currentConv = useChatStore
+        .getState()
+        .conversations.find((c) => c.id === convId);
+      if (
+        currentConv &&
+        currentConv.messages.length <= 2 &&
+        (!currentConv.title || currentConv.title === "New Chat")
+      ) {
+        const title =
+          content.length > 40 ? content.slice(0, 40) + "..." : content;
+        useChatStore.setState((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.id === convId ? { ...c, title } : c,
+          ),
+        }));
+      }
+
+      // Capture values for the closure — these won't change after this point
+      const capturedConvId = convId;
+      const capturedIsFromHomePage = isFromHomePage;
+
+      // Shared callbacks (identical behavior to the pre-voice inline
+      // object — the voice pipeline reuses the same function).
+      const callbacks = buildStreamCallbacks(capturedConvId, assistantMsgId, {
+        userMsgId,
+        content,
+        isFromHomePage: capturedIsFromHomePage,
+      });
 
       const streamOptions = {
         conversationId: capturedConvId,
@@ -543,8 +616,24 @@ export function ChatArea() {
       addTerminalLine,
       setRightPanelOpen,
       setRightPanelTab,
+      buildStreamCallbacks,
     ],
   );
+
+  // ── Voice session (one per ChatArea; drives the same store) ──
+  const voiceSession = useVoiceSession({
+    conversationId: effectiveConvId,
+    buildStreamCallbacks,
+    onConversationCreated: (convId) => setPendingConvId(convId),
+  });
+
+  const handleStopResponse = useCallback(() => {
+    if (responseTransportForStop(voiceState) === "voice") {
+      voiceSession.interruptSpeaking();
+      return;
+    }
+    stopActiveStream();
+  }, [voiceState, voiceSession]);
 
   // Listen for regenerate events from MessageBubble
   useEffect(() => {
@@ -556,8 +645,14 @@ export function ChatArea() {
     return () => window.removeEventListener("regenerate-message", handler);
   }, [handleSend]);
 
+  // Partial-transcript ghost bubble — visible while the user is speaking
+  // (listening/processing states), replaced by the persisted user message
+  // on `user_message`.
+  const showPartialBubble =
+    (voiceState === "listening" || voiceState === "processing") &&
+    partialTranscript.length > 0;
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="relative flex flex-col h-full overflow-hidden bg-background">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-2.75 border-b border-border/50">
         <div className="flex items-center gap-2">
@@ -567,6 +662,12 @@ export function ChatArea() {
           </h2>
         </div>
       </div>
+
+      <VoiceCallPanel
+        onToggleMute={voiceSession.toggleVoice}
+        onEnd={voiceSession.stopVoice}
+        onStopResponse={handleStopResponse}
+      />
 
       {/* Messages or Welcome */}
       {isLoadingConv ? (
@@ -585,13 +686,27 @@ export function ChatArea() {
       ) : (
         <ScrollArea className="flex-1">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-            {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                conversationId={effectiveConvId!}
-              />
-            ))}
+            {messages.map((msg, i) => {
+              // Briefly flash the last assistant bubble when the user
+              // interrupted the assistant (barge-in feedback).
+              const isFlashTarget =
+                flashActive &&
+                msg.role === "assistant" &&
+                i === messages.length - 1;
+              return (
+                <div
+                  key={msg.id}
+                  className={cn(
+                    isFlashTarget && "voice-interrupt-flash rounded-2xl",
+                  )}
+                >
+                  <MessageBubble
+                    message={msg}
+                    conversationId={effectiveConvId!}
+                  />
+                </div>
+              );
+            })}
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
@@ -611,7 +726,38 @@ export function ChatArea() {
         />
       )}
 
-      <InputArea onSend={handleSend} isStreaming={isStreaming} />
+      {/* Partial transcript ghost bubble — transient user-style bubble
+          while the user speaks; replaced by the persisted user message. */}
+      {showPartialBubble && (
+        <div className="px-4 pb-1.5 animate-fade-in">
+          <div className="max-w-3xl mx-auto flex justify-end">
+            <div
+              className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-primary/85 text-primary-foreground px-4 py-2.5 flex items-start gap-2"
+              aria-live="polite"
+            >
+              <Mic className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-80" />
+              <p
+                className="whitespace-pre-wrap leading-relaxed text-[13px]"
+                style={{ fontSize: "var(--app-font-size)" }}
+              >
+                {partialTranscript}
+                <span className="voice-typing-dots" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <InputArea
+        onSend={handleSend}
+        isStreaming={isStreaming}
+        onStartVoice={voiceSession.toggleVoice}
+        onStopResponse={handleStopResponse}
+      />
     </div>
   );
 }

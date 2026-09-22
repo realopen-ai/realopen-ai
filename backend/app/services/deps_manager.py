@@ -1,6 +1,6 @@
 """
 Dependency management service — installs, uninstalls, and persists optional
-system-level dependencies using apt-get.
+system-level dependencies using apt-get or pip.
 
 ## Architecture
 
@@ -18,32 +18,37 @@ reinstalls from cached .debs with no network access needed. Debian handles
 dependency resolution, triggers, ldconfig, and filesystem layout exactly as
 intended.
 
+Python (pip) dependencies (kind "pip", e.g. the voice runtime packages) are
+installed into the interpreter's site-packages with `python -m pip install`.
+Those live in the image, not in the data volume, so after an image rebuild
+they are gone — the voice setup wizard (provider-aware, idempotent,
+find_spec-based) re-installs them on the next setup run. The manifest is
+still updated so the Dependencies UI reflects the user's choices.
+
 ## Install flow (user clicks Install)
 
-  1. apt-get update
-  2. apt-get install -y <packages>     (downloads .debs to cache + installs)
+  1. apt-get update                       (kind "system-direct")
+     python -m pip install <pip_name>     (kind "pip", streamed output)
+  2. apt-get install -y <packages>        (kind "system-direct")
   3. Update manifest
-
-## Startup (after rebuild)
-
-  1. Read manifest
-  2. For each dep: apt-get install --no-download -y <packages>
-     → reinstalls from cache, no wifi needed
-     → Debian restores: binaries, libraries, symlinks, ldconfig, dpkg db
-  3. Done
 
 ## Uninstall flow
 
-  1. apt-get remove -y --auto-remove <packages>
-  2. Delete cached .debs for these packages (so it stays uninstalled after rebuild)
+  1. apt-get remove -y --auto-remove <packages>  (kind "system-direct")
+     python -m pip uninstall -y <pip_name>        (kind "pip")
+  2. Delete cached .debs for these packages (so it stays uninstalled after
+     rebuild) — apt deps only
   3. Update manifest
 
-This scales to any Debian package with zero package-specific logic.
+This scales to any Debian package or pip package with zero
+package-specific logic.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import shlex
@@ -85,11 +90,44 @@ class Dependency:
     display_name: str
     description: str
     category: str
-    kind: str  # "system-direct" (apt-get install to default location)
+    kind: str  # "system-direct" (apt-get) | "pip" (python package)
     binary_name: Optional[str] = None  # for is_installed check
     pip_name: Optional[str] = None  # for pip-installed deps
+    import_name: Optional[str] = None  # module name for find_spec checks
+    pip_extra_args: list[str] = field(default_factory=list)  # e.g. cpu index URL
     install_size: str = ""
     enables: list[str] = field(default_factory=list)
+
+
+def _voice_dep(
+    name: str,
+    display: str,
+    description: str,
+    pip_name: str,
+    import_name: Optional[str] = None,
+    pip_extra_args: Optional[list[str]] = None,
+    install_size: str = "",
+    enables: Optional[list[str]] = None,
+) -> Dependency:
+    """Build a voice-runtime pip Dependency (kind "pip").
+
+    NOTE: which packages the voice feature *needs* is resolved from
+    profiles.yml via app.services.voice_model_installer — these catalog
+    entries only describe HOW each package is installed so the existing
+    Settings ▸ Dependencies UI can show/install them.
+    """
+    return Dependency(
+        name=name,
+        display_name=display,
+        description=description,
+        category="Voice",
+        kind="pip",
+        pip_name=pip_name,
+        import_name=import_name,
+        pip_extra_args=pip_extra_args or [],
+        install_size=install_size,
+        enables=enables or [],
+    )
 
 
 CATALOG: list[Dependency] = [
@@ -105,6 +143,71 @@ CATALOG: list[Dependency] = [
             "High-quality template thumbnails",
             "MS-formats conversions",
         ],
+    ),
+    # ── Voice runtime (pip) ──────────────────────────────────────────
+    # Mirrors RUNTIME_PACKAGES in app/services/voice_model_installer.py
+    # (kept consistent by backend/tests).
+    _voice_dep(
+        "mlx-qwen3-asr",
+        "Qwen3-ASR MLX runtime (Apple Silicon)",
+        "Native MLX speech-recognition runtime for Apple-Silicon hosts "
+        "(no PyTorch needed).",
+        "mlx-qwen3-asr",
+        import_name="mlx_qwen3_asr",
+        install_size="~60 MB",
+        enables=["Voice input (ASR model runtime)"],
+    ),
+    _voice_dep(
+        "torch-cpu",
+        "PyTorch (CPU)",
+        "CPU-only PyTorch build used by the speech recognition model.",
+        "torch",
+        pip_extra_args=["--index-url", "https://download.pytorch.org/whl/cpu"],
+        install_size="~200 MB",
+        enables=["Voice input (ASR model runtime)"],
+    ),
+    _voice_dep(
+        "transformers",
+        "Transformers",
+        "Hugging Face Transformers — runs the ASR model.",
+        "transformers",
+        install_size="~50 MB",
+        enables=["Voice input (ASR model runtime)"],
+    ),
+    _voice_dep(
+        "soundfile",
+        "SoundFile",
+        "libsndfile bindings for reading/writing audio (ASR/TTS I/O).",
+        "soundfile",
+        install_size="~3 MB",
+        enables=["Voice audio input/output"],
+    ),
+    _voice_dep(
+        "webrtcvad-wheels",
+        "WebRTC VAD",
+        "Voice activity detection used for barge-in / pre-roll gating.",
+        "webrtcvad-wheels",
+        import_name="webrtcvad",
+        install_size="~1 MB",
+        enables=["Barge-in interruption detection"],
+    ),
+    _voice_dep(
+        "huggingface-hub",
+        "Hugging Face Hub client",
+        "Client used by the setup wizard to download ASR model files.",
+        "huggingface-hub",
+        import_name="huggingface_hub",
+        install_size="~2 MB",
+        enables=["Voice model downloads during setup"],
+    ),
+    _voice_dep(
+        "pocket-tts",
+        "Pocket TTS runtime",
+        "Streaming neural speech synthesis runtime.",
+        "pocket-tts",
+        import_name="pocket_tts",
+        install_size="~600 MB",
+        enables=["Voice output (TTS)"],
     ),
 ]
 
@@ -138,9 +241,28 @@ _PKG_MAP: dict[str, dict[str, list[str]]] = {
 
 
 def is_installed(dep: Dependency) -> bool:
-    """Check if a dependency is installed (binary available on PATH)."""
+    """Check if a dependency is installed.
+
+    - binary deps: binary available on PATH (e.g. soffice)
+    - pip deps (binary_name is None, pip_name set): module importable —
+      checked with importlib.util.find_spec ONLY (never import heavy libs
+      like torch in the backend loop), with an importlib.metadata fallback
+      for packages whose import name differs from the distribution name.
+    """
     if dep.binary_name:
         return shutil.which(dep.binary_name) is not None
+    if dep.pip_name:
+        module_name = dep.import_name or dep.pip_name.replace("-", "_")
+        try:
+            if importlib.util.find_spec(module_name) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            importlib.metadata.version(dep.pip_name)
+            return True
+        except Exception:
+            return False
     return False
 
 
@@ -240,6 +362,11 @@ def get_install_command(dep: Dependency) -> Optional[str]:
             return None
         pkgs_str = " ".join(shlex.quote(p) for p in packages)
         return f"apt-get install -y --no-install-recommends {pkgs_str}"
+    if dep.kind == "pip" and dep.pip_name:
+        cmd = f"pip install {dep.pip_name}"
+        if dep.pip_extra_args:
+            cmd += " " + " ".join(shlex.quote(a) for a in dep.pip_extra_args)
+        return cmd
     return None
 
 
@@ -378,7 +505,10 @@ async def _install_system_direct(
 
     # Step 2: apt-get install
     yield {"stage": "installing", "output": f"Installing {pkgs_str}..."}
-    install_cmd = f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}"
+    install_cmd = (
+        "env DEBIAN_FRONTEND=noninteractive apt-get install -y "
+        f"--no-install-recommends {pkgs_str}"
+    )
     install_lines: list[str] = []
     rc = 0
     async for event in _run_command_streaming(install_cmd, "installing", install_lines):
@@ -409,12 +539,145 @@ async def _install_system_direct(
     }
 
 
+async def _install_pip(
+    dep: Dependency,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+) -> AsyncGenerator[dict, None]:
+    """Install a pip dependency through the PERSISTENT wheelhouse.
+
+    Uses :mod:`app.services.pip_persistence` (the LibreOffice-style pip
+    strategy): the wheel lands in ``data/pip-wheels`` and the install runs
+    offline-first from there — so the package survives container rebuilds
+    via the startup replay instead of being re-downloaded each time.
+    Streams every real output line as an SSE ``stage`` event — pip gives
+    no byte-accurate progress, so the output is the honest progress
+    indicator (no invented percentages)."""
+    if not dep.pip_name:
+        yield {
+            "stage": "error",
+            "error": f"{dep.display_name} has no pip package name.",
+        }
+        return
+
+    yield {
+        "stage": "installing",
+        "output": (
+            f"Installing {dep.pip_name} (persistent wheelhouse — "
+            "survives container rebuilds)"
+        ),
+    }
+
+    try:
+        from app.services import pip_persistence
+    except Exception:  # pragma: no cover — module lives in the same package
+        pip_persistence = None  # type: ignore[assignment]
+
+    failed = False
+    if pip_persistence is not None:
+        try:
+            async for line in pip_persistence.pip_install_persistent(
+                dep.pip_name, tuple(dep.pip_extra_args)
+            ):
+                if line:
+                    event = {"stage": "installing", "output": line[:400]}
+                    if progress_callback:
+                        progress_callback(event)
+                    yield event
+        except Exception as e:  # noqa: BLE001 — fall back to plain pip
+            yield {
+                "stage": "installing",
+                "output": f"persistent install failed ({e}) — plain pip fallback",
+            }
+            failed = True
+        if not failed:
+            rc = 0
+    if failed or pip_persistence is None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--progress-bar",
+            "off",
+            dep.pip_name,
+            *dep.pip_extra_args,
+        ]
+        yield {
+            "stage": "installing",
+            "output": f"Running: {' '.join(shlex.quote(c) for c in cmd)}",
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert proc.stdout is not None
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").strip()
+                if not text:
+                    continue
+                event = {"stage": "installing", "output": text[:400]}
+                if progress_callback:
+                    progress_callback(event)
+                yield event
+            rc = await proc.wait()
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+
+    if rc != 0:
+        yield {
+            "stage": "error",
+            "exit_code": rc,
+            "error": f"pip install failed (exit code {rc}).",
+        }
+        return
+
+    # Refresh import caches so find_spec sees the new package in THIS process.
+    importlib.invalidate_caches()
+
+    # Step: Update manifest
+    _record_install(dep)
+
+    yield {
+        "stage": "done",
+        "exit_code": 0,
+        "output": f"{dep.display_name} installed successfully.",
+        "version": get_version(dep),
+    }
+
+
 async def install_dependency(
     dep: Dependency,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> AsyncGenerator[dict, None]:
     """Install a dependency. Yields SSE progress events."""
     distro = _detect_distro()
+
+    if dep.kind == "pip":
+        # pip works regardless of the distro (even "unknown").
+        if is_installed(dep):
+            _log("%s already installed — skipping", dep.name)
+            yield {
+                "stage": "done",
+                "exit_code": 0,
+                "output": f"{dep.display_name} is already installed.",
+                "version": get_version(dep),
+            }
+            return
+        async for event in _install_pip(dep, progress_callback):
+            yield event
+        return
 
     if distro == "unknown":
         yield {
@@ -522,6 +785,61 @@ async def _uninstall_system_direct(
     }
 
 
+async def _uninstall_pip(dep: Dependency) -> AsyncGenerator[dict, None]:
+    """Uninstall a pip dependency with `python -m pip uninstall -y`."""
+    if not dep.pip_name:
+        yield {
+            "stage": "error",
+            "error": f"{dep.display_name} has no pip package name.",
+        }
+        return
+
+    cmd = [sys.executable, "-m", "pip", "uninstall", "-y", dep.pip_name]
+    yield {
+        "stage": "uninstalling",
+        "output": f"Running: {' '.join(shlex.quote(c) for c in cmd)}",
+    }
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    try:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            text = line.decode(errors="replace").strip()
+            if text:
+                yield {"stage": "uninstalling", "output": text[:400]}
+        rc = await proc.wait()
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+
+    # pip uninstall returns non-zero when the package isn't installed —
+    # that's fine, we still clean the manifest.
+    if rc != 0:
+        yield {
+            "stage": "uninstalling",
+            "output": f"pip uninstall returned {rc} (package may not be installed)",
+        }
+
+    importlib.invalidate_caches()
+    _record_uninstall(dep)
+
+    yield {
+        "stage": "done",
+        "exit_code": 0,
+        "output": f"{dep.display_name} uninstalled successfully.",
+    }
+
+
 async def uninstall_dependency(
     dep: Dependency,
 ) -> AsyncGenerator[dict, None]:
@@ -530,6 +848,11 @@ async def uninstall_dependency(
 
     if dep.kind == "system-direct":
         async for event in _uninstall_system_direct(dep, distro):
+            yield event
+        return
+
+    if dep.kind == "pip":
+        async for event in _uninstall_pip(dep):
             yield event
         return
 
@@ -593,6 +916,9 @@ async def verify_deps_on_startup() -> None:
             continue
 
         if dep.kind != "system-direct":
+            # pip deps live in the image, not in the data volume — they are
+            # re-installed by the (idempotent) voice setup wizard when the
+            # user re-runs setup, never silently at startup.
             continue
 
         packages = _PKG_MAP.get(name, {}).get(distro, [])
@@ -616,7 +942,8 @@ async def verify_deps_on_startup() -> None:
                 [
                     "sh",
                     "-c",
-                    f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-download --no-install-recommends {pkgs_str}",
+                    "env DEBIAN_FRONTEND=noninteractive apt-get install -y "
+                    f"--no-download --no-install-recommends {pkgs_str}",
                 ],
                 timeout=300,
             )
@@ -649,7 +976,8 @@ async def verify_deps_on_startup() -> None:
             [
                 "sh",
                 "-c",
-                f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}",
+                "env DEBIAN_FRONTEND=noninteractive apt-get install -y "
+                f"--no-install-recommends {pkgs_str}",
             ],
             timeout=300,
         )
@@ -697,7 +1025,11 @@ def get_catalog() -> list[dict]:
                 "available": available,
                 "install_cmd": install_cmd,
                 "distro": distro,
-                "persistence": "apt-cache" if installed else "none",
+                "persistence": (
+                    "apt-cache"
+                    if installed and dep.kind == "system-direct"
+                    else ("image" if installed else "none")
+                ),
             }
         )
     return result
