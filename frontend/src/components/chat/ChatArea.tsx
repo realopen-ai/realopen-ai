@@ -18,6 +18,7 @@ import {
   streamChat,
   streamChatWithFiles,
   streamChatDemo,
+  stopActiveStream,
   type StreamCallbacks,
 } from "@/api/stream";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
@@ -28,6 +29,7 @@ import {
   type BuildStreamCallbacksOptions,
 } from "@/voice/useVoiceSession";
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
+import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
 
 const log = createDebugLogger("ChatArea");
@@ -624,6 +626,14 @@ export function ChatArea() {
     onConversationCreated: (convId) => setPendingConvId(convId),
   });
 
+  const handleStopResponse = useCallback(() => {
+    if (responseTransportForStop(voiceState) === "voice") {
+      voiceSession.interruptSpeaking();
+      return;
+    }
+    stopActiveStream();
+  }, [voiceState, voiceSession]);
+
   // Listen for regenerate events from MessageBubble
   useEffect(() => {
     const handler = (e: Event) => {
@@ -760,7 +770,8 @@ export function ChatArea() {
         onSend={handleSend}
         isStreaming={isStreaming}
         onToggleVoice={voiceSession.toggleVoice}
-        onInterruptSpeaking={voiceSession.interruptSpeaking}
+        onStopResponse={handleStopResponse}
+        onStopVoice={voiceSession.stopVoice}
       />
     </div>
   );

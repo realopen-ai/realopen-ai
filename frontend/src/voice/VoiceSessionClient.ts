@@ -33,6 +33,7 @@
  */
 
 import { createDebugLogger, dbgError } from "@/lib/debug";
+import { shouldCaptureMicrophone } from "@/voice/responseControl";
 
 const log = createDebugLogger("voice");
 
@@ -167,6 +168,7 @@ export class VoiceSessionClient {
   private audioCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
   private captureNode: AudioWorkletNode | null = null;
+  private micMuted = false;
   private playbackNode: AudioWorkletNode | null = null;
 
   // TTS generation gating: a tts_chunk announce must immediately precede
@@ -177,6 +179,9 @@ export class VoiceSessionClient {
   private interruptedGenerations = new Set<string>();
   private expectTtsFrame = false;
   private ttsSampleRate = TTS_RATE;
+  private queuedTtsSamples = 0;
+  private serverTtsEnded = false;
+  private playbackEndSent = false;
 
   // Session state (from server `state` events) — used by the barge-in VAD.
   private sessionState: VoiceSessionState | "IDLE" = "IDLE";
@@ -280,6 +285,9 @@ export class VoiceSessionClient {
         throw err;
       }
       this.micStream = stream;
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = !this.micMuted;
+      }
 
       // 3. AudioWorklet modules (served from /worklets/*).
       await ctx.audioWorklet.addModule("/worklets/voice-capture-processor.js");
@@ -314,7 +322,12 @@ export class VoiceSessionClient {
       playback.port.onmessage = (e: MessageEvent) => {
         const msg = e.data as { type?: string; buffer?: ArrayBuffer };
         if (msg?.type === "played" && msg.buffer) {
+          this.queuedTtsSamples = Math.max(
+            0,
+            this.queuedTtsSamples - msg.buffer.byteLength / 2,
+          );
           this.sendFarEndReference(msg.buffer);
+          this.maybeSendPlaybackEnd();
         }
       };
       playback.connect(ctx.destination);
@@ -378,6 +391,7 @@ export class VoiceSessionClient {
       sample_rate: MIC_RATE,
       channels: 1,
       format: "pcm_s16le",
+      playback_ack: true,
     });
     log("start frame sent");
   }
@@ -397,6 +411,18 @@ export class VoiceSessionClient {
       log("stop timeout — force closing");
       this.handleClosed(true);
     }, STOP_TIMEOUT_MS);
+  }
+
+  /** Mute capture without changing the session, agent, or TTS lifecycle. */
+  setMicMuted(muted: boolean): void {
+    this.micMuted = muted;
+    for (const track of this.micStream?.getAudioTracks() ?? []) {
+      track.enabled = !muted;
+    }
+    if (muted) {
+      this.vadAboveCount = 0;
+    }
+    log(`microphone ${muted ? "muted" : "unmuted"}`);
   }
 
   /** Client-side barge-in: tell the server, and stop playback NOW. */
@@ -556,6 +582,13 @@ export class VoiceSessionClient {
         this.activeTtsGeneration = gid;
         this.interruptedGenerations.delete(gid);
         this.ttsSampleRate = (msg.sample_rate as number) ?? TTS_RATE;
+        this.queuedTtsSamples = 0;
+        this.serverTtsEnded = false;
+        this.playbackEndSent = false;
+        this.playbackNode?.port.postMessage({
+          type: "speed",
+          value: (msg.speed as number) ?? 1,
+        });
         // tts_start itself does not arm a binary frame — only tts_chunk
         // announces are immediately followed by 0x03 audio.
         this.emit("ttsAnnounce", {
@@ -589,6 +622,8 @@ export class VoiceSessionClient {
       case "tts_end": {
         const gid = String(msg.generation_id ?? "");
         this.expectTtsFrame = false;
+        this.serverTtsEnded = true;
+        this.maybeSendPlaybackEnd();
         this.emit("ttsAnnounce", {
           phase: "end",
           generation_id: gid,
@@ -655,6 +690,7 @@ export class VoiceSessionClient {
     this.expectTtsFrame = false; // one announce covers one binary frame
     const pcm = data.slice(1);
     if (pcm.byteLength === 0) return;
+    this.queuedTtsSamples += pcm.byteLength / 2;
     this.playbackNode?.port.postMessage(
       { type: "append", buffer: pcm, sampleRate: this.ttsSampleRate },
       [pcm],
@@ -672,8 +708,27 @@ export class VoiceSessionClient {
     }
   }
 
+  /** Tell the server when generated TTS has actually drained from the
+   * browser playback queue, not merely when synthesis finished. */
+  private maybeSendPlaybackEnd(): void {
+    if (
+      !this.serverTtsEnded ||
+      this.playbackEndSent ||
+      this.queuedTtsSamples > 0 ||
+      !this.activeTtsGeneration
+    ) {
+      return;
+    }
+    this.playbackEndSent = true;
+    this.sendJson({
+      type: "playback_end",
+      generation_id: this.activeTtsGeneration,
+    });
+  }
+
   /** 0x01 mic frame — ALWAYS sent, including while assistant audio plays. */
   private handleMicPcm(buffer: ArrayBuffer): void {
+    if (!shouldCaptureMicrophone(this.micMuted)) return;
     // Client-side barge-in VAD (runs on the near-end capture stream).
     this.runBargeInVad(buffer);
     if (this.ws?.readyState !== WebSocket.OPEN || !this.started) return;
@@ -798,6 +853,9 @@ export class VoiceSessionClient {
     this.activeTtsGeneration = null;
     this.interruptedGenerations.clear();
     this.expectTtsFrame = false;
+    this.queuedTtsSamples = 0;
+    this.serverTtsEnded = false;
+    this.playbackEndSent = false;
 
     if (intentional) {
       this.emit("stopped", undefined);

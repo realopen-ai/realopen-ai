@@ -259,6 +259,12 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   },
 
   pullModels: async () => {
+    // React StrictMode mounts effects twice in development.  The first call
+    // flips this synchronously, so the remount must reuse the in-flight
+    // installation instead of opening a second SSE stream whose waiting
+    // events can overwrite the completed state from the first stream.
+    if (get().isPulling) return true;
+
     const state = get();
     set({
       isPulling: true,

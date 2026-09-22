@@ -20,6 +20,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Package,
+  Mic2,
 } from "lucide-react";
 import {
   useSettingsStore,
@@ -38,8 +39,9 @@ import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import { DependenciesTab } from "@/components/settings/DependenciesTab";
 import { AiTab } from "@/components/settings/AiTab";
+import { VoiceTab } from "@/components/settings/VoiceTab";
 
-type TabKey = "general" | "ai" | "modules" | "dependencies" | "notifications";
+type TabKey = "general" | "ai" | "voice" | "modules" | "dependencies" | "notifications";
 
 // ─── Radio Option ────────────────────────────────────────────────
 
@@ -463,6 +465,11 @@ export function SettingsModal({
       icon: <Sparkles className="w-4 h-4" />,
     },
     {
+      key: "voice",
+      label: "Voice",
+      icon: <Mic2 className="w-4 h-4" />,
+    },
+    {
       key: "modules",
       label: t("settings.modules"),
       icon: <Puzzle className="w-4 h-4" />,
@@ -718,6 +725,8 @@ export function SettingsModal({
               )}
 
               {tab === "ai" && <AiTab />}
+
+              {tab === "voice" && <VoiceTab />}
 
               {tab === "modules" && (
                 <div className="space-y-3">

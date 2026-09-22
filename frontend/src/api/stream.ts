@@ -84,6 +84,16 @@ const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 
+const activeControllers = new Set<AbortController>();
+
+/** Stop user-visible text generation without treating it as a timeout. */
+export function stopActiveStream(): void {
+  for (const controller of activeControllers) {
+    controller.abort("user_stop");
+  }
+  activeControllers.clear();
+}
+
 /**
  * Stream chat via the JSON endpoint.
  */
@@ -98,6 +108,7 @@ export async function streamChat(
   },
 ): Promise<void> {
   const controller = new AbortController();
+  activeControllers.add(controller);
   // Safety net: absolute maximum time for the entire request
   const maxTimeoutId = setTimeout(
     () => controller.abort(),
@@ -159,7 +170,9 @@ export async function streamChat(
     await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChat complete");
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (controller.signal.reason === "user_stop") {
+      callbacks.onDone();
+    } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
         "Request timed out. The AI may be loading - please try again.",
       );
@@ -171,6 +184,7 @@ export async function streamChat(
   } finally {
     clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
+    activeControllers.delete(controller);
   }
 }
 
@@ -192,6 +206,7 @@ export async function streamChatWithFiles(
   },
 ): Promise<void> {
   const controller = new AbortController();
+  activeControllers.add(controller);
   const maxTimeoutId = setTimeout(
     () => controller.abort(),
     STREAM_MAX_TIMEOUT_MS,
@@ -258,7 +273,9 @@ export async function streamChatWithFiles(
     await parseSSEStream(response, callbacks, resetIdleTimeout);
     log("✅ streamChatWithFiles complete");
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (controller.signal.reason === "user_stop") {
+      callbacks.onDone();
+    } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
         "Request timed out. The AI may be loading - please try again.",
       );
@@ -270,6 +287,7 @@ export async function streamChatWithFiles(
   } finally {
     clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
+    activeControllers.delete(controller);
   }
 }
 

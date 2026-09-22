@@ -37,6 +37,7 @@ class VoicePlaybackProcessor extends AudioWorkletProcessor {
     this._frac = 0;
     /** Input samples consumed per output sample (24k → context rate). */
     this._step = QUEUE_RATE / sampleRate;
+    this._speed = 1;
     /** Samples fully consumed since the last 'played' post. */
     this._played = [];
 
@@ -68,6 +69,9 @@ class VoicePlaybackProcessor extends AudioWorkletProcessor {
           }
           this._chunks.push(out);
         }
+      } else if (msg.type === "speed") {
+        const value = Number(msg.value);
+        this._speed = [0.5, 1, 1.5, 2].includes(value) ? value : 1;
       } else if (msg.type === "clear") {
         // Barge-in: drop everything. Flushed samples were never scheduled
         // to the speaker, so they are NOT reported as 'played'.
@@ -104,7 +108,7 @@ class VoicePlaybackProcessor extends AudioWorkletProcessor {
    *  leaves one sample fully behind — that sample is collected as
    *  'played' (far-end reference), and exhausted chunks are dropped. */
   _advance() {
-    this._frac += this._step;
+    this._frac += this._step * this._speed;
     while (this._frac >= 1 && this._chunks.length > 0) {
       this._frac -= 1;
       const chunk = this._chunks[0];
@@ -125,9 +129,7 @@ class VoicePlaybackProcessor extends AudioWorkletProcessor {
     if (this._played.length === 0) return;
     const buf = new Int16Array(this._played);
     this._played = [];
-    this.port.postMessage({ type: "played", buffer: buf.buffer }, [
-      buf.buffer,
-    ]);
+    this.port.postMessage({ type: "played", buffer: buf.buffer }, [buf.buffer]);
   }
 
   process(_inputs, outputs) {

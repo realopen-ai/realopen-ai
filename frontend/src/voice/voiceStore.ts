@@ -47,6 +47,8 @@ interface VoiceState {
    * (inactive/connecting/stopping). */
   voiceState: VoiceUiState;
   micPermission: MicPermission;
+  /** Local capture mute. Independent from the server/response state. */
+  isMicMuted: boolean;
   /** Live partial ASR transcript (cleared when the persisted user
    * message replaces it). */
   partialTranscript: string;
@@ -62,6 +64,7 @@ interface VoiceState {
   // Actions
   setVoiceState: (state: VoiceUiState) => void;
   setMicPermission: (permission: MicPermission) => void;
+  setMicMuted: (muted: boolean) => void;
   setPartialTranscript: (text: string) => void;
   setVoiceError: (error: VoiceError | null) => void;
   setReadiness: (readiness: VoiceReadiness | null) => void;
@@ -77,6 +80,7 @@ export const INTERRUPT_FLASH_MS = 900;
 export const useVoiceStore = create<VoiceState>((set) => ({
   voiceState: "inactive",
   micPermission: "unknown",
+  isMicMuted: false,
   partialTranscript: "",
   voiceError: null,
   readiness: null,
@@ -85,6 +89,7 @@ export const useVoiceStore = create<VoiceState>((set) => ({
 
   setVoiceState: (state) => set({ voiceState: state }),
   setMicPermission: (permission) => set({ micPermission: permission }),
+  setMicMuted: (muted) => set({ isMicMuted: muted }),
   setPartialTranscript: (text) => set({ partialTranscript: text }),
   setVoiceError: (error) => set({ voiceError: error }),
   setReadiness: (readiness) => set({ readiness }),
@@ -102,6 +107,7 @@ export const useVoiceStore = create<VoiceState>((set) => ({
   reset: () =>
     set({
       voiceState: "inactive",
+      isMicMuted: false,
       partialTranscript: "",
       interruptFlashAt: null,
     }),

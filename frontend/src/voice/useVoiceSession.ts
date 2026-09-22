@@ -74,10 +74,12 @@ export interface UseVoiceSessionOptions {
 }
 
 export interface VoiceSessionHandle {
-  /** Toggle: connect+start / stop. Clicking while SPEAKING = interrupt. */
+  /** Start voice when inactive; otherwise mute/unmute capture only. */
   toggleVoice: () => void;
   /** Explicit barge-in affordance (mic button / status strip). */
   interruptSpeaking: () => void;
+  /** Explicitly close the voice session. */
+  stopVoice: () => void;
   /** True while a voice session is connecting or active. */
   isVoiceActive: boolean;
   /** Current voice UI state (mirrored from the session). */
@@ -311,6 +313,7 @@ export function useVoiceSession(
 
       client.on("ready", () => {
         useVoiceStore.getState().setMicPermission("granted");
+        useVoiceStore.getState().setMicMuted(false);
         useVoiceStore.getState().setVoiceState("listening");
       });
 
@@ -415,13 +418,9 @@ export function useVoiceSession(
   const toggleVoice = useCallback(() => {
     const client = clientRef.current;
     if (client) {
-      const state = useVoiceStore.getState().voiceState;
-      if (state === "speaking") {
-        // Clicking the mic while the assistant speaks = barge-in.
-        client.interrupt();
-      } else {
-        client.stop();
-      }
+      const muted = !useVoiceStore.getState().isMicMuted;
+      client.setMicMuted(muted);
+      useVoiceStore.getState().setMicMuted(muted);
       return;
     }
     void startVoiceSession();
@@ -429,6 +428,10 @@ export function useVoiceSession(
 
   const interruptSpeaking = useCallback(() => {
     clientRef.current?.interrupt();
+  }, []);
+
+  const stopVoice = useCallback(() => {
+    clientRef.current?.stop();
   }, []);
 
   // ── Conversation switch / unmount cleanup ───────────────────────
@@ -457,5 +460,5 @@ export function useVoiceSession(
     };
   }, []);
 
-  return { toggleVoice, interruptSpeaking, isVoiceActive, voiceState };
+  return { toggleVoice, interruptSpeaking, stopVoice, isVoiceActive, voiceState };
 }

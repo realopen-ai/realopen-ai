@@ -14,6 +14,7 @@ import {
   FileText,
   Mic,
   MicOff,
+  Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -242,17 +243,17 @@ function voiceErrorMessage(code: string, message: string): string {
   }
 }
 
-/** Mic button — one visual per voice state, with per-state tooltip and
- *  aria-label. Clicking while the assistant speaks = interrupt (barge-in).
- *  The button is never disabled by streaming — voice stays usable while
- *  text chat is streaming (mixed modality). */
+/** Mic button — starts voice mode, then controls capture mute independently
+ *  from agent generation and TTS playback. */
 function VoiceMicButton({
   voiceState,
+  isMuted,
   disabled,
   disabledReason,
   onToggle,
 }: {
   voiceState: VoiceUiState;
+  isMuted: boolean;
   disabled: boolean;
   disabledReason: string | null;
   onToggle: () => void;
@@ -260,24 +261,8 @@ function VoiceMicButton({
   const isActive = voiceState !== "inactive" && voiceState !== "error";
 
   const stateTooltipKey = (() => {
-    switch (voiceState) {
-      case "connecting":
-        return "voice.button.connecting";
-      case "listening":
-        return "voice.button.listening";
-      case "processing":
-        return "voice.button.processing";
-      case "speaking":
-        return "voice.button.speaking";
-      case "interrupting":
-        return "voice.button.interrupting";
-      case "stopping":
-        return "voice.button.stopping";
-      case "error":
-        return "voice.button.error";
-      default:
-        return "voice.button.start";
-    }
+    if (isActive) return isMuted ? "voice.button.unmute" : "voice.button.mute";
+    return voiceState === "error" ? "voice.button.error" : "voice.button.start";
   })();
 
   const tooltip = disabled
@@ -285,13 +270,14 @@ function VoiceMicButton({
     : t(stateTooltipKey);
 
   const buttonBody = (() => {
+    if (isActive && isMuted) return <MicOff className="w-4.5 h-4.5" />;
     switch (voiceState) {
       case "connecting":
       case "stopping":
       case "processing":
         return <Loader2 className="w-4.5 h-4.5 animate-spin" />;
       case "speaking":
-        return <VoiceEqBars className="h-4.5 w-4.5" />;
+        return <Mic className="w-4.5 h-4.5" />;
       case "listening":
         return (
           <span className="relative flex items-center justify-center w-4.5 h-4.5">
@@ -314,24 +300,29 @@ function VoiceMicButton({
           variant="ghost"
           size="icon"
           aria-label={tooltip}
-          aria-pressed={isActive}
+          aria-pressed={isActive && !isMuted}
           onClick={onToggle}
           disabled={disabled}
           className={cn(
             "h-8 w-8 shrink-0 transition-all",
+            isActive && isMuted && "text-amber-500 hover:text-amber-400",
             // Default / inactive
             voiceState === "inactive" &&
               "text-muted-foreground/50 hover:text-muted-foreground",
             // Listening — emerald, active
             voiceState === "listening" &&
+              !isMuted &&
               "text-emerald-500 hover:text-emerald-400",
             // Processing / connecting / stopping — primary
             (voiceState === "connecting" ||
               voiceState === "processing" ||
               voiceState === "stopping") &&
+              !isMuted &&
               "text-primary hover:text-primary",
             // Speaking — animated bars, primary
-            voiceState === "speaking" && "text-primary hover:text-primary/80",
+            voiceState === "speaking" &&
+              !isMuted &&
+              "text-primary hover:text-primary/80",
             // Interrupting / error — red flash
             (voiceState === "interrupting" || voiceState === "error") &&
               "text-red-500 hover:text-red-400 voice-error-flash",
@@ -353,8 +344,9 @@ function VoiceMicButton({
  *  permission denied during connect — the session tears down to inactive
  *  but the actionable message must stay visible until dismissed). Never
  *  blocks the normal UI (textarea + send remain fully usable). */
-function VoiceStatusStrip({ onInterrupt }: { onInterrupt: () => void }) {
+function VoiceStatusStrip({ onStopVoice }: { onStopVoice: () => void }) {
   const voiceState = useVoiceStore((s) => s.voiceState);
+  const isMicMuted = useVoiceStore((s) => s.isMicMuted);
   const partialTranscript = useVoiceStore((s) => s.partialTranscript);
   const voiceError = useVoiceStore((s) => s.voiceError);
   const clearVoiceError = useVoiceStore((s) => s.clearVoiceError);
@@ -426,26 +418,29 @@ function VoiceStatusStrip({ onInterrupt }: { onInterrupt: () => void }) {
           <span className={cn("text-[11px] font-medium shrink-0", stateColor)}>
             {t(stateLabelKey)}
           </span>
-          {/* Live partial transcript (subtle, typewriter-ish) */}
-          {(voiceState === "listening" || voiceState === "processing") && (
-            <span
-              className="text-[11px] text-muted-foreground/70 truncate"
-              aria-live="polite"
-            >
-              {partialTranscript
-                ? `“${partialTranscript}”`
-                : t("voice.partial.placeholder")}
+          {isMicMuted && (
+            <span className="text-[10px] font-medium text-amber-500 shrink-0">
+              {t("voice.state.muted")}
             </span>
           )}
-          {/* Interrupt affordance while the assistant speaks */}
-          {voiceState === "speaking" && (
-            <button
-              onClick={onInterrupt}
-              className="text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0 transition-colors"
-            >
-              {t("voice.interrupt")}
-            </button>
-          )}
+          {/* Live partial transcript (subtle, typewriter-ish) */}
+          {!isMicMuted &&
+            (voiceState === "listening" || voiceState === "processing") && (
+              <span
+                className="text-[11px] text-muted-foreground/70 truncate"
+                aria-live="polite"
+              >
+                {partialTranscript
+                  ? `“${partialTranscript}”`
+                  : t("voice.partial.placeholder")}
+              </span>
+            )}
+          <button
+            onClick={onStopVoice}
+            className="ml-auto text-[11px] text-muted-foreground hover:text-foreground underline underline-offset-2 shrink-0 transition-colors"
+          >
+            {t("voice.end")}
+          </button>
         </div>
       )}
 
@@ -475,7 +470,8 @@ export function InputArea({
   onSend,
   isStreaming,
   onToggleVoice,
-  onInterruptSpeaking,
+  onStopResponse,
+  onStopVoice,
 }: {
   onSend: (
     message: string,
@@ -487,10 +483,12 @@ export function InputArea({
     },
   ) => void;
   isStreaming: boolean;
-  /** Toggle voice mode (connect+start / stop; interrupt while speaking). */
+  /** Start voice mode when inactive; otherwise mute/unmute capture. */
   onToggleVoice: () => void;
-  /** Explicit barge-in affordance while the assistant speaks. */
-  onInterruptSpeaking: () => void;
+  /** Stop the current text or voice response, preserving partial output. */
+  onStopResponse: () => void;
+  /** Explicitly end the persistent voice session. */
+  onStopVoice: () => void;
 }) {
   const [input, setInput] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -499,6 +497,7 @@ export function InputArea({
 
   // ── Voice state (global store — one session per ChatArea) ──
   const voiceState = useVoiceStore((s) => s.voiceState);
+  const isMicMuted = useVoiceStore((s) => s.isMicMuted);
   const readiness = useVoiceStore((s) => s.readiness);
   const voiceSetupDisabled = readiness !== null && !readiness.ready;
   const missingItems = readiness?.missing ?? [];
@@ -723,7 +722,7 @@ export function InputArea({
 
         {/* Voice status strip — state label + live partial transcript +
             inline error alert. Only visible while voice is active. */}
-        <VoiceStatusStrip onInterrupt={onInterruptSpeaking} />
+        <VoiceStatusStrip onStopVoice={onStopVoice} />
 
         {/* Input Container */}
         <div className="input-glow rounded-2xl border border-border bg-card transition-all">
@@ -801,30 +800,37 @@ export function InputArea({
               <Globe className="w-4.5 h-4.5" />
             </Button>
 
-            {/* Voice mic button — state-colored; while the assistant speaks,
-                clicking it = interrupt. Never disabled by streaming. */}
+            {/* Voice mic button — starts voice mode, then mutes/unmutes capture.
+                It never interrupts generation or TTS playback. */}
             <VoiceMicButton
               voiceState={voiceState}
+              isMuted={isMicMuted}
               disabled={voiceSetupDisabled}
               disabledReason={voiceDisabledReason}
               onToggle={onToggleVoice}
             />
 
             <Button
-              onClick={handleSend}
+              onClick={isStreaming ? onStopResponse : handleSend}
               disabled={
-                isStreaming || (!input.trim() && attachments.length === 0)
+                !isStreaming && !input.trim() && attachments.length === 0
               }
+              aria-label={
+                isStreaming ? t("input.stopResponse") : t("input.send")
+              }
+              title={isStreaming ? t("input.stopResponse") : t("input.send")}
               size="icon"
               className={cn(
                 "h-8 w-8 rounded-xl shrink-0 transition-all",
-                (input.trim() || attachments.length > 0) && !isStreaming
+                isStreaming
                   ? "bg-primary hover:bg-primary/90 text-primary-foreground"
-                  : "bg-secondary text-muted-foreground/40",
+                  : input.trim() || attachments.length > 0
+                    ? "bg-primary hover:bg-primary/90 text-primary-foreground"
+                    : "bg-secondary text-muted-foreground/40",
               )}
             >
               {isStreaming ? (
-                <Loader2 className="w-4.5 h-4.5 animate-spin" />
+                <Square className="w-3.5 h-3.5 fill-current" />
               ) : (
                 <Send className="w-4.5 h-4.5" />
               )}

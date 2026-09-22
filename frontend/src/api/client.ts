@@ -112,6 +112,64 @@ export async function setModelPreference(
   return null;
 }
 
+export interface VoicePersona {
+  id: string;
+  name: string;
+  prompt: string;
+}
+export interface VoiceChoice {
+  id: string;
+  name: string;
+  voice: string;
+}
+export interface VoiceSettings {
+  voice: string;
+  speed: number;
+  persona: string;
+  custom_personas: VoicePersona[];
+  personas: Record<string, string>;
+  model: ModelTaskSlot;
+}
+
+export async function fetchVoiceSettings(): Promise<VoiceSettings> {
+  const res = await fetch("/api/voice/settings");
+  if (!res.ok) throw new Error("Could not load voice settings");
+  return res.json();
+}
+
+export async function updateVoiceSettings(
+  patch: Partial<
+    Pick<VoiceSettings, "voice" | "speed" | "persona" | "custom_personas">
+  >,
+): Promise<void> {
+  const res = await fetch("/api/voice/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error("Could not save voice settings");
+}
+
+export async function fetchVoices(): Promise<{
+  builtin: string[];
+  custom: VoiceChoice[];
+}> {
+  const res = await fetch("/api/voice/voices");
+  if (!res.ok) throw new Error("Could not load voices");
+  return res.json();
+}
+
+export async function uploadVoice(file: File): Promise<VoiceChoice> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/voice/voices", { method: "POST", body: form });
+  if (!res.ok)
+    throw new Error(
+      (await res.json().catch(() => ({}))).detail || "Voice import failed",
+    );
+  return res.json();
+}
+
 // ─── Providers ─────────────────────────────────────────────────────
 
 export interface ProviderInfo {
