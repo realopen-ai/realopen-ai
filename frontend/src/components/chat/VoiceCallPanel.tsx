@@ -65,7 +65,9 @@ export function VoiceCallPanel({
     voiceState === "interrupting";
   const stateLabel = isMicMuted
     ? t("voice.state.muted")
-    : t(`voice.state.${voiceState === "interrupting" ? "interrupted" : voiceState}`);
+    : t(
+        `voice.state.${voiceState === "interrupting" ? "interrupted" : voiceState}`,
+      );
 
   const beginDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!minimized || (event.target as HTMLElement).closest("button")) return;
@@ -147,10 +149,16 @@ export function VoiceCallPanel({
           size="icon"
           className="h-8 w-8 rounded-full"
           onClick={() => setMinimized((value) => !value)}
-          aria-label={minimized ? t("voice.call.expand") : t("voice.call.minimize")}
+          aria-label={
+            minimized ? t("voice.call.expand") : t("voice.call.minimize")
+          }
           title={minimized ? t("voice.call.expand") : t("voice.call.minimize")}
         >
-          {minimized ? <Expand className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
+          {minimized ? (
+            <Expand className="h-4 w-4" />
+          ) : (
+            <Minimize2 className="h-4 w-4" />
+          )}
         </Button>
       </div>
 
@@ -166,15 +174,39 @@ export function VoiceCallPanel({
         >
           <div className="voice-energy-sphere">
             <span className="voice-energy-core" />
-            <span className="voice-energy-ribbon voice-energy-ribbon-1" />
-            <span className="voice-energy-ribbon voice-energy-ribbon-2" />
-            <span className="voice-energy-ribbon voice-energy-ribbon-3" />
-            <span className="voice-energy-ribbon voice-energy-ribbon-4" />
+            <svg
+              className="voice-energy-filaments"
+              viewBox="0 0 240 240"
+              aria-hidden="true"
+            >
+              {[0, 1, 2, 3].map((layer) => (
+                <g
+                  key={layer}
+                  className={`voice-filament-layer voice-filament-layer-${layer}`}
+                >
+                  <path
+                    className="voice-filament-veil"
+                    d="M 7 120 C 32 58 69 133 117 60 C 163 -7 226 53 233 120 C 211 191 177 131 124 173 C 62 225 17 178 7 120 Z"
+                  />
+                  <path
+                    className="voice-filament-edge"
+                    d="M 7 120 C 32 58 69 133 117 60 C 163 -7 226 53 233 120 C 211 191 177 131 124 173 C 62 225 17 178 7 120 Z"
+                  />
+                  <path
+                    className="voice-filament-fine"
+                    d="M 9 124 C 45 77 64 140 126 71 C 180 12 219 66 230 119 M 11 125 C 62 155 128 105 184 154 C 212 174 225 148 231 119"
+                  />
+                </g>
+              ))}
+            </svg>
           </div>
         </div>
 
         {!minimized && (
-          <div className="mt-5 flex h-9 items-center justify-center gap-1" aria-label="Microphone level">
+          <div
+            className="mt-5 flex h-9 items-center justify-center gap-1"
+            aria-label="Microphone level"
+          >
             {[0.65, 1, 0.8, 1.2, 0.7].map((weight, index) => (
               <span
                 key={index}
@@ -189,7 +221,10 @@ export function VoiceCallPanel({
         )}
 
         {!minimized && partialTranscript && !isMicMuted && (
-          <p className="mt-2 max-w-xl truncate text-center text-xs text-muted-foreground" aria-live="polite">
+          <p
+            className="mt-2 max-w-xl truncate text-center text-xs text-muted-foreground"
+            aria-live="polite"
+          >
             “{partialTranscript}”
           </p>
         )}
@@ -199,12 +234,21 @@ export function VoiceCallPanel({
         <Button
           variant="secondary"
           size="icon"
-          className={cn("h-10 w-10 rounded-full", isMicMuted && "text-amber-500")}
+          className={cn(
+            "h-10 w-10 rounded-full",
+            isMicMuted && "text-amber-500",
+          )}
           onClick={onToggleMute}
-          aria-label={isMicMuted ? t("voice.button.unmute") : t("voice.button.mute")}
+          aria-label={
+            isMicMuted ? t("voice.button.unmute") : t("voice.button.mute")
+          }
           title={isMicMuted ? t("voice.button.unmute") : t("voice.button.mute")}
         >
-          {isMicMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+          {isMicMuted ? (
+            <MicOff className="h-4 w-4" />
+          ) : (
+            <Mic className="h-4 w-4" />
+          )}
         </Button>
         {canStopResponse && (
           <Button
