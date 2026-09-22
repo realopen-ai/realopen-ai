@@ -8,11 +8,18 @@ build/
 .venv/
 venv/
 *.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Node
 node_modules/
 frontend/dist/
 frontend/.vite/
+*.tsbuildinfo
+coverage/
 
 # Environment
 .env
