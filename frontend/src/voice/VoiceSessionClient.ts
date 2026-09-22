@@ -148,6 +148,7 @@ export interface VoiceEventMap {
   error: VoiceErrorEvent;
   ready: VoiceReadyEvent;
   stopped: void;
+  micLevel: number;
 }
 
 export type VoiceEventName = keyof VoiceEventMap;
@@ -421,6 +422,7 @@ export class VoiceSessionClient {
     }
     if (muted) {
       this.vadAboveCount = 0;
+      this.emit("micLevel", 0);
     }
     log(`microphone ${muted ? "muted" : "unmuted"}`);
   }
@@ -729,6 +731,15 @@ export class VoiceSessionClient {
   /** 0x01 mic frame — ALWAYS sent, including while assistant audio plays. */
   private handleMicPcm(buffer: ArrayBuffer): void {
     if (!shouldCaptureMicrophone(this.micMuted)) return;
+    if (buffer.byteLength >= 2) {
+      const samples = new Int16Array(buffer);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const value = samples[i] / 32768;
+        sum += value * value;
+      }
+      this.emit("micLevel", Math.min(1, Math.sqrt(sum / samples.length) * 12));
+    }
     // Client-side barge-in VAD (runs on the near-end capture stream).
     this.runBargeInVad(buffer);
     if (this.ws?.readyState !== WebSocket.OPEN || !this.started) return;

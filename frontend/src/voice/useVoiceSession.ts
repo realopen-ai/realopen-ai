@@ -320,6 +320,9 @@ export function useVoiceSession(
       client.on("asrPartial", (p) => {
         useVoiceStore.getState().setPartialTranscript(p.text);
       });
+      client.on("micLevel", (level) => {
+        useVoiceStore.getState().setMicLevel(level);
+      });
       client.on("asrFinal", (p) => {
         // Keep the final text visible as the partial bubble until the
         // persisted user_message replaces it.
@@ -361,7 +364,11 @@ export function useVoiceSession(
       });
 
       client.on("stopped", () => {
-        teardownSession();
+        // Keep the STOPPING state mounted long enough for the call surface's
+        // exit animation to complete before resetting it to inactive.
+        setTimeout(() => {
+          if (clientRef.current === client) teardownSession();
+        }, 280);
       });
     },
     [startVoiceTurn, finalizeVoiceTurn, teardownSession],

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { InputArea } from "@/components/chat/InputArea";
+import { VoiceCallPanel } from "@/components/chat/VoiceCallPanel";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import {
   useChatStore,
@@ -13,7 +14,7 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
-import { Brain, Check, Mic, Volume2 } from "lucide-react";
+import { Brain, Check, Mic } from "lucide-react";
 import {
   streamChat,
   streamChatWithFiles,
@@ -650,12 +651,8 @@ export function ChatArea() {
   const showPartialBubble =
     (voiceState === "listening" || voiceState === "processing") &&
     partialTranscript.length > 0;
-  // Assistant "speaking" indicator — shown near the streaming assistant
-  // message while TTS audio plays.
-  const showSpeakingIndicator = voiceState === "speaking";
-
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="relative flex flex-col h-full overflow-hidden bg-background">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-2.75 border-b border-border/50">
         <div className="flex items-center gap-2">
@@ -665,6 +662,12 @@ export function ChatArea() {
           </h2>
         </div>
       </div>
+
+      <VoiceCallPanel
+        onToggleMute={voiceSession.toggleVoice}
+        onEnd={voiceSession.stopVoice}
+        onStopResponse={handleStopResponse}
+      />
 
       {/* Messages or Welcome */}
       {isLoadingConv ? (
@@ -723,23 +726,6 @@ export function ChatArea() {
         />
       )}
 
-      {/* Assistant speaking indicator — TTS audio is playing (voice mode) */}
-      {showSpeakingIndicator && (
-        <div className="px-4 pb-1 animate-fade-in">
-          <div className="max-w-3xl mx-auto flex items-center gap-2">
-            <Volume2 className="w-3.5 h-3.5 text-primary animate-pulse" />
-            <span className="text-[11px] text-primary/70">
-              {t("voice.state.speaking")}
-            </span>
-            <span className="voice-eq-bars" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </span>
-          </div>
-        </div>
-      )}
-
       {/* Partial transcript ghost bubble — transient user-style bubble
           while the user speaks; replaced by the persisted user message. */}
       {showPartialBubble && (
@@ -769,9 +755,8 @@ export function ChatArea() {
       <InputArea
         onSend={handleSend}
         isStreaming={isStreaming}
-        onToggleVoice={voiceSession.toggleVoice}
+        onStartVoice={voiceSession.toggleVoice}
         onStopResponse={handleStopResponse}
-        onStopVoice={voiceSession.stopVoice}
       />
     </div>
   );
