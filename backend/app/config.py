@@ -729,7 +729,7 @@ class Settings(BaseSettings):
     # Poll interval (seconds) for the background queue's idle check.
     MEMORY_BG_QUEUE_POLL: float = 0.25
 
-    # ── KV-cache-aware system prompt ────────────────────────────────────
+    # ── KV-cache-aware system prompt ────────────────────────────────────────
     # When true, the agent builds a STABLE system prefix (agent persona +
     # tool list + untrusted-context policy) and appends DYNAMIC content
     # (memories, RAG, cross-session, current datetime) as tail user-role
@@ -743,6 +743,10 @@ class Settings(BaseSettings):
     # Master switch: when false the /ws/voice endpoint refuses sessions
     # (text chat is unaffected).
     VOICE_ENABLED: bool = True
+    # Optional host-native inference service. Docker uses this URL to reach
+    # MLX/Metal on Apple Silicon (or the native Torch backend on Linux/
+    # Windows) instead of running accelerator-blind inference in-container.
+    VOICE_RUNTIME_URL: str = ""
     # Input (mic + far-end reference) sample rate. Protocol v1 fixes this
     # at 16000 Hz mono PCM s16le.
     VOICE_SAMPLE_RATE: int = 16000
@@ -751,11 +755,14 @@ class Settings(BaseSettings):
     VOICE_TTS_SAMPLE_RATE: int = 24000
     # WebRTC VAD aggressiveness 0-3 (3 = most aggressive filtering).
     VOICE_VAD_MODE: int = 3
+    # Sustained raw speech required before capture starts. This exceeds the
+    # fallback VAD's short hangover so a keyboard click cannot open a turn.
+    VOICE_VAD_START_MS: int = 240
     # Silence (ms) after detected speech before an utterance is ended.
-    VOICE_VAD_SILENCE_MS: int = 700
+    VOICE_VAD_SILENCE_MS: int = 1400
     # Rolling mic pre-roll (ms) retained before the VAD trigger so the
     # first syllables of a barge-in utterance are never lost.
-    VOICE_PREROLL_MS: int = 250
+    VOICE_PREROLL_MS: int = 400
     # AEC backend: "auto" (WebRTC when importable, else NLMS), "nlms",
     # "webrtc", or "none" (pass-through — debugging only).
     VOICE_AEC: str = "auto"
@@ -768,6 +775,30 @@ class Settings(BaseSettings):
     VOICE_MAX_UTTERANCE_SEC: int = 30
     # Idle timeout for a voice WebSocket session (seconds).
     VOICE_SESSION_IDLE_SEC: int = 600
+    # Upper bound for one TTS model load (seconds). Local disk loads of
+    # validated assets finish well below this; a load that exceeds it is
+    # almost certainly a stuck download attempt (assets missing → the
+    # setup wizard should have materialized them) and surfaces as a clear
+    # recoverable TtsError instead of an infinite mid-turn hang.
+    VOICE_TTS_LOAD_TIMEOUT_SEC: int = 300
+    # Upper bound for one ASR model load (seconds) — same rationale as the
+    # TTS bound: warm-cache/local loads finish well below it; a load that
+    # exceeds it is a stuck network attempt and surfaces as a clear
+    # recoverable AsrError instead of an infinite mid-turn hang.
+    VOICE_ASR_LOAD_TIMEOUT_SEC: int = 300
+    # Eagerly warm up the ASR/TTS engines in the background right after
+    # the voice session starts (mic click), so first-utterance/first-reply
+    # latency is model-load-free and load failures surface immediately
+    # instead of mid-turn. Models were installed by the setup wizard, so
+    # these loads are disk-bound, not network-bound.
+    VOICE_EAGER_WARMUP: bool = True
+    # ASR compute dtype: "auto" (default — bfloat16 on CPU, float16 when a
+    # CUDA device is visible; the official qwen-asr runtime handles both),
+    # or an explicit "bfloat16" | "float16" | "float32". fp32 doubles the
+    # resident size (≈1.5 GB → 3 GB for Qwen3-ASR-0.6B) and starves small
+    # machines — the cause of the original "app hangs while loading
+    # weights" bug on low-RAM hosts.
+    VOICE_ASR_DTYPE: str = "auto"
 
     model_config = {
         "env_file": ".env",

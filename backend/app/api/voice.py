@@ -24,15 +24,123 @@ GET /api/setup/status → ``voice`` summary (app/services/voice_model_installer)
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
+import httpx
 
+from app.config import settings
 from app.voice import models_store
+from app.services import model_prefs, voice_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class VoiceSettingsRequest(BaseModel):
+    voice: Optional[str] = None
+    speed: Optional[float] = None
+    persona: Optional[str] = None
+    custom_personas: Optional[List[Dict[str, Any]]] = None
+
+
+@router.get("/voice/settings")
+async def get_voice_settings():
+    return {
+        **voice_settings.get(),
+        "personas": voice_settings.PERSONAS,
+        "model": await model_prefs.task_row("voice"),
+    }
+
+
+@router.put("/voice/settings")
+async def put_voice_settings(request: VoiceSettingsRequest):
+    try:
+        payload = request.model_dump(exclude_none=True)
+        if "voice" in payload and settings.VOICE_RUNTIME_URL:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    settings.VOICE_RUNTIME_URL.rstrip("/") + "/v1/voices/prepare",
+                    json={"voice": payload["voice"]},
+                )
+                if response.is_error:
+                    detail = response.json().get("detail", response.text)
+                    raise HTTPException(response.status_code, detail)
+        return voice_settings.update(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Could not prepare voice: {exc}") from exc
+
+
+@router.get("/voice/voices")
+async def get_voices():
+    builtins = [
+        "alba",
+        "anna",
+        "azelma",
+        "bill_boerst",
+        "caro_davy",
+        "charles",
+        "cosette",
+        "eponine",
+        "eve",
+        "fantine",
+        "george",
+        "jane",
+        "jean",
+        "javert",
+        "marius",
+        "mary",
+        "michael",
+        "paul",
+        "peter_yearsley",
+        "stuart_bell",
+        "vera",
+    ]
+    custom = []
+    if settings.VOICE_RUNTIME_URL:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(
+                    settings.VOICE_RUNTIME_URL.rstrip("/") + "/v1/voices"
+                )
+                response.raise_for_status()
+                custom = response.json().get("custom", [])
+        except Exception:
+            pass
+    return {"builtin": builtins, "custom": custom}
+
+
+@router.post("/voice/voices")
+async def upload_voice(file: UploadFile = File(...)):
+    if not (file.filename or "").lower().endswith(".wav"):
+        raise HTTPException(400, "Voice sample must be a .wav file")
+    data = await file.read(20 * 1024 * 1024 + 1)
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "Voice sample is larger than 20 MB")
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(
+                settings.VOICE_RUNTIME_URL.rstrip("/") + "/v1/voices",
+                content=data,
+                headers={
+                    "Content-Type": "audio/wav",
+                    "X-Voice-Name": file.filename or "voice.wav",
+                },
+            )
+            if response.is_error:
+                detail = response.json().get("detail", response.text)
+                raise HTTPException(response.status_code, detail)
+            return response.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Could not import voice: {exc}") from exc
 
 
 def _side_missing(label: str, side: dict) -> Optional[str]:
@@ -66,6 +174,30 @@ def _runtime_missing() -> List[str]:
 @router.get("/voice/status")
 async def get_voice_status():
     """Voice pipeline readiness (the mic button's gate)."""
+    if settings.VOICE_RUNTIME_URL:
+        url = settings.VOICE_RUNTIME_URL.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{url}/health")
+                response.raise_for_status()
+                native = response.json()
+            return {
+                "ready": bool(native.get("ready")) and settings.VOICE_ENABLED,
+                "enabled": settings.VOICE_ENABLED,
+                "asr": native.get("asr") or {"valid": True},
+                "tts": native.get("tts") or {"valid": True},
+                "missing": [],
+                "runtime": "host-native",
+            }
+        except Exception as exc:
+            return {
+                "ready": False,
+                "enabled": settings.VOICE_ENABLED,
+                "asr": {"valid": False, "reason": "host_runtime_unavailable"},
+                "tts": {"valid": False, "reason": "host_runtime_unavailable"},
+                "missing": [f"Host voice runtime: {exc}"],
+                "runtime": "host-native",
+            }
     status = models_store.voice_dependency_status()
     asr = status["asr"]
     tts = status["tts"]
@@ -74,7 +206,10 @@ async def get_voice_status():
         for entry in (_side_missing("ASR", asr), _side_missing("TTS", tts))
         if entry
     ]
-    runtime_missing = _runtime_missing()
+    runtime_missing = [
+        f"Runtime: {entry.get('description') or entry.get('id')}"
+        for entry in status.get("runtime", [])
+    ]
     missing.extend(runtime_missing)
     ready = bool(status["ready"]) and not runtime_missing and status["enabled"]
     return {

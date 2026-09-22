@@ -1,87 +1,111 @@
 """
-Voice model installer — provider-aware setup for ASR + TTS models.
+Voice model installer — natural HuggingFace downloads into the persisted
+data volume.
 
-Used by the setup wizard (``POST /api/setup/pull-models`` SSE stream) and by
-the host-side script ``scripts/install-voice-models.py`` (which re-implements
-the download with stdlib-only urllib and writes the SAME manifest).
+Used by the setup wizard (``POST /api/setup/pull-models`` SSE stream) and
+by the CLI (``python -m app.services.voice_model_installer``).
+
+**Design (user directive, 2026-09-19)** — let HuggingFace handle the model
+downloads the way the packages do it NATURALLY (exactly like running
+``mlx_qwen3_asr.Session(model=…)`` / ``pocket_tts.TTSModel.load_model(…)``
+on a laptop: files land in the hub cache), and pin that hub cache to the
+persisted data directory so everything survives rebuilds:
+
+* ``app.voice.hf_cache.ensure_hf_env()`` pins ``HF_HOME`` to
+  ``<data>/huggingface`` (Docker ``/app/data/huggingface`` — the
+  ``./data:/app/data`` bind mount already persists it).
+* **ASR** — ``huggingface_hub.snapshot_download(repo_id, revision)`` warms
+  the cache; the wizard reports REAL byte progress by watching the cache
+  directory grow (blobs on disk, including in-flight ``*.incomplete``).
+  An existing legacy local snapshot (``data/models/voice/asr/…``) is
+  SEEDED into the cache layout first so upgraded installs do not
+  re-download ~1.9 GB.
+* **TTS** — the pocket_tts package itself performs the natural download:
+  ``TTSModel.load_model(language=…)`` + ``get_state_for_audio_prompt(<voice>)``
+  during setup. The wizard watches the hub cache grow (honest MB-so-far
+  status lines — the package owns the actual byte stream). Afterwards
+  the manifest records the resulting ``models--*`` repos/snapshots.
+* **Runtime pip packages** — installed through
+  :mod:`app.services.pip_persistence` (a wheelhouse in the data volume +
+  offline-first installs), so they persist like LibreOffice: after a
+  rebuild the backend startup replays them offline from the wheelhouse.
 
 Key design rules (enforced by tests):
 
 * **profiles.yml is the single source of truth.** The selected ASR/TTS
   provider + model + revision always come from ``settings.get_voice_config()``
-  (when available) or from parsing ``profiles.yml`` directly. Nothing in this
-  module (or anywhere else) hardcodes a *selection*. Provider IDs appear here
-  only as *capability strings* — the installer implementations and validation
-  whitelists below.
-* **Real progress only.** ASR downloads stream bytes over HTTP and emit
-  byte-accurate ``pull_progress`` events (completed/total/percent computed
-  from actual file sizes). Stages without byte progress (pip installs,
-  metadata listing, TTS package materialization) emit ``pull_status`` events
-  with real output lines — never invented percentages.
-* **Idempotent.** Before every install the manifest + files on disk are
-  validated. Already-installed + valid + matching model/revision → skipped
-  with ``pull_done {"already_installed": true}``. Changed model/revision,
-  missing/corrupt files, or an incomplete manifest entry → reinstall.
-* **No first-use downloads.** This module is only invoked from the setup
-  wizard (or the explicit CLI). The voice runtime never calls it.
+  (when available) or from parsing ``profiles.yml`` directly. Nothing here
+  hardcodes a *selection*; provider IDs are capability strings only.
+* **Real progress only.** Progress events carry bytes actually observed on
+  disk; stages without byte granularity emit real output lines — never
+  invented percentages.
+* **Idempotent.** Before every install the manifest + cache are validated
+  (models_store read side). Already-installed + valid + matching
+  selection → skipped with ``pull_done {"already_installed": true}``.
+* **No first-use downloads.** Only this module (invoked from the setup
+  wizard or the CLI) downloads. Runtime engine loads run offline
+  (``app.voice.hf_cache.offline_hub``) and fail fast with clear errors.
 
-Manifest — ``data/models/voice/.manifest.json`` (schema shared with the
-host-side script so both installers see the same state):
+Manifest — ``data/models/voice/.manifest.json`` (schema v3; legacy v1/v2
+entries stay readable for validation)::
 
     {
       "asr": {
-        "provider": "qwen3-asr",
-        "model": "Qwen/Qwen3-ASR-0.6B",
-        "revision": "main",
-        "type": "asr",
-        "role": "default_asr",
-        "path": "asr/Qwen3-ASR-0.6B",          # relative to the models dir
-        "files": {"config.json": 731, ...},     # relative path -> bytes
-        "total_bytes": 1400000731,
-        "complete": true,
-        "installed_at": "2026-04-17T12:00:00",
-        "source": "https://huggingface.co/<repo>@<rev>"
+        "provider": "qwen3-asr", "model": "Qwen/Qwen3-ASR-0.6B",
+        "revision": "main", "type": "asr", "role": "default_asr",
+        "store": "hf",
+        "hf_repos": {"Qwen/Qwen3-ASR-0.6B": "snapshots/<sha>"},
+        "files": {"Qwen/Qwen3-ASR-0.6B::model.safetensors": 1876091704, ...},
+        "total_bytes": ..., "complete": true, "installed_at": "..."
       },
       "tts": {
-        "provider": "pocket-tts",
-        "model": "pocket-tts",
-        "language": "english_2026-04",
-        "voice": "mary",
-        "type": "tts",
-        "role": "default_tts",
-        "path": "tts/pocket-tts",
-        "files": {...},                          # empty when not preloaded
-        "total_bytes": 0,
-        "complete": true,
-        "preloaded": false,                      # assets materialize on 1st load
-        "package_installed": true,
+        "provider": "pocket-tts", "model": "pocket-tts",
+        "language": "english_2026-04", "voice": "mary",
+        "type": "tts", "role": "default_tts", "store": "hf",
+        "hf_repos": {"kyutai/pocket-tts-without-voice-cloning": "snapshots/<sha>"},
+        "files": {"kyutai/...::model.safetensors": 209709196, ...},
+        "complete": true, "package_installed": true, "installed_at": "..."
+      },
+      "runtime": {
+        "packages": [
+          {"id": "pocket-tts", "module": "pocket_tts",
+           "pip_name": "pocket-tts", "pip_extra_args": [],
+           "display": "Pocket TTS runtime"}, ...
+        ],
         "installed_at": "..."
       }
     }
 
-SSE event dicts yielded by :func:`stream_install_voice_dependencies` use the
-exact event names the setup wizard already consumes (``pull_start`` /
-``pull_progress`` / ``pull_status`` / ``pull_done`` / ``pull_error``) with one
-new field — ``provider`` — plus ``kind`` (``voice_model`` | ``voice_runtime``).
-The setup API adds ``provider``/``kind`` to the Ollama events as well so the
-frontend sees a uniform protocol.
+SSE event dicts use the exact names the setup wizard consumes
+(``pull_start`` / ``pull_progress`` / ``pull_status`` / ``pull_done`` /
+``pull_error``) with ``provider`` + ``kind``
+(``voice_model`` | ``voice_runtime``) fields.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import importlib.util
-import inspect
 import json
 import logging
+import os
 import shutil
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.parse import quote
 
 import yaml
@@ -91,10 +115,18 @@ try:  # httpx is a hard backend dependency, but keep the module importable
 except ImportError:  # pragma: no cover - only hit in exotic environments
     httpx = None  # type: ignore[assignment]
 
-try:  # optional: used only for HF metadata when present
-    import huggingface_hub
-except ImportError:  # normal in the stock backend image
-    huggingface_hub = None  # type: ignore[assignment]
+from app.services import pip_persistence
+from app.voice.hf_cache import (
+    dir_size_bytes,
+    ensure_hf_env,
+    hub_cache_dir,
+    human_mb,
+    repo_cache_dir,
+    run_monitored,
+    snapshot_files,
+    snapshot_dir as hf_snapshot_dir,
+    suppress_hub_progress_bars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +153,7 @@ class VoiceModelSpec:
     role: str = ""
     description: str = ""
     size: str = ""
+    runtime: Optional[str] = None
 
     @property
     def display_name(self) -> str:
@@ -139,6 +172,7 @@ class VoiceModelSpec:
             "role": self.role,
             "description": self.description,
             "size": self.size,
+            "runtime": self.runtime,
         }
 
 
@@ -163,6 +197,7 @@ _SPEC_FIELDS = (
     "role",
     "description",
     "size",
+    "runtime",
 )
 
 
@@ -222,6 +257,7 @@ def _coerce_spec(kind: str, data: Any) -> Optional[VoiceModelSpec]:
         role=str(source.get("role") or f"default_{kind}"),
         description=str(source.get("description") or ""),
         size=str(source.get("size") or ""),
+        runtime=source.get("runtime"),
     )
 
 
@@ -300,7 +336,8 @@ class RuntimePackage:
 
     ``id`` is the setup-plan identifier; ``module`` is the import name used
     for the find_spec() presence check (find_spec only — heavy libs are never
-    imported here).
+    imported here). Installs go through pip_persistence so the wheelhouse
+    in the data volume persists them across rebuilds.
     """
 
     id: str
@@ -310,68 +347,127 @@ class RuntimePackage:
     pip_extra_args: Tuple[str, ...] = ()
     size: str = ""
 
-    def pip_command(self) -> List[str]:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "--progress-bar",
-            "off",
-            self.pip_name,
-        ]
-        cmd.extend(self.pip_extra_args)
-        return cmd
+    def to_manifest_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "module": self.module,
+            "display": self.display,
+            "pip_name": self.pip_name,
+            "pip_extra_args": list(self.pip_extra_args),
+        }
 
 
 # Registry of the voice runtime packages. Mirrors the "voice" category
-# entries in app/services/deps_manager.py CATALOG (kept consistent by
-# test_voice_installer.py).
+# entries in app/services/deps_manager.py CATALOG.
 RUNTIME_PACKAGES: Dict[str, RuntimePackage] = {
     p.id: p
     for p in (
+        # ── Apple-Silicon host runtime (native MLX ASR — no torch needed) ──
+        RuntimePackage(
+            id="mlx-qwen3-asr",
+            module="mlx_qwen3_asr",
+            display="Qwen3-ASR MLX runtime (Apple Silicon)",
+            pip_name="mlx-qwen3-asr==0.4.4",
+            size="~60 MB",
+        ),
+        # ── Cross-platform (Linux/Docker) ASR runtime ──
         RuntimePackage(
             id="torch-cpu",
             module="torch",
             display="PyTorch (CPU)",
-            pip_name="torch",
+            pip_name="torch==2.14.0+cpu",
             pip_extra_args=("--index-url", "https://download.pytorch.org/whl/cpu"),
             size="~200 MB",
+        ),
+        # The official qwen-asr runtime: the Qwen3-ASR checkpoints ship in
+        # the "thinker export" layout that plain transformers releases
+        # mis-parse. qwen-asr pins its own transformers (4.57.6) and carries
+        # the matching implementation. --no-deps keeps its demo deps out.
+        RuntimePackage(
+            id="qwen-asr",
+            module="qwen_asr",
+            display="Qwen3-ASR runtime (official)",
+            pip_name="qwen-asr==0.0.6",
+            pip_extra_args=("--no-deps",),
+            size="~60 MB",
         ),
         RuntimePackage(
             id="transformers",
             module="transformers",
-            display="Transformers",
-            pip_name="transformers",
+            display="Transformers (qwen-asr pin)",
+            pip_name="transformers==4.57.6",
             size="~50 MB",
+        ),
+        RuntimePackage(
+            id="accelerate",
+            module="accelerate",
+            display="Accelerate (low-memory model loading)",
+            # Its small dependency set is already covered by the pinned
+            # runtime entries/base backend. Resolving dependencies here can
+            # replace CPU Torch with PyPI's CUDA build on Linux.
+            pip_name="accelerate==1.12.0",
+            pip_extra_args=("--no-deps",),
+            size="~5 MB",
+        ),
+        RuntimePackage(
+            id="psutil",
+            module="psutil",
+            display="psutil (accelerate dependency)",
+            pip_name="psutil==7.2.2",
+            size="~1 MB",
+        ),
+        RuntimePackage(
+            id="qwen-omni-utils",
+            module="qwen_omni_utils",
+            display="Qwen audio utils",
+            pip_name="qwen-omni-utils==0.0.9",
+            size="~1 MB",
+        ),
+        RuntimePackage(
+            id="nagisa",
+            module="nagisa",
+            display="nagisa (qwen-asr dependency)",
+            pip_name="nagisa==0.2.11",
+            size="~5 MB",
+        ),
+        RuntimePackage(
+            id="soynlp",
+            module="soynlp",
+            display="soynlp (qwen-asr dependency)",
+            pip_name="soynlp==0.0.493",
+            size="~2 MB",
         ),
         RuntimePackage(
             id="soundfile",
             module="soundfile",
             display="SoundFile (audio I/O)",
-            pip_name="soundfile",
+            pip_name="soundfile==0.14.0",
             size="~3 MB",
         ),
         RuntimePackage(
             id="webrtcvad-wheels",
             module="webrtcvad",
             display="WebRTC VAD",
-            pip_name="webrtcvad-wheels",
+            pip_name="webrtcvad-wheels==2.0.14",
             size="~1 MB",
         ),
         RuntimePackage(
             id="huggingface-hub",
             module="huggingface_hub",
             display="Hugging Face Hub client",
-            pip_name="huggingface-hub",
+            pip_name="huggingface-hub==0.36.2",
             size="~2 MB",
         ),
         RuntimePackage(
             id="pocket-tts",
             module="pocket_tts",
             display="Pocket TTS runtime",
-            pip_name="pocket-tts",
+            pip_name="pocket-tts==3.1.0",
+            # Prevent Linux from resolving the multi-GB CUDA PyTorch stack.
+            pip_extra_args=(
+                "--extra-index-url",
+                "https://download.pytorch.org/whl/cpu",
+            ),
             size="~600 MB",
         ),
     )
@@ -381,8 +477,38 @@ RUNTIME_PACKAGES: Dict[str, RuntimePackage] = {
 # pipeline) plus per-provider runtime requirements. Keyed by provider ID
 # (capability string) — the *selection* still comes from profiles.yml.
 VOICE_COMMON_RUNTIME: Tuple[str, ...] = ("soundfile", "webrtcvad-wheels")
+
+
+def _on_apple_host() -> bool:
+    """True when running natively on macOS (MLX-capable host).
+
+    Docker containers (even on a Mac) report linux — the cross-platform
+    runtime set applies there, which is exactly right: MLX has no Linux
+    builds, so containerized backends use the transformers engine.
+    """
+    return sys.platform == "darwin"
+
+
+def _asr_runtime_packages() -> Tuple[str, ...]:
+    """ASR provider runtime package ids for THIS host."""
+    if _on_apple_host():
+        # Native MLX runtime — mlx, numpy, regex, huggingface-hub (no torch).
+        return ("mlx-qwen3-asr", "huggingface-hub")
+    return (
+        "torch-cpu",
+        "qwen-asr",
+        "transformers",
+        "accelerate",
+        "psutil",
+        "qwen-omni-utils",
+        "nagisa",
+        "soynlp",
+        "huggingface-hub",
+    )
+
+
 PROVIDER_RUNTIME: Dict[str, Tuple[str, ...]] = {
-    "qwen3-asr": ("torch-cpu", "transformers", "huggingface-hub"),
+    "qwen3-asr": (),  # resolved per-host by _asr_runtime_packages()
     "pocket-tts": ("pocket-tts",),
 }
 
@@ -390,8 +516,13 @@ PROVIDER_RUNTIME: Dict[str, Tuple[str, ...]] = {
 def required_runtime_package_ids(cfg: VoiceConfig) -> List[str]:
     """Package ids required by the configured providers (+ common set)."""
     ids: List[str] = list(VOICE_COMMON_RUNTIME)
-    for provider in (cfg.asr.provider, cfg.tts.provider):
-        ids.extend(PROVIDER_RUNTIME.get(provider, ()))
+    # Install TTS first because Pocket TTS has the broadest dependency set;
+    # the exact ASR pins that follow then stabilize shared Torch/HF packages.
+    for provider in (cfg.tts.provider, cfg.asr.provider):
+        if provider == "qwen3-asr":
+            ids.extend(_asr_runtime_packages())
+        else:
+            ids.extend(PROVIDER_RUNTIME.get(provider, ()))
     seen: set = set()
     ordered: List[str] = []
     for i in ids:
@@ -409,6 +540,10 @@ def _module_importable(module_name: str) -> bool:
         return False
 
 
+def _runtime_package_satisfied(pkg: RuntimePackage) -> bool:
+    return pip_persistence.package_satisfied(pkg.pip_name, pkg.module)
+
+
 def missing_runtime_packages(cfg: VoiceConfig) -> List[RuntimePackage]:
     """Runtime packages that are not importable right now."""
     missing = []
@@ -417,7 +552,7 @@ def missing_runtime_packages(cfg: VoiceConfig) -> List[RuntimePackage]:
         if pkg is None:
             # Unknown package id — provider mapping drift; fail loudly.
             raise RuntimeError(f"Unknown voice runtime package id: {pkg_id}")
-        if not _module_importable(pkg.module):
+        if not _runtime_package_satisfied(pkg):
             missing.append(pkg)
     return missing
 
@@ -445,11 +580,7 @@ def get_data_dir() -> Path:
 
 
 def _models_store():
-    """Lazy import of app.voice.models_store (owned by the voice core agent).
-
-    Returns None when the voice package isn't present yet — every use has a
-    standalone fallback so the setup wizard keeps working.
-    """
+    """Lazy import of app.voice.models_store (the read-side owner)."""
     try:
         from app.voice import models_store
 
@@ -459,7 +590,7 @@ def _models_store():
 
 
 def get_models_dir() -> Path:
-    """Voice model storage root: ``data/models/voice``.
+    """Voice manifest storage root: ``data/models/voice``.
 
     Prefers ``app.voice.models_store.MODELS_DIR`` when available (same path
     by construction) so both modules agree on the location.
@@ -486,7 +617,7 @@ def _dir_name(model_id: str) -> str:
 
 
 def asr_target_dir(spec: VoiceModelSpec) -> Path:
-    """ASR snapshot directory: ``data/models/voice/asr/<model-name>``."""
+    """LEGACY ASR snapshot directory (seeding source): ``data/models/voice/asr/<model-name>``."""
     ms = _models_store()
     if ms is not None:
         fn = getattr(ms, "asr_dir", None)
@@ -501,7 +632,7 @@ def asr_target_dir(spec: VoiceModelSpec) -> Path:
 
 
 def tts_target_dir(spec: VoiceModelSpec) -> Path:
-    """TTS asset directory: ``data/models/voice/tts/<model-name>``."""
+    """LEGACY TTS asset directory: ``data/models/voice/tts/<model-name>``."""
     return get_models_dir() / "tts" / _dir_name(spec.model)
 
 
@@ -558,19 +689,46 @@ def _entry_matches(kind: str, spec: VoiceModelSpec, entry: dict) -> bool:
 
 
 def _files_valid(kind: str, entry: dict) -> Tuple[bool, str]:
-    """Validate the files recorded in a manifest entry against disk."""
+    """Validate a manifest entry (hf store or legacy local) — mirrors
+    app.voice.models_store._files_valid so idempotency checks agree."""
+    ms = _models_store()
+    if ms is not None:
+        fn = getattr(ms, "_files_valid", None)
+        if callable(fn):
+            try:
+                return fn(kind, entry)
+            except Exception as e:  # noqa: BLE001 — mirror must never crash
+                logger.warning("models_store _files_valid raised: %s", e)
+    # Standalone fallback (hf store).
+    if entry.get("store") == "hf":
+        repos = entry.get("hf_repos")
+        files = entry.get("files") or {}
+        if not isinstance(repos, dict) or not repos or not files:
+            return False, "manifest entry records no HF cache files"
+        for repo_id, snapshot_name in repos.items():
+            root = repo_cache_dir(str(repo_id)) / str(snapshot_name or "")
+            if not (root.is_dir() and any(root.iterdir())):
+                return False, f"HF cache snapshot missing for {repo_id}"
+        for key, size in (files or {}).items():
+            repo_id, _, rel = str(key).partition("::")
+            root = repo_cache_dir(repo_id) / str((repos.get(repo_id) or "snapshots/x"))
+            f = root / rel
+            if not f.exists():
+                return False, f"missing HF cache file: {rel}"
+            try:
+                if f.stat().st_size != int(size):
+                    return False, f"size mismatch: {rel}"
+            except (OSError, TypeError, ValueError):
+                return False, f"unreadable file: {rel}"
+        return True, ""
+    # Standalone fallback (legacy local layout).
     rel = entry.get("path")
     files = entry.get("files") or {}
-    if not rel:
-        return False, "manifest entry has no path"
-    if kind == "tts" and not files and not entry.get("preloaded"):
-        # TTS entries may legitimately have no files when the package
-        # materializes its cache on first load — the package_installed /
-        # preloaded flags carry the state instead.
-        return True, ""
-    root = get_models_dir() / rel
-    if not files:
+    if not rel or not files:
         return False, "manifest entry records no files"
+    if kind == "tts" and "local-config.yaml" not in files:
+        return False, "legacy TTS layout incomplete (no local-config.yaml)"
+    root = get_models_dir() / rel
     for fname, size in files.items():
         f = root / fname
         if not f.exists():
@@ -587,7 +745,7 @@ def _run_models_store_validator(kind: str, cfg: VoiceConfig) -> Optional[bool]:
     """Call app.voice.models_store validators when available.
 
     Returns None when models_store is absent or the validator could not be
-    applied (unknown signature etc.) — file-based validation still applies.
+    applied — file-based validation still applies.
     """
     ms = _models_store()
     if ms is None:
@@ -609,8 +767,6 @@ def check_installed(kind: str, cfg: VoiceConfig) -> Tuple[bool, str]:
     """Idempotency check for one side (asr/tts) of the voice install.
 
     Returns (installed_ok, reason). ``reason`` is "" when installed.
-    Reasons: not_installed | incomplete | changed | missing file: … |
-    size mismatch: … | runtime package missing | validation_failed.
     """
     spec = cfg.asr if kind == "asr" else cfg.tts
     entry = read_manifest().get(kind)
@@ -618,17 +774,19 @@ def check_installed(kind: str, cfg: VoiceConfig) -> Tuple[bool, str]:
         return False, "not_installed"
     if not entry.get("complete"):
         return False, "incomplete"
+    if entry.get("store") != "hf":
+        return False, "legacy_install"
     if not _entry_matches(kind, spec, entry):
         return False, "changed"
     ok, why = _files_valid(kind, entry)
     if not ok:
         return False, why
 
-    # Extra: the TTS python package must still be importable (pip packages
-    # live in the image, not in the data volume — a rebuild wipes them).
+    # The TTS python package must still be importable (pip persistence
+    # replays it at startup; a fresh container reports it honestly).
     if kind == "tts":
         pkg = RUNTIME_PACKAGES.get("pocket-tts")
-        if pkg and not _module_importable(pkg.module):
+        if pkg and not _runtime_package_satisfied(pkg):
             return False, "runtime package missing"
 
     validator = _run_models_store_validator(kind, cfg)
@@ -643,16 +801,7 @@ def check_installed(kind: str, cfg: VoiceConfig) -> Tuple[bool, str]:
 def voice_enabled_for_profile(
     profile: str, enabled_modules: Optional[Sequence[str]] = None
 ) -> bool:
-    """Whether voice dependencies should be installed for this setup run.
-
-    Semantics (matches the project's module architecture):
-    * If modules.yml defines an optional ``voice`` module → voice is enabled
-      only when the user selected it (enabled_modules) or it is already
-      enabled in settings.
-    * If no voice module is defined (current state — voice is a core
-      capability of the assistant) → always enabled during setup, per the
-      spec's "setup wizard must download ASR/TTS" requirement.
-    """
+    """Whether voice dependencies should be installed for this setup run."""
     from app.config import settings
 
     try:
@@ -673,10 +822,7 @@ def voice_enabled_for_profile(
 
 
 def voice_model_entries(profile: Optional[str] = None) -> List[dict]:
-    """Voice MODEL entries for the setup wizard plan (``_get_models_to_pull``).
-
-    The entries mirror the Ollama plan entries plus the provider/kind fields.
-    """
+    """Voice MODEL entries for the setup wizard plan (``_get_models_to_pull``)."""
     cfg = resolve_voice_config(profile)
     if cfg is None:
         return []
@@ -738,11 +884,7 @@ def voice_install_plan(
 
 
 def voice_status_summary(profile: Optional[str] = None) -> dict:
-    """Voice dependency status summary for /setup/status.
-
-    Distinguishes configured / installed / valid / ready (per the spec),
-    with an honest per-package importable state for the runtime.
-    """
+    """Voice dependency status summary for /setup/status."""
     cfg = resolve_voice_config(profile)
     if cfg is None:
         return {
@@ -761,7 +903,7 @@ def voice_status_summary(profile: Optional[str] = None) -> dict:
                 {
                     "id": pkg.id,
                     "display": pkg.display,
-                    "installed": _module_importable(pkg.module),
+                    "installed": _runtime_package_satisfied(pkg),
                 }
             )
     except RuntimeError:
@@ -780,7 +922,8 @@ def voice_status_summary(profile: Optional[str] = None) -> dict:
             "size": spec.size,
             "configured": True,
             "installed": installed,
-            "valid": installed,  # valid == manifest + files verified
+            "valid": installed,  # valid == manifest + cache verified
+            "store": "hf",
         }
         if not installed and reason:
             out["reason"] = reason
@@ -826,7 +969,7 @@ def _evt(
     return payload
 
 
-# ─── Runtime package install (pip) ────────────────────────────────────────────
+# ─── Runtime package install (persistent pip) ─────────────────────────────────
 
 
 async def _pip_install_package(
@@ -834,12 +977,8 @@ async def _pip_install_package(
     index: int,
     total_models: int,
 ) -> AsyncGenerator[dict, None]:
-    """pip install one runtime package, streaming real output lines.
-
-    Indeterminate stage: only real pip output lines are emitted
-    (pull_status), never invented percentages.
-    """
-    cmd = pkg.pip_command()
+    """pip install one runtime package through the persistent wheelhouse,
+    streaming real output lines (never invented percentages)."""
     yield _evt(
         "pull_status",
         pkg.id,
@@ -848,59 +987,23 @@ async def _pip_install_package(
         index,
         total_models,
         status="installing",
-        output=f"Running: {' '.join(cmd)}",
+        output=f"Installing {pkg.display} (persistent wheelhouse)",
     )
-    proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        assert proc.stdout is not None
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode(errors="replace").strip()
-            if text:
-                yield _evt(
-                    "pull_status",
-                    pkg.id,
-                    "pip",
-                    "voice_runtime",
-                    index,
-                    total_models,
-                    status="installing",
-                    output=text[:400],
-                )
-        rc = await proc.wait()
-        if rc != 0:
+        async for line in pip_persistence.pip_install_persistent(
+            pkg.pip_name, pkg.pip_extra_args
+        ):
             yield _evt(
-                "pull_error",
+                "pull_status",
                 pkg.id,
                 "pip",
                 "voice_runtime",
                 index,
                 total_models,
-                error=f"pip install failed (exit code {rc})",
+                status="installing",
+                output=line[:400],
             )
-            return
-        # pip installs into site-packages — refresh the import system's
-        # caches so find_spec sees the new package in THIS process.
-        importlib.invalidate_caches()
-        if not _module_importable(pkg.module):
-            yield _evt(
-                "pull_error",
-                pkg.id,
-                "pip",
-                "voice_runtime",
-                index,
-                total_models,
-                error="pip reported success but module is still not importable",
-            )
-            return
-    except FileNotFoundError:
+    except Exception as e:  # noqa: BLE001 — pip failures are install errors
         yield _evt(
             "pull_error",
             pkg.id,
@@ -908,25 +1011,60 @@ async def _pip_install_package(
             "voice_runtime",
             index,
             total_models,
-            error="pip is not available in this environment",
+            error=f"pip install failed: {e}",
         )
         return
-    finally:
-        if proc is not None and proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+    # pip installs into site-packages — refresh the import system's caches
+    # so find_spec sees the new package in THIS process.
+    importlib.invalidate_caches()
+    if not _runtime_package_satisfied(pkg):
+        yield _evt(
+            "pull_error",
+            pkg.id,
+            "pip",
+            "voice_runtime",
+            index,
+            total_models,
+            error="pip reported success but module is still not importable",
+        )
+        return
     yield _evt("pull_done", pkg.id, "pip", "voice_runtime", index, total_models)
 
 
-# ─── ASR install (HF snapshot over streaming HTTP) ────────────────────────────
+def _record_runtime_manifest(cfg: VoiceConfig) -> None:
+    """Record only a fully importable runtime set.
+
+    A previous implementation recorded the desired package list even after
+    an SSE pip failure, making rebuilds repeatedly attempt packages that had
+    never installed successfully. The manifest is now a success record, not
+    an installation wish list.
+    """
+    try:
+        required = [
+            RUNTIME_PACKAGES[pkg_id] for pkg_id in required_runtime_package_ids(cfg)
+        ]
+    except RuntimeError:
+        return
+    packages = [pkg.to_manifest_dict() for pkg in required]
+    missing = [pkg.display for pkg in required if not _runtime_package_satisfied(pkg)]
+    manifest = read_manifest()
+    if missing:
+        manifest.pop("runtime", None)
+        write_manifest(manifest)
+        raise RuntimeError(
+            "voice runtime incomplete; not recording manifest: " + ", ".join(missing)
+        )
+    manifest["runtime"] = {
+        "packages": packages,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_manifest(manifest)
+
+
+# ─── HF helpers (listing, seeding, monitoring) ────────────────────────────────
 
 
 def _hf_token() -> Optional[str]:
-    import os
-
     return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
 
@@ -939,20 +1077,24 @@ async def _list_hf_files(
     Prefers huggingface_hub (metadata call, run in a thread); falls back to
     the plain HTTP tree API. Raises on failure.
     """
-    if huggingface_hub is not None:
 
-        def _via_hub() -> List[Tuple[str, Optional[int]]]:
-            api = huggingface_hub.HfApi()
-            info = api.model_info(repo_id, revision=revision, files_metadata=True)
-            out = []
-            for s in getattr(info, "siblings", None) or []:
-                path = getattr(s, "rfilename", None)
-                if not path:
-                    continue
-                out.append((path, getattr(s, "size", None)))
-            return out
+    def _via_hub() -> List[Tuple[str, Optional[int]]]:
+        import huggingface_hub  # noqa: PLC0415 — lazy by design
 
+        api = huggingface_hub.HfApi()
+        info = api.model_info(repo_id, revision=revision, files_metadata=True)
+        out = []
+        for s in getattr(info, "siblings", None) or []:
+            path = getattr(s, "rfilename", None)
+            if not path:
+                continue
+            out.append((path, getattr(s, "size", None)))
+        return out
+
+    try:
         return await asyncio.to_thread(_via_hub)
+    except ImportError:
+        pass
 
     if httpx is None:
         raise RuntimeError("neither huggingface_hub nor httpx is available")
@@ -983,26 +1125,239 @@ async def _list_hf_files(
     return out
 
 
-def _resolve_url(repo_id: str, revision: str, path: str) -> str:
-    return (
-        f"{HF_BASE_URL}/{quote(repo_id, safe='/')}"
-        f"/resolve/{quote(revision, safe='')}/{quote(path, safe='/')}"
+def _seed_legacy_asr_into_cache(spec: VoiceModelSpec) -> int:
+    """Seed an existing LEGACY local snapshot into the HF cache layout.
+
+    Upgraded installs already hold ``data/models/voice/asr/<model>/`` from
+    the previous installer; registering those bytes as hub blobs (named by
+    their LFS sha256 / git blob id) lets the natural snapshot_download
+    VERIFY instead of re-downloading ~1.9 GB. Best-effort: any mismatch
+    simply falls through to a normal download.
+
+    Returns the number of files seeded (0 = nothing seeded).
+    """
+    legacy = asr_target_dir(spec)
+    if not legacy.is_dir() or not any(legacy.iterdir()):
+        return 0
+    try:
+        import huggingface_hub  # noqa: PLC0415
+
+        api = huggingface_hub.HfApi()
+        info = api.model_info(
+            spec.model, revision=spec.revision or "main", files_metadata=True
+        )
+    except ImportError:
+        return 0
+    except Exception as e:  # noqa: BLE001 — metadata unreachable → normal download
+        logger.info("cache seeding skipped (metadata unreachable): %s", e)
+        return 0
+    commit = getattr(info, "sha", None)
+    if not commit:
+        return 0
+    repo_dir = repo_cache_dir(spec.model)
+    snap = repo_dir / "snapshots" / commit
+    seeded = 0
+    for s in getattr(info, "siblings", None) or []:
+        rel = getattr(s, "rfilename", None)
+        if not rel:
+            continue
+        local = legacy / rel
+        try:
+            if not local.is_file():
+                continue
+            size = getattr(s, "size", None)
+            if size is not None and local.stat().st_size != int(size):
+                continue  # stale/foreign file — let the download replace it
+            lfs = getattr(s, "lfs", None)
+            blob_name = getattr(lfs, "sha256", None) or getattr(s, "blob_id", None)
+            if not blob_name:
+                continue
+            blob = repo_dir / "blobs" / blob_name
+            if not blob.exists():
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local, blob)
+            target = snap / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                try:
+                    os.link(blob, target)
+                except OSError:
+                    shutil.copy2(blob, target)
+            seeded += 1
+        except OSError:
+            continue
+    if seeded:
+        refs = repo_dir / "refs" / (spec.revision or "main")
+        try:
+            refs.parent.mkdir(parents=True, exist_ok=True)
+            refs.write_text(commit, encoding="utf-8")
+        except OSError:
+            return 0
+        logger.info(
+            "seeded %d legacy ASR files into the HF cache (%s)", seeded, repo_dir
+        )
+    return seeded
+
+
+def _repo_snapshot_name(repo_id: str) -> Optional[str]:
+    """``snapshots/<sha>`` name recorded in the repo's refs/main."""
+    ref = repo_cache_dir(repo_id) / "refs" / "main"
+    try:
+        if ref.is_file():
+            sha = ref.read_text(encoding="utf-8").strip()
+            if sha:
+                return f"snapshots/{sha}"
+    except OSError:
+        pass
+    return None
+
+
+def _hub_state_before() -> Dict[str, int]:
+    """{repo_name: size} of every models--* dir in the hub cache."""
+    state: Dict[str, int] = {}
+    hub = hub_cache_dir()
+    if not hub.is_dir():
+        return state
+    for d in hub.iterdir():
+        try:
+            if d.is_dir() and d.name.startswith("models--"):
+                state[d.name] = dir_size_bytes(d)
+        except OSError:
+            continue
+    return state
+
+
+def _new_or_grown_repos(before: Dict[str, int]) -> List[str]:
+    """Repo dir names that appeared or grew since ``before``."""
+    out: List[str] = []
+    hub = hub_cache_dir()
+    if not hub.is_dir():
+        return out
+    for d in hub.iterdir():
+        try:
+            if not (d.is_dir() and d.name.startswith("models--")):
+                continue
+            size = dir_size_bytes(d)
+            if before.get(d.name) is None or before.get(d.name) != size:
+                out.append(d.name)
+        except OSError:
+            continue
+    return out
+
+
+async def _run_with_progress_queue(
+    fn,
+    watch_dirs: List[Path],
+) -> Tuple[Any, asyncio.Queue]:
+    """run_monitored with progress routed to an asyncio queue.
+
+    The watcher thread cannot await; the queue bridges threads → the event
+    loop (call_soon_threadsafe). Returns (task, queue) — await the task for
+    the result, drain the queue for byte-progress events.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def on_progress(size: int) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, size)
+
+    task = asyncio.create_task(run_monitored(fn, watch_dirs, on_progress))
+    return task, queue
+
+
+async def _stream_warmup_subprocess(
+    script: str,
+    watch_dirs: Sequence[Path],
+    timeout_s: float,
+) -> AsyncGenerator[Tuple[str, Any], None]:
+    """Run a setup-only Python warm-up in a killable child process.
+
+    Events are ``("progress", bytes_on_disk)`` and one terminal
+    ``("done", output)``. Timeout and non-zero exit raise RuntimeError.
+    Unlike ``asyncio.to_thread``, cancellation and timeouts terminate the
+    child, so a stalled hub request cannot hang the FastAPI process.
+    """
+    home = ensure_hf_env()
+    target = pip_persistence.activate_persistent_site_packages()
+    env = os.environ.copy()
+    env["HF_HOME"] = str(home)
+    env["HF_HUB_OFFLINE"] = "0"
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    pythonpath = [str(target)]
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=env,
     )
+    communicate = asyncio.create_task(proc.communicate())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    last_size = -1
+    try:
+        while not communicate.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(communicate), timeout=min(0.4, remaining)
+                )
+            except asyncio.TimeoutError:
+                if loop.time() >= deadline:
+                    raise
+                size = await asyncio.to_thread(
+                    lambda: sum(dir_size_bytes(Path(p)) for p in watch_dirs)
+                )
+                if size != last_size:
+                    last_size = size
+                    yield "progress", size
+        stdout, _ = await communicate
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        communicate.cancel()
+        if isinstance(sys.exc_info()[1], asyncio.CancelledError):
+            raise
+        raise RuntimeError(f"model warm-up timed out after {timeout_s:.0f}s")
+
+    output = (stdout or b"").decode(errors="replace").strip()
+    if proc.returncode != 0:
+        raise RuntimeError(f"model warm-up exited {proc.returncode}: {output[-1200:]}")
+    yield "done", output
 
 
-# Progress events are throttled by both bytes and wall time so the SSE stream
-# stays informative without flooding the wizard.
-_PROGRESS_MIN_BYTES = 512 * 1024
-_PROGRESS_MIN_SECONDS = 0.25
+# ─── ASR install (natural snapshot_download into the persisted cache) ────────
+
+# Overall bound for the monitored warm-up (seconds) — slow links may take a
+# while for ~1.9 GB; a stuck network attempt fails at this bound.
+_ASR_WARMUP_TIMEOUT_S = 3600.0
 
 
-async def _download_asr_model(
+async def _install_asr_model(
     cfg: VoiceConfig,
     spec: VoiceModelSpec,
     index: int,
     total_models: int,
 ) -> AsyncGenerator[dict, None]:
-    """Download the ASR model snapshot with byte-accurate progress."""
+    """Warm the HF cache for the ASR model — the natural way.
+
+    ``huggingface_hub.snapshot_download`` performs the download (resumable,
+    race-safe, into ``data/huggingface/hub``); the wizard reports REAL byte
+    progress by watching the repo's cache directory grow. A legacy local
+    snapshot is seeded first so upgrades skip the re-download.
+    """
     if spec.provider not in SUPPORTED_ASR_PROVIDERS:
         yield _evt(
             "pull_error",
@@ -1019,7 +1374,8 @@ async def _download_asr_model(
         return
 
     revision = spec.revision or "main"
-    dest_dir = asr_target_dir(spec)
+    ensure_hf_env()
+    suppress_hub_progress_bars()
 
     yield _evt(
         "pull_status",
@@ -1045,9 +1401,10 @@ async def _download_asr_model(
         )
         return
 
-    total_bytes = sum(size for _, size in files if size is not None)
-    all_sizes_known = all(size is not None for _, size in files)
-    if all_sizes_known:
+    known = [(p, s) for p, s in files if s is not None]
+    total_bytes = sum(s for _, s in known)
+    all_sizes_known = len(known) == len(files)
+    if all_sizes_known and total_bytes:
         yield _evt(
             "pull_status",
             spec.display_name,
@@ -1056,10 +1413,79 @@ async def _download_asr_model(
             index,
             total_models,
             status="preparing",
-            output=f"{len(files)} files, {total_bytes / (1024 * 1024):.1f} MB total",
+            output=(
+                f"{len(files)} files, {total_bytes / (1024 * 1024):.1f} MB total "
+                f"(HF cache: {hub_cache_dir()})"
+            ),
         )
 
-    if httpx is None:
+    # Seed a legacy local snapshot into the cache (best-effort, offline).
+    try:
+        seeded = await asyncio.to_thread(_seed_legacy_asr_into_cache, spec)
+    except Exception as e:  # noqa: BLE001 — seeding is an optimization
+        logger.warning("cache seeding failed: %s", e)
+        seeded = 0
+    if seeded:
+        yield _evt(
+            "pull_status",
+            spec.display_name,
+            spec.provider,
+            "voice_model",
+            index,
+            total_models,
+            status="preparing",
+            output=(
+                f"seeded {seeded} existing local files into the HF cache — "
+                "only missing files will be downloaded"
+            ),
+        )
+
+    repo_root = repo_cache_dir(spec.model)
+    repo_root.mkdir(parents=True, exist_ok=True)
+    yield _evt(
+        "pull_status",
+        spec.display_name,
+        spec.provider,
+        "voice_model",
+        index,
+        total_models,
+        status="downloading",
+        output=(
+            "snapshot_download → the HuggingFace client handles resumable "
+            "downloads into the persisted cache"
+        ),
+    )
+
+    warm_script = (
+        "from huggingface_hub import snapshot_download\n"
+        f"print(snapshot_download(repo_id={spec.model!r}, revision={revision!r}))\n"
+    )
+    last_emit = 0.0
+    snap_path: Optional[str] = None
+    try:
+        async for event_type, value in _stream_warmup_subprocess(
+            warm_script, [repo_root], _ASR_WARMUP_TIMEOUT_S
+        ):
+            if event_type == "done":
+                snap_path = str(value).splitlines()[-1] if value else None
+                continue
+            size = int(value)
+            now = time.monotonic()
+            if all_sizes_known and total_bytes and now - last_emit >= 0.25:
+                last_emit = now
+                yield _evt(
+                    "pull_progress",
+                    spec.display_name,
+                    spec.provider,
+                    "voice_model",
+                    index,
+                    total_models,
+                    status="downloading",
+                    completed=min(size, total_bytes),
+                    total=total_bytes,
+                    percent=min(int(size / total_bytes * 100), 100),
+                )
+    except Exception as e:  # noqa: BLE001 — honest install failure
         yield _evt(
             "pull_error",
             spec.display_name,
@@ -1067,126 +1493,10 @@ async def _download_asr_model(
             "voice_model",
             index,
             total_models,
-            error="httpx is not available — cannot download",
+            error=f"snapshot_download failed: {e}",
         )
         return
 
-    headers = {}
-    token = _hf_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    completed = 0
-    files_record: Dict[str, int] = {}
-    last_emit_bytes = 0
-    last_emit_time = time.monotonic()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    timeout = httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=60.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        for file_path, expected_size in files:
-            target = dest_dir / file_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-
-            # File-level idempotency: an existing file with the right size
-            # is skipped and its bytes counted as completed.
-            if target.exists() and expected_size is not None:
-                actual = target.stat().st_size
-                if actual == expected_size:
-                    completed += actual
-                    files_record[file_path] = actual
-                    continue
-
-            url = _resolve_url(spec.model, revision, file_path)
-            try:
-                async with client.stream("GET", url, headers=headers) as resp:
-                    if resp.status_code != 200:
-                        body = (await resp.aread())[:200]
-                        yield _evt(
-                            "pull_error",
-                            spec.display_name,
-                            spec.provider,
-                            "voice_model",
-                            index,
-                            total_models,
-                            error=(
-                                f"HTTP {resp.status_code} for {file_path}: "
-                                f"{body.decode(errors='replace')}"
-                            ),
-                        )
-                        return
-                    if not all_sizes_known:
-                        # Unknown size — honest status line, no percent.
-                        yield _evt(
-                            "pull_status",
-                            spec.display_name,
-                            spec.provider,
-                            "voice_model",
-                            index,
-                            total_models,
-                            status="downloading",
-                            output=f"Downloading {file_path} (size unknown — no percent)",
-                        )
-                    tmp = target.with_suffix(target.suffix + ".part")
-                    got = 0
-                    with open(tmp, "wb+") as fh:
-                        async for chunk in resp.aiter_bytes(256 * 1024):
-                            fh.write(chunk)
-                            got += len(chunk)
-                            completed += len(chunk)
-                            if all_sizes_known and (
-                                completed - last_emit_bytes >= _PROGRESS_MIN_BYTES
-                                or time.monotonic() - last_emit_time
-                                >= _PROGRESS_MIN_SECONDS
-                            ):
-                                last_emit_bytes = completed
-                                last_emit_time = time.monotonic()
-                                pct = (
-                                    int(completed / total_bytes * 100)
-                                    if total_bytes
-                                    else 0
-                                )
-                                yield _evt(
-                                    "pull_progress",
-                                    spec.display_name,
-                                    spec.provider,
-                                    "voice_model",
-                                    index,
-                                    total_models,
-                                    status="downloading",
-                                    completed=completed,
-                                    total=total_bytes,
-                                    percent=pct,
-                                )
-                    if expected_size is not None and got != expected_size:
-                        yield _evt(
-                            "pull_error",
-                            spec.display_name,
-                            spec.provider,
-                            "voice_model",
-                            index,
-                            total_models,
-                            error=(
-                                f"size mismatch after download: {file_path} "
-                                f"({got} bytes, expected {expected_size})"
-                            ),
-                        )
-                        return
-                    tmp.replace(target)
-                    files_record[file_path] = got
-            except httpx.HTTPError as e:
-                yield _evt(
-                    "pull_error",
-                    spec.display_name,
-                    spec.provider,
-                    "voice_model",
-                    index,
-                    total_models,
-                    error=f"Download failed for {file_path}: {e}",
-                )
-                return
-
-    # Final byte-accurate 100% event when sizes were known.
     if all_sizes_known and total_bytes:
         yield _evt(
             "pull_progress",
@@ -1196,21 +1506,59 @@ async def _download_asr_model(
             index,
             total_models,
             status="downloading",
-            completed=completed,
+            completed=total_bytes,
             total=total_bytes,
             percent=100,
         )
 
-    # Persist the manifest entry (shared schema with the host script).
+    # Record the warmed snapshot in the manifest (schema v3, hf store).
+    snapshot_name = _repo_snapshot_name(spec.model) or (
+        Path(str(snap_path)).name and f"snapshots/{Path(snap_path).name}"
+    )
+    files_record: Dict[str, int] = {}
+    snap_root = hf_snapshot_dir(spec.model, revision)
+    if snap_root is None and not snap_path:
+        yield _evt(
+            "pull_error",
+            spec.display_name,
+            spec.provider,
+            "voice_model",
+            index,
+            total_models,
+            error="snapshot_download completed without a readable snapshot path",
+        )
+        return
+    root = snap_root or Path(str(snap_path))
+    for p in root.rglob("*"):
+        try:
+            if p.is_file():
+                files_record[f"{spec.model}::{p.relative_to(root).as_posix()}"] = (
+                    p.stat().st_size
+                )
+        except OSError:
+            continue
+    if not files_record:
+        yield _evt(
+            "pull_error",
+            spec.display_name,
+            spec.provider,
+            "voice_model",
+            index,
+            total_models,
+            error="snapshot_download returned no files — cache unreadable",
+        )
+        return
+
     entry = {
         "provider": spec.provider,
         "model": spec.model,
         "revision": revision,
         "type": spec.type or "asr",
         "role": spec.role or "default_asr",
-        "path": _manifest_rel_path(asr_target_dir(spec)),
+        "store": "hf",
+        "hf_repos": {spec.model: snapshot_name},
         "files": files_record,
-        "total_bytes": completed,
+        "total_bytes": sum(files_record.values()),
         "complete": True,
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "source": f"{HF_BASE_URL}/{spec.model}@{revision}",
@@ -1240,60 +1588,101 @@ async def _download_asr_model(
         total_models,
         status="verifying",
         output=(
-            f"Verified {len(files_record)} files "
-            f"({completed / (1024 * 1024):.1f} MB)"
+            f"verified {len(files_record)} files "
+            f"({sum(files_record.values()) / (1024 * 1024):.1f} MB) in "
+            f"{repo_root}"
         ),
     )
     yield _evt(
-        "pull_done", spec.display_name, spec.provider, "voice_model", index, total_models
+        "pull_done",
+        spec.display_name,
+        spec.provider,
+        "voice_model",
+        index,
+        total_models,
     )
 
 
-# ─── TTS install (pocket-tts package + optional asset precache) ───────────────
+# ─── TTS install (natural pocket_tts load into the persisted cache) ───────────
+
+# The setup-side forced load may legitimately download hundreds of MB —
+# bounded so a stuck network attempt fails honestly.
+_TTS_WARMUP_TIMEOUT_S = 900.0
 
 
-def _try_pocket_tts_precache(cache_dir: Path) -> Optional[str]:
-    """Best-effort runtime introspection of the pocket_tts package.
+def _warm_pocket_tts_sync(spec: VoiceModelSpec) -> Any:
+    """Construct the model + voice state ONCE (setup-side, natural).
 
-    Looks for a download/precache-style API (never constructs a full model —
-    that belongs to the voice runtime, not the installer). Returns a
-    human-readable result line, or None when no programmatic API exists.
+    Exactly the released API the user's local pipeline exercises:
+    ``TTSModel.load_model(language=…)`` downloads the weights through the
+    HF hub cache; ``get_state_for_audio_prompt(<voice name>)`` fetches the
+    pretrained embedding into the same cache. After this call every
+    runtime load is a local cache hit.
     """
-    try:
-        module = importlib.import_module("pocket_tts")
-    except Exception:
-        return None
-
-    for name in (
-        "download_model",
-        "download",
-        "fetch_model",
-        "prepare_model",
-        "precache",
-    ):
-        fn = getattr(module, name, None)
-        if not callable(fn):
-            continue
-        try:
-            sig = inspect.signature(fn)
-        except (TypeError, ValueError):
-            sig = None
-        params = list(sig.parameters.keys()) if sig else []
-        try:
-            if params and params[0] not in ("self", "cls"):
-                result = fn(str(cache_dir))
-            else:
-                result = fn()
-            return f"pocket_tts.{name} → {result or 'done'}"
-        except TypeError:
+    ensure_hf_env()
+    importlib.invalidate_caches()
+    pocket_tts = importlib.import_module("pocket_tts")
+    TTSModel = getattr(pocket_tts, "TTSModel", None)
+    if TTSModel is None:
+        raise RuntimeError("pocket_tts exposes no TTSModel (unrecognized API)")
+    load = getattr(TTSModel, "load_model", None)
+    model = None
+    if callable(load):
+        lang = spec.language or "english_2026-04"
+        errors: List[str] = []
+        for args, kwargs in (
+            ((), {"language": lang}),
+            ((), {}),
+            ((lang,), {}),
+        ):
             try:
-                result = fn()
-                return f"pocket_tts.{name} → {result or 'done'}"
-            except Exception as e:
-                logger.warning("pocket_tts.%s failed: %s", name, e)
-        except Exception as e:
-            logger.warning("pocket_tts.%s failed: %s", name, e)
-    return None
+                model = load(*args, **kwargs)
+                if model is not None:
+                    break
+            except TypeError:
+                continue
+            except Exception as e:  # noqa: BLE001 — remember, keep probing
+                errors.append(f"{type(e).__name__}: {e}")
+                continue
+        if model is None:
+            for args in ((), (lang,)):
+                try:
+                    model = TTSModel(*args)
+                    if model is not None:
+                        break
+                except TypeError:
+                    continue
+        if model is None:
+            raise RuntimeError(
+                "pocket_tts load_model failed: "
+                + ("; ".join(errors) or "unrecognized signature")
+            )
+    else:
+        for args in ((), (spec.language or "english_2026-04",)):
+            try:
+                model = TTSModel(*args)
+                if model is not None:
+                    break
+            except TypeError:
+                continue
+        if model is None:
+            raise RuntimeError("pocket_tts API not recognized (no load_model)")
+
+    # Voice state — the pretrained embedding for the configured speaker
+    # (downloads into the same repo cache on first use; cached afterwards).
+    get_state = getattr(model, "get_state_for_audio_prompt", None)
+    voice_name = str(spec.voice or "mary").strip() or "mary"
+    if callable(get_state):
+        try:
+            get_state(voice_name)
+        except Exception as e:  # noqa: BLE001 — voice prompt is best-effort
+            logger.warning(
+                "voice state warm-up for %r failed (%s) — the runtime will "
+                "retry and report a clear error if it persists",
+                voice_name,
+                e,
+            )
+    return model
 
 
 async def _install_tts(
@@ -1302,7 +1691,13 @@ async def _install_tts(
     index: int,
     total_models: int,
 ) -> AsyncGenerator[dict, None]:
-    """Install the TTS runtime package and (best effort) its model assets."""
+    """Install the TTS runtime package AND warm its HF cache (setup-time).
+
+    The pocket_tts package performs its own natural download
+    (``load_model(language=…)``); the wizard watches the persisted hub
+    cache grow for honest progress. The manifest records the resulting
+    repos/snapshots so runtime gates + startup replay see the state.
+    """
     if spec.provider not in SUPPORTED_TTS_PROVIDERS:
         yield _evt(
             "pull_error",
@@ -1319,8 +1714,8 @@ async def _install_tts(
         return
 
     pkg = RUNTIME_PACKAGES["pocket-tts"]
-    if not _module_importable(pkg.module):
-        # Install the package first (indeterminate, honest output lines).
+    if not _runtime_package_satisfied(pkg):
+        # Install the package first (persistent, honest output lines).
         package_ok = False
         async for event in _pip_install_package(pkg, index, total_models):
             if event.get("event") == "pull_done":
@@ -1333,48 +1728,108 @@ async def _install_tts(
         if not package_ok:
             return
 
-    dest_dir = tts_target_dir(spec)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    ensure_hf_env()
+    suppress_hub_progress_bars()
+    yield _evt(
+        "pull_status",
+        spec.display_name,
+        spec.provider,
+        "voice_model",
+        index,
+        total_models,
+        status="preparing",
+        output=(
+            f"Warming the Pocket TTS model (load_model(language={spec.language!r}) "
+            f"— natural HF download into {hub_cache_dir()})"
+        ),
+    )
 
-    # Best-effort asset pre-download so assets persist under data/.
-    precache_result = await asyncio.to_thread(_try_pocket_tts_precache, dest_dir)
-    preloaded = False
-    if precache_result:
-        preloaded = True
+    before = await asyncio.to_thread(_hub_state_before)
+    watch = [hub_cache_dir()]
+    language = spec.language or "english_2026-04"
+    voice = str(spec.voice or "mary").strip() or "mary"
+    warm_script = (
+        "import torch\n"
+        "threads = torch.get_num_threads()\n"
+        "from pocket_tts import TTSModel\n"
+        "torch.set_num_threads(threads)\n"
+        f"model = TTSModel.load_model(language={language!r})\n"
+        f"state = model.get_state_for_audio_prompt({voice!r})\n"
+        "assert state is not None\n"
+        "print('pocket-tts-ready')\n"
+    )
+    baseline = sum(before.values())
+    last_emit = 0.0
+    try:
+        async for event_type, value in _stream_warmup_subprocess(
+            warm_script, watch, _TTS_WARMUP_TIMEOUT_S
+        ):
+            if event_type != "progress":
+                continue
+            size = int(value)
+            now = time.monotonic()
+            if now - last_emit >= 1.0:
+                last_emit = now
+                yield _evt(
+                    "pull_status",
+                    spec.display_name,
+                    spec.provider,
+                    "voice_model",
+                    index,
+                    total_models,
+                    status="downloading",
+                    output=(
+                        f"pocket_tts is downloading — {human_mb(max(size - baseline, 0))} "
+                        "in the persisted cache so far (no byte-accurate total: "
+                        "the package owns the stream)"
+                    ),
+                )
+    except Exception as e:  # noqa: BLE001 — honest install failure
         yield _evt(
-            "pull_status",
+            "pull_error",
             spec.display_name,
             spec.provider,
             "voice_model",
             index,
             total_models,
-            status="preparing",
-            output=precache_result,
+            error=f"Pocket TTS model warm-up failed: {e}",
         )
-    else:
-        # Honest indeterminate state — never fabricate byte progress.
-        yield _evt(
-            "pull_status",
-            spec.display_name,
-            spec.provider,
-            "voice_model",
-            index,
-            total_models,
-            status="preparing",
-            output=(
-                "pocket-tts exposes no programmatic model-download API; "
-                "its assets materialize into the cache on first load"
-            ),
-        )
+        return
 
-    files: Dict[str, int] = {}
-    total_bytes = 0
-    if preloaded:
-        for f in dest_dir.rglob("*"):
-            if f.is_file():
-                size = f.stat().st_size
-                files[str(f.relative_to(dest_dir))] = size
-                total_bytes += size
+    # Record the repos/snapshots the package materialized (schema v3).
+    repos: Dict[str, str] = {}
+    files_record: Dict[str, int] = {}
+    grown = await asyncio.to_thread(_new_or_grown_repos, before)
+    for repo_dir_name in grown:
+        repo_id = repo_dir_name.removeprefix("models--").replace("--", "/")
+        snapshot_name = _repo_snapshot_name(repo_id)
+        if snapshot_name is None:
+            continue
+        repos[repo_id] = snapshot_name
+        for rel, size in snapshot_files(repo_id).items():
+            files_record[f"{repo_id}::{rel}"] = size
+    if not files_record:
+        # The model was already fully cached (no growth). Record the
+        # language repo from the package's bundled config when possible,
+        # else every currently-present models--* repo (the load we just
+        # performed demonstrably used this cache state).
+        repo_id = _pocket_tts_language_repo(spec.language)
+        candidates = [repo_id] if repo_id else _all_cached_repo_ids()
+        for repo_id in candidates:
+            if not repo_id:
+                continue
+            snapshot_name = _repo_snapshot_name(repo_id)
+            if snapshot_name is None:
+                continue
+            repos[repo_id] = snapshot_name
+            for rel, size in snapshot_files(repo_id).items():
+                files_record[f"{repo_id}::{rel}"] = size
+    # Pocket TTS 3.x may bundle the selected language/voice assets in its
+    # persisted wheel rather than materializing a Hugging Face repo. The
+    # authoritative readiness check is the successful model + voice-state
+    # warm-up above. Record HF files when they exist; otherwise record the
+    # package-backed layout and let runtime package validation guard it.
+    store = "hf" if files_record else "package"
 
     entry = {
         "provider": spec.provider,
@@ -1383,11 +1838,11 @@ async def _install_tts(
         "voice": spec.voice,
         "type": spec.type or "tts",
         "role": spec.role or "default_tts",
-        "path": _manifest_rel_path(tts_target_dir(spec)),
-        "files": files,
-        "total_bytes": total_bytes,
+        "store": store,
+        "hf_repos": repos,
+        "files": files_record,
+        "total_bytes": sum(files_record.values()),
         "complete": True,
-        "preloaded": preloaded,
         "package_installed": True,
         "installed_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1407,16 +1862,100 @@ async def _install_tts(
             error="models_store validator rejected the TTS install",
         )
         return
-
     yield _evt(
-        "pull_done", spec.display_name, spec.provider, "voice_model", index, total_models
+        "pull_status",
+        spec.display_name,
+        spec.provider,
+        "voice_model",
+        index,
+        total_models,
+        status="verifying",
+        output=(
+            "verified: model + voice state load from persisted "
+            + (
+                f"HF cache ({len(files_record)} files, "
+                f"{human_mb(sum(files_record.values()))})"
+                if files_record
+                else "Pocket TTS package assets"
+            )
+        ),
     )
+    yield _evt(
+        "pull_done",
+        spec.display_name,
+        spec.provider,
+        "voice_model",
+        index,
+        total_models,
+    )
+
+
+def _all_cached_repo_ids() -> List[str]:
+    """Repo ids of every models--* dir currently in the hub cache."""
+    out: List[str] = []
+    hub = hub_cache_dir()
+    if not hub.is_dir():
+        return out
+    for d in hub.iterdir():
+        try:
+            if d.is_dir() and d.name.startswith("models--"):
+                out.append(d.name.removeprefix("models--").replace("--", "/"))
+        except OSError:
+            continue
+    return out
+
+
+def _pocket_tts_language_repo(language: Optional[str]) -> Optional[str]:
+    """The HF repo id the pocket_tts config references for ``language``.
+
+    Read from the package's bundled language config (hf:// source paths) —
+    no hardcoded model ids. None when the config cannot be parsed.
+    """
+    try:
+        import pocket_tts  # type: ignore  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — find_spec passed, import may fail
+        return None
+    pkg_file = getattr(pocket_tts, "__file__", None)
+    if not pkg_file:
+        return None
+    cfg_dir = Path(pkg_file).parent / "config"
+    lang = (language or "").strip() or "english"
+    for cand in (cfg_dir / f"{lang}.yaml", cfg_dir / f"{lang}.yml"):
+        if not cand.exists():
+            continue
+        try:
+            data = yaml.safe_load(cand.read_text()) or {}
+        except Exception:  # noqa: BLE001 — unreadable config
+            continue
+        for key in ("weights_path", "weights_path_without_voice_cloning"):
+            src = str(data.get(key) or "")
+            if src.startswith("hf://"):
+                parts = src.removeprefix("hf://").split("/")
+                if len(parts) >= 3:
+                    return "/".join(parts[:2])
+    return None
 
 
 # ─── Public installer entry points ────────────────────────────────────────────
 
-# Reasons that do NOT require wiping the target directory before reinstall.
-_KEEP_DIR_REASONS = ("not_installed", "runtime package missing")
+# Reasons that do NOT require wiping a legacy target directory before
+# reinstall (the HF store needs no wiping at all — the hub client verifies
+# and re-downloads only what changed).
+_KEEP_DIR_REASONS = (
+    "not_installed",
+    "legacy_install",
+    "runtime package missing",
+    "TTS assets not installed — run the setup wizard",
+    "TTS assets use the legacy v1 layout (no local-config.yaml) — "
+    "re-run the setup wizard to install into the HF cache",
+)
+
+
+# One install at a time, process-wide. Two concurrent setup wizard runs
+# (double click / auto-retry) MUST NOT race on the same cache — the second
+# waits for the first, then runs idempotently (snapshot_download + the
+# wheelhouse are safe under the lock).
+_PULL_LOCK = asyncio.Lock()
 
 
 async def stream_install_voice_dependencies(
@@ -1429,24 +1968,53 @@ async def stream_install_voice_dependencies(
     """Stream the voice dependency installation as setup-wizard SSE events.
 
     Yields the SAME event dicts the wizard already consumes
-    (pull_start/pull_progress/pull_status/pull_done/pull_error) with the new
+    (pull_start/pull_progress/pull_status/pull_done/pull_error) with the
     ``provider`` + ``kind`` fields. Install order: runtime pip packages
-    (missing only), ASR model, TTS package/assets.
+    (missing only), ASR model, TTS package+cache.
 
     ``index_offset`` / ``total_models`` let the setup API keep a single
-    sequential plan across Ollama + voice entries (ollama first, then voice
-    runtime, then voice models). When ``total_models`` is None the voice-only
-    count is used. ``only`` (values: "runtime", "asr", "tts") filters sides —
-    used by the CLI's --asr-only/--tts-only flags.
+    sequential plan across Ollama + voice entries. ``only`` (values:
+    "runtime", "asr", "tts") filters sides — used by the CLI flags.
 
-    Cancellation: the consumer may break/close the stream at any time
-    (client disconnect). GeneratorExit/CancelledError propagate through the
-    ``async with`` blocks, closing HTTP streams and killing pip processes.
+    Concurrency: installs are serialized process-wide (``_PULL_LOCK``).
+
+    Cancellation: the consumer may break/close the stream at any time.
+    The hub download thread finishes its current file (resumable); pip
+    subprocesses are killed by their wrappers.
     """
+    if _PULL_LOCK.locked():
+        yield _evt(
+            "pull_status",
+            "Voice dependencies",
+            "pip",
+            "voice_runtime",
+            index_offset,
+            total_models or 0,
+            status="waiting",
+            output="Another model installation is running — waiting for it to finish…",
+        )
+    async with _PULL_LOCK:
+        async for event in _stream_install_unlocked(
+            profile,
+            enabled_modules=enabled_modules,
+            index_offset=index_offset,
+            total_models=total_models,
+            only=only,
+        ):
+            yield event
+
+
+async def _stream_install_unlocked(
+    profile: str,
+    enabled_modules: Optional[Sequence[str]] = None,
+    index_offset: int = 0,
+    total_models: Optional[int] = None,
+    only: Optional[Sequence[str]] = None,
+) -> AsyncGenerator[dict, None]:
+    """The actual install stream — call only while holding ``_PULL_LOCK``."""
     cfg = resolve_voice_config(profile)
     if cfg is None:
-        # No voice section in profiles.yml — nothing to do (the caller
-        # already gated the plan on voice being configured).
+        # No voice section in profiles.yml — nothing to do.
         return
     if profile and not voice_enabled_for_profile(profile, enabled_modules):
         return
@@ -1522,37 +2090,55 @@ async def stream_install_voice_dependencies(
             )
             continue
 
-        # changed model/revision, corrupt/missing files, incomplete download
-        # or missing runtime package → (re)install. Corrupt/changed installs
-        # clear the target dir first so no stale bytes survive.
-        if reason not in _KEEP_DIR_REASONS:
+        # Changed selection / corrupt legacy layout → drop the stale
+        # manifest entry; the hub cache itself self-verifies (no wipe).
+        manifest = read_manifest()
+        stale = manifest.get(spec.kind)
+        wiped = ""
+        if isinstance(stale, dict) and stale.get("store") != "hf":
             target = (
                 asr_target_dir(spec) if spec.kind == "asr" else tts_target_dir(spec)
             )
-            if target.exists():
+            if reason not in _KEEP_DIR_REASONS and target.exists():
                 shutil.rmtree(target, ignore_errors=True)
+                wiped = " (stale legacy assets removed)"
+            manifest.pop(spec.kind, None)
+            write_manifest(manifest)
+
+        if reason == "changed" or reason:
+            yield _evt(
+                "pull_status",
+                spec.display_name,
+                spec.provider,
+                "voice_model",
+                index,
+                effective_total,
+                status="reinstalling",
+                output=f"reinstalling ({reason}){wiped}",
+            )
 
         if spec.kind == "asr":
-            async for event in _download_asr_model(cfg, spec, index, effective_total):
+            async for event in _install_asr_model(cfg, spec, index, effective_total):
                 yield event
         else:
             async for event in _install_tts(cfg, spec, index, effective_total):
                 yield event
+
+    # Record the runtime packages for the startup replay (pip persistence).
+    if only is None or "runtime" in only:
+        try:
+            _record_runtime_manifest(cfg)
+        except Exception as e:  # noqa: BLE001 — recording is best-effort
+            logger.warning("runtime manifest recording failed: %s", e)
 
 
 async def install_voice_models_cli(
     profile: Optional[str] = None,
     asr_only: bool = False,
     tts_only: bool = False,
-    on_line: Optional[Callable[[str], None]] = None,
+    on_line: Optional[Any] = None,
 ) -> bool:
-    """Plain-text variant of the installer (same logic, human progress).
-
-    Prints real progress lines (byte-accurate where sizes are known) and
-    returns True when no pull_error occurred. Usable inside the container::
-
-        python -m app.services.voice_model_installer --profile cpu_small
-    """
+    """Plain-text variant of the installer (same logic, human progress)."""
     emit = on_line if on_line is not None else print
     profile = profile or _current_profile()
     only: Optional[Tuple[str, ...]] = None
@@ -1618,6 +2204,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
         return 0
     print(f"  ASR: {cfg.asr.provider} / {cfg.asr.model}@{cfg.asr.revision}")
     print(f"  TTS: {cfg.tts.provider} / {cfg.tts.model} ({cfg.tts.language})")
+    ensure_hf_env()
+    print(f"  HF cache: {hub_cache_dir()} (persisted in the data volume)")
 
     ok = asyncio.run(install_voice_models_cli(profile, args.asr_only, args.tts_only))
     return 0 if ok else 1

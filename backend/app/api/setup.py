@@ -502,27 +502,19 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
         """Stream model pull progress as SSE events (Ollama + voice)."""
         total_models = len(models_to_pull)
 
-        # First, check if Ollama is reachable — only when the plan actually
-        # contains Ollama models (voice-only plans must not abort on Ollama
-        # being down).
+        # Probe Ollama once, but do not let an unrelated service prevent the
+        # independent voice packages/models later in the plan from installing.
+        ollama_error = None
         if ollama_models:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/version")
                     if resp.status_code != 200:
-                        payload = {
-                            "event": "setup_error",
-                            "error": "Ollama is not reachable. Please start Ollama first.",
-                        }
-                        yield f"data: {json.dumps(payload)}\n\n"
-                        return
+                        ollama_error = (
+                            "Ollama is not reachable. Please start Ollama first."
+                        )
             except Exception as e:
-                payload = {
-                    "event": "setup_error",
-                    "error": f"Cannot connect to Ollama: {e}",
-                }
-                yield f"data: {json.dumps(payload)}\n\n"
-                return
+                ollama_error = f"Cannot connect to Ollama: {e}"
 
         # Emit total count
         yield f"data: {json.dumps({'event': 'pull_start_all', 'total': total_models})}\n\n"
@@ -550,6 +542,20 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 "total_models": total_models,
             }
             yield f"data: {json.dumps(payload)}\n\n"
+
+            if ollama_error:
+                payload = {
+                    "event": "pull_error",
+                    "model": model_id,
+                    "module": module_name,
+                    "provider": provider,
+                    "kind": kind,
+                    "index": i,
+                    "total_models": total_models,
+                    "error": ollama_error,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                continue
 
             try:
                 async with httpx.AsyncClient(timeout=1800.0) as client:

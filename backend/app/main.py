@@ -3,28 +3,36 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Query, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import make_asgi_app
+# Optional voice runtimes live in a durable, platform/Python-keyed target.
+# Activate it before importing routers or the voice manager so a container
+# rebuild only needs to re-use the persisted packages, never reinstall them.
+from app.services.pip_persistence import activate_persistent_site_packages
 
-from app.config import settings
-from app.core import metrics as app_metrics
-from app.api.health import router as health_router
-from app.api.chat import router as chat_router
-from app.api.models import router as models_router
-from app.api.modules import router as modules_router
-from app.api.setup import router as setup_router
-from app.api.memory import router as memory_router
-from app.api.documents import router as documents_router
-from app.api.reports import router as reports_router
-from app.api.workspace import router as workspace_router
-from app.api.deps import router as deps_router
-from app.api.providers import router as providers_router
-from app.api.tools import router as tools_router
-from app.api.voice import router as voice_router
-from app.core.logger import is_debug
-from app.core.middleware import DebugLoggingMiddleware
+activate_persistent_site_packages()
+
+# noqa: E402 — FastAPI imports must come after pip_persistence activation #
+from fastapi import FastAPI, Query, WebSocket  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+from prometheus_client import make_asgi_app  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.core import metrics as app_metrics  # noqa: E402
+from app.api.health import router as health_router  # noqa: E402
+from app.api.chat import router as chat_router  # noqa: E402
+from app.api.models import router as models_router  # noqa: E402
+from app.api.modules import router as modules_router  # noqa: E402
+from app.api.setup import router as setup_router  # noqa: E402
+from app.api.memory import router as memory_router  # noqa: E402
+from app.api.documents import router as documents_router  # noqa: E402
+from app.api.reports import router as reports_router  # noqa: E402
+from app.api.workspace import router as workspace_router  # noqa: E402
+from app.api.deps import router as deps_router  # noqa: E402
+from app.api.providers import router as providers_router  # noqa: E402
+from app.api.tools import router as tools_router  # noqa: E402
+from app.api.voice import router as voice_router  # noqa: E402
+from app.core.logger import is_debug  # noqa: E402
+from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +264,14 @@ async def lifespan(app: FastAPI):
     from alembic import command
 
     try:
-        alembic_cfg = AlembicConfig("alembic.ini")
+        # Resolve from the backend root, not the process working directory.
+        # Development runs Uvicorn from ``/app/app`` so its reload watcher
+        # cannot recursively watch the persistent voice-package target.
+        backend_root = Path(__file__).resolve().parents[1]
+        alembic_ini = backend_root / "alembic.ini"
+        alembic_cfg = AlembicConfig(str(alembic_ini))
+        alembic_cfg.set_main_option("script_location", str(backend_root / "alembic"))
+        alembic_cfg.set_main_option("prepend_sys_path", str(backend_root))
         alembic_cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
         command.upgrade(alembic_cfg, "head")
         if is_debug():
@@ -296,6 +311,11 @@ async def lifespan(app: FastAPI):
         await verify_deps_on_startup()
     except Exception as e:
         logger.warning("Dependency verification on startup failed: %s", e)
+
+    # Voice packages are activated from the durable target at module import.
+    # Missing packages are deliberately installed only by the setup flow:
+    # application startup must remain offline and must never be held hostage
+    # by a package index or model host.
 
     yield
 

@@ -146,7 +146,17 @@ CATALOG: list[Dependency] = [
     ),
     # ── Voice runtime (pip) ──────────────────────────────────────────
     # Mirrors RUNTIME_PACKAGES in app/services/voice_model_installer.py
-    # (kept consistent by backend/tests/test_voice_installer.py).
+    # (kept consistent by backend/tests).
+    _voice_dep(
+        "mlx-qwen3-asr",
+        "Qwen3-ASR MLX runtime (Apple Silicon)",
+        "Native MLX speech-recognition runtime for Apple-Silicon hosts "
+        "(no PyTorch needed).",
+        "mlx-qwen3-asr",
+        import_name="mlx_qwen3_asr",
+        install_size="~60 MB",
+        enables=["Voice input (ASR model runtime)"],
+    ),
     _voice_dep(
         "torch-cpu",
         "PyTorch (CPU)",
@@ -533,11 +543,15 @@ async def _install_pip(
     dep: Dependency,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> AsyncGenerator[dict, None]:
-    """Install a pip dependency with `python -m pip install`.
+    """Install a pip dependency through the PERSISTENT wheelhouse.
 
-    Streams every real output line as an SSE ``stage`` event — pip gives no
-    byte-accurate progress, so the output is the honest progress indicator
-    (no invented percentages)."""
+    Uses :mod:`app.services.pip_persistence` (the LibreOffice-style pip
+    strategy): the wheel lands in ``data/pip-wheels`` and the install runs
+    offline-first from there — so the package survives container rebuilds
+    via the startup replay instead of being re-downloaded each time.
+    Streams every real output line as an SSE ``stage`` event — pip gives
+    no byte-accurate progress, so the output is the honest progress
+    indicator (no invented percentages)."""
     if not dep.pip_name:
         yield {
             "stage": "error",
@@ -545,48 +559,81 @@ async def _install_pip(
         }
         return
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--no-cache-dir",
-        "--progress-bar",
-        "off",
-        dep.pip_name,
-        *dep.pip_extra_args,
-    ]
     yield {
         "stage": "installing",
-        "output": f"Running: {' '.join(shlex.quote(c) for c in cmd)}",
+        "output": (
+            f"Installing {dep.pip_name} (persistent wheelhouse — "
+            "survives container rebuilds)"
+        ),
     }
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    assert proc.stdout is not None
     try:
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode(errors="replace").strip()
-            if not text:
-                continue
-            event = {"stage": "installing", "output": text[:400]}
-            if progress_callback:
-                progress_callback(event)
-            yield event
-        rc = await proc.wait()
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.wait()
-            except Exception:
-                pass
+        from app.services import pip_persistence
+    except Exception:  # pragma: no cover — module lives in the same package
+        pip_persistence = None  # type: ignore[assignment]
+
+    failed = False
+    if pip_persistence is not None:
+        try:
+            async for line in pip_persistence.pip_install_persistent(
+                dep.pip_name, tuple(dep.pip_extra_args)
+            ):
+                if line:
+                    event = {"stage": "installing", "output": line[:400]}
+                    if progress_callback:
+                        progress_callback(event)
+                    yield event
+        except Exception as e:  # noqa: BLE001 — fall back to plain pip
+            yield {
+                "stage": "installing",
+                "output": f"persistent install failed ({e}) — plain pip fallback",
+            }
+            failed = True
+        if not failed:
+            rc = 0
+    if failed or pip_persistence is None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--progress-bar",
+            "off",
+            dep.pip_name,
+            *dep.pip_extra_args,
+        ]
+        yield {
+            "stage": "installing",
+            "output": f"Running: {' '.join(shlex.quote(c) for c in cmd)}",
+        }
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert proc.stdout is not None
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode(errors="replace").strip()
+                if not text:
+                    continue
+                event = {"stage": "installing", "output": text[:400]}
+                if progress_callback:
+                    progress_callback(event)
+                yield event
+            rc = await proc.wait()
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
 
     if rc != 0:
         yield {

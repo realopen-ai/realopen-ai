@@ -292,12 +292,14 @@ async def test_task_overview(ollama_up, tmp_state):
     tasks = {row["task"]: row for row in overview}
     assert set(tasks) == {
         "chat",
+        "voice",
         "vision",
         "document_reasoning",
         "report",
         "excel",
         "image",
     }
+    assert tasks["voice"]["default_model"] == "qwen3.5:0.8b-q4_K_M"
     assert tasks["chat"]["label"] == "Chat / Agent"
     assert tasks["report"]["label"] == "Report generation"
     assert tasks["vision"]["local_only"] is True

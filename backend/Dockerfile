@@ -3,6 +3,11 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
+ENV HF_HOME=/app/data/huggingface \
+    REALOPEN_DATA_DIR=/app/data \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=10
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -44,4 +49,9 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools"]
+# --ws-ping-interval 3600: ASR inference (GIL-heavy, seconds-long on CPU)
+# starves the event loop; uvicorn's default 20s WS keepalive then kills
+# LIVE voice sessions with 1011 "keepalive ping timeout". The voice
+# protocol has its own app-level ping (25 s) + a 600 s idle watchdog, so
+# the transport-level keepalive is effectively disabled (3600 s).
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --ws-ping-interval 3600 --ws-ping-timeout 3600"]
