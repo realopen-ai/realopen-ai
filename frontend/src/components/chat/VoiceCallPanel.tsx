@@ -12,7 +12,6 @@ import {
   Minimize2,
   PhoneOff,
   Square,
-  Volume2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -106,6 +105,7 @@ export function VoiceCallPanel({
         "voice-call-panel z-40 overflow-hidden border-border bg-card/95 shadow-2xl backdrop-blur-xl",
         voiceState === "stopping" && "voice-call-panel-exit",
         dragging && "voice-call-dragging",
+        minimized && "voice-call-minimized",
         minimized
           ? `absolute h-48 w-72 rounded-3xl border ${cornerClass[corner]}`
           : "relative h-[40%] min-h-60 shrink-0 border-b",
@@ -154,10 +154,22 @@ export function VoiceCallPanel({
         </Button>
       </div>
 
-      <div className="flex h-full flex-col items-center justify-center px-6 pb-14 pt-11">
-        <div className={cn("voice-agent-orb", isSpeaking && "is-speaking", voiceState === "connecting" && "is-connecting")}>
-          <div className="voice-agent-orb-core">
-            {isSpeaking ? <Volume2 className="h-7 w-7" /> : <span className="text-lg font-semibold">AI</span>}
+      <div className="relative z-1 flex h-full flex-col items-center justify-center px-6 pb-14 pt-11">
+        <div
+          className={cn(
+            "voice-energy-orb",
+            isSpeaking && "is-speaking",
+            voiceState === "connecting" && "is-connecting",
+          )}
+          aria-label={isSpeaking ? t("voice.state.speaking") : stateLabel}
+          role="img"
+        >
+          <div className="voice-energy-sphere">
+            <span className="voice-energy-core" />
+            <span className="voice-energy-ribbon voice-energy-ribbon-1" />
+            <span className="voice-energy-ribbon voice-energy-ribbon-2" />
+            <span className="voice-energy-ribbon voice-energy-ribbon-3" />
+            <span className="voice-energy-ribbon voice-energy-ribbon-4" />
           </div>
         </div>
 
@@ -183,7 +195,7 @@ export function VoiceCallPanel({
         )}
       </div>
 
-      <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-3">
+      <div className="absolute inset-x-0 bottom-4 z-10 flex items-center justify-center gap-3">
         <Button
           variant="secondary"
           size="icon"
