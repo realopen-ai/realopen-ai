@@ -57,6 +57,16 @@ export interface SandboxCommand {
   output_truncated: boolean;
 }
 
+export function mergeSandboxList(
+  remote: Sandbox[],
+  activeId: string | null,
+  current: Sandbox[],
+): Sandbox[] {
+  if (!activeId || remote.some((item) => item.id === activeId)) return remote;
+  const active = current.find((item) => item.id === activeId);
+  return active ? [active, ...remote] : remote;
+}
+
 export function commandHistoryLines(commands: SandboxCommand[]): string[] {
   return commands.flatMap((item) => {
     const command =
@@ -83,8 +93,10 @@ interface SandboxState {
   activeFile: string | null;
   activeFileContent: string | null;
   previewUrl: string | null;
+  previewPort: number | null;
   terminalHistory: string[];
   loading: boolean;
+  lifecyclePending: Record<string, "start" | "stop" | "restart">;
   error: string | null;
   setFileTree: (tree: FileNode[]) => void;
   setLoadingTree: (v: boolean) => void;
@@ -93,13 +105,18 @@ interface SandboxState {
   clearTerminal: () => void;
   setSandboxId: (id: string | null) => void;
   setPreviewUrl: (url: string | null) => void;
+  selectPreview: (url: string, port?: number) => void;
   loadCommandHistory: () => Promise<void>;
-  activateSandbox: (sandboxId: string) => Promise<void>;
+  activateSandbox: (sandboxId: string, sandbox?: Sandbox) => Promise<void>;
   loadSandboxes: () => Promise<void>;
   loadForConversation: (conversationId: string | null) => Promise<void>;
+  discoverPreview: (sandboxId: string) => Promise<void>;
   createSandbox: (options: SandboxCreateOptions) => Promise<Sandbox>;
   linkSandbox: (sandboxId: string, conversationId: string) => Promise<void>;
-  lifecycle: (action: "start" | "stop" | "restart") => Promise<void>;
+  lifecycle: (
+    action: "start" | "stop" | "restart",
+    sandboxId?: string,
+  ) => Promise<void>;
   deleteSandbox: (id: string) => Promise<void>;
   fetchFileTree: () => Promise<void>;
   fetchFileContent: (path: string) => Promise<void>;
@@ -128,8 +145,10 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
   activeFile: null,
   activeFileContent: null,
   previewUrl: null,
+  previewPort: null,
   terminalHistory: [],
   loading: false,
+  lifecyclePending: {},
   error: null,
   setFileTree: (fileTree) => set({ fileTree }),
   setLoadingTree: (isLoadingTree) => set({ isLoadingTree }),
@@ -138,10 +157,23 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
   addTerminalLine: (line) =>
     set((s) => ({ terminalHistory: [...s.terminalHistory, line] })),
   clearTerminal: () => set({ terminalHistory: [] }),
-  setPreviewUrl: (previewUrl) => set({ previewUrl }),
+  setPreviewUrl: (previewUrl) => set({ previewUrl, previewPort: null }),
+  selectPreview: (previewUrl, port) =>
+    set((state) => {
+      const previewPort = port ?? null;
+      if (state.previewPort === 6767 && previewPort !== 6767) return state;
+      return { previewUrl, previewPort };
+    }),
   setSandboxId: (sandboxId) => {
     conversationLoadRevision += 1;
-    set({ sandboxId, fileTree: [], activeFile: null, terminalHistory: [] });
+    set({
+      sandboxId,
+      fileTree: [],
+      activeFile: null,
+      terminalHistory: [],
+      previewUrl: null,
+      previewPort: null,
+    });
   },
   loadCommandHistory: async () => {
     const id = get().sandboxId;
@@ -158,18 +190,45 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
       set({ error: String(e) });
     }
   },
-  activateSandbox: async (sandboxId) => {
+  activateSandbox: async (sandboxId, sandbox) => {
     conversationLoadRevision += 1;
-    if (get().sandboxId !== sandboxId)
-      set({
-        sandboxId,
-        fileTree: [],
-        activeFile: null,
-        activeFileContent: null,
-        terminalHistory: [],
-        error: null,
-      });
+    set((state) => ({
+      ...(state.sandboxId !== sandboxId
+        ? {
+            sandboxId,
+            fileTree: [],
+            activeFile: null,
+            activeFileContent: null,
+            terminalHistory: [],
+            error: null,
+            previewUrl: null,
+            previewPort: null,
+          }
+        : {}),
+      ...(sandbox
+        ? {
+            sandboxes: [
+              sandbox,
+              ...state.sandboxes.filter((item) => item.id !== sandbox.id),
+            ],
+          }
+        : {}),
+    }));
+    const loadActiveSandbox = async () => {
+      try {
+        const active = await request<Sandbox>(`/api/sandboxes/${sandboxId}`);
+        set((state) => ({
+          sandboxes: [
+            active,
+            ...state.sandboxes.filter((item) => item.id !== active.id),
+          ],
+        }));
+      } catch (error) {
+        set({ error: String(error) });
+      }
+    };
     await Promise.all([
+      loadActiveSandbox(),
       get().loadSandboxes(),
       get().fetchFileTree(),
       get().loadCommandHistory(),
@@ -179,7 +238,13 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const d = await request<{ sandboxes: Sandbox[] }>("/api/sandboxes");
-      set({ sandboxes: d.sandboxes });
+      set((state) => ({
+        sandboxes: mergeSandboxList(
+          d.sandboxes,
+          state.sandboxId,
+          state.sandboxes,
+        ),
+      }));
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -197,11 +262,39 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
         `/api/sandboxes/conversation/${conversationId}`,
       );
       if (revision !== conversationLoadRevision) return;
-      set({ sandboxId: d.sandbox?.id ?? null, terminalHistory: [] });
+      set((state) => ({
+        sandboxId: d.sandbox?.id ?? null,
+        terminalHistory: [],
+        ...(state.sandboxId !== (d.sandbox?.id ?? null)
+          ? { previewUrl: null, previewPort: null }
+          : {}),
+        sandboxes: d.sandbox
+          ? [
+              d.sandbox,
+              ...state.sandboxes.filter((item) => item.id !== d.sandbox?.id),
+            ]
+          : state.sandboxes,
+      }));
       if (d.sandbox)
-        await Promise.all([get().fetchFileTree(), get().loadCommandHistory()]);
+        await Promise.all([
+          get().fetchFileTree(),
+          get().loadCommandHistory(),
+          get().discoverPreview(d.sandbox.id),
+        ]);
     } catch (e) {
       if (revision === conversationLoadRevision) set({ error: String(e) });
+    }
+  },
+  discoverPreview: async (sandboxId) => {
+    try {
+      const result = await request<{
+        preferred: { port: number; url: string; host_url: string } | null;
+      }>(`/api/sandboxes/${sandboxId}/previews`);
+      if (result.preferred && get().sandboxId === sandboxId) {
+        get().selectPreview(result.preferred.url, result.preferred.port);
+      }
+    } catch {
+      // Preview discovery is best-effort and should not make workspace loading fail.
     }
   },
   createSandbox: async ({
@@ -234,15 +327,32 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
     set({ sandboxId, terminalHistory: [] });
     await Promise.all([get().fetchFileTree(), get().loadCommandHistory()]);
   },
-  lifecycle: async (action) => {
-    const id = get().sandboxId;
+  lifecycle: async (action, sandboxId) => {
+    const id = sandboxId ?? get().sandboxId;
     if (!id) return;
-    const item = await request<Sandbox>(`/api/sandboxes/${id}/${action}`, {
-      method: "POST",
-    });
-    set((s) => ({
-      sandboxes: s.sandboxes.map((x) => (x.id === id ? item : x)),
+    if (get().lifecyclePending[id]) return;
+    set((state) => ({
+      lifecyclePending: { ...state.lifecyclePending, [id]: action },
+      error: null,
     }));
+    try {
+      const item = await request<Sandbox>(`/api/sandboxes/${id}/${action}`, {
+        method: "POST",
+      });
+      set((state) => ({
+        sandboxes: state.sandboxes.map((entry) =>
+          entry.id === id ? item : entry,
+        ),
+      }));
+    } catch (error) {
+      set({ error: String(error) });
+    } finally {
+      set((state) => {
+        const lifecyclePending = { ...state.lifecyclePending };
+        delete lifecyclePending[id];
+        return { lifecyclePending };
+      });
+    }
   },
   deleteSandbox: async (id) => {
     await request(`/api/sandboxes/${id}`, { method: "DELETE" });

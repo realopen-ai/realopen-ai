@@ -15,6 +15,7 @@ import {
 } from "@/api/client";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
+import type { Sandbox } from "@/store/sandboxStore";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export interface ToolCallResult {
   previewUrl?: string;
   previewPort?: number;
   sandboxId?: string;
+  sandbox?: Sandbox;
   // Error
   error?: string;
   // RAG sources (for rag_search tool calls)

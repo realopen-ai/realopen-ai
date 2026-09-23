@@ -685,7 +685,8 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
 
 function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
   const openPreview = () => {
-    if (tc.previewUrl) useSandboxStore.getState().setPreviewUrl(tc.previewUrl);
+    if (tc.previewUrl)
+      useSandboxStore.getState().selectPreview(tc.previewUrl, tc.previewPort);
     useUIStore.getState().setRightPanelOpen(true);
     useUIStore.getState().setRightPanelTab("preview");
   };

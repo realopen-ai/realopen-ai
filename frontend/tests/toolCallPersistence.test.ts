@@ -12,6 +12,11 @@ test("coder file and preview details survive reload and live SSE mapping", () =>
       previewUrl: "/api/sandboxes/id/preview/8000/",
       previewPort: 8000,
       sandboxId: "workspace-id",
+      sandbox: {
+        id: "workspace-id",
+        name: "Project workspace",
+        status: "running",
+      },
       unrelated: "discarded",
     }),
     {
@@ -21,6 +26,11 @@ test("coder file and preview details survive reload and live SSE mapping", () =>
       previewUrl: "/api/sandboxes/id/preview/8000/",
       previewPort: 8000,
       sandboxId: "workspace-id",
+      sandbox: {
+        id: "workspace-id",
+        name: "Project workspace",
+        status: "running",
+      },
     },
   );
 });

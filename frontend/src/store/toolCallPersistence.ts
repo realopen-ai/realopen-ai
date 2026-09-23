@@ -5,6 +5,7 @@ const DETAIL_FIELDS = [
   "previewUrl",
   "previewPort",
   "sandboxId",
+  "sandbox",
 ] as const;
 
 type PersistedToolCall = {
@@ -14,6 +15,7 @@ type PersistedToolCall = {
   previewUrl?: string;
   previewPort?: number;
   sandboxId?: string;
+  sandbox?: Sandbox;
   unrelated?: string;
 };
 
@@ -27,3 +29,4 @@ export function persistedToolCallDetails(
     ),
   ) as PersistedToolCall;
 }
+import type { Sandbox } from "@/store/sandboxStore";

@@ -45,7 +45,7 @@ export function ChatArea() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
-  const setPreviewUrl = useSandboxStore((s) => s.setPreviewUrl);
+  const selectPreview = useSandboxStore((s) => s.selectPreview);
   const isExtracting = useMemoryStore((s) => s.isExtracting);
   const lastExtraction = useMemoryStore((s) => s.lastExtraction);
   const t = useT();
@@ -364,7 +364,9 @@ export function ChatArea() {
             toolCall.sandboxId &&
             useSandboxStore.getState().sandboxId !== toolCall.sandboxId
           ) {
-            void useSandboxStore.getState().activateSandbox(toolCall.sandboxId);
+            void useSandboxStore
+              .getState()
+              .activateSandbox(toolCall.sandboxId, toolCall.sandbox);
           }
 
           if (toolCall.type === "code_exec") {
@@ -412,14 +414,16 @@ export function ChatArea() {
             updates.sandboxId &&
             useSandboxStore.getState().sandboxId !== updates.sandboxId
           ) {
-            void useSandboxStore.getState().activateSandbox(updates.sandboxId);
+            void useSandboxStore
+              .getState()
+              .activateSandbox(updates.sandboxId, updates.sandbox);
           }
           if (terminalToolIds.has(toolCallId) && updates.output) {
             const output = formatCodeExecOutput(updates.output);
             if (output) addTerminalLine(output);
           }
           if (updates.previewUrl) {
-            setPreviewUrl(updates.previewUrl);
+            selectPreview(updates.previewUrl, updates.previewPort);
             setRightPanelOpen(true);
             setRightPanelTab("preview");
           }
@@ -471,7 +475,7 @@ export function ChatArea() {
     [
       navigate,
       addTerminalLine,
-      setPreviewUrl,
+      selectPreview,
       setRightPanelOpen,
       setRightPanelTab,
     ],

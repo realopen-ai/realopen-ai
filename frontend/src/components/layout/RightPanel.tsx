@@ -12,6 +12,7 @@ import {
   GripVertical,
   GripHorizontal,
   Terminal as TerminalIcon,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -25,6 +26,8 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chatStore";
 import { CreateSandboxDialog } from "@/components/workspace/SandboxDialogs";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { shouldLoadConversationWorkspace } from "@/lib/workspaceActivation";
+import { normalizePreviewAddress, previewHostUrl } from "@/lib/previewAddress";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -58,15 +61,42 @@ export function RightPanel() {
   const loadForConversation = useSandboxStore((s) => s.loadForConversation);
   const linkSandbox = useSandboxStore((s) => s.linkSandbox);
   const lifecycle = useSandboxStore((s) => s.lifecycle);
+  const lifecyclePending = useSandboxStore((s) => s.lifecyclePending);
   const conversationId = useChatStore((s) => s.activeConversationId);
   const previewUrl = useSandboxStore((s) => s.previewUrl);
+  const previewPort = useSandboxStore((s) => s.previewPort);
+  const previewBaseUrl = previewHostUrl(previewPort, previewUrl ?? "");
+  const [previewAddress, setPreviewAddress] = useState("");
+  const [previewDraft, setPreviewDraft] = useState("");
   useEffect(() => {
     void loadSandboxes();
   }, [loadSandboxes]);
   useEffect(() => {
-    void loadForConversation(conversationId);
+    // A home-page conversation is not active in the URL until its first
+    // stream finishes. Its workspace may already have arrived over SSE.
+    if (shouldLoadConversationWorkspace(conversationId)) {
+      void loadForConversation(conversationId);
+    }
   }, [conversationId, loadForConversation]);
+  useEffect(() => {
+    if (sandboxId) setTerminalTab("coder");
+  }, [sandboxId]);
+  useEffect(() => {
+    setPreviewAddress(previewBaseUrl);
+    setPreviewDraft(previewBaseUrl);
+  }, [previewBaseUrl]);
+  const navigatePreview = () => {
+    const next = normalizePreviewAddress(previewDraft, previewBaseUrl);
+    if (!next) {
+      setPreviewDraft(previewAddress);
+      return;
+    }
+    setPreviewAddress(next);
+    setPreviewDraft(next);
+    setPreviewKey((value) => value + 1);
+  };
   const active = sandboxes.find((item) => item.id === sandboxId);
+  const activeLifecycle = active ? lifecyclePending[active.id] : undefined;
 
   return (
     <div className="flex flex-col h-full bg-card">
@@ -129,7 +159,7 @@ export function RightPanel() {
             e.target.value &&
             void linkSandbox(e.target.value, conversationId)
           }
-          disabled={!conversationId}
+          disabled={!conversationId || Boolean(activeLifecycle)}
         >
           <option value="">No workspace linked</option>
           {sandboxes.map((item) => (
@@ -158,8 +188,11 @@ export function RightPanel() {
             onClick={() =>
               void lifecycle(active.status === "running" ? "stop" : "start")
             }
+            disabled={Boolean(activeLifecycle)}
           >
-            {active.status === "running" ? (
+            {activeLifecycle ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : active.status === "running" ? (
               <Square className="w-3 h-3" />
             ) : (
               <Play className="w-3 h-3" />
@@ -271,21 +304,32 @@ export function RightPanel() {
           </PanelGroup>
         ) : previewUrl ? (
           <div className="flex h-full flex-col bg-background">
-            <div className="flex items-center justify-between border-b border-border/50 px-2 py-1.5">
-              <span className="truncate font-mono text-[10px] text-muted-foreground">
-                {previewUrl}
-              </span>
+            <form
+              className="flex items-center justify-between gap-1 border-b border-border/50 px-2 py-1.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                navigatePreview();
+              }}
+            >
+              <input
+                aria-label="Preview address"
+                value={previewDraft}
+                onChange={(event) => setPreviewDraft(event.target.value)}
+                onBlur={navigatePreview}
+                className="h-6 min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 font-mono text-[10px] text-muted-foreground outline-none focus:border-border focus:bg-background focus:text-foreground"
+                spellCheck={false}
+              />
               <div className="flex items-center">
                 <button
                   type="button"
-                  onClick={() => setPreviewKey((value) => value + 1)}
+                  onClick={navigatePreview}
                   className="rounded p-1 hover:bg-accent"
                   title="Reload preview"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
                 </button>
                 <a
-                  href={previewUrl}
+                  href={previewAddress}
                   target="_blank"
                   rel="noreferrer"
                   className="rounded p-1 hover:bg-accent"
@@ -294,11 +338,11 @@ export function RightPanel() {
                   <ExternalLink className="h-3.5 w-3.5" />
                 </a>
               </div>
-            </div>
+            </form>
             <iframe
               key={previewKey}
               title="Sandbox app preview"
-              src={previewUrl}
+              src={previewAddress}
               className="h-full w-full flex-1 border-0 bg-white"
               sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
             />

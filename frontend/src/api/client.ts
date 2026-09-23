@@ -373,6 +373,18 @@ export interface BackendToolCall {
   previewUrl?: string;
   previewPort?: number;
   sandboxId?: string;
+  sandbox?: {
+    id: string;
+    name: string;
+    status: string;
+    desired_running: boolean;
+    cpu_limit: number;
+    memory_limit_mb: number;
+    workspace_quota_bytes: number;
+    usage_bytes: number;
+    idle_timeout_seconds: number;
+    error?: string | null;
+  };
   error?: string;
   completedAt?: number;
   sources?: RetrievedSourceDTO[];
