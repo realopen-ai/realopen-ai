@@ -71,8 +71,27 @@ start_host_runtime() {
     local url="http://127.0.0.1:8766"
     local log_file="${PROJECT_ROOT}/data/host-runtime.log"
     local pid_file="${PROJECT_ROOT}/data/host-runtime.pid"
+    local health_response=""
 
-    if curl -fsS "${url}/health" &> /dev/null; then
+    host_runtime_is_running() {
+        health_response="$(curl -fsS "${url}/health" 2>/dev/null)" || return 1
+        HEALTH_RESPONSE="${health_response}" python - <<'PY'
+import json
+import os
+import sys
+
+try:
+    health = json.loads(os.environ["HEALTH_RESPONSE"])
+except (json.JSONDecodeError, KeyError):
+    sys.exit(1)
+
+if isinstance(health, dict) and "docker" in health:
+    sys.exit(0)
+sys.exit(1)
+PY
+    }
+
+    if host_runtime_is_running; then
         ok "Host runtime is running"
         return 0
     fi
@@ -89,7 +108,7 @@ start_host_runtime() {
         echo $! > "${pid_file}"
     )
     for _ in {1..20}; do
-        if curl -fsS "${url}/health" &> /dev/null; then
+        if host_runtime_is_running; then
             ok "Host runtime is running"
             return 0
         fi
