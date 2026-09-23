@@ -75,7 +75,7 @@ start_host_runtime() {
 
     host_runtime_is_running() {
         health_response="$(curl -fsS "${url}/health" 2>/dev/null)" || return 1
-        HEALTH_RESPONSE="${health_response}" python - <<'PY'
+        HEALTH_RESPONSE="${health_response}" python3 - <<'PY'
 import json
 import os
 import sys
