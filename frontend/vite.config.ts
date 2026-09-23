@@ -23,6 +23,9 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://backend:8000",
+        // Sandbox terminals also live below /api. Without WebSocket proxying
+        // enabled, Vite accepts the HTTP routes but drops terminal upgrades.
+        ws: true,
         changeOrigin: true,
         // SSE streams can be long-running (thinking + generating + tool calls).
         // Set a generous timeout so the Vite proxy doesn't kill the connection.
