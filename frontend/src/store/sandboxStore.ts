@@ -322,8 +322,20 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
     await request(`/api/sandboxes/${sandboxId}/link/${conversationId}`, {
       method: "PUT",
     });
-    set({ sandboxId, terminalHistory: [] });
-    await Promise.all([get().fetchFileTree(), get().loadCommandHistory()]);
+    set({
+      sandboxId,
+      fileTree: [],
+      activeFile: null,
+      activeFileContent: null,
+      terminalHistory: [],
+      previewUrl: null,
+      previewPort: null,
+    });
+    await Promise.all([
+      get().fetchFileTree(),
+      get().loadCommandHistory(),
+      get().discoverPreview(sandboxId),
+    ]);
   },
   lifecycle: async (action, sandboxId) => {
     const id = sandboxId ?? get().sandboxId;
