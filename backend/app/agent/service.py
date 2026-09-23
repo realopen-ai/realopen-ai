@@ -7,6 +7,7 @@ Tools are dynamically selected per-request to keep prompts small
 for 4B/7B models.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -616,6 +617,7 @@ async def run_agent_stream(
             _dbg("Model override after tool call → %s", resolved_model)
 
     max_rounds = 10
+    coder_attempted = False
     for round_number in range(max_rounds):
         if round_number == max_rounds - 1:
             app_metrics.record_agent_rounds(round_number + 1)
@@ -795,6 +797,21 @@ async def run_agent_stream(
                 )
                 continue
 
+            if tool_name == "delegate_to_coder":
+                if coder_attempted:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[The workspace coder was already invoked in this "
+                                "turn. Do not invoke it again; report the existing "
+                                "result to the user.]"
+                            ),
+                        }
+                    )
+                    continue
+                coder_attempted = True
+
             # RAG: inject conversation_id
             if tool_name == "rag_search" and conversation_id:
                 tool_args.setdefault("conversation_id", conversation_id)
@@ -811,6 +828,9 @@ async def run_agent_stream(
                     "   🔎 search_past_conversations: injected conversation_id=%s",
                     conversation_id,
                 )
+
+            if tool_name == "delegate_to_coder" and conversation_id:
+                tool_args.setdefault("conversation_id", conversation_id)
 
             # Generate a tool call ID for tracking across start/update events
             tc_id = f"tc-{tool.tool_type.value}-{int(time.time()*1000)}"
@@ -856,7 +876,24 @@ async def run_agent_stream(
                 exec_args.setdefault("model", model_override)
             try:
                 with app_metrics.track_tool_call(tool_name):
-                    result = await tool.execute(**exec_args)
+                    if tool_name == "delegate_to_coder":
+                        event_queue: asyncio.Queue = asyncio.Queue()
+                        exec_args["_event_queue"] = event_queue
+                        exec_args["_parent_tool_call_id"] = tc_id
+                        execution = asyncio.create_task(tool.execute(**exec_args))
+                        while not execution.done() or not event_queue.empty():
+                            try:
+                                nested_event = await asyncio.wait_for(
+                                    event_queue.get(), timeout=0.1
+                                )
+                                yield _sse_event(
+                                    "tool_call", {"tool_call": nested_event}
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                        result = await execution
+                    else:
+                        result = await tool.execute(**exec_args)
                 if model_override:
                     await _switch_model(model_override)
             except Exception as e:
@@ -946,6 +983,16 @@ async def run_agent_stream(
                     _dbg("   🔎 rag_sources: no sources retrieved, skipping event")
 
             # Feed result back
+            if tool_name == "delegate_to_coder" and not result.success and ollama_tools:
+                # A failed coding run is expensive and may have partially
+                # changed the workspace. Never let the main model blindly
+                # spawn another run in the same turn; it must report the
+                # concrete failure and let the user decide whether to retry.
+                ollama_tools = [
+                    schema
+                    for schema in ollama_tools
+                    if schema.get("function", {}).get("name") != "delegate_to_coder"
+                ]
             messages.append({"role": "assistant", "content": full_response})
             messages.append(
                 {

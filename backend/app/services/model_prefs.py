@@ -33,6 +33,11 @@ from app.services import providers
 # ─── Task slot definitions ──────────────────────────────────────────
 
 TASK_SLOTS: Dict[str, Dict[str, Any]] = {
+    "coder": {
+        "label": "Workspace coding agent",
+        "fallback_role": "default_coder",
+        "local_only": False,
+    },
     "voice": {
         "label": "Voice assistant",
         "fallback_role": "role_voice",

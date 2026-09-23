@@ -34,6 +34,7 @@ _ALWAYS_TOOLS: Set[str] = {
     "use_code_exec",
     "rag_search",
     "manage_memory",
+    "delegate_to_coder",
 }
 
 # ── Keyword → tool mapping for dynamic selection ──
@@ -48,6 +49,10 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
     "run": {"use_code_exec"},
     "code": {"use_code_exec"},
     "script": {"use_code_exec"},
+    "workspace": {"delegate_to_coder"},
+    "implement": {"delegate_to_coder"},
+    "build": {"delegate_to_coder"},
+    "fix": {"delegate_to_coder"},
     "document": {"rag_search"},
     "pdf": {"rag_search"},
     "file": {"rag_search"},
