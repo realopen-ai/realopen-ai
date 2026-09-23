@@ -13,10 +13,12 @@ import {
   Download,
   Upload,
   X,
+  Pencil,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSandboxStore, type FileNode } from "@/store/sandboxStore";
 import { cn } from "@/lib/utils";
+import { HighlightedCode } from "@/components/ui/HighlightedCode";
 
 function getFileIcon(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -239,9 +241,11 @@ export function FileEditorPane() {
   const setActiveFile = useSandboxStore((s) => s.setActiveFile);
   const saveFileContent = useSandboxStore((s) => s.saveFileContent);
   const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
 
   useEffect(() => {
     setDraft(activeFileContent ?? "");
+    setEditing(false);
   }, [activeFileContent, activeFile]);
 
   if (!activeFile) {
@@ -276,22 +280,38 @@ export function FileEditorPane() {
             <X className="h-3 w-3 cursor-pointer" />
           </button>
         </div>
-        <button
-          type="button"
-          disabled={!changed}
-          onClick={() => void saveFileContent(activeFile, draft)}
-          className="mr-2 rounded-md bg-primary px-2.5 py-1 text-[10px] text-primary-foreground disabled:opacity-35"
-        >
-          Save
-        </button>
+        <div className="mr-2 flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setEditing((value) => !value)}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Pencil className="h-3 w-3" />
+            {editing ? "Preview" : "Edit"}
+          </button>
+          <button
+            type="button"
+            disabled={!changed}
+            onClick={() => void saveFileContent(activeFile, draft)}
+            className="rounded-md bg-primary px-2.5 py-1 text-[10px] text-primary-foreground disabled:opacity-35"
+          >
+            Save
+          </button>
+        </div>
       </div>
-      <textarea
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        className="h-full min-h-0 w-full flex-1 resize-none bg-background p-4 font-mono text-[12px] leading-relaxed text-foreground/85 outline-none"
-        spellCheck={false}
-        aria-label={`Edit ${activeFile}`}
-      />
+      {editing ? (
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          className="h-full min-h-0 w-full flex-1 resize-none bg-background p-4 font-mono text-[12px] leading-relaxed text-foreground/85 outline-none"
+          spellCheck={false}
+          aria-label={`Edit ${activeFile}`}
+        />
+      ) : (
+        <pre className="m-0 min-h-0 flex-1 overflow-auto bg-background p-4 font-mono text-[12px] leading-relaxed text-foreground/85">
+          <HighlightedCode code={draft} filePath={activeFile} />
+        </pre>
+      )}
     </div>
   );
 }

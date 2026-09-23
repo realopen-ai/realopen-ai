@@ -25,6 +25,8 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
+import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
 import { useChatStore } from "@/store/chatStore";
@@ -325,7 +327,10 @@ function TextBlockView({
       )}
       style={{ fontSize: "var(--app-font-size)" }}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownCodeComponents}
+      >
         {block.content || (isStreaming ? "" : "...")}
       </ReactMarkdown>
     </div>
@@ -638,12 +643,17 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
   const displayedContent = tc.fileContent
     ? formatWorkspaceTreeOutput(tc.fileContent)
     : "";
+  const highlightContent =
+    (tc.type === "file_read" || tc.type === "file_write") &&
+    Boolean(tc.filePath) &&
+    tc.filePath !== "/workspace";
   const openFile = async () => {
     if (!tc.filePath || tc.filePath === "/workspace") return;
     useUIStore.getState().setRightPanelOpen(true);
     useUIStore.getState().setRightPanelTab("code");
     await useSandboxStore.getState().fetchFileContent(tc.filePath);
   };
+  const diffLines = tc.diff?.split("\n") ?? [];
   return (
     <div className="space-y-2">
       {tc.filePath && (
@@ -667,8 +677,23 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
             5-line diff
           </div>
-          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-emerald-300/80">
-            {tc.diff}
+          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed">
+            {diffLines.map((line, index) => (
+              <span
+                key={`${index}-${line}`}
+                className={cn(
+                  "block min-h-lh whitespace-pre",
+                  line.startsWith("---") ||
+                    (line.startsWith("-") && !line.startsWith("---"))
+                    ? "bg-red-500/5 text-red-400"
+                    : line.startsWith("+++") || line.startsWith("+")
+                      ? "bg-emerald-500/5 text-emerald-400"
+                      : "text-foreground/65",
+                )}
+              >
+                {line}
+              </span>
+            ))}
           </pre>
         </div>
       )}
@@ -677,8 +702,12 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
             {tc.type === "file_write" ? "Written content" : "Result"}
           </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
-            {displayedContent}
+          <pre className="max-h-64 overflow-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
+            {highlightContent ? (
+              <HighlightedCode code={displayedContent} filePath={tc.filePath} />
+            ) : (
+              displayedContent
+            )}
           </pre>
         </div>
       )}
@@ -807,8 +836,11 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
               {tc.language ?? "code"}
             </span>
           </div>
-          <pre className="p-3 text-[11px] text-emerald-300/70 font-mono overflow-x-auto leading-relaxed bg-sandbox-bg">
-            <code>{tc.code}</code>
+          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
+            <HighlightedCode
+              code={tc.code}
+              language={tc.language ?? "python"}
+            />
           </pre>
         </div>
       )}
@@ -1353,7 +1385,10 @@ export function MessageBubble({
           )}
           style={{ fontSize: "var(--app-font-size)" }}
         >
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={markdownCodeComponents}
+          >
             {message.content}
           </ReactMarkdown>
         </div>
