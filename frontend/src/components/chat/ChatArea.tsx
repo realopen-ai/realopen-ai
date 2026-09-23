@@ -169,6 +169,7 @@ export function ChatArea() {
       const capturedIsFromHomePage = isFromHomePage;
       const capturedGeneration = ++streamGenerationRef.current;
       const terminalToolIds = new Set<string>();
+      const streamedToolTypes = new Map<string, ToolCallResult["type"]>();
 
       return {
         onToken: (token: string) =>
@@ -357,8 +358,21 @@ export function ChatArea() {
         onToolCallStart: (toolCall: ToolCallResult) => {
           const s = useChatStore.getState();
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
+          streamedToolTypes.set(toolCall.id, toolCall.type);
+
+          if (
+            toolCall.sandboxId &&
+            useSandboxStore.getState().sandboxId !== toolCall.sandboxId
+          ) {
+            void useSandboxStore.getState().activateSandbox(toolCall.sandboxId);
+          }
 
           if (toolCall.type === "code_exec") {
+            if (!toolCall.sandboxId && !useSandboxStore.getState().sandboxId) {
+              void useSandboxStore
+                .getState()
+                .loadForConversation(capturedConvId);
+            }
             terminalToolIds.add(toolCall.id);
             setRightPanelOpen(true);
             setRightPanelTab("code");
@@ -377,6 +391,9 @@ export function ChatArea() {
           } else if (toolCall.type === "preview") {
             setRightPanelOpen(true);
             setRightPanelTab("preview");
+          } else if (toolCall.type === "sandbox") {
+            setRightPanelOpen(true);
+            setRightPanelTab("code");
           }
         },
         onToolCallUpdate: (
@@ -391,6 +408,12 @@ export function ChatArea() {
               toolCallId,
               updates,
             );
+          if (
+            updates.sandboxId &&
+            useSandboxStore.getState().sandboxId !== updates.sandboxId
+          ) {
+            void useSandboxStore.getState().activateSandbox(updates.sandboxId);
+          }
           if (terminalToolIds.has(toolCallId) && updates.output) {
             const output = formatCodeExecOutput(updates.output);
             if (output) addTerminalLine(output);
@@ -400,7 +423,16 @@ export function ChatArea() {
             setRightPanelOpen(true);
             setRightPanelTab("preview");
           }
-          if (updates.status === "completed" || updates.status === "error") terminalToolIds.delete(toolCallId);
+          if (
+            updates.status === "completed" &&
+            streamedToolTypes.get(toolCallId) === "file_write"
+          ) {
+            void useSandboxStore.getState().fetchFileTree();
+          }
+          if (updates.status === "completed" || updates.status === "error") {
+            terminalToolIds.delete(toolCallId);
+            streamedToolTypes.delete(toolCallId);
+          }
         },
         onDone: () => {
           useChatStore

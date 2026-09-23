@@ -11,6 +11,7 @@ test("coder file and preview details survive reload and live SSE mapping", () =>
       diff: "+print('ok')",
       previewUrl: "/api/sandboxes/id/preview/8000/",
       previewPort: 8000,
+      sandboxId: "workspace-id",
       unrelated: "discarded",
     }),
     {
@@ -19,6 +20,7 @@ test("coder file and preview details survive reload and live SSE mapping", () =>
       diff: "+print('ok')",
       previewUrl: "/api/sandboxes/id/preview/8000/",
       previewPort: 8000,
+      sandboxId: "workspace-id",
     },
   );
 });

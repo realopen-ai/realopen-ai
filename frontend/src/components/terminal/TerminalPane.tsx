@@ -125,25 +125,34 @@ export function TerminalPane({
     lastHistoryLenRef.current = history.length;
 
     let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
     if (mode === "shell" && sandboxId) {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${window.location.host}/api/sandboxes/${sandboxId}/terminal`);
-      socket.binaryType = "arraybuffer";
-      socket.onopen = () => {
-        if (disposed) {
-          socket?.close();
-          return;
-        }
-        socket?.send(JSON.stringify({ cols: xterm.cols, rows: xterm.rows }));
-        xterm.focus();
+      const connect = () => {
+        if (disposed) return;
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const nextSocket = new WebSocket(`${protocol}//${window.location.host}/api/sandboxes/${sandboxId}/terminal`);
+        socket = nextSocket;
+        nextSocket.binaryType = "arraybuffer";
+        nextSocket.onopen = () => {
+          if (disposed) {
+            nextSocket.close();
+            return;
+          }
+          nextSocket.send(JSON.stringify({ cols: xterm.cols, rows: xterm.rows }));
+          xterm.focus();
+        };
+        nextSocket.onmessage = (event) => {
+          if (!disposed) xterm.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+        };
+        nextSocket.onclose = () => {
+          if (!disposed && socket === nextSocket) {
+            xterm.writeln("\r\n\x1b[2;37m  Reconnecting to workspace shell...\x1b[0m");
+            reconnectTimer = setTimeout(connect, 1000);
+          }
+        };
       };
-      socket.onmessage = (event) => {
-        if (!disposed) xterm.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
-      };
-      socket.onerror = () => {
-        if (!disposed) xterm.writeln("\r\n\x1b[31mTerminal connection failed. Is the workspace running?\x1b[0m");
-      };
+      connect();
       xterm.onData((data) => { if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)); });
     }
 
@@ -159,6 +168,7 @@ export function TerminalPane({
 
     return () => {
       disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
       if (socket?.readyState === WebSocket.OPEN) socket.close();
       else if (socket?.readyState === WebSocket.CONNECTING) {

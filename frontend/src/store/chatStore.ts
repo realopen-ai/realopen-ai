@@ -65,6 +65,7 @@ export interface ToolCallResult {
   diff?: string;
   previewUrl?: string;
   previewPort?: number;
+  sandboxId?: string;
   // Error
   error?: string;
   // RAG sources (for rag_search tool calls)

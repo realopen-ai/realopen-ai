@@ -372,6 +372,7 @@ export interface BackendToolCall {
   diff?: string;
   previewUrl?: string;
   previewPort?: number;
+  sandboxId?: string;
   error?: string;
   completedAt?: number;
   sources?: RetrievedSourceDTO[];
