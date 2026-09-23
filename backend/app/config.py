@@ -1107,9 +1107,9 @@ class Settings(BaseSettings):
         Resolve a model identifier to an actual Ollama model ID.
 
         Resolution order:
-        1. If model is a known role (e.g. "default", "default_vision", "default_code"),
+        1. If model is a known role (e.g. "default", "default_vision", "default_coder"),
            look it up in the current hardware profile.
-        2. If model is a known type (e.g. "chat", "vision", "code"),
+        2. If model is a known type (e.g. "chat", "vision", "embedding"),
            return the model with role="default_<type>" in the current profile.
         3. Check enabled module models for matching role.
         4. Otherwise, treat it as a direct Ollama model ID (e.g. "qwen3:4b").

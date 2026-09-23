@@ -39,9 +39,9 @@ modules:
     # based on the current hardware profile. This list is informational only.
     models:
       - role: default
+      - role: default_coder
       - role: default_vision
       - role: default_embedding
-      - role: default_code
 
   image_generation:
     required: false

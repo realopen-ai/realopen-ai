@@ -24,8 +24,8 @@
 #
 # Model fields:
 #   id:          Ollama model tag (used in `ollama pull <id>`)
-#   type:        Model category — chat, vision, code, embedding
-#   role:        How the model is used — default, default_vision, default_code, etc.
+#   type:        Model category — chat, vision, embedding
+#   role:        How the model is used — default, default_coder, default_vision, etc.
 #                The backend resolves roles to model IDs automatically.
 #                If the frontend sends model="default", backend looks up the
 #                model with role="default" in the current hardware profile.
@@ -212,12 +212,6 @@ profiles:
         description: "LLaVA 7B — multimodal model combining vision encoder with Vicuna"
         size: "4.7 GB"
 
-      - id: qwen2.5-coder:14b
-        type: code
-        role: default_code
-        description: "Qwen2.5 Coder 14B — code generation, reasoning, and debugging"
-        size: "9.0 GB"
-
       - id: nomic-embed-text:v1.5
         type: embedding
         role: default_embedding
@@ -259,12 +253,6 @@ profiles:
         description: "LLaVA 13B — multimodal model with stronger visual understanding"
         size: "8 GB"
 
-      - id: qwen2.5-coder:32b
-        type: code
-        role: default_code
-        description: "Qwen2.5 Coder 32B — advanced code generation and reasoning"
-        size: "20 GB"
-
       - id: nomic-embed-text:v1.5
         type: embedding
         role: default_embedding
@@ -305,12 +293,6 @@ profiles:
         role: default_vision
         description: "LLaVA 34B — large multimodal model for comprehensive visual understanding"
         size: "20 GB"
-
-      - id: qwen3-coder:30b
-        type: code
-        role: default_code
-        description: "Qwen3 Coder 30B — performant long-context model for agentic coding"
-        size: "19 GB"
 
       - id: nomic-embed-text:v1.5
         type: embedding
@@ -437,12 +419,6 @@ profiles:
         description: "LLaVA 13B — multimodal model with strong visual understanding"
         size: "8 GB"
 
-      - id: qwen2.5-coder:32b
-        type: code
-        role: default_code
-        description: "Qwen2.5 Coder 32B — advanced code generation and reasoning"
-        size: "20 GB"
-
       - id: nomic-embed-text:v1.5
         type: embedding
         role: default_embedding
@@ -483,12 +459,6 @@ profiles:
         role: default_vision
         description: "LLaVA 34B — large multimodal model for comprehensive visual understanding"
         size: "20 GB"
-
-      - id: qwen3-coder:30b
-        type: code
-        role: default_code
-        description: "Qwen3 Coder 30B — performant long-context model for agentic coding"
-        size: "19 GB"
 
       - id: nomic-embed-text:v1.5
         type: embedding
