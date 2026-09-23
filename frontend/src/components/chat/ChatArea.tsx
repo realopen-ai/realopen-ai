@@ -32,7 +32,10 @@ import {
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
 import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
-import { formatCodeExecOutput } from "@/lib/codeExecOutput";
+import {
+  formatCodeExecOutput,
+  generalCodeExecCommand,
+} from "@/lib/codeExecOutput";
 
 const log = createDebugLogger("ChatArea");
 
@@ -381,14 +384,7 @@ export function ChatArea() {
             if (toolCall.language === "shell" && toolCall.code) {
               addTerminalLine(`$ ${toolCall.code}`);
             } else {
-              addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
-            }
-            if (toolCall.code) {
-              if (toolCall.language !== "shell") {
-                toolCall.code
-                  .split("\n")
-                  .forEach((l) => addTerminalLine(`  ${l}`));
-              }
+              addTerminalLine(generalCodeExecCommand(toolCall.id));
             }
           } else if (toolCall.type === "preview") {
             setRightPanelOpen(true);

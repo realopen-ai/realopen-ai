@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatCodeExecOutput } from "../src/lib/codeExecOutput.ts";
+import {
+  formatCodeExecOutput,
+  generalCodeExecCommand,
+} from "../src/lib/codeExecOutput.ts";
 
 test("command JSON displays stdout with its line breaks", () => {
   const output = JSON.stringify({
@@ -27,4 +30,11 @@ test("command JSON displays stderr when stdout is empty", () => {
 test("plain and unrelated JSON output remains unchanged", () => {
   assert.equal(formatCodeExecOutput("plain output\n"), "plain output\n");
   assert.equal(formatCodeExecOutput('{"value":42}'), '{"value":42}');
+});
+
+test("general code execution uses a compact synthetic Python command", () => {
+  assert.equal(
+    generalCodeExecCommand("tc:code/123"),
+    "$ python3 /tmp/tc-code-123.py",
+  );
 });

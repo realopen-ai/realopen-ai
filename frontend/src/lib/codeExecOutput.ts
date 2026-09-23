@@ -28,3 +28,10 @@ export function formatCodeExecOutput(output: unknown): string {
     return output;
   }
 }
+
+/** Compact terminal projection for general-agent Python execution. */
+export function generalCodeExecCommand(toolCallId: string): string {
+  const safeId =
+    toolCallId.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 80) || "code";
+  return `$ python3 /tmp/${safeId}.py`;
+}

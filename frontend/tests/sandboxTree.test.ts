@@ -93,7 +93,7 @@ test("sandbox command history renders only command streams", () => {
   assert.deepEqual(lines, [
     "$ ls -la",
     "file.txt\n",
-    "$ python\n  print(2 + 2)",
+    "$ python3 /tmp/2.py",
     "4\n",
   ]);
 });

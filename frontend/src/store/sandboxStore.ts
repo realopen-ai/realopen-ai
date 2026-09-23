@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { generalCodeExecCommand } from "../lib/codeExecOutput.ts";
 
 export interface FileNode {
   name: string;
@@ -71,10 +72,7 @@ export function commandHistoryLines(commands: SandboxCommand[]): string[] {
   return commands.flatMap((item) => {
     const command =
       item.source === "general_agent"
-        ? `$ python\n${item.command
-            .split("\n")
-            .map((line) => `  ${line}`)
-            .join("\n")}`
+        ? generalCodeExecCommand(item.id)
         : `$ ${item.command}`;
     const lines = [command];
     if (item.stdout) lines.push(item.stdout);
