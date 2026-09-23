@@ -32,6 +32,7 @@ import {
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
 import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
+import { formatCodeExecOutput } from "@/lib/codeExecOutput";
 
 const log = createDebugLogger("ChatArea");
 
@@ -161,12 +162,13 @@ export function ChatArea() {
       assistantMsgId: string,
       opts: BuildStreamCallbacksOptions,
     ): StreamCallbacks => {
-      const { userMsgId, content, isFromHomePage } = opts;
+      const { userMsgId, isFromHomePage } = opts;
 
       // Capture values for the closure — these won't change after this point
       const capturedConvId = convId;
       const capturedIsFromHomePage = isFromHomePage;
       const capturedGeneration = ++streamGenerationRef.current;
+      const terminalToolIds = new Set<string>();
 
       return {
         onToken: (token: string) =>
@@ -294,18 +296,6 @@ export function ChatArea() {
           total_chunks?: number;
           total_images?: number;
         }) => {
-          // Terminal log
-          if (p.percent === 0 || p.stage === "started") {
-            addTerminalLine(`📄 Digesting ${p.filename ?? "document"}...`);
-          } else if (p.stage === "done") {
-            // Handled in onDocumentDigestDone
-          } else if (p.stage === "error") {
-            addTerminalLine(`   ❌ ${p.details}`);
-          } else {
-            addTerminalLine(
-              `   ${p.percent}%  ${p.stage}  ${p.details ?? ""}`.trim(),
-            );
-          }
           // Inline progress on the user's message bubble
           // so the user sees feedback directly in the conversation.
           // (Voice turns never upload documents → userMsgId is undefined.)
@@ -337,9 +327,6 @@ export function ChatArea() {
           total_chunks: number;
           total_images: number;
         }) => {
-          addTerminalLine(
-            `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
-          );
           // Final "done" item so the inline indicator shows completion
           if (userMsgId) {
             useChatStore
@@ -355,9 +342,6 @@ export function ChatArea() {
           }
         },
         onDocumentDigestError: (info: { filename?: string; error: string }) => {
-          addTerminalLine(
-            `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
-          );
           if (userMsgId) {
             useChatStore
               .getState()
@@ -375,6 +359,7 @@ export function ChatArea() {
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
 
           if (toolCall.type === "code_exec") {
+            terminalToolIds.add(toolCall.id);
             setRightPanelOpen(true);
             setRightPanelTab("code");
             if (toolCall.language === "shell" && toolCall.code) {
@@ -389,19 +374,9 @@ export function ChatArea() {
                   .forEach((l) => addTerminalLine(`  ${l}`));
               }
             }
-          } else if (toolCall.type === "sandbox") {
-            setRightPanelOpen(true);
-            setRightPanelTab("code");
-            addTerminalLine("$ Delegated task to workspace coder");
           } else if (toolCall.type === "preview") {
             setRightPanelOpen(true);
             setRightPanelTab("preview");
-          } else if (toolCall.type === "vision") {
-            setRightPanelOpen(true);
-            setRightPanelTab("code");
-            addTerminalLine(`$ Analyzing image...`);
-          } else if (toolCall.type === "websearch") {
-            addTerminalLine(`$ Searching: ${toolCall.query ?? content}`);
           }
         },
         onToolCallUpdate: (
@@ -416,27 +391,16 @@ export function ChatArea() {
               toolCallId,
               updates,
             );
-          if (updates.output) {
-            updates.output.split("\n").forEach((l) => addTerminalLine(l));
+          if (terminalToolIds.has(toolCallId) && updates.output) {
+            const output = formatCodeExecOutput(updates.output);
+            if (output) addTerminalLine(output);
           }
           if (updates.previewUrl) {
             setPreviewUrl(updates.previewUrl);
             setRightPanelOpen(true);
             setRightPanelTab("preview");
           }
-          if (updates.webResults) {
-            addTerminalLine(`  → ${updates.webResults.length} result(s) found`);
-          }
-          if (updates.genResults) {
-            addTerminalLine(
-              `  → ${updates.genResults.length} generated result(s)`,
-            );
-          }
-          if (updates.imageDescription) {
-            addTerminalLine(
-              `  → Image analyzed: ${updates.imageDescription.slice(0, 80)}...`,
-            );
-          }
+          if (updates.status === "completed" || updates.status === "error") terminalToolIds.delete(toolCallId);
         },
         onDone: () => {
           useChatStore

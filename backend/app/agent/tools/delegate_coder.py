@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import difflib
+import logging
 import shlex
 import time
 import uuid
@@ -17,7 +18,36 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_regist
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.services import providers, sandbox_host
+from app.services.sandbox_commands import persist_command, split_command_output
 from app.services.model_prefs import resolve_task_model
+
+logger = logging.getLogger(__name__)
+
+
+async def _record_coder_command(
+    *, sandbox, conversation_id, task_id, tool_name, sequence, command,
+    started_at: float, output="", exit_code=None, error: str = "",
+) -> None:
+    try:
+        stdout, stderr = split_command_output(output, exit_code)
+        if error:
+            stderr = error
+        await persist_command(
+            sandbox_id=sandbox.id,
+            conversation_id=conversation_id,
+            task_id=task_id,
+            source="coder_agent",
+            tool_name=tool_name,
+            sequence=sequence,
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            started_at=datetime.utcfromtimestamp(started_at),
+            completed_at=datetime.utcnow(),
+        )
+    except Exception as exc:
+        logger.warning("Could not persist coder command history: %s", exc)
 
 CODER_TOOLS = [
     {
@@ -588,6 +618,19 @@ class DelegateCoderTool(BaseTool):
                         _event_queue.put_nowait(start_event)
                     try:
                         output, event = await _dispatch(sandbox, name, args)
+                        if name in {"run_command", "run_tests", "install_dependencies"}:
+                            exit_code = event.get("exit_code") if event else None
+                            await _record_coder_command(
+                                sandbox=sandbox,
+                                conversation_id=conversation.id,
+                                task_id=task_id,
+                                tool_name=name,
+                                sequence=step_index,
+                                command=str(args.get("command", "")),
+                                output=output,
+                                exit_code=exit_code,
+                                started_at=started_at,
+                            )
                         completed_event = {
                             **start_event,
                             "status": "completed",
@@ -607,6 +650,17 @@ class DelegateCoderTool(BaseTool):
                             completed_event["previewPort"] = event["port"]
                             preview_started = True
                     except Exception as exc:
+                        if name in {"run_command", "run_tests", "install_dependencies"}:
+                            await _record_coder_command(
+                                sandbox=sandbox,
+                                conversation_id=conversation.id,
+                                task_id=task_id,
+                                tool_name=name,
+                                sequence=step_index,
+                                command=str(args.get("command", "")),
+                                started_at=started_at,
+                                error=str(exc),
+                            )
                         completed_event = {
                             **start_event,
                             "status": "error",

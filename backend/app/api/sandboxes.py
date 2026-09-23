@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Sandbox, SandboxTask
+from app.db.models import Conversation, Sandbox, SandboxCommand, SandboxTask
 from app.db.session import get_db
 from app.services import sandbox_host
 
@@ -241,6 +241,50 @@ async def execute(
     result["usage_bytes"] = item.usage_bytes
     result["quota_exceeded"] = item.usage_bytes > item.workspace_quota_bytes
     return result
+
+
+@router.get("/{sandbox_id}/commands")
+async def command_history(
+    sandbox_id: uuid.UUID,
+    limit: int = Query(default=500, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_one(db, sandbox_id)
+    rows = (
+        (
+            await db.execute(
+                select(SandboxCommand)
+                .where(SandboxCommand.sandbox_id == sandbox_id)
+                .order_by(SandboxCommand.started_at.desc(), SandboxCommand.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rows.reverse()
+    return {
+        "commands": [
+            {
+                "id": str(row.id),
+                "task_id": str(row.task_id) if row.task_id else None,
+                "conversation_id": str(row.conversation_id) if row.conversation_id else None,
+                "source": row.source,
+                "tool_name": row.tool_name,
+                "sequence": row.sequence,
+                "command": row.command,
+                "cwd": row.cwd,
+                "stdout": row.stdout,
+                "stderr": row.stderr,
+                "exit_code": row.exit_code,
+                "output_truncated": row.output_truncated,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                "duration_ms": row.duration_ms,
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.post("/{sandbox_id}/exec/{command_id}/cancel")

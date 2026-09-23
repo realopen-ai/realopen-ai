@@ -108,6 +108,12 @@ class Sandbox(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    commands = relationship(
+        "SandboxCommand",
+        back_populates="sandbox",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class SandboxTask(Base):
@@ -136,6 +142,46 @@ class SandboxTask(Base):
     completed_at = Column(DateTime, nullable=True)
 
     sandbox = relationship("Sandbox", back_populates="tasks")
+    commands = relationship("SandboxCommand", back_populates="task")
+
+
+class SandboxCommand(Base):
+    """Durable command and output history for a sandbox workspace."""
+
+    __tablename__ = "sandbox_commands"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sandbox_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sandboxes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sandbox_tasks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source = Column(String(32), nullable=False)
+    tool_name = Column(String(80), nullable=False)
+    sequence = Column(Integer, nullable=True)
+    command = Column(Text, nullable=False)
+    cwd = Column(String(1024), nullable=False, default="/workspace")
+    stdout = Column(Text, nullable=False, default="")
+    stderr = Column(Text, nullable=False, default="")
+    exit_code = Column(Integer, nullable=True)
+    output_truncated = Column(Boolean, nullable=False, default=False)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    sandbox = relationship("Sandbox", back_populates="commands")
+    task = relationship("SandboxTask", back_populates="commands")
 
 
 class Message(Base):

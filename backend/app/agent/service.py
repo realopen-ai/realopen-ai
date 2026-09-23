@@ -832,6 +832,9 @@ async def run_agent_stream(
             if tool_name == "delegate_to_coder" and conversation_id:
                 tool_args.setdefault("conversation_id", conversation_id)
 
+            if tool_name == "use_code_exec" and conversation_id:
+                tool_args.setdefault("conversation_id", conversation_id)
+
             # Generate a tool call ID for tracking across start/update events
             tc_id = f"tc-{tool.tool_type.value}-{int(time.time()*1000)}"
 

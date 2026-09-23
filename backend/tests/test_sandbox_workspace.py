@@ -73,6 +73,23 @@ def test_coder_tool_is_registered():
     assert tool.get_required_params() == ["task"]
 
 
+def test_sandbox_exec_envelope_splits_stdout_and_stderr():
+    from app.services.sandbox_commands import split_command_output
+
+    stdout, stderr = split_command_output(
+        json.dumps({"stdout": "ok\n", "stderr": "warning\n", "exit_code": 0}),
+        0,
+    )
+    assert stdout == "ok\n"
+    assert stderr == "warning\n"
+
+
+def test_failed_plain_command_output_is_stderr():
+    from app.services.sandbox_commands import split_command_output
+
+    assert split_command_output("command refused", 2) == ("", "command refused")
+
+
 def test_coder_contract_includes_toolchains_and_preview():
     from app.agent.tools import delegate_coder
 
