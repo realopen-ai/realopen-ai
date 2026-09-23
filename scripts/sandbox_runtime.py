@@ -24,7 +24,9 @@ except ImportError:  # reported through /health rather than breaking voice
 
 LABEL = "ai.realopen.sandbox"
 WORKSPACE = "/workspace"
-PREVIEW_PORTS = (3000, 5173, 8000, 8080)
+FRONTEND_PORT = 6767
+BACKEND_PORT = 6969
+PREVIEW_PORTS = (FRONTEND_PORT, BACKEND_PORT)
 
 
 def safe_path(path: str) -> str:
@@ -170,7 +172,12 @@ class SandboxRuntime:
         # Docker SDK waits for completion. The command itself is bounded by
         # coreutils timeout inside the sandbox image.
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", command_id)[:80] or "command"
-        script = f"echo $$ > /tmp/roai-{safe_id}.pid; trap 'rm -f /tmp/roai-{safe_id}.pid' EXIT; exec timeout --signal=TERM {max(1, min(timeout, 1800))} bash -lc {shlex.quote(command)}"
+        script = (
+            f"echo $$ > /tmp/roai-{safe_id}.pid; "
+            f"trap 'rm -f /tmp/roai-{safe_id}.pid' EXIT; "
+            f"exec timeout --signal=TERM {max(1, min(timeout, 1800))} "
+            f"bash -lc {shlex.quote(command)}"
+        )
         wrapped = ["bash", "-lc", script]
         result = container.exec_run(wrapped, workdir=WORKSPACE, demux=True)
         stdout, stderr = result.output or (b"", b"")

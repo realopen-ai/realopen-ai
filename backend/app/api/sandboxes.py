@@ -384,6 +384,43 @@ async def preview(
     return Response(response.content, response.status_code, headers=headers)
 
 
+@router.get("/{sandbox_id}/previews")
+async def discover_previews(
+    sandbox_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    item = await get_one(db, sandbox_id)
+    try:
+        runtime = await sandbox_host.call("status", item, timeout=10)
+    except Exception:
+        return {"available": [], "preferred": None}
+    if not runtime.get("running"):
+        return {"available": [], "preferred": None}
+
+    async def probe(port: int) -> dict | None:
+        try:
+            response = await asyncio.wait_for(
+                sandbox_host.preview_get(item, port, ""), timeout=3
+            )
+            # API roots commonly return 404 while the service is healthy.
+            if response.status_code < 500:
+                return {
+                    "port": port,
+                    "url": f"/api/sandboxes/{item.id}/preview/{port}/",
+                    "host_url": f"http://localhost:{port}",
+                }
+        except Exception:
+            pass
+        return None
+
+    results = await asyncio.gather(probe(6767), probe(6969))
+    available = [result for result in results if result is not None]
+    preferred = next(
+        (result for result in available if result["port"] == 6767),
+        available[0] if available else None,
+    )
+    return {"available": available, "preferred": preferred}
+
+
 @router.get("/{sandbox_id}/tasks")
 async def tasks(sandbox_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     rows = (

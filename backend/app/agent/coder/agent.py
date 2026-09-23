@@ -122,7 +122,7 @@ async def _create_task(conversation_id: str, task_id: uuid.UUID, request: str):
         return conversation, sandbox
 
 
-def _workspace_events(sandbox_id, parent_id: str | None, task_id) -> tuple[dict, dict]:
+def _workspace_events(sandbox, parent_id: str | None, task_id) -> tuple[dict, dict]:
     now = time.time()
     event = {
         "id": f"{parent_id or task_id}-workspace",
@@ -131,7 +131,19 @@ def _workspace_events(sandbox_id, parent_id: str | None, task_id) -> tuple[dict,
         "status": "running",
         "title": "Workspace ready",
         "startedAt": now,
-        "sandboxId": str(sandbox_id),
+        "sandboxId": str(sandbox.id),
+        "sandbox": {
+            "id": str(sandbox.id),
+            "name": sandbox.name,
+            "status": sandbox.status,
+            "desired_running": sandbox.desired_running,
+            "cpu_limit": sandbox.cpu_limit,
+            "memory_limit_mb": sandbox.memory_limit_mb,
+            "workspace_quota_bytes": sandbox.workspace_quota_bytes,
+            "usage_bytes": sandbox.usage_bytes,
+            "idle_timeout_seconds": sandbox.idle_timeout_seconds,
+            "error": sandbox.error,
+        },
     }
     return event, {**event, "status": "completed", "completedAt": now}
 
@@ -357,10 +369,13 @@ class CoderAgent(BaseTool):
         task_id = uuid.uuid4()
         try:
             conversation, sandbox = await _create_task(conversation_id, task_id, task)
-            await sandbox_host.call("start", sandbox)
+            runtime = await sandbox_host.call("start", sandbox)
+            sandbox.status = runtime.get("status", "running")
+            sandbox.desired_running = True
+            sandbox.error = None
             if _event_queue is not None:
                 for event in _workspace_events(
-                    sandbox.id, _parent_tool_call_id, task_id
+                    sandbox, _parent_tool_call_id, task_id
                 ):
                     _event_queue.put_nowait(event)
             model = await resolve_task_model("coder")

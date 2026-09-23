@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,6 +75,7 @@ def online_hub():
 
 app = FastAPI(title="RealOpen Host Runtime")
 sandbox_runtime = None
+direct_preview_specs: dict[int, SandboxSpec] = {}
 
 
 def _sandboxes() -> SandboxRuntime:
@@ -220,12 +222,16 @@ async def sandbox_exec(payload: SandboxExecPayload) -> dict:
 
 @app.post("/v1/sandboxes/exec/detached")
 async def sandbox_exec_detached(payload: SandboxExecPayload) -> dict:
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         _sandboxes().exec_detached,
         payload.spec(),
         payload.command,
         payload.command_id,
     )
+    match = re.fullmatch(r"preview-(6767|6969)", payload.command_id)
+    if match:
+        direct_preview_specs[int(match.group(1))] = payload.spec()
+    return result
 
 
 @app.api_route(
@@ -239,6 +245,8 @@ async def sandbox_preview(sandbox_id: str, port: int, path: str, request: Reques
         container_name=request.query_params["container_name"],
         image=request.query_params.get("image", "realopenai-sandbox:latest"),
     ).spec()
+    if port in (6767, 6969):
+        direct_preview_specs[port] = spec
     target = await asyncio.to_thread(_sandboxes().preview_target, spec, port)
     url = f"{target}/{path}"
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
@@ -257,6 +265,45 @@ async def sandbox_preview(sandbox_id: str, port: int, path: str, request: Reques
         if key.lower() in {"content-type", "cache-control", "etag", "last-modified"}
     }
     return StreamingResponse(iter([response.content]), response.status_code, headers)
+
+
+def _direct_preview_app(port: int) -> FastAPI:
+    """Stable localhost gateway for the most recently started service."""
+    direct = FastAPI(title=f"RealOpen Sandbox Preview {port}")
+
+    @direct.api_route(
+        "/{path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def proxy(path: str, request: Request):
+        spec = direct_preview_specs.get(port)
+        if spec is None:
+            raise HTTPException(503, f"No sandbox service is running on port {port}")
+        target = await asyncio.to_thread(_sandboxes().preview_target, spec, port)
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in {"host", "content-length", "connection"}
+        }
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            response = await client.request(
+                request.method,
+                f"{target}/{path}",
+                params=request.query_params,
+                headers=headers,
+                content=await request.body(),
+            )
+        forwarded_headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower()
+            in {"content-type", "cache-control", "etag", "last-modified", "location"}
+        }
+        return StreamingResponse(
+            iter([response.content]), response.status_code, forwarded_headers
+        )
+
+    return direct
 
 
 @app.post("/v1/sandboxes/exec/cancel")
@@ -453,4 +500,16 @@ async def synthesize(payload: SpeechRequest) -> StreamingResponse:
 if __name__ == "__main__":
     import uvicorn
 
+    for direct_port in (6767, 6969):
+        threading.Thread(
+            target=uvicorn.run,
+            args=(_direct_preview_app(direct_port),),
+            kwargs={
+                "host": "127.0.0.1",
+                "port": direct_port,
+                "log_level": "warning",
+            },
+            daemon=True,
+            name=f"sandbox-preview-{direct_port}",
+        ).start()
     uvicorn.run(app, host="127.0.0.1", port=8766, log_level="info")

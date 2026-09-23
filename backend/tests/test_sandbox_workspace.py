@@ -156,17 +156,41 @@ def test_coder_contract_includes_toolchains_and_preview():
     assert "uv sync" in prompt
     assert "never try pip" in prompt
     assert "written at most twice" in prompt
+    assert "0.0.0.0:6767" in prompt
+    assert "0.0.0.0:6969" in prompt
+    preview_tool = next(
+        item for item in CODER_TOOLS if item["function"]["name"] == "start_preview"
+    )
+    ports = preview_tool["function"]["parameters"]["properties"]["port"]["enum"]
+    assert ports == [6767, 6969]
+
+
+def test_sandbox_uses_fixed_loopback_application_ports():
+    assert MODULE.PREVIEW_PORTS == (6767, 6969)
 
 
 def test_workspace_ready_events_link_live_client_to_sandbox():
     from app.agent.coder.agent import _workspace_events
 
     sandbox_id = uuid.uuid4()
-    running, completed = _workspace_events(sandbox_id, "parent", uuid.uuid4())
+    sandbox = SimpleNamespace(
+        id=sandbox_id,
+        name="Project workspace",
+        status="running",
+        desired_running=True,
+        cpu_limit=2.0,
+        memory_limit_mb=2048,
+        workspace_quota_bytes=2 * 1024**3,
+        usage_bytes=0,
+        idle_timeout_seconds=1800,
+        error=None,
+    )
+    running, completed = _workspace_events(sandbox, "parent", uuid.uuid4())
 
     assert running["type"] == "sandbox"
     assert running["status"] == "running"
     assert running["sandboxId"] == str(sandbox_id)
+    assert running["sandbox"]["name"] == "Project workspace"
     assert completed["id"] == running["id"]
     assert completed["status"] == "completed"
 

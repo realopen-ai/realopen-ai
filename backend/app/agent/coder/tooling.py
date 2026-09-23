@@ -9,6 +9,9 @@ import shlex
 
 from app.services import sandbox_host
 
+FRONTEND_PORT = 6767
+BACKEND_PORT = 6969
+
 
 def _function(name: str, description: str, properties: dict, required=()) -> dict:
     return {
@@ -83,7 +86,7 @@ CODER_TOOLS = [
         "Start the tested web app and expose it in the Preview panel.",
         {
             "command": {"type": "string"},
-            "port": {"type": "integer", "enum": [3000, 5173, 8000, 8080]},
+            "port": {"type": "integer", "enum": [FRONTEND_PORT, BACKEND_PORT]},
         },
         ("command", "port"),
     ),
@@ -247,16 +250,7 @@ async def _run_command(sandbox, args: dict) -> tuple[str, dict | None]:
 
 
 async def infer_preview(sandbox) -> tuple[str, int] | None:
-    for path, module in (
-        ("/workspace/app/main.py", "app.main:app"),
-        ("/workspace/main.py", "main:app"),
-    ):
-        try:
-            result = await sandbox_host.call("files/read", sandbox, {"path": path})
-        except Exception:
-            continue
-        if "FastAPI(" in result.get("content", ""):
-            return f"uv run uvicorn {module} --host 0.0.0.0 --port 8000", 8000
+    # Prefer a frontend when a full-stack workspace exposes both services.
     try:
         package = json.loads(
             (
@@ -266,7 +260,23 @@ async def infer_preview(sandbox) -> tuple[str, int] | None:
             ).get("content", "{}")
         )
         if package.get("scripts", {}).get("dev"):
-            return "bun run dev --host 0.0.0.0 --port 5173", 5173
+            return (
+                f"bun run dev --host 0.0.0.0 --port {FRONTEND_PORT}",
+                FRONTEND_PORT,
+            )
     except Exception:
         pass
+    for path, module in (
+        ("/workspace/app/main.py", "app.main:app"),
+        ("/workspace/main.py", "main:app"),
+    ):
+        try:
+            result = await sandbox_host.call("files/read", sandbox, {"path": path})
+        except Exception:
+            continue
+        if "FastAPI(" in result.get("content", ""):
+            return (
+                f"uv run uvicorn {module} --host 0.0.0.0 --port {BACKEND_PORT}",
+                BACKEND_PORT,
+            )
     return None
