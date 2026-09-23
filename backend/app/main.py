@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 # Optional voice runtimes live in a durable, platform/Python-keyed target.
@@ -31,6 +32,7 @@ from app.api.deps import router as deps_router  # noqa: E402
 from app.api.providers import router as providers_router  # noqa: E402
 from app.api.tools import router as tools_router  # noqa: E402
 from app.api.voice import router as voice_router  # noqa: E402
+from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa: E402
 from app.core.logger import is_debug  # noqa: E402
 from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
 
@@ -317,10 +319,58 @@ async def lifespan(app: FastAPI):
     # application startup must remain offline and must never be held hostage
     # by a package index or model host.
 
+    async def idle_sandbox_monitor():
+        from datetime import datetime
+        from sqlalchemy import select
+        from app.db.models import Sandbox, SandboxTask
+        from app.db.session import async_session_factory
+        from app.services import sandbox_host
+
+        while True:
+            await asyncio.sleep(30)
+            try:
+                async with async_session_factory() as db:
+                    rows = (
+                        (
+                            await db.execute(
+                                select(Sandbox).where(
+                                    Sandbox.status == "running",
+                                    Sandbox.desired_running.is_(True),
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    now = datetime.utcnow()
+                    for item in rows:
+                        active = await db.scalar(
+                            select(SandboxTask.id).where(
+                                SandboxTask.sandbox_id == item.id,
+                                SandboxTask.status.in_(["queued", "running"]),
+                            )
+                        )
+                        idle = (
+                            item.last_active_at
+                            and (now - item.last_active_at).total_seconds()
+                            >= item.idle_timeout_seconds
+                        )
+                        if idle and not active:
+                            await sandbox_host.call("stop", item)
+                            item.status = "stopped"
+                    await db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Sandbox idle monitor: %s", exc)
+
+    sandbox_monitor = asyncio.create_task(idle_sandbox_monitor())
     yield
 
     # Shutdown
-    pass
+    sandbox_monitor.cancel()
+    with suppress(asyncio.CancelledError):
+        await sandbox_monitor
 
 
 app = FastAPI(
@@ -373,6 +423,15 @@ app.include_router(deps_router, prefix="/api", tags=["dependencies"])
 app.include_router(providers_router, prefix="/api", tags=["providers"])
 app.include_router(tools_router, prefix="/api", tags=["tools"])
 app.include_router(voice_router, prefix="/api", tags=["voice"])
+app.include_router(sandboxes_router, prefix="/api")
+
+
+@app.websocket("/api/sandboxes/{sandbox_id}/terminal")
+async def sandbox_terminal_socket(websocket: WebSocket, sandbox_id: str):
+    from app.db.session import async_session_factory
+
+    async with async_session_factory() as db:
+        await terminal_proxy(websocket, sandbox_id, db)
 
 
 # ── Voice chat WebSocket (protocol v1) ─────────────────────────────

@@ -2,7 +2,17 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -49,12 +59,83 @@ class Conversation(Base):
     summary_embedding = Column(Vector(768), nullable=True)
     summary_at = Column(DateTime, nullable=True)
 
+    # A conversation may use one persistent workspace. The sandbox itself
+    # can be shared by several conversations and outlives its containers.
+    sandbox_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sandboxes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     messages = relationship(
         "Message",
         back_populates="conversation",
         order_by="Message.created_at",
         foreign_keys="Message.conversation_id",
     )
+    sandbox = relationship("Sandbox", back_populates="conversations")
+
+
+class Sandbox(Base):
+    """Persistent workspace metadata; compute containers are disposable."""
+
+    __tablename__ = "sandboxes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(120), nullable=False)
+    status = Column(String(24), nullable=False, default="stopped")
+    desired_running = Column(Boolean, nullable=False, default=False)
+    volume_name = Column(String(180), nullable=False, unique=True)
+    container_name = Column(String(180), nullable=False, unique=True)
+    image = Column(String(255), nullable=False, default="realopenai-sandbox:latest")
+    cpu_limit = Column(Float, nullable=False, default=2.0)
+    memory_limit_mb = Column(Integer, nullable=False, default=2048)
+    workspace_quota_bytes = Column(
+        BigInteger, nullable=False, default=2 * 1024 * 1024 * 1024
+    )
+    usage_bytes = Column(BigInteger, nullable=False, default=0)
+    idle_timeout_seconds = Column(Integer, nullable=False, default=1800)
+    last_active_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversations = relationship("Conversation", back_populates="sandbox")
+    tasks = relationship(
+        "SandboxTask",
+        back_populates="sandbox",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class SandboxTask(Base):
+    """Auditable state for a delegated coding-agent run."""
+
+    __tablename__ = "sandbox_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sandbox_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sandboxes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    status = Column(String(24), nullable=False, default="queued")
+    request = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    worklog = Column(JSONB, nullable=False, default=list)
+    files_changed = Column(JSONB, nullable=False, default=list)
+    tests_run = Column(JSONB, nullable=False, default=list)
+    cancellation_requested = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    sandbox = relationship("Sandbox", back_populates="tasks")
 
 
 class Message(Base):

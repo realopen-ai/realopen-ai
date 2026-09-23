@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /workspace
+printf 'toolchains\n'
+printf '  python: '; python3 --version
+printf '  uv: '; uv --version
+printf '  node: '; node --version
+printf '  bun: '; bun --version
+printf '  sqlite: '; sqlite3 --version | cut -d' ' -f1
+printf '\ndetected files\n'
+for file in pyproject.toml uv.lock package.json bun.lock bun.lockb requirements.txt; do
+  [[ -e "$file" ]] && printf '  %s\n' "$file"
+done
+exit 0

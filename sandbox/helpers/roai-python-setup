@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /workspace
+[[ -f pyproject.toml ]] || { echo 'pyproject.toml is required' >&2; exit 2; }
+exec uv sync --all-groups "$@"

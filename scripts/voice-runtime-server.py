@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -20,13 +21,21 @@ from app.services.pip_persistence import activate_persistent_site_packages  # no
 activate_persistent_site_packages()
 
 # noqa: E402 — FastAPI imports must come after pip_persistence activation #
-from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)  # noqa: E402
 from fastapi.responses import StreamingResponse  # noqa: E402
+import httpx  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.voice.asr import create_asr_engine  # noqa: E402
 from app.voice.tts import create_tts_engine  # noqa: E402
+from sandbox_runtime import SandboxRuntime, SandboxSpec  # noqa: E402
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -64,6 +73,17 @@ def online_hub():
 
 
 app = FastAPI(title="RealOpen Native Voice Runtime")
+sandbox_runtime = None
+
+
+def _sandboxes() -> SandboxRuntime:
+    global sandbox_runtime
+    if sandbox_runtime is None:
+        try:
+            sandbox_runtime = SandboxRuntime()
+        except Exception as exc:
+            raise HTTPException(503, str(exc)) from exc
+    return sandbox_runtime
 
 
 class SpeechRequest(BaseModel):
@@ -73,6 +93,37 @@ class SpeechRequest(BaseModel):
 
 class VoiceRequest(BaseModel):
     voice: str
+
+
+class SandboxPayload(BaseModel):
+    sandbox_id: str
+    volume_name: str
+    container_name: str
+    image: str = "realopenai-sandbox:latest"
+    cpu_limit: float = 2.0
+    memory_limit_mb: int = 2048
+
+    def spec(self) -> SandboxSpec:
+        return SandboxSpec(
+            sandbox_id=self.sandbox_id,
+            volume_name=self.volume_name,
+            container_name=self.container_name,
+            image=self.image,
+            cpu_limit=self.cpu_limit,
+            memory_limit_mb=self.memory_limit_mb,
+        )
+
+
+class SandboxExecPayload(SandboxPayload):
+    command: str
+    timeout: int = 120
+    command_id: str = "command"
+
+
+class SandboxFilePayload(SandboxPayload):
+    path: str
+    content: str | None = None
+    content_base64: str | None = None
 
 
 def _custom_voices() -> list[dict]:
@@ -112,7 +163,191 @@ def _tts_for_voice(voice: str):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ready": True, "asr": asr.status(), "tts": tts.status()}
+    docker_ready = False
+    try:
+        docker_ready = _sandboxes().ping()
+    except HTTPException:
+        pass
+    return {
+        "ready": True,
+        "asr": asr.status(),
+        "tts": tts.status(),
+        "docker": docker_ready,
+    }
+
+
+@app.post("/v1/sandboxes/create")
+async def sandbox_create(payload: SandboxPayload) -> dict:
+    return await asyncio.to_thread(_sandboxes().create, payload.spec())
+
+
+@app.post("/v1/sandboxes/start")
+async def sandbox_start(payload: SandboxPayload) -> dict:
+    return await asyncio.to_thread(_sandboxes().start, payload.spec())
+
+
+@app.post("/v1/sandboxes/stop")
+async def sandbox_stop(payload: SandboxPayload) -> dict:
+    return await asyncio.to_thread(_sandboxes().stop, payload.spec())
+
+
+@app.post("/v1/sandboxes/restart")
+async def sandbox_restart(payload: SandboxPayload) -> dict:
+    return await asyncio.to_thread(_sandboxes().restart, payload.spec())
+
+
+@app.post("/v1/sandboxes/delete")
+async def sandbox_delete(payload: SandboxPayload) -> dict:
+    await asyncio.to_thread(_sandboxes().delete, payload.spec())
+    return {"deleted": True}
+
+
+@app.post("/v1/sandboxes/status")
+async def sandbox_status(payload: SandboxPayload) -> dict:
+    return await asyncio.to_thread(_sandboxes().status, payload.spec())
+
+
+@app.post("/v1/sandboxes/exec")
+async def sandbox_exec(payload: SandboxExecPayload) -> dict:
+    return await asyncio.to_thread(
+        _sandboxes().exec,
+        payload.spec(),
+        payload.command,
+        payload.timeout,
+        payload.command_id,
+    )
+
+
+@app.post("/v1/sandboxes/exec/detached")
+async def sandbox_exec_detached(payload: SandboxExecPayload) -> dict:
+    return await asyncio.to_thread(
+        _sandboxes().exec_detached,
+        payload.spec(),
+        payload.command,
+        payload.command_id,
+    )
+
+
+@app.api_route(
+    "/v1/sandboxes/preview/{sandbox_id}/{port}/{path:path}",
+    methods=["GET", "HEAD"],
+)
+async def sandbox_preview(sandbox_id: str, port: int, path: str, request: Request):
+    spec = SandboxPayload(
+        sandbox_id=sandbox_id,
+        volume_name=request.query_params["volume_name"],
+        container_name=request.query_params["container_name"],
+        image=request.query_params.get("image", "realopenai-sandbox:latest"),
+    ).spec()
+    target = await asyncio.to_thread(_sandboxes().preview_target, spec, port)
+    url = f"{target}/{path}"
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        response = await client.request(
+            request.method,
+            url,
+            params={
+                key: value
+                for key, value in request.query_params.multi_items()
+                if key not in {"volume_name", "container_name", "image"}
+            },
+        )
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() in {"content-type", "cache-control", "etag", "last-modified"}
+    }
+    return StreamingResponse(iter([response.content]), response.status_code, headers)
+
+
+@app.post("/v1/sandboxes/exec/cancel")
+async def sandbox_exec_cancel(payload: SandboxExecPayload) -> dict:
+    return {
+        "cancelled": await asyncio.to_thread(
+            _sandboxes().cancel, payload.spec(), payload.command_id
+        )
+    }
+
+
+@app.post("/v1/sandboxes/usage")
+async def sandbox_usage(payload: SandboxPayload) -> dict:
+    return {"usage_bytes": await asyncio.to_thread(_sandboxes().usage, payload.spec())}
+
+
+@app.post("/v1/sandboxes/files")
+async def sandbox_files(payload: SandboxFilePayload) -> dict:
+    tree = await asyncio.to_thread(
+        _sandboxes().list_files, payload.spec(), payload.path
+    )
+    return {"tree": tree}
+
+
+@app.post("/v1/sandboxes/files/read")
+async def sandbox_file_read(payload: SandboxFilePayload) -> dict:
+    data = await asyncio.to_thread(_sandboxes().read_file, payload.spec(), payload.path)
+    return {
+        "content": data.decode("utf-8", "replace"),
+        "content_base64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+@app.post("/v1/sandboxes/files/write")
+async def sandbox_file_write(payload: SandboxFilePayload) -> dict:
+    data = (
+        base64.b64decode(payload.content_base64, validate=True)
+        if payload.content_base64 is not None
+        else (payload.content or "").encode()
+    )
+    await asyncio.to_thread(_sandboxes().write_file, payload.spec(), payload.path, data)
+    return {"written": len(data)}
+
+
+@app.websocket("/v1/sandboxes/{sandbox_id}/terminal")
+async def sandbox_terminal(websocket: WebSocket, sandbox_id: str):
+    await websocket.accept()
+    try:
+        initial = await websocket.receive_json()
+        payload = SandboxPayload(**{**initial, "sandbox_id": sandbox_id})
+        sock, exec_id = await asyncio.to_thread(
+            _sandboxes().pty_socket,
+            payload.spec(),
+            int(initial.get("cols", 100)),
+            int(initial.get("rows", 30)),
+        )
+        raw = getattr(sock, "_sock", sock)
+
+        async def docker_to_web():
+            while True:
+                chunk = await asyncio.to_thread(raw.recv, 8192)
+                if not chunk:
+                    break
+                await websocket.send_bytes(chunk)
+
+        async def web_to_docker():
+            while True:
+                message = await websocket.receive()
+                if message.get("bytes") is not None:
+                    await asyncio.to_thread(raw.sendall, message["bytes"])
+                elif message.get("text"):
+                    event = json.loads(message["text"])
+                    if event.get("type") == "resize":
+                        await asyncio.to_thread(
+                            _sandboxes().client.api.exec_resize,
+                            exec_id,
+                            height=int(event.get("rows", 30)),
+                            width=int(event.get("cols", 100)),
+                        )
+
+        tasks = [
+            asyncio.create_task(docker_to_web()),
+            asyncio.create_task(web_to_docker()),
+        ]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        raw.close()
+    except (WebSocketDisconnect, Exception):
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 @app.post("/v1/warmup/asr")

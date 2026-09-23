@@ -98,9 +98,27 @@ start_voice_runtime() {
     warn "Native voice runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
 }
 
+ensure_sandbox_image() {
+    if ! command -v docker &> /dev/null; then
+        warn "Docker is unavailable; coding sandboxes will be disabled"
+        return 0
+    fi
+    if docker image inspect realopenai-sandbox:latest &> /dev/null; then
+        ok "Sandbox runtime image is available"
+        return 0
+    fi
+    info "Building the sandbox runtime image (first run only)..."
+    if docker build -t realopenai-sandbox:latest "${PROJECT_ROOT}/sandbox"; then
+        ok "Sandbox runtime image built"
+    else
+        warn "Sandbox image build failed; run 'make sandbox-build' to retry"
+    fi
+}
+
 main() {
     create_env_file
     start_ollama
+    ensure_sandbox_image
     start_voice_runtime
 }
 
