@@ -67,35 +67,35 @@ start_ollama() {
     fi
 }
 
-start_voice_runtime() {
+start_host_runtime() {
     local url="http://127.0.0.1:8766"
-    local log_file="${PROJECT_ROOT}/data/voice-runtime.log"
-    local pid_file="${PROJECT_ROOT}/data/voice-runtime.pid"
+    local log_file="${PROJECT_ROOT}/data/host-runtime.log"
+    local pid_file="${PROJECT_ROOT}/data/host-runtime.pid"
 
     if curl -fsS "${url}/health" &> /dev/null; then
-        ok "Native voice runtime is running"
+        ok "Host runtime is running"
         return 0
     fi
     if ! command -v poetry &> /dev/null; then
-        warn "Poetry is unavailable; native voice runtime was not started"
+        warn "Poetry is unavailable; host runtime was not started"
         return 0
     fi
 
-    info "Starting native voice runtime (platform accelerator enabled)..."
+    info "Starting host runtime (voice acceleration and coding sandboxes)..."
     (
         cd "${PROJECT_ROOT}/backend"
-        nohup poetry run python ../scripts/voice-runtime-server.py \
+        nohup poetry run python ../scripts/host-runtime-server.py \
             > "${log_file}" 2>&1 &
         echo $! > "${pid_file}"
     )
     for _ in {1..20}; do
         if curl -fsS "${url}/health" &> /dev/null; then
-            ok "Native voice runtime is running"
+            ok "Host runtime is running"
             return 0
         fi
         sleep 0.5
     done
-    warn "Native voice runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
+    warn "Host runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
 }
 
 ensure_sandbox_image() {
@@ -119,7 +119,7 @@ main() {
     create_env_file
     start_ollama
     ensure_sandbox_image
-    start_voice_runtime
+    start_host_runtime
 }
 
 main "$@"

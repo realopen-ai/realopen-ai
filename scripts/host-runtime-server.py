@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback-only native ASR/TTS service used by the Docker backend."""
+"""Loopback-only host services for voice acceleration and coding sandboxes."""
 
 from __future__ import annotations
 
@@ -21,13 +21,13 @@ from app.services.pip_persistence import activate_persistent_site_packages  # no
 activate_persistent_site_packages()
 
 # noqa: E402 — FastAPI imports must come after pip_persistence activation #
-from fastapi import (
+from fastapi import (  # noqa: E402
     FastAPI,
     HTTPException,
     Request,
     WebSocket,
     WebSocketDisconnect,
-)  # noqa: E402
+)
 from fastapi.responses import StreamingResponse  # noqa: E402
 import httpx  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -72,7 +72,7 @@ def online_hub():
         reset_sessions()
 
 
-app = FastAPI(title="RealOpen Native Voice Runtime")
+app = FastAPI(title="RealOpen Host Runtime")
 sandbox_runtime = None
 
 
