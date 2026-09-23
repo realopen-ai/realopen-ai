@@ -11,7 +11,7 @@ import {
   FileText,
   Sheet,
   Image as ImageIcon,
-  MessageSquare,
+  Bot,
 } from "lucide-react";
 
 import { useAiStore } from "@/store/aiStore";
@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 function TaskIcon({ task, className }: { task: string; className?: string }) {
   switch (task) {
     case "chat":
-      return <MessageSquare className={className} />;
+      return <Bot className={className} />;
     case "vision":
       return <Eye className={className} />;
     case "document_reasoning":
@@ -258,53 +258,55 @@ export function AiTab() {
         )}
 
         <div className="rounded-xl border border-border divide-y divide-border/60">
-          {tasks.filter((slot) => slot.task !== "voice").map((slot) => {
-            const label = t(`settings.ai.tasks.${slot.task}`);
-            const error = taskErrors[slot.task];
-            return (
-              <div
-                key={slot.task}
-                className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 p-3"
-              >
-                <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                  <TaskIcon
+          {tasks
+            .filter((slot) => slot.task !== "voice")
+            .map((slot) => {
+              const label = t(`settings.ai.tasks.${slot.task}`);
+              const error = taskErrors[slot.task];
+              return (
+                <div
+                  key={slot.task}
+                  className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 p-3"
+                >
+                  <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                    <TaskIcon
+                      task={slot.task}
+                      className="w-4 h-4 text-muted-foreground shrink-0"
+                    />
+                    <span className="text-[13px] text-foreground truncate">
+                      {label}
+                    </span>
+                    {slot.is_default ? (
+                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground/70">
+                        {t("settings.ai.models.defaultSuffix")}
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => selectModel(slot.task, null)}
+                        title={t("settings.ai.models.reset")}
+                        className="shrink-0 flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        {t("settings.ai.models.reset")}
+                      </button>
+                    )}
+                    {error && (
+                      <span className="text-[10px] text-red-400">
+                        {t("settings.ai.models.saveError")}
+                      </span>
+                    )}
+                  </div>
+                  <ModelSelect
                     task={slot.task}
-                    className="w-4 h-4 text-muted-foreground shrink-0"
+                    models={models}
+                    currentModel={slot.model}
+                    groqConnected={groqConnected}
+                    localOnly={slot.local_only}
+                    onSelect={selectModel}
                   />
-                  <span className="text-[13px] text-foreground truncate">
-                    {label}
-                  </span>
-                  {slot.is_default ? (
-                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground/70">
-                      {t("settings.ai.models.defaultSuffix")}
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => selectModel(slot.task, null)}
-                      title={t("settings.ai.models.reset")}
-                      className="shrink-0 flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" />
-                      {t("settings.ai.models.reset")}
-                    </button>
-                  )}
-                  {error && (
-                    <span className="text-[10px] text-red-400">
-                      {t("settings.ai.models.saveError")}
-                    </span>
-                  )}
                 </div>
-                <ModelSelect
-                  task={slot.task}
-                  models={models}
-                  currentModel={slot.model}
-                  groqConnected={groqConnected}
-                  localOnly={slot.local_only}
-                  onSelect={selectModel}
-                />
-              </div>
-            );
-          })}
+              );
+            })}
         </div>
       </div>
 
