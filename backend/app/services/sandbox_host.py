@@ -43,7 +43,7 @@ async def preview_get(sandbox: Sandbox, port: int, path: str, query: str = ""):
         "container_name": sandbox.container_name,
         "image": sandbox.image,
     }
-    params.update(dict(parse_qsl(query, keep_blank_values=True)))
+    params.update({key: value for key, value in parse_qsl(query, keep_blank_values=True) if key not in {"volume_name", "container_name", "image"}})
     url = f"{base_url()}/v1/sandboxes/preview/{sandbox.id}/{port}/{path}"
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(url, params=params)
