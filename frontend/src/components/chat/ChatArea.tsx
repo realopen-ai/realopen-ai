@@ -44,6 +44,7 @@ export function ChatArea() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
+  const setPreviewUrl = useSandboxStore((s) => s.setPreviewUrl);
   const isExtracting = useMemoryStore((s) => s.isExtracting);
   const lastExtraction = useMemoryStore((s) => s.lastExtraction);
   const t = useT();
@@ -375,16 +376,29 @@ export function ChatArea() {
 
           if (toolCall.type === "code_exec") {
             setRightPanelOpen(true);
-            setRightPanelTab("terminal");
-            addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
-            if (toolCall.code) {
-              toolCall.code
-                .split("\n")
-                .forEach((l) => addTerminalLine(`  ${l}`));
+            setRightPanelTab("code");
+            if (toolCall.language === "shell" && toolCall.code) {
+              addTerminalLine(`$ ${toolCall.code}`);
+            } else {
+              addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
             }
+            if (toolCall.code) {
+              if (toolCall.language !== "shell") {
+                toolCall.code
+                  .split("\n")
+                  .forEach((l) => addTerminalLine(`  ${l}`));
+              }
+            }
+          } else if (toolCall.type === "sandbox") {
+            setRightPanelOpen(true);
+            setRightPanelTab("code");
+            addTerminalLine("$ Delegated task to workspace coder");
+          } else if (toolCall.type === "preview") {
+            setRightPanelOpen(true);
+            setRightPanelTab("preview");
           } else if (toolCall.type === "vision") {
             setRightPanelOpen(true);
-            setRightPanelTab("terminal");
+            setRightPanelTab("code");
             addTerminalLine(`$ Analyzing image...`);
           } else if (toolCall.type === "websearch") {
             addTerminalLine(`$ Searching: ${toolCall.query ?? content}`);
@@ -404,6 +418,11 @@ export function ChatArea() {
             );
           if (updates.output) {
             updates.output.split("\n").forEach((l) => addTerminalLine(l));
+          }
+          if (updates.previewUrl) {
+            setPreviewUrl(updates.previewUrl);
+            setRightPanelOpen(true);
+            setRightPanelTab("preview");
           }
           if (updates.webResults) {
             addTerminalLine(`  → ${updates.webResults.length} result(s) found`);
@@ -453,7 +472,13 @@ export function ChatArea() {
         },
       };
     },
-    [navigate, addTerminalLine, setRightPanelOpen, setRightPanelTab],
+    [
+      navigate,
+      addTerminalLine,
+      setPreviewUrl,
+      setRightPanelOpen,
+      setRightPanelTab,
+    ],
   );
 
   // ── Handle sending a message ──

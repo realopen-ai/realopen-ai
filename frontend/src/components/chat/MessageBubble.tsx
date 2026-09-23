@@ -35,6 +35,9 @@ import {
   type ViewerFormat,
 } from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
+import { formatCodeExecOutput } from "@/lib/codeExecOutput";
+import { useUIStore } from "@/store/uiStore";
+import { useSandboxStore } from "@/store/sandboxStore";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -447,6 +450,18 @@ function ToolCallBlockView({
       runningLabel: "Generating image...",
       text: "text-emerald-400",
     },
+    sandbox: {
+      icon: Code2,
+      label: "Workspace coding complete",
+      runningLabel: "Coding in workspace...",
+      text: "text-cyan-400",
+    },
+    preview: {
+      icon: Eye,
+      label: "Started app preview",
+      runningLabel: "Starting app preview...",
+      text: "text-cyan-400",
+    },
     report_gen: {
       icon: FileText,
       label: "Generated report",
@@ -507,6 +522,8 @@ function ToolCallBlockView({
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
     tc.status === "running" ||
+    ((tc.type === "file_read" || tc.type === "file_write") &&
+      tc.status === "completed") ||
     ((isReportTool || isPresentationTool || isExcelTool) &&
       tc.status === "completed");
   const isExpanded = expanded || autoExpand;
@@ -585,6 +602,9 @@ function ToolCallDetail({
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
+  if (tc.type === "file_read" || tc.type === "file_write")
+    return <FileToolDetail tc={tc} />;
+  if (tc.type === "preview") return <PreviewToolDetail tc={tc} />;
   if (tc.type === "image_gen") {
     // Check genResults for report/presentation/excel deliverables
     const hasDeliverable = tc.genResults?.some(
@@ -611,6 +631,78 @@ function ToolCallDetail({
     return <ImageGenDetail tc={tc} />;
   }
   return <GenericToolDetail tc={tc} />;
+}
+
+function FileToolDetail({ tc }: { tc: ToolCallResult }) {
+  const openFile = async () => {
+    if (!tc.filePath || tc.filePath === "/workspace") return;
+    useUIStore.getState().setRightPanelOpen(true);
+    useUIStore.getState().setRightPanelTab("code");
+    await useSandboxStore.getState().fetchFileContent(tc.filePath);
+  };
+  return (
+    <div className="space-y-2">
+      {tc.filePath && (
+        <button
+          type="button"
+          onClick={() => void openFile()}
+          disabled={tc.filePath === "/workspace"}
+          className="flex items-center gap-1.5 font-mono text-[11px] text-amber-300 hover:underline disabled:no-underline disabled:opacity-70"
+          title={
+            tc.filePath === "/workspace"
+              ? "Workspace root"
+              : "Open in Files panel"
+          }
+        >
+          <FileCode className="h-3.5 w-3.5" />
+          {tc.filePath}
+        </button>
+      )}
+      {tc.diff && (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
+            5-line diff
+          </div>
+          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-emerald-300/80">
+            {tc.diff}
+          </pre>
+        </div>
+      )}
+      {tc.fileContent && (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
+            {tc.type === "file_write" ? "Written content" : "Result"}
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
+            {tc.fileContent}
+          </pre>
+        </div>
+      )}
+      {tc.error && <p className="text-[11px] text-red-400">{tc.error}</p>}
+    </div>
+  );
+}
+
+function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
+  const openPreview = () => {
+    if (tc.previewUrl) useSandboxStore.getState().setPreviewUrl(tc.previewUrl);
+    useUIStore.getState().setRightPanelOpen(true);
+    useUIStore.getState().setRightPanelTab("preview");
+  };
+  return (
+    <div className="space-y-2">
+      {tc.code && <CodeExecDetail tc={tc} />}
+      {tc.previewUrl && (
+        <button
+          type="button"
+          onClick={openPreview}
+          className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-medium text-cyan-300 hover:bg-cyan-500/20"
+        >
+          Open preview{tc.previewPort ? ` · port ${tc.previewPort}` : ""}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
@@ -691,6 +783,8 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
+  const output = formatCodeExecOutput(tc.output);
+
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
@@ -713,7 +807,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
           </pre>
         </div>
       )}
-      {tc.output && (
+      {output && (
         <div className="rounded-lg border border-border overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
             <span className="text-[10px] text-muted-foreground">Output</span>
@@ -731,7 +825,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
             )}
           </div>
           <pre className="p-3 text-[11px] text-terminal-green font-mono overflow-x-auto leading-relaxed bg-sandbox-bg">
-            {tc.output}
+            {output}
           </pre>
         </div>
       )}
