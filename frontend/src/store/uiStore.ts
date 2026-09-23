@@ -5,8 +5,8 @@ interface UIState {
   sidebarCollapsed: boolean;
   sidebarMobileOpen: boolean;
   rightPanelOpen: boolean;
-  rightPanelTab: "files" | "terminal";
-  mobileTab: "chat" | "files" | "terminal";
+  rightPanelTab: "code" | "preview";
+  mobileTab: "chat" | "files" | "terminal" | "preview";
   showBrainPage: boolean;
   showWorkspacePage: boolean;
 
@@ -16,8 +16,8 @@ interface UIState {
   setSidebarMobileOpen: (open: boolean) => void;
   toggleRightPanel: () => void;
   setRightPanelOpen: (open: boolean) => void;
-  setRightPanelTab: (tab: "files" | "terminal") => void;
-  setMobileTab: (tab: "chat" | "files" | "terminal") => void;
+  setRightPanelTab: (tab: "code" | "preview") => void;
+  setMobileTab: (tab: "chat" | "files" | "terminal" | "preview") => void;
   setShowBrainPage: (show: boolean) => void;
   setShowWorkspacePage: (show: boolean) => void;
 }
@@ -28,7 +28,7 @@ export const useUIStore = create<UIState>()(
       sidebarCollapsed: false,
       sidebarMobileOpen: false,
       rightPanelOpen: false,
-      rightPanelTab: "files",
+      rightPanelTab: "code",
       mobileTab: "chat",
       showBrainPage: false,
       showWorkspacePage: false,
@@ -55,6 +55,14 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "realopen-ai-ui",
+      version: 1,
+      migrate: (persisted) => {
+        const state = persisted as Partial<UIState>;
+        return {
+          ...state,
+          rightPanelTab: state.rightPanelTab === "preview" ? "preview" : "code",
+        } as UIState;
+      },
     },
   ),
 );
