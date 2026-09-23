@@ -2,12 +2,12 @@ import importlib.util
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import httpx
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -90,20 +90,91 @@ def test_failed_plain_command_output_is_stderr():
     assert split_command_output("command refused", 2) == ("", "command refused")
 
 
-def test_coder_contract_includes_toolchains_and_preview():
-    from app.agent.tools import delegate_coder
+@pytest.mark.asyncio
+async def test_coder_auto_provisions_default_workspace(monkeypatch):
+    from app.agent.coder import agent
+    from app.db.models import Conversation
 
-    names = {item["function"]["name"] for item in delegate_coder.CODER_TOOLS}
+    conversation_id = uuid.uuid4()
+    conversation = SimpleNamespace(
+        id=conversation_id, title="Automatic", sandbox_id=None
+    )
+    sandbox = SimpleNamespace(id=uuid.uuid4())
+    provisioned = []
+
+    class FakeDb:
+        async def get(self, model, _ident):
+            return conversation if model is Conversation else None
+
+        async def execute(self, _statement, _params=None):
+            return None
+
+        async def refresh(self, _record):
+            return None
+
+        async def scalar(self, _statement):
+            return None
+
+        def add(self, record):
+            self.record = record
+
+        async def commit(self):
+            return None
+
+    class SessionContext:
+        async def __aenter__(self):
+            self.db = FakeDb()
+            return self.db
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def fake_provision(_db, *, name, conversation):
+        provisioned.append(name)
+        conversation.sandbox_id = sandbox.id
+        return sandbox
+
+    monkeypatch.setattr(agent, "async_session_factory", SessionContext)
+    monkeypatch.setattr(agent, "provision_sandbox", fake_provision)
+    result_conversation, result_sandbox = await agent._create_task(
+        str(conversation_id), uuid.uuid4(), "build it"
+    )
+
+    assert provisioned == ["Automatic workspace"]
+    assert result_conversation is conversation
+    assert result_sandbox is sandbox
+
+
+def test_coder_contract_includes_toolchains_and_preview():
+    from app.agent.coder.tooling import CODER_TOOLS
+    from app.prompts import get_prompt
+
+    names = {item["function"]["name"] for item in CODER_TOOLS}
     assert "start_preview" in names
     assert "setup_python_project" in names
-    assert "uv sync" in delegate_coder.SYSTEM
-    assert "never try pip" in delegate_coder.SYSTEM
-    assert "written at most twice" in delegate_coder.SYSTEM
+    prompt = get_prompt("coder_system")
+    assert "uv sync" in prompt
+    assert "never try pip" in prompt
+    assert "written at most twice" in prompt
+
+
+def test_workspace_ready_events_link_live_client_to_sandbox():
+    from app.agent.coder.agent import _workspace_events
+
+    sandbox_id = uuid.uuid4()
+    running, completed = _workspace_events(sandbox_id, "parent", uuid.uuid4())
+
+    assert running["type"] == "sandbox"
+    assert running["status"] == "running"
+    assert running["sandboxId"] == str(sandbox_id)
+    assert completed["id"] == running["id"]
+    assert completed["status"] == "completed"
 
 
 @pytest.mark.asyncio
 async def test_coder_recovers_from_ollama_native_tool_parser_500(monkeypatch):
-    from app.agent.tools import delegate_coder
+    from app.agent.coder import provider
+    from app.agent.coder.tooling import CODER_TOOLS
 
     calls = []
 
@@ -126,8 +197,8 @@ async def test_coder_recovers_from_ollama_native_tool_parser_500(monkeypatch):
             }
         }
 
-    monkeypatch.setattr(delegate_coder.providers, "chat_once", fake_chat_once)
-    response = await delegate_coder._chat_with_tool_recovery(
+    monkeypatch.setattr(provider.providers, "chat_once", fake_chat_once)
+    response = await provider.chat_with_tool_recovery(
         "qwen", [{"role": "user", "content": "continue"}]
     )
     function = response["message"]["tool_calls"][0]["function"]
@@ -135,14 +206,14 @@ async def test_coder_recovers_from_ollama_native_tool_parser_500(monkeypatch):
         "name": "read_file",
         "arguments": {"path": "/workspace/main.py"},
     }
-    assert calls[0]["tools"] == delegate_coder.CODER_TOOLS
+    assert calls[0]["tools"] == CODER_TOOLS
     assert calls[1]["tools"] is None
     assert calls[1]["format"] == "json"
 
 
 @pytest.mark.asyncio
 async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
-    from app.agent.tools import delegate_coder
+    from app.agent.coder import tooling
 
     calls = []
 
@@ -150,8 +221,8 @@ async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
         calls.append((action, payload))
         return {"exit_code": 0, "stdout": "synced", "stderr": ""}
 
-    monkeypatch.setattr(delegate_coder.sandbox_host, "call", fake_call)
-    _, event = await delegate_coder._dispatch(
+    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
+    _, event = await tooling.dispatch_tool(
         SimpleNamespace(),
         "setup_python_project",
         {
@@ -169,13 +240,13 @@ async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_coder_refuses_manual_python_toolchain_install(monkeypatch):
-    from app.agent.tools import delegate_coder
+    from app.agent.coder import tooling
 
     async def unexpected_call(*_args, **_kwargs):
         raise AssertionError("prohibited command must not reach sandbox")
 
-    monkeypatch.setattr(delegate_coder.sandbox_host, "call", unexpected_call)
-    output, event = await delegate_coder._dispatch(
+    monkeypatch.setattr(tooling.sandbox_host, "call", unexpected_call)
+    output, event = await tooling.dispatch_tool(
         SimpleNamespace(),
         "run_command",
         {"command": "pip install fastapi"},
@@ -186,7 +257,7 @@ async def test_coder_refuses_manual_python_toolchain_install(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_write_tool_returns_five_line_diff(monkeypatch):
-    from app.agent.tools import delegate_coder
+    from app.agent.coder import tooling
 
     calls = []
 
@@ -198,9 +269,9 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
             return {"usage_bytes": 0}
         return {"written": 10}
 
-    monkeypatch.setattr(delegate_coder.sandbox_host, "call", fake_call)
+    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
     sandbox = SimpleNamespace(workspace_quota_bytes=1024)
-    _, event = await delegate_coder._dispatch(
+    _, event = await tooling.dispatch_tool(
         sandbox,
         "write_file",
         {"path": "main.py", "content": "new\nvalue\nextra\n"},

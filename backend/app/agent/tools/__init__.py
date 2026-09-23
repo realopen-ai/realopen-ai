@@ -16,7 +16,7 @@ from app.agent.tools.search_past_conversations import SearchPastConversationsToo
 from app.agent.tools.report_gen import ReportGenTool
 from app.agent.tools.pptx_gen import PptxGenTool
 from app.agent.tools.excel_gen import ExcelGenTool
-from app.agent.tools.delegate_coder import DelegateCoderTool
+from app.agent.tools.delegate_coder import CoderAgent
 
 __all__ = [
     "WebSearchTool",
@@ -30,5 +30,5 @@ __all__ = [
     "ReportGenTool",
     "PptxGenTool",
     "ExcelGenTool",
-    "DelegateCoderTool",
+    "CoderAgent",
 ]

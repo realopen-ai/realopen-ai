@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Conversation, Sandbox, SandboxCommand, SandboxTask
 from app.db.session import get_db
 from app.services import sandbox_host
+from app.services.sandbox_manager import provision_sandbox
 
 router = APIRouter(prefix="/sandboxes", tags=["sandboxes"])
 
@@ -96,32 +97,22 @@ async def list_sandboxes(db: AsyncSession = Depends(get_db)):
 
 @router.post("")
 async def create_sandbox(body: CreateSandbox, db: AsyncSession = Depends(get_db)):
-    ident = uuid.uuid4()
-    item = Sandbox(
-        id=ident,
-        name=body.name.strip(),
-        volume_name=f"realopenai-sandbox-{ident}",
-        container_name=f"realopenai-sandbox-{ident}",
-        cpu_limit=body.cpu_limit,
-        memory_limit_mb=body.memory_limit_mb,
-        workspace_quota_bytes=body.workspace_quota_bytes,
-        idle_timeout_seconds=body.idle_timeout_seconds,
-        status="creating",
-        desired_running=True,
-        last_active_at=datetime.utcnow(),
-    )
-    db.add(item)
-    await db.flush()
+    conversation = None
     if body.conversation_id:
         conversation = await db.get(Conversation, body.conversation_id)
         if not conversation:
             raise HTTPException(404, "Conversation not found")
-        conversation.sandbox_id = item.id
     try:
-        await sandbox_host.call("create", item)
-        item.status = "running"
+        item = await provision_sandbox(
+            db,
+            name=body.name,
+            conversation=conversation,
+            cpu_limit=body.cpu_limit,
+            memory_limit_mb=body.memory_limit_mb,
+            workspace_quota_bytes=body.workspace_quota_bytes,
+            idle_timeout_seconds=body.idle_timeout_seconds,
+        )
     except Exception as exc:
-        item.status, item.error = "error", str(exc)
         raise HTTPException(503, f"Host sandbox runtime failed: {exc}") from exc
     return as_dict(item)
 
@@ -268,7 +259,9 @@ async def command_history(
             {
                 "id": str(row.id),
                 "task_id": str(row.task_id) if row.task_id else None,
-                "conversation_id": str(row.conversation_id) if row.conversation_id else None,
+                "conversation_id": (
+                    str(row.conversation_id) if row.conversation_id else None
+                ),
                 "source": row.source,
                 "tool_name": row.tool_name,
                 "sequence": row.sequence,
@@ -279,7 +272,9 @@ async def command_history(
                 "exit_code": row.exit_code,
                 "output_truncated": row.output_truncated,
                 "started_at": row.started_at.isoformat() if row.started_at else None,
-                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                "completed_at": (
+                    row.completed_at.isoformat() if row.completed_at else None
+                ),
                 "duration_ms": row.duration_ms,
             }
             for row in rows
