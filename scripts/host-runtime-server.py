@@ -168,7 +168,9 @@ async def health() -> dict:
     docker_ready = False
     try:
         docker_ready = _sandboxes().ping()
-    except HTTPException:
+    except Exception:
+        # Docker is optional: a stopped/unreachable daemon disables sandboxing
+        # but must not make the shared voice runtime fail its health check.
         pass
     return {
         "ready": True,
@@ -335,6 +337,14 @@ async def sandbox_file_read(payload: SandboxFilePayload) -> dict:
         "content": data.decode("utf-8", "replace"),
         "content_base64": base64.b64encode(data).decode("ascii"),
     }
+
+
+@app.post("/v1/sandboxes/files/stat")
+async def sandbox_file_stat(payload: SandboxFilePayload) -> dict:
+    size = await asyncio.to_thread(
+        _sandboxes().file_size, payload.spec(), payload.path
+    )
+    return {"exists": size is not None, "size": size or 0}
 
 
 @app.post("/v1/sandboxes/files/write")

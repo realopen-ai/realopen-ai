@@ -197,7 +197,13 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
     except Exception:
         pass
     usage = await sandbox_host.call("usage", sandbox)
-    if usage["usage_bytes"] + len(content.encode()) > sandbox.workspace_quota_bytes:
+    current = await sandbox_host.call(
+        "files/stat", sandbox, {"path": args["path"]}
+    )
+    projected_usage = (
+        max(0, usage["usage_bytes"] - current["size"]) + len(content.encode())
+    )
+    if projected_usage > sandbox.workspace_quota_bytes:
         return "Workspace quota exceeded; stop and report this.", None
     await sandbox_host.call(
         "files/write", sandbox, {"path": args["path"], "content": content}

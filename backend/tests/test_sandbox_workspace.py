@@ -1,3 +1,4 @@
+import importlib.machinery
 import importlib.util
 import json
 import sys
@@ -16,6 +17,13 @@ SPEC = importlib.util.spec_from_file_location(
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules["sandbox_runtime"] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+TREE_LOADER = importlib.machinery.SourceFileLoader(
+    "roai_tree", str(ROOT / "sandbox" / "helpers" / "roai-tree")
+)
+TREE_SPEC = importlib.util.spec_from_loader("roai_tree", TREE_LOADER)
+TREE_MODULE = importlib.util.module_from_spec(TREE_SPEC)
+TREE_LOADER.exec_module(TREE_MODULE)
 
 
 @pytest.mark.parametrize(
@@ -37,6 +45,179 @@ def test_safe_path_rejects_escape(path):
         MODULE.safe_path(path)
 
 
+def test_tree_does_not_follow_directory_symlinks(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    (workspace / "outside-link").symlink_to(outside, target_is_directory=True)
+
+    tree = TREE_MODULE.walk(str(workspace), 4)
+
+    assert len(tree) == 1
+    assert tree[0]["name"] == "outside-link"
+    assert tree[0]["type"] == "file"
+    assert "children" not in tree[0]
+
+
+class _ResolvedPathContainer:
+    def __init__(self, resolved: str):
+        self.status = "running"
+        self.resolved = resolved
+
+    def exec_run(self, command, demux=False):
+        assert command[:3] == ["realpath", "-m", "--"]
+        assert demux is True
+        return SimpleNamespace(
+            exit_code=0, output=((self.resolved + "\n").encode(), b"")
+        )
+
+
+def test_runtime_accepts_resolved_workspace_path():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    container = _ResolvedPathContainer("/workspace/src/main.py")
+    runtime._container = lambda _name: container
+    spec = SimpleNamespace(container_name="sandbox")
+
+    actual_container, path = runtime._resolved_workspace_path(
+        spec, "/workspace/link/main.py"
+    )
+
+    assert actual_container is container
+    assert path == "/workspace/src/main.py"
+
+
+def test_runtime_rejects_symlink_resolution_outside_workspace():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: _ResolvedPathContainer("/etc/passwd")
+    spec = SimpleNamespace(container_name="sandbox")
+
+    with pytest.raises(ValueError, match="Resolved path"):
+        runtime._resolved_workspace_path(spec, "/workspace/outside/passwd")
+
+
+class _BoundedReadContainer:
+    status = "running"
+
+    def __init__(self, content: bytes, *, exit_code: int = 0, stderr: bytes = b""):
+        self.content = content
+        self.exit_code = exit_code
+        self.stderr = stderr
+        self.commands = []
+
+    def exec_run(self, command, demux=False):
+        self.commands.append(command)
+        if command[:3] == ["realpath", "-m", "--"]:
+            return SimpleNamespace(
+                exit_code=0, output=(b"/workspace/file.bin\n", b"")
+            )
+        assert command[:2] == ["head", "-c"]
+        assert demux is True
+        return SimpleNamespace(
+            exit_code=self.exit_code, output=(self.content, self.stderr)
+        )
+
+
+def test_runtime_file_read_is_bounded_and_binary_safe():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    container = _BoundedReadContainer(b"\x00abc")
+    runtime._container = lambda _name: container
+    spec = SimpleNamespace(container_name="sandbox")
+
+    assert runtime.read_file(spec, "/workspace/file.bin", max_bytes=4) == b"\x00abc"
+    assert container.commands[-1] == [
+        "head",
+        "-c",
+        "5",
+        "--",
+        "/workspace/file.bin",
+    ]
+
+
+def test_runtime_file_read_rejects_content_over_limit():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: _BoundedReadContainer(b"12345")
+    spec = SimpleNamespace(container_name="sandbox")
+
+    with pytest.raises(ValueError, match="4-byte read limit"):
+        runtime.read_file(spec, "/workspace/file.bin", max_bytes=4)
+
+
+def test_runtime_file_read_surfaces_container_errors():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: _BoundedReadContainer(
+        b"", exit_code=1, stderr=b"not a regular file"
+    )
+    spec = SimpleNamespace(container_name="sandbox")
+
+    with pytest.raises(RuntimeError, match="not a regular file"):
+        runtime.read_file(spec, "/workspace/file.bin")
+
+
+def test_runtime_file_size_uses_resolved_path():
+    class Container:
+        status = "running"
+
+        def exec_run(self, command, demux=False):
+            if command[:3] == ["realpath", "-m", "--"]:
+                return SimpleNamespace(
+                    exit_code=0, output=(b"/workspace/file.bin\n", b"")
+                )
+            assert command == ["stat", "-c", "%s", "--", "/workspace/file.bin"]
+            assert demux is True
+            return SimpleNamespace(exit_code=0, output=(b"90\n", b""))
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: Container()
+    spec = SimpleNamespace(container_name="sandbox")
+
+    assert runtime.file_size(spec, "/workspace/link.bin") == 90
+
+
+@pytest.mark.asyncio
+async def test_api_replacement_quota_charges_only_size_delta(monkeypatch):
+    from app.api import sandboxes
+
+    item = SimpleNamespace(
+        usage_bytes=90,
+        workspace_quota_bytes=100,
+        last_active_at=None,
+    )
+    actions = []
+
+    async def fake_get_one(_db, _sandbox_id):
+        return item
+
+    async def fake_call(action, _item, payload=None, **_kwargs):
+        actions.append((action, payload))
+        if action == "usage":
+            return {"usage_bytes": 90}
+        if action == "files/stat":
+            return {"exists": True, "size": 90}
+        return {"written": 90}
+
+    class DB:
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(sandboxes, "get_one", fake_get_one)
+    monkeypatch.setattr(sandboxes.sandbox_host, "call", fake_call)
+
+    result = await sandboxes.write_file(
+        uuid.uuid4(),
+        sandboxes.FileWrite(path="/workspace/file", content="x" * 90),
+        DB(),
+    )
+
+    assert result == {"written": 90}
+    assert [action for action, _payload in actions] == [
+        "usage",
+        "files/stat",
+        "files/write",
+    ]
+
+
 def test_host_payload_contains_only_runtime_fields():
     from app.services.sandbox_host import payload
 
@@ -55,6 +236,48 @@ def test_host_payload_contains_only_runtime_fields():
         "image": "image",
         "cpu_limit": 1.5,
         "memory_limit_mb": 768,
+    }
+
+
+@pytest.mark.asyncio
+async def test_preview_query_cannot_override_sandbox_identity(monkeypatch):
+    from app.services import sandbox_host
+
+    captured = {}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, *, params):
+            captured.update(params)
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        sandbox_host.httpx, "AsyncClient", lambda **_kwargs: Client()
+    )
+    sandbox = SimpleNamespace(
+        id="trusted-id",
+        volume_name="trusted-volume",
+        container_name="trusted-container",
+        image="trusted-image",
+    )
+
+    await sandbox_host.preview_get(
+        sandbox,
+        6969,
+        "health",
+        "container_name=attacker&volume_name=attacker&image=attacker&view=full",
+    )
+
+    assert captured == {
+        "volume_name": "trusted-volume",
+        "container_name": "trusted-container",
+        "image": "trusted-image",
+        "view": "full",
     }
 
 
@@ -291,6 +514,8 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
             return {"content": "old\nvalue\n"}
         if action == "usage":
             return {"usage_bytes": 0}
+        if action == "files/stat":
+            return {"exists": True, "size": len("old\nvalue\n".encode())}
         return {"written": 10}
 
     monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
@@ -307,7 +532,13 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
 
 def test_write_file_stops_when_parent_directory_cannot_be_created():
     class Container:
-        def exec_run(self, *_args, **_kwargs):
+        status = "running"
+
+        def exec_run(self, command, **_kwargs):
+            if command[:3] == ["realpath", "-m", "--"]:
+                return SimpleNamespace(
+                    exit_code=0, output=(b"/workspace/new/file.txt\n", b"")
+                )
             return SimpleNamespace(exit_code=1, output=(b"", b"permission denied"))
 
         def put_archive(self, *_args, **_kwargs):

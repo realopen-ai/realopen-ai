@@ -319,7 +319,10 @@ async def write_file(
     item = await get_one(db, sandbox_id)
     usage = await sandbox_host.call("usage", item)
     item.usage_bytes = usage["usage_bytes"]
-    if item.usage_bytes + len(body.content.encode()) > item.workspace_quota_bytes:
+    current = await sandbox_host.call("files/stat", item, {"path": body.path})
+    replacement_size = len(body.content.encode())
+    projected_usage = max(0, item.usage_bytes - current["size"]) + replacement_size
+    if projected_usage > item.workspace_quota_bytes:
         raise HTTPException(413, "Workspace quota exceeded")
     result = await sandbox_host.call("files/write", item, body.model_dump())
     await touch(db, item)
@@ -337,11 +340,13 @@ async def upload_file(
     data = await upload.read(25 * 1024**2 + 1)
     if len(data) > 25 * 1024**2:
         raise HTTPException(413, "Upload exceeds the 25 MB limit")
-    usage = await sandbox_host.call("usage", item)
-    if usage["usage_bytes"] + len(data) > item.workspace_quota_bytes:
-        raise HTTPException(413, "Workspace quota exceeded")
     filename = (upload.filename or "upload.bin").replace("/", "_")
     target = path.rstrip("/") + "/" + filename
+    usage = await sandbox_host.call("usage", item)
+    current = await sandbox_host.call("files/stat", item, {"path": target})
+    projected_usage = max(0, usage["usage_bytes"] - current["size"]) + len(data)
+    if projected_usage > item.workspace_quota_bytes:
+        raise HTTPException(413, "Workspace quota exceeded")
     result = await sandbox_host.call(
         "files/write",
         item,

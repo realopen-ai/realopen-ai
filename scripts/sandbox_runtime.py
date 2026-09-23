@@ -27,6 +27,7 @@ WORKSPACE = "/workspace"
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
 PREVIEW_PORTS = (FRONTEND_PORT, BACKEND_PORT)
+MAX_FILE_READ_BYTES = 5 * 1024 * 1024
 
 
 def safe_path(path: str) -> str:
@@ -65,6 +66,28 @@ class SandboxRuntime:
             return self.client.containers.get(name)
         except NotFound:
             return None
+
+    def _resolved_workspace_path(
+        self, spec: SandboxSpec, path: str
+    ) -> tuple[object, str]:
+        """Resolve symlinks in-container and enforce the workspace boundary."""
+        target = safe_path(path)
+        container = self._container(spec.container_name)
+        if not container or container.status != "running":
+            raise RuntimeError("Sandbox is not running")
+        resolved = container.exec_run(
+            ["realpath", "-m", "--", target], demux=True
+        )
+        stdout, stderr = resolved.output or (b"", b"")
+        if resolved.exit_code:
+            detail = (stderr or b"Could not resolve path").decode(
+                "utf-8", "replace"
+            ).strip()
+            raise ValueError(detail)
+        canonical = stdout.decode("utf-8", "replace").strip()
+        if canonical != WORKSPACE and not canonical.startswith(WORKSPACE + "/"):
+            raise ValueError("Resolved path must stay inside /workspace")
+        return container, canonical
 
     def create(self, spec: SandboxSpec) -> dict:
         try:
@@ -254,21 +277,47 @@ class SandboxRuntime:
         return json.loads(result["stdout"] or "[]")
 
     def read_file(
-        self, spec: SandboxSpec, path: str, max_bytes: int = 1_000_000
+        self,
+        spec: SandboxSpec,
+        path: str,
+        max_bytes: int = MAX_FILE_READ_BYTES,
     ) -> bytes:
-        target = safe_path(path)
-        container = self._container(spec.container_name)
-        stream, _ = container.get_archive(target)
-        payload = b"".join(stream)
-        with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
-            member = archive.getmembers()[0]
-            if member.size > max_bytes:
-                raise ValueError("File is too large to open")
-            extracted = archive.extractfile(member)
-            return extracted.read() if extracted else b""
+        container, target = self._resolved_workspace_path(spec, path)
+        # Docker's archive API streams a tarball, so checking its member size
+        # after joining the stream can already exhaust host memory. Read one
+        # byte beyond the limit inside the container instead; the host can
+        # never materialize more than this bounded result.
+        result = container.exec_run(
+            ["head", "-c", str(max_bytes + 1), "--", target], demux=True
+        )
+        stdout, stderr = result.output or (b"", b"")
+        if result.exit_code:
+            detail = (stderr or b"Could not read file").decode(
+                "utf-8", "replace"
+            ).strip()
+            raise RuntimeError(detail)
+        if len(stdout) > max_bytes:
+            raise ValueError(
+                f"File is larger than the configured {max_bytes}-byte read limit"
+            )
+        return stdout
+
+    def file_size(self, spec: SandboxSpec, path: str) -> int | None:
+        """Return a file's byte size, or ``None`` when it does not exist."""
+        container, target = self._resolved_workspace_path(spec, path)
+        result = container.exec_run(
+            ["stat", "-c", "%s", "--", target], demux=True
+        )
+        stdout, _stderr = result.output or (b"", b"")
+        if result.exit_code:
+            return None
+        try:
+            return int(stdout.strip())
+        except ValueError as exc:
+            raise RuntimeError("Could not determine file size") from exc
 
     def write_file(self, spec: SandboxSpec, path: str, data: bytes) -> None:
-        target = safe_path(path)
+        container, target = self._resolved_workspace_path(spec, path)
         parent, name = posixpath.split(target)
         info = tarfile.TarInfo(name=name)
         info.size = len(data)
@@ -277,7 +326,6 @@ class SandboxRuntime:
         with tarfile.open(fileobj=buf, mode="w") as archive:
             archive.addfile(info, io.BytesIO(data))
         buf.seek(0)
-        container = self._container(spec.container_name)
         mkdir = container.exec_run(["mkdir", "-p", parent], demux=True)
         if mkdir.exit_code:
             _stdout, stderr = mkdir.output or (b"", b"")
