@@ -26,6 +26,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
+import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
 import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
@@ -634,6 +635,9 @@ function ToolCallDetail({
 }
 
 function FileToolDetail({ tc }: { tc: ToolCallResult }) {
+  const displayedContent = tc.fileContent
+    ? formatWorkspaceTreeOutput(tc.fileContent)
+    : "";
   const openFile = async () => {
     if (!tc.filePath || tc.filePath === "/workspace") return;
     useUIStore.getState().setRightPanelOpen(true);
@@ -668,13 +672,13 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           </pre>
         </div>
       )}
-      {tc.fileContent && (
+      {displayedContent && (
         <div className="overflow-hidden rounded-lg border border-border">
           <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
             {tc.type === "file_write" ? "Written content" : "Result"}
           </div>
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
-            {tc.fileContent}
+            {displayedContent}
           </pre>
         </div>
       )}
