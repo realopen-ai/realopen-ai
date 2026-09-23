@@ -1,6 +1,7 @@
 import type { ToolCallResult } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
+import { persistedToolCallDetails } from "@/store/toolCallPersistence";
 
 const log = createDebugLogger("stream");
 
@@ -527,6 +528,7 @@ export function dispatchAgentEvent(
         genResults: tc.genResults,
         output: tc.output,
         exitCode: tc.exitCode,
+        ...persistedToolCallDetails(tc),
       });
       // If the backend already sent results in the start event, mark as completed
       if (tc.webResults && tc.webResults.length > 0) {
@@ -556,6 +558,7 @@ export function dispatchAgentEvent(
       if (tc.output) updates.output = tc.output;
       if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
       if (tc.imageDescription) updates.imageDescription = tc.imageDescription;
+      Object.assign(updates, persistedToolCallDetails(tc));
       if (tc.error) updates.error = tc.error;
 
       callbacks.onToolCallUpdate(tcId, updates);

@@ -367,6 +367,11 @@ export interface BackendToolCall {
     created_at?: number;
   }[];
   imageDescription?: string;
+  filePath?: string;
+  fileContent?: string;
+  diff?: string;
+  previewUrl?: string;
+  previewPort?: number;
   error?: string;
   completedAt?: number;
   sources?: RetrievedSourceDTO[];
@@ -384,6 +389,7 @@ export interface ConversationDTO {
   id: string;
   title: string;
   model: string | null;
+  sandboxId?: string | null;
   createdAt: number;
   updatedAt: number;
   // Sidebar organization flags (three-dots menu).

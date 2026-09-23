@@ -1,226 +1,45 @@
 import { create } from "zustand";
 
-export interface FileNode {
-  name: string;
-  type: "file" | "directory";
-  path: string;
-  children?: FileNode[];
-  size?: number;
-  modifiedAt?: string;
+export interface FileNode { name: string; type: "file" | "directory"; path: string; children?: FileNode[]; size?: number; modifiedAt?: string }
+const HIDDEN_WORKSPACE_DIRS = new Set([".venv", "venv", ".pytest_cache", "__pycache__", "node_modules", "dist", "build"]);
+export function visibleWorkspaceTree(nodes: FileNode[]): FileNode[] {
+  return nodes.filter((node) => !HIDDEN_WORKSPACE_DIRS.has(node.name)).map((node) => ({ ...node, ...(node.children ? { children: visibleWorkspaceTree(node.children) } : {}) }));
 }
+export interface Sandbox { id: string; name: string; status: string; desired_running: boolean; cpu_limit: number; memory_limit_mb: number; workspace_quota_bytes: number; usage_bytes: number; idle_timeout_seconds: number; error?: string | null }
+export interface SandboxCreateOptions { name: string; conversationId?: string | null; cpuLimit: number; memoryLimitMb: number; workspaceQuotaBytes: number }
 
 interface SandboxState {
-  fileTree: FileNode[];
-  isLoadingTree: boolean;
-  activeFile: string | null;
-  activeFileContent: string | null;
-  terminalHistory: string[];
-  sandboxId: string | null;
-
-  // Actions
-  setFileTree: (tree: FileNode[]) => void;
-  setLoadingTree: (loading: boolean) => void;
-  setActiveFile: (path: string | null, content?: string | null) => void;
-  addTerminalLine: (line: string) => void;
-  clearTerminal: () => void;
-  setSandboxId: (id: string | null) => void;
-  fetchFileTree: () => Promise<void>;
-  fetchFileContent: (path: string) => Promise<void>;
+  sandboxes: Sandbox[]; sandboxId: string | null; fileTree: FileNode[]; isLoadingTree: boolean;
+  activeFile: string | null; activeFileContent: string | null; previewUrl: string | null; terminalHistory: string[]; loading: boolean; error: string | null;
+  setFileTree: (tree: FileNode[]) => void; setLoadingTree: (v: boolean) => void; setActiveFile: (path: string | null, content?: string | null) => void;
+  addTerminalLine: (line: string) => void; clearTerminal: () => void; setSandboxId: (id: string | null) => void;
+  setPreviewUrl: (url: string | null) => void;
+  loadSandboxes: () => Promise<void>; loadForConversation: (conversationId: string | null) => Promise<void>;
+  createSandbox: (options: SandboxCreateOptions) => Promise<Sandbox>; linkSandbox: (sandboxId: string, conversationId: string) => Promise<void>;
+  lifecycle: (action: "start" | "stop" | "restart") => Promise<void>; deleteSandbox: (id: string) => Promise<void>;
+  fetchFileTree: () => Promise<void>; fetchFileContent: (path: string) => Promise<void>; saveFileContent: (path: string, content: string) => Promise<void>;
 }
 
-export const useSandboxStore = create<SandboxState>((set, _) => ({
-  fileTree: [],
-  isLoadingTree: false,
-  activeFile: null,
-  activeFileContent: null,
-  terminalHistory: [],
-  sandboxId: null,
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
+  if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || `Request failed (${response.status})`); }
+  return response.json();
+}
 
-  setFileTree: (tree) => set({ fileTree: tree }),
-  setLoadingTree: (loading) => set({ isLoadingTree: loading }),
-  setActiveFile: (path, content) =>
-    set({ activeFile: path, activeFileContent: content ?? null }),
-  addTerminalLine: (line) =>
-    set((s) => ({ terminalHistory: [...s.terminalHistory, line] })),
-  clearTerminal: () => set({ terminalHistory: [] }),
-  setSandboxId: (id) => set({ sandboxId: id }),
-
-  fetchFileTree: async () => {
-    set({ isLoadingTree: true });
-    try {
-      const res = await fetch("/api/sandbox/files");
-      if (res.ok) {
-        const data = await res.json();
-        set({ fileTree: data.tree ?? [] });
-      } else {
-        // Placeholder fallback
-        set({
-          fileTree: [
-            {
-              name: "workspace",
-              type: "directory",
-              path: "/workspace",
-              children: [
-                {
-                  name: "main.py",
-                  type: "file",
-                  path: "/workspace/main.py",
-                  size: 1024,
-                  modifiedAt: "2025-04-30T12:00:00Z",
-                },
-                {
-                  name: "utils",
-                  type: "directory",
-                  path: "/workspace/utils",
-                  children: [
-                    {
-                      name: "helpers.py",
-                      type: "file",
-                      path: "/workspace/utils/helpers.py",
-                      size: 512,
-                      modifiedAt: "2025-04-30T11:30:00Z",
-                    },
-                    {
-                      name: "config.json",
-                      type: "file",
-                      path: "/workspace/utils/config.json",
-                      size: 256,
-                      modifiedAt: "2025-04-30T11:00:00Z",
-                    },
-                  ],
-                },
-                {
-                  name: "data",
-                  type: "directory",
-                  path: "/workspace/data",
-                  children: [
-                    {
-                      name: "input.csv",
-                      type: "file",
-                      path: "/workspace/data/input.csv",
-                      size: 4096,
-                      modifiedAt: "2025-04-30T10:00:00Z",
-                    },
-                    {
-                      name: "output.json",
-                      type: "file",
-                      path: "/workspace/data/output.json",
-                      size: 2048,
-                      modifiedAt: "2025-04-30T12:05:00Z",
-                    },
-                  ],
-                },
-                {
-                  name: "requirements.txt",
-                  type: "file",
-                  path: "/workspace/requirements.txt",
-                  size: 128,
-                  modifiedAt: "2025-04-30T09:00:00Z",
-                },
-                {
-                  name: "README.md",
-                  type: "file",
-                  path: "/workspace/README.md",
-                  size: 768,
-                  modifiedAt: "2025-04-30T09:30:00Z",
-                },
-              ],
-            },
-          ],
-        });
-      }
-    } catch {
-      set({
-        fileTree: [
-          {
-            name: "workspace",
-            type: "directory",
-            path: "/workspace",
-            children: [
-              {
-                name: "main.py",
-                type: "file",
-                path: "/workspace/main.py",
-                size: 1024,
-              },
-              {
-                name: "utils",
-                type: "directory",
-                path: "/workspace/utils",
-                children: [
-                  {
-                    name: "helpers.py",
-                    type: "file",
-                    path: "/workspace/utils/helpers.py",
-                    size: 512,
-                  },
-                ],
-              },
-              {
-                name: "data",
-                type: "directory",
-                path: "/workspace/data",
-                children: [
-                  {
-                    name: "input.csv",
-                    type: "file",
-                    path: "/workspace/data/input.csv",
-                    size: 4096,
-                  },
-                  {
-                    name: "output.json",
-                    type: "file",
-                    path: "/workspace/data/output.json",
-                    size: 2048,
-                  },
-                ],
-              },
-              {
-                name: "requirements.txt",
-                type: "file",
-                path: "/workspace/requirements.txt",
-                size: 128,
-              },
-              {
-                name: "README.md",
-                type: "file",
-                path: "/workspace/README.md",
-                size: 768,
-              },
-            ],
-          },
-        ],
-      });
-    } finally {
-      set({ isLoadingTree: false });
-    }
-  },
-
-  fetchFileContent: async (path) => {
-    try {
-      const res = await fetch(
-        `/api/sandbox/files?path=${encodeURIComponent(path)}`,
-      );
-      if (res.ok) {
-        const data = await res.json();
-        set({ activeFile: path, activeFileContent: data.content ?? "" });
-      } else {
-        // Placeholder
-        const placeholders: Record<string, string> = {
-          "/workspace/main.py": `import os\nimport json\nfrom utils.helpers import load_data, process_data\n\ndef main():\n    """Main entry point for the analysis pipeline."""\n    print("Loading data...")\n    data = load_data("data/input.csv")\n    print(f"Loaded {len(data)} records")\n    \n    results = process_data(data)\n    \n    with open("data/output.json", "w") as f:\n        json.dump(results, f, indent=2)\n    print("Results saved to data/output.json")\n\nif __name__ == "__main__":\n    main()\n`,
-          "/workspace/utils/helpers.py": `import csv\nimport json\n\ndef load_data(path: str) -> list:\n    """Load CSV data from the given path."""\n    with open(path, 'r') as f:\n        reader = csv.DictReader(f)\n        return list(reader)\n\ndef process_data(data: list) -> dict:\n    """Process the loaded data and return results."""\n    total = len(data)\n    return {\n        "total_records": total,\n        "processed": True,\n        "summary": "Data processed successfully"\n    }\n`,
-          "/workspace/utils/config.json": `{\n  "model": "qwen3:8b",\n  "temperature": 0.7,\n  "max_tokens": 2048,\n  "sandbox": {\n    "timeout": 30,\n    "memory_limit": "512m"\n  }\n}\n`,
-          "/workspace/requirements.txt": `pandas>=2.0.0\nnumpy>=1.24.0\nscikit-learn>=1.3.0\nrequests>=2.31.0\n`,
-          "/workspace/README.md": `# Workspace\n\nThis is the sandbox workspace for the AI coding agent.\n\n## Structure\n- \`main.py\` - Main entry point\n- \`utils/\` - Utility functions and config\n- \`data/\` - Input and output data files\n`,
-        };
-        set({
-          activeFile: path,
-          activeFileContent:
-            placeholders[path] ?? `// File: ${path}\n// Content loading...`,
-        });
-      }
-    } catch {
-      set({ activeFile: path, activeFileContent: `// Error loading ${path}` });
-    }
-  },
+export const useSandboxStore = create<SandboxState>((set, get) => ({
+  sandboxes: [], sandboxId: null, fileTree: [], isLoadingTree: false, activeFile: null, activeFileContent: null, previewUrl: null, terminalHistory: [], loading: false, error: null,
+  setFileTree: (fileTree) => set({ fileTree }), setLoadingTree: (isLoadingTree) => set({ isLoadingTree }),
+  setActiveFile: (activeFile, content) => set({ activeFile, activeFileContent: content ?? null }),
+  addTerminalLine: (line) => set((s) => ({ terminalHistory: [...s.terminalHistory, line] })), clearTerminal: () => set({ terminalHistory: [] }),
+  setPreviewUrl: (previewUrl) => set({ previewUrl }),
+  setSandboxId: (sandboxId) => set({ sandboxId, fileTree: [], activeFile: null }),
+  loadSandboxes: async () => { set({ loading: true, error: null }); try { const d = await request<{sandboxes: Sandbox[]}>("/api/sandboxes"); set({ sandboxes: d.sandboxes }); } catch(e) { set({ error: String(e) }); } finally { set({ loading: false }); } },
+  loadForConversation: async (conversationId) => { if (!conversationId) { set({ sandboxId: null, fileTree: [] }); return; } try { const d = await request<{sandbox: Sandbox | null}>(`/api/sandboxes/conversation/${conversationId}`); set({ sandboxId: d.sandbox?.id ?? null }); if (d.sandbox) await get().fetchFileTree(); } catch(e) { set({ error: String(e) }); } },
+  createSandbox: async ({name,conversationId,cpuLimit,memoryLimitMb,workspaceQuotaBytes}) => { const item = await request<Sandbox>("/api/sandboxes", { method: "POST", body: JSON.stringify({ name, conversation_id: conversationId || null, cpu_limit: cpuLimit, memory_limit_mb: memoryLimitMb, workspace_quota_bytes: workspaceQuotaBytes }) }); set((s) => ({ sandboxes: [item, ...s.sandboxes], sandboxId: conversationId ? item.id : s.sandboxId })); return item; },
+  linkSandbox: async (sandboxId, conversationId) => { await request(`/api/sandboxes/${sandboxId}/link/${conversationId}`, { method: "PUT" }); set({ sandboxId }); await get().fetchFileTree(); },
+  lifecycle: async (action) => { const id=get().sandboxId; if(!id)return; const item=await request<Sandbox>(`/api/sandboxes/${id}/${action}`,{method:"POST"});set((s)=>({sandboxes:s.sandboxes.map(x=>x.id===id?item:x)})); },
+  deleteSandbox: async(id)=>{await request(`/api/sandboxes/${id}`,{method:"DELETE"});set((s)=>({sandboxes:s.sandboxes.filter(x=>x.id!==id),sandboxId:s.sandboxId===id?null:s.sandboxId}));},
+  fetchFileTree: async()=>{const id=get().sandboxId;if(!id){set({fileTree:[]});return;}set({isLoadingTree:true});try{const d=await request<{tree:FileNode[]}>(`/api/sandboxes/${id}/files`);set({fileTree:visibleWorkspaceTree(d.tree)});}catch(e){set({error:String(e)});}finally{set({isLoadingTree:false});}},
+  fetchFileContent: async(path)=>{const id=get().sandboxId;if(!id)return;set({activeFile:path,activeFileContent:null});try{const d=await request<{content:string}>(`/api/sandboxes/${id}/file?path=${encodeURIComponent(path)}`);set({activeFileContent:d.content});}catch(e){set({error:String(e)});}},
+  saveFileContent:async(path,content)=>{const id=get().sandboxId;if(!id)return;await request(`/api/sandboxes/${id}/file`,{method:"PUT",body:JSON.stringify({path,content})});set({activeFileContent:content});await get().fetchFileTree();},
 }));
