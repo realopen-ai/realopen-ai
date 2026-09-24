@@ -994,7 +994,8 @@ async def run_agent_stream(
                 ollama_tools = [
                     schema
                     for schema in ollama_tools
-                    if schema.get("function", {}).get("name") != "delegate_to_coder"
+                    if schema.get("function", {}).get("name")
+                    not in {"delegate_to_coder", "use_code_exec"}
                 ]
             messages.append({"role": "assistant", "content": full_response})
             messages.append(

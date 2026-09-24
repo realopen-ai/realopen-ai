@@ -33,7 +33,9 @@ class CodeExecTool(BaseTool):
     display_name = "Code Execution"
     description = (
         "Execute Python code and return the output. "
-        "Use for calculations, data processing, or scripting. "
+        "Use only for isolated calculations, data processing, or scripting. "
+        "It cannot access the coding workspace or build/run applications; "
+        "delegate those tasks to the workspace coder. "
         "Only printed output is captured — always print results."
     )
     tool_type = ToolType.CODE_EXEC
@@ -117,9 +119,25 @@ class CodeExecTool(BaseTool):
         if language not in ("python", "python3"):
             return "", f"Unsupported language: {language}", 1
 
+        workspace_markers = (
+            "/workspace",
+            "from fastapi",
+            "import fastapi",
+            "uvicorn",
+            "flask",
+            "django",
+        )
+        code_lower = code.lower()
+        if any(marker in code_lower for marker in workspace_markers):
+            return (
+                "",
+                "Code execution is isolated and cannot build or modify workspace "
+                "applications. Use delegate_to_coder for that work.",
+                1,
+            )
+
         # Basic safety: block dangerous imports
         blocked = {"os.system", "subprocess", "shutil.rmtree", "__import__('os')"}
-        code_lower = code.lower()
         for b in blocked:
             if b in code_lower:
                 return "", f"Blocked dangerous operation: {b}", 1
@@ -184,7 +202,8 @@ CODE_EXEC_CONFIG = ToolConfigDefinition(
     display_name="Code Execution",
     description=(
         "Execute Python code and return the output. "
-        "Use for calculations, data processing, or scripting. "
+        "Use only for isolated calculations, data processing, or scripting; "
+        "workspace application work belongs to the workspace coder. "
         "Only printed output is captured — always print results."
     ),
     custom_defaults={"timeout_s": DEFAULT_TIMEOUT_S},

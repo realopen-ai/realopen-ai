@@ -1,3 +1,4 @@
+import asyncio
 import importlib.machinery
 import importlib.util
 import json
@@ -43,6 +44,22 @@ def test_safe_path_resolves_repository_relative_paths_inside_workspace():
 def test_safe_path_rejects_escape(path):
     with pytest.raises(ValueError):
         MODULE.safe_path(path)
+
+
+def test_python_indentation_repair_fixes_off_by_one_block():
+    malformed = (
+        b"def client():\n"
+        b'     \"\"\"Create a test client.\"\"\"\n'
+        b"    return 1\n"
+    )
+    repaired = MODULE.repair_python_indentation(malformed)
+    compile(repaired.decode(), "<test>", "exec")
+    assert b'    \"\"\"Create a test client.\"\"\"' in repaired
+
+
+def test_python_indentation_repair_leaves_valid_source_unchanged():
+    valid = b"def client():\n    return 1\n"
+    assert MODULE.repair_python_indentation(valid) == valid
 
 
 def test_tree_does_not_follow_directory_symlinks(tmp_path):
@@ -469,6 +486,7 @@ async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
         return {"exit_code": 0, "stdout": "synced", "stderr": ""}
 
     monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
+    progress = []
     _, event = await tooling.dispatch_tool(
         SimpleNamespace(),
         "setup_python_project",
@@ -477,12 +495,18 @@ async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
             "dependencies": ["fastapi", "uvicorn"],
             "dev_dependencies": ["pytest", "httpx"],
         },
+        progress.append,
     )
     written = calls[0][1]["content"]
     assert 'dependencies = ["fastapi", "uvicorn"]' in written
+    assert 'dev = ["pytest", "httpx", "httpx2"]' in written
     assert "[project.dependencies]" not in written
     assert calls[1][1]["command"] == "uv sync --all-groups"
     assert event["exit_code"] == 0
+    assert [item["stage"] for item in progress] == [
+        "project_written",
+        "sync_completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -499,7 +523,128 @@ async def test_coder_refuses_manual_python_toolchain_install(monkeypatch):
         {"command": "pip install fastapi"},
     )
     assert "setup_python_project" in output
+    assert "uv add --dev httpx2" in output
     assert event["exit_code"] == 2
+    assert event["corrective"] is True
+
+
+@pytest.mark.asyncio
+async def test_coder_refuses_web_server_outside_preview_tool(monkeypatch):
+    from app.agent.coder import tooling
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("server command must not reach sandbox")
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", unexpected_call)
+    output, event = await tooling.dispatch_tool(
+        SimpleNamespace(),
+        "run_command",
+        {"command": "uvicorn app:app --host 0.0.0.0 --port 8000"},
+    )
+    assert "start_preview" in output
+    assert "6969" in output
+    assert event["exit_code"] == 2
+
+
+def test_python_project_setup_starts_as_visible_terminal_command():
+    from app.agent.coder.agent import _event_for_step
+
+    event = _event_for_step(
+        "setup_python_project", {"name": "notes-api"}, "step", None
+    )
+    assert event["type"] == "code_exec"
+    assert event["language"] == "shell"
+    assert event["code"] == "uv sync --all-groups"
+
+
+@pytest.mark.parametrize(
+    ("provided", "expected"),
+    [
+        ("app.py", "/workspace/app.py"),
+        ("/app.py", "/workspace/app.py"),
+        ("/tests/test_app.py", "/workspace/tests/test_app.py"),
+        ("/workspace/main.py", "/workspace/main.py"),
+        ("/workspace/../app.py", "/workspace/app.py"),
+    ],
+)
+def test_coder_paths_are_canonicalized_into_workspace(provided, expected):
+    from app.agent.coder.tooling import workspace_path
+
+    assert workspace_path(provided) == expected
+
+
+@pytest.mark.asyncio
+async def test_python_setup_streams_file_write_before_sync_and_refreshes(monkeypatch):
+    from app.agent.coder import agent
+
+    async def fake_dispatch(_sandbox, name, _args, progress=None):
+        assert name == "setup_python_project"
+        progress(
+            {
+                "stage": "project_written",
+                "file_content": "[project]\nname = 'demo'\n",
+            }
+        )
+        progress({"stage": "sync_completed"})
+        return "synced", {"command": "uv sync --all-groups", "exit_code": 0}
+
+    async def fake_record(**_kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(agent, "_record_command", fake_record)
+    queue = asyncio.Queue()
+    await agent._run_step(
+        sandbox=SimpleNamespace(id="sandbox-id"),
+        conversation=SimpleNamespace(id="conversation-id"),
+        task_id=uuid.uuid4(),
+        name="setup_python_project",
+        args={"name": "demo", "dependencies": [], "dev_dependencies": []},
+        state=agent.RunState(),
+        parent_id="parent",
+        event_queue=queue,
+    )
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+
+    assert [(event["type"], event["status"]) for event in events] == [
+        ("file_write", "running"),
+        ("file_write", "completed"),
+        ("code_exec", "running"),
+        ("code_exec", "completed"),
+    ]
+    assert events[1]["filePath"] == "/workspace/pyproject.toml"
+    assert events[-1]["refreshFiles"] is True
+
+
+@pytest.mark.asyncio
+async def test_coder_tool_error_is_returned_for_model_recovery(monkeypatch):
+    from app.agent.coder import agent
+
+    async def failed_dispatch(*_args, **_kwargs):
+        raise RuntimeError("temporary file service failure")
+
+    monkeypatch.setattr(agent, "dispatch_tool", failed_dispatch)
+    queue = asyncio.Queue()
+    output, event = await agent._run_step(
+        sandbox=SimpleNamespace(id="sandbox-id"),
+        conversation=SimpleNamespace(id="conversation-id"),
+        task_id=uuid.uuid4(),
+        name="write_file",
+        args={"path": "/app.py", "content": "value = 1\n"},
+        state=agent.RunState(),
+        parent_id="parent",
+        event_queue=queue,
+    )
+
+    assert "temporary file service failure" in output
+    assert event["exit_code"] == 1
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert events[0]["filePath"] == "/workspace/app.py"
+    assert events[-1]["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -508,14 +653,26 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
 
     calls = []
 
+    read_count = 0
+
     async def fake_call(action, _sandbox, payload=None, **_kwargs):
+        nonlocal read_count
         calls.append((action, payload))
         if action == "files/read":
-            return {"content": "old\nvalue\n"}
+            read_count += 1
+            return {
+                "content": (
+                    "old\nvalue\n"
+                    if read_count == 1
+                    else "new\nvalue\nextra\n"
+                )
+            }
         if action == "usage":
             return {"usage_bytes": 0}
         if action == "files/stat":
             return {"exists": True, "size": len("old\nvalue\n".encode())}
+        if action == "exec":
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
         return {"written": 10}
 
     monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
@@ -525,9 +682,116 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
         "write_file",
         {"path": "main.py", "content": "new\nvalue\nextra\n"},
     )
-    assert calls[-1][0] == "files/write"
+    assert any(action == "files/write" for action, _payload in calls)
     assert len(event["diff"].splitlines()) <= 5
     assert event["file_content"] == "new\nvalue\nextra\n"
+
+
+@pytest.mark.asyncio
+async def test_write_tool_repairs_python_indentation_before_upload(monkeypatch):
+    from app.agent.coder import tooling
+
+    written = None
+    reads = 0
+
+    async def fake_call(action, _sandbox, payload=None, **_kwargs):
+        nonlocal written, reads
+        if action == "usage":
+            return {"usage_bytes": 0}
+        if action == "files/stat":
+            return {"exists": False, "size": 0}
+        if action == "files/write":
+            written = payload["content"]
+            return {"written": len(written)}
+        if action == "files/read":
+            reads += 1
+            if reads == 1:
+                raise FileNotFoundError
+            return {"content": written}
+        if action == "exec":
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
+    malformed = 'def client():\n     """Client."""\n    return 1\n'
+    await tooling.dispatch_tool(
+        SimpleNamespace(workspace_quota_bytes=1024),
+        "write_file",
+        {"path": "/workspace/test_app.py", "content": malformed},
+    )
+    assert '    """Client."""' in written
+    compile(written, "<test>", "exec")
+
+
+@pytest.mark.asyncio
+async def test_write_tool_repairs_multiple_off_grid_indent_widths(monkeypatch):
+    from app.agent.coder import tooling
+
+    written = None
+    reads = 0
+
+    async def fake_call(action, _sandbox, payload=None, **_kwargs):
+        nonlocal written, reads
+        if action == "usage":
+            return {"usage_bytes": 0}
+        if action == "files/stat":
+            return {"exists": False, "size": 0}
+        if action == "files/write":
+            written = payload["content"]
+            return {"written": len(written)}
+        if action == "files/read":
+            reads += 1
+            if reads == 1:
+                raise FileNotFoundError
+            return {"content": written}
+        if action == "exec":
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
+    malformed = (
+        'def initialize():\n'
+        '      """Initialize."""\n'
+        "     global engine\n"
+        "      # Build the engine.\n"
+        "     engine = object()\n"
+    )
+    await tooling.dispatch_tool(
+        SimpleNamespace(workspace_quota_bytes=1024),
+        "write_file",
+        {"path": "/workspace/main.py", "content": malformed},
+    )
+    compile(written, "<test>", "exec")
+    assert '    """Initialize."""' in written
+    assert "    global engine" in written
+
+
+@pytest.mark.asyncio
+async def test_write_tool_rejects_invalid_python_before_replacing_file(monkeypatch):
+    from app.agent.coder import tooling
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("invalid Python must not reach the file service")
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", unexpected_call)
+    output, event = await tooling.dispatch_tool(
+        SimpleNamespace(workspace_quota_bytes=1024),
+        "write_file",
+        {"path": "/workspace/main.py", "content": "def broken(:\n    pass\n"},
+    )
+    assert "rejected before replacing" in output
+    assert event["exit_code"] == 1
+    assert event["corrective"] is True
+
+
+def test_general_code_exec_rejects_workspace_application_builds():
+    from app.agent.tools.code_exec import CodeExecTool
+
+    _stdout, stderr, exit_code = CodeExecTool()._run_code(
+        "from fastapi import FastAPI\nopen('/workspace/main.py', 'w')", "python"
+    )
+    assert exit_code == 1
+    assert "delegate_to_coder" in stderr
 
 
 def test_write_file_stops_when_parent_directory_cannot_be_created():
@@ -549,6 +813,45 @@ def test_write_file_stops_when_parent_directory_cannot_be_created():
     spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
     with pytest.raises(RuntimeError, match="Could not create parent directory"):
         runtime.write_file(spec, "/workspace/new/file.txt", b"hello")
+
+
+def test_python_write_is_owned_by_workspace_user_and_formatted():
+    class Container:
+        status = "running"
+
+        def __init__(self):
+            self.archive = None
+            self.commands = []
+
+        def exec_run(self, command, **_kwargs):
+            self.commands.append(command)
+            if command[:3] == ["realpath", "-m", "--"]:
+                return SimpleNamespace(
+                    exit_code=0, output=(b"/workspace/app.py\n", b"")
+                )
+            return SimpleNamespace(exit_code=0, output=(b"", b""))
+
+        def put_archive(self, _parent, archive):
+            self.archive = archive
+            return True
+
+    container = Container()
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: container
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+
+    runtime.write_file(spec, "/workspace/app.py", b"x=1\n")
+
+    with MODULE.tarfile.open(fileobj=MODULE.io.BytesIO(container.archive)) as archive:
+        member = archive.getmember("app.py")
+        assert (member.uid, member.gid) == (1000, 1000)
+    assert [
+        "autopep8",
+        "--in-place",
+        "--aggressive",
+        "--",
+        "/workspace/app.py",
+    ] in container.commands
 
 
 def test_workspace_owner_repair_uses_short_lived_root_helper():

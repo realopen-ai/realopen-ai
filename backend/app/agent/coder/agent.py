@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
-from app.agent.coder.tooling import dispatch_tool, infer_preview
+from app.agent.coder.tooling import dispatch_tool, infer_preview, normalize_tool_args
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
@@ -23,8 +23,15 @@ from app.services.sandbox_commands import persist_command, split_command_output
 from app.services.sandbox_manager import provision_sandbox
 
 logger = logging.getLogger(__name__)
-CODER_SYSTEM_PROMPT = get_prompt("coder_system")
-COMMAND_TOOLS = {"run_command", "run_tests", "install_dependencies"}
+CODER_SYSTEM_PROMPT = "\n\n".join(
+    (get_prompt("coder_system"), get_prompt("coder_fastapi_reference"))
+)
+COMMAND_TOOLS = {
+    "run_command",
+    "run_tests",
+    "install_dependencies",
+    "setup_python_project",
+}
 READ_TOOLS = {"list_files", "read_file", "search_files"}
 
 
@@ -160,7 +167,7 @@ def _event_for_step(
         if name in READ_TOOLS
         else (
             "file_write"
-            if name in {"write_file", "setup_python_project"}
+            if name == "write_file"
             else "preview" if name == "start_preview" else "code_exec"
         )
     )
@@ -186,7 +193,12 @@ def _event_for_step(
     if sandbox_id is not None:
         event["sandboxId"] = str(sandbox_id)
     if name in COMMAND_TOOLS | {"start_preview"}:
-        event.update({"language": "shell", "code": args.get("command", "")})
+        command = (
+            "uv sync --all-groups"
+            if name == "setup_python_project"
+            else args.get("command", "")
+        )
+        event.update({"language": "shell", "code": command})
     else:
         event["filePath"] = (
             "/workspace/pyproject.toml"
@@ -208,6 +220,7 @@ async def _run_step(
     event_queue,
 ) -> tuple[str, dict | None]:
     state.step_index += 1
+    args = normalize_tool_args(name, args)
     start_event = _event_for_step(
         name,
         args,
@@ -215,11 +228,48 @@ async def _run_step(
         parent_id,
         sandbox.id,
     )
-    if event_queue is not None:
+    project_event = None
+    command_started = name != "setup_python_project"
+    if name == "setup_python_project":
+        project_event = {
+            **start_event,
+            "id": f"{start_event['id']}-project",
+            "type": "file_write",
+            "title": "Writing /workspace/pyproject.toml",
+            "filePath": "/workspace/pyproject.toml",
+        }
+        project_event.pop("language", None)
+        project_event.pop("code", None)
+        if event_queue is not None:
+            event_queue.put_nowait(project_event)
+    elif event_queue is not None:
         event_queue.put_nowait(start_event)
     started_at = start_event["startedAt"]
+
+    def setup_progress(update: dict) -> None:
+        nonlocal command_started
+        if event_queue is None:
+            return
+        if update.get("stage") == "project_written" and project_event:
+            event_queue.put_nowait(
+                {
+                    **project_event,
+                    "status": "completed",
+                    "completedAt": time.time(),
+                    "output": "Created /workspace/pyproject.toml",
+                    "fileContent": update.get("file_content", ""),
+                }
+            )
+            event_queue.put_nowait(start_event)
+            command_started = True
+
     try:
-        output, event = await dispatch_tool(sandbox, name, args)
+        output, event = await dispatch_tool(
+            sandbox,
+            name,
+            args,
+            setup_progress if name == "setup_python_project" else None,
+        )
         if name in COMMAND_TOOLS:
             await _record_command(
                 sandbox=sandbox,
@@ -227,7 +277,7 @@ async def _run_step(
                 task_id=task_id,
                 tool_name=name,
                 sequence=state.step_index,
-                command=str(args.get("command", "")),
+                command=str(start_event.get("code", "")),
                 output=output,
                 exit_code=event.get("exit_code") if event else None,
                 started_at=started_at,
@@ -238,6 +288,8 @@ async def _run_step(
             "completedAt": time.time(),
             "output": output[:20_000],
         }
+        if name == "setup_python_project":
+            completed["refreshFiles"] = True
         if name in READ_TOOLS:
             completed["fileContent"] = output[:20_000]
         if event:
@@ -261,21 +313,26 @@ async def _run_step(
                 task_id=task_id,
                 tool_name=name,
                 sequence=state.step_index,
-                command=str(args.get("command", "")),
+                command=str(start_event.get("code", "")),
                 started_at=started_at,
                 error=str(exc),
             )
         if event_queue is not None:
+            failed_event = start_event if command_started else project_event
             event_queue.put_nowait(
                 {
-                    **start_event,
+                    **(failed_event or start_event),
                     "status": "error",
                     "completedAt": time.time(),
                     "error": str(exc),
                     "output": str(exc),
                 }
             )
-        raise
+        command = str(start_event.get("code", ""))
+        return f"Tool error: {exc}", {
+            **({"command": command} if command else {}),
+            "exit_code": 1,
+        }
 
 
 def _track_step(
@@ -303,7 +360,11 @@ def _track_step(
             or "npm test" in command
         ):
             state.successful_validation = True
-    if event and event.get("exit_code") not in (None, 0):
+    if (
+        event
+        and event.get("exit_code") not in (None, 0)
+        and not event.get("corrective")
+    ):
         state.command_failures += 1
         if state.command_failures >= 4:
             return (
@@ -374,9 +435,7 @@ class CoderAgent(BaseTool):
             sandbox.desired_running = True
             sandbox.error = None
             if _event_queue is not None:
-                for event in _workspace_events(
-                    sandbox, _parent_tool_call_id, task_id
-                ):
+                for event in _workspace_events(sandbox, _parent_tool_call_id, task_id):
                     _event_queue.put_nowait(event)
             model = await resolve_task_model("coder")
             messages = [
