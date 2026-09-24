@@ -425,7 +425,8 @@ export function ChatArea() {
           }
           if (
             updates.status === "completed" &&
-            streamedToolTypes.get(toolCallId) === "file_write"
+            (streamedToolTypes.get(toolCallId) === "file_write" ||
+              updates.refreshFiles)
           ) {
             void useSandboxStore.getState().fetchFileTree();
           }

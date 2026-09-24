@@ -66,6 +66,7 @@ export interface ToolCallResult {
   diff?: string;
   previewUrl?: string;
   previewPort?: number;
+  refreshFiles?: boolean;
   sandboxId?: string;
   sandbox?: Sandbox;
   // Error
