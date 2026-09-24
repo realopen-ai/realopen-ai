@@ -101,6 +101,7 @@
   "settings.notifyDeepSearch": "Get notified about DeepSearch tasks",
   "settings.ai": "AI",
   "settings.ai.description": "Choose which model runs each task, and manage your model providers.",
+  "settings.ai.tasks.coder": "Coder",
   "settings.ai.tasks.chat": "Chat / Agent",
   "settings.ai.tasks.vision": "Vision",
   "settings.ai.tasks.document_reasoning": "Document reasoning",

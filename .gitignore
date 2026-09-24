@@ -11,13 +11,16 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # Node
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.eslintcache
 *.tsbuildinfo
 coverage/
 
@@ -47,7 +50,14 @@ Thumbs.db
 
 # Logs
 *.log
+*.pid
+*.sock
+*.tmp
 logs/
+
+# Local sandbox runtime state
+sandbox/workspace/
+sandbox/.cache/
 
 # Alembic
 backend/alembic/versions/__pycache__/

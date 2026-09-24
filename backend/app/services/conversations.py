@@ -290,6 +290,7 @@ async def conversation_to_dict(conv: Conversation) -> dict:
         "id": str(conv.id),
         "title": conv.title,
         "model": conv.model,
+        "sandboxId": str(conv.sandbox_id) if conv.sandbox_id else None,
         "createdAt": int(conv.created_at.timestamp() * 1000) if conv.created_at else 0,
         "updatedAt": int(conv.updated_at.timestamp() * 1000) if conv.updated_at else 0,
         # Sidebar organization flags (three-dots menu)

@@ -9,6 +9,7 @@ import logging
 import time
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,6 +19,7 @@ from app.agent.tools.config_base import (
     ToolConfigDefinition,
     register_config,
 )
+from app.services.sandbox_commands import persist_general_code_command
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,9 @@ class CodeExecTool(BaseTool):
     display_name = "Code Execution"
     description = (
         "Execute Python code and return the output. "
-        "Use for calculations, data processing, or scripting. "
+        "Use only for isolated calculations, data processing, or scripting. "
+        "It cannot access the coding workspace or build/run applications; "
+        "delegate those tasks to the workspace coder. "
         "Only printed output is captured — always print results."
     )
     tool_type = ToolType.CODE_EXEC
@@ -54,6 +58,7 @@ class CodeExecTool(BaseTool):
         *,
         code: str,
         language: str = "python",
+        conversation_id: str | None = None,
         **kwargs,
     ) -> ToolResult:
         """Execute code and return the output."""
@@ -70,11 +75,28 @@ class CodeExecTool(BaseTool):
         )
 
         try:
-            output, exit_code = self._run_code(code, language)
+            stdout, stderr, exit_code = self._run_code(code, language)
+            output = stdout
+            if stderr:
+                output += f"\n[stderr]:\n{stderr}"
+            output = output.strip()
             tool_call.status = "completed"
             tool_call.completed_at = time.time()
             tool_call.output = output
             tool_call.exit_code = exit_code
+
+            try:
+                await persist_general_code_command(
+                    conversation_id,
+                    command=code,
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=exit_code,
+                    started_at=datetime.fromtimestamp(start),
+                    completed_at=datetime.utcnow(),
+                )
+            except Exception as exc:
+                logger.warning("Could not persist code execution history: %s", exc)
 
             result_text = f"Code execution output (exit code {exit_code}):\n{output}"
             return ToolResult(
@@ -92,17 +114,33 @@ class CodeExecTool(BaseTool):
                 tool_call=tool_call,
             )
 
-    def _run_code(self, code: str, language: str) -> tuple[str, int]:
+    def _run_code(self, code: str, language: str) -> tuple[str, str, int]:
         """Run code in a subprocess with the configured timeout."""
         if language not in ("python", "python3"):
-            return f"Unsupported language: {language}", 1
+            return "", f"Unsupported language: {language}", 1
+
+        workspace_markers = (
+            "/workspace",
+            "from fastapi",
+            "import fastapi",
+            "uvicorn",
+            "flask",
+            "django",
+        )
+        code_lower = code.lower()
+        if any(marker in code_lower for marker in workspace_markers):
+            return (
+                "",
+                "Code execution is isolated and cannot build or modify workspace "
+                "applications. Use delegate_to_coder for that work.",
+                1,
+            )
 
         # Basic safety: block dangerous imports
         blocked = {"os.system", "subprocess", "shutil.rmtree", "__import__('os')"}
-        code_lower = code.lower()
         for b in blocked:
             if b in code_lower:
-                return f"Blocked dangerous operation: {b}", 1
+                return "", f"Blocked dangerous operation: {b}", 1
 
         timeout_s = _configured_timeout_s()
 
@@ -119,12 +157,9 @@ class CodeExecTool(BaseTool):
                 timeout=timeout_s,
                 cwd="/tmp",
             )
-            output = result.stdout
-            if result.stderr:
-                output += f"\n[stderr]:\n{result.stderr}"
-            return output.strip(), result.returncode
+            return result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired:
-            return f"Error: Code execution timed out ({timeout_s}s)", 1
+            return "", f"Error: Code execution timed out ({timeout_s}s)", 1
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
@@ -167,7 +202,8 @@ CODE_EXEC_CONFIG = ToolConfigDefinition(
     display_name="Code Execution",
     description=(
         "Execute Python code and return the output. "
-        "Use for calculations, data processing, or scripting. "
+        "Use only for isolated calculations, data processing, or scripting; "
+        "workspace application work belongs to the workspace coder. "
         "Only printed output is captured — always print results."
     ),
     custom_defaults={"timeout_s": DEFAULT_TIMEOUT_S},

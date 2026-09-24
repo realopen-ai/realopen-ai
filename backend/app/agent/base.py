@@ -23,7 +23,9 @@ class ToolType(str, Enum):
     CODE_EXEC = "code_exec"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"
+    PREVIEW = "preview"
     IMAGE_GEN = "image_gen"
+    SANDBOX = "sandbox"
 
 
 @dataclass

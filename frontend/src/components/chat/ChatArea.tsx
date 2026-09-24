@@ -32,6 +32,10 @@ import {
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
 import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
+import {
+  formatCodeExecOutput,
+  generalCodeExecCommand,
+} from "@/lib/codeExecOutput";
 
 const log = createDebugLogger("ChatArea");
 
@@ -44,6 +48,7 @@ export function ChatArea() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const setRightPanelTab = useUIStore((s) => s.setRightPanelTab);
   const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
+  const selectPreview = useSandboxStore((s) => s.selectPreview);
   const isExtracting = useMemoryStore((s) => s.isExtracting);
   const lastExtraction = useMemoryStore((s) => s.lastExtraction);
   const t = useT();
@@ -160,12 +165,14 @@ export function ChatArea() {
       assistantMsgId: string,
       opts: BuildStreamCallbacksOptions,
     ): StreamCallbacks => {
-      const { userMsgId, content, isFromHomePage } = opts;
+      const { userMsgId, isFromHomePage } = opts;
 
       // Capture values for the closure — these won't change after this point
       const capturedConvId = convId;
       const capturedIsFromHomePage = isFromHomePage;
       const capturedGeneration = ++streamGenerationRef.current;
+      const terminalToolIds = new Set<string>();
+      const streamedToolTypes = new Map<string, ToolCallResult["type"]>();
 
       return {
         onToken: (token: string) =>
@@ -293,18 +300,6 @@ export function ChatArea() {
           total_chunks?: number;
           total_images?: number;
         }) => {
-          // Terminal log
-          if (p.percent === 0 || p.stage === "started") {
-            addTerminalLine(`📄 Digesting ${p.filename ?? "document"}...`);
-          } else if (p.stage === "done") {
-            // Handled in onDocumentDigestDone
-          } else if (p.stage === "error") {
-            addTerminalLine(`   ❌ ${p.details}`);
-          } else {
-            addTerminalLine(
-              `   ${p.percent}%  ${p.stage}  ${p.details ?? ""}`.trim(),
-            );
-          }
           // Inline progress on the user's message bubble
           // so the user sees feedback directly in the conversation.
           // (Voice turns never upload documents → userMsgId is undefined.)
@@ -336,9 +331,6 @@ export function ChatArea() {
           total_chunks: number;
           total_images: number;
         }) => {
-          addTerminalLine(
-            `   ✅ ${doc.filename}: ${doc.total_chunks} chunks, ${doc.total_images} image(s)`,
-          );
           // Final "done" item so the inline indicator shows completion
           if (userMsgId) {
             useChatStore
@@ -354,9 +346,6 @@ export function ChatArea() {
           }
         },
         onDocumentDigestError: (info: { filename?: string; error: string }) => {
-          addTerminalLine(
-            `   ❌ Failed to digest ${info.filename ?? "document"}: ${info.error}`,
-          );
           if (userMsgId) {
             useChatStore
               .getState()
@@ -372,22 +361,37 @@ export function ChatArea() {
         onToolCallStart: (toolCall: ToolCallResult) => {
           const s = useChatStore.getState();
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
+          streamedToolTypes.set(toolCall.id, toolCall.type);
+
+          if (
+            toolCall.sandboxId &&
+            useSandboxStore.getState().sandboxId !== toolCall.sandboxId
+          ) {
+            void useSandboxStore
+              .getState()
+              .activateSandbox(toolCall.sandboxId, toolCall.sandbox);
+          }
 
           if (toolCall.type === "code_exec") {
-            setRightPanelOpen(true);
-            setRightPanelTab("terminal");
-            addTerminalLine(`$ Running ${toolCall.language ?? "code"}...`);
-            if (toolCall.code) {
-              toolCall.code
-                .split("\n")
-                .forEach((l) => addTerminalLine(`  ${l}`));
+            if (!toolCall.sandboxId && !useSandboxStore.getState().sandboxId) {
+              void useSandboxStore
+                .getState()
+                .loadForConversation(capturedConvId);
             }
-          } else if (toolCall.type === "vision") {
+            terminalToolIds.add(toolCall.id);
             setRightPanelOpen(true);
-            setRightPanelTab("terminal");
-            addTerminalLine(`$ Analyzing image...`);
-          } else if (toolCall.type === "websearch") {
-            addTerminalLine(`$ Searching: ${toolCall.query ?? content}`);
+            setRightPanelTab("code");
+            if (toolCall.language === "shell" && toolCall.code) {
+              addTerminalLine(`$ ${toolCall.code}`);
+            } else {
+              addTerminalLine(generalCodeExecCommand(toolCall.id));
+            }
+          } else if (toolCall.type === "preview") {
+            setRightPanelOpen(true);
+            setRightPanelTab("preview");
+          } else if (toolCall.type === "sandbox") {
+            setRightPanelOpen(true);
+            setRightPanelTab("code");
           }
         },
         onToolCallUpdate: (
@@ -402,21 +406,33 @@ export function ChatArea() {
               toolCallId,
               updates,
             );
-          if (updates.output) {
-            updates.output.split("\n").forEach((l) => addTerminalLine(l));
+          if (
+            updates.sandboxId &&
+            useSandboxStore.getState().sandboxId !== updates.sandboxId
+          ) {
+            void useSandboxStore
+              .getState()
+              .activateSandbox(updates.sandboxId, updates.sandbox);
           }
-          if (updates.webResults) {
-            addTerminalLine(`  → ${updates.webResults.length} result(s) found`);
+          if (terminalToolIds.has(toolCallId) && updates.output) {
+            const output = formatCodeExecOutput(updates.output);
+            if (output) addTerminalLine(output);
           }
-          if (updates.genResults) {
-            addTerminalLine(
-              `  → ${updates.genResults.length} generated result(s)`,
-            );
+          if (updates.previewUrl) {
+            selectPreview(updates.previewUrl, updates.previewPort);
+            setRightPanelOpen(true);
+            setRightPanelTab("preview");
           }
-          if (updates.imageDescription) {
-            addTerminalLine(
-              `  → Image analyzed: ${updates.imageDescription.slice(0, 80)}...`,
-            );
+          if (
+            updates.status === "completed" &&
+            (streamedToolTypes.get(toolCallId) === "file_write" ||
+              updates.refreshFiles)
+          ) {
+            void useSandboxStore.getState().fetchFileTree();
+          }
+          if (updates.status === "completed" || updates.status === "error") {
+            terminalToolIds.delete(toolCallId);
+            streamedToolTypes.delete(toolCallId);
           }
         },
         onDone: () => {
@@ -453,7 +469,13 @@ export function ChatArea() {
         },
       };
     },
-    [navigate, addTerminalLine, setRightPanelOpen, setRightPanelTab],
+    [
+      navigate,
+      addTerminalLine,
+      selectPreview,
+      setRightPanelOpen,
+      setRightPanelTab,
+    ],
   );
 
   // ── Handle sending a message ──

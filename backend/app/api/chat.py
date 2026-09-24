@@ -107,8 +107,8 @@ async def chat(
     """Send a chat completion request to Ollama (non-streaming).
 
     The `model` field accepts:
-    - A role name: "default", "default_vision", "default_code"
-    - A type name: "chat", "vision", "code" (resolved to default_<type>)
+    - A role name: "default", "default_vision", "default_coder"
+    - A type name: "chat", "vision", "embedding" (resolved to default_<type>)
     - A direct Ollama model ID: "qwen3:4b"
     """
     dbg(

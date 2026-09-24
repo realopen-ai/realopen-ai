@@ -34,12 +34,20 @@ function writeHistoryEntry(xterm: XTerm, entry: string, accent: string) {
   }
 }
 
-export function TerminalPane() {
+export type TerminalMode = "coder" | "shell";
+
+export function TerminalPane({
+  mode = "shell",
+  active = true,
+}: {
+  mode?: TerminalMode;
+  active?: boolean;
+}) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const lastHistoryLenRef = useRef(0);
-  const addTerminalLine = useSandboxStore((s) => s.addTerminalLine);
+  const sandboxId = useSandboxStore((s) => s.sandboxId);
 
   // Create the terminal once + immediately replay any pending history
   useEffect(() => {
@@ -76,7 +84,7 @@ export function TerminalPane() {
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
       fontSize: 12,
       lineHeight: 1.6,
-      cursorBlink: true,
+      cursorBlink: mode === "shell",
       cursorStyle: "bar",
       scrollback: 1000,
       allowTransparency: true,
@@ -97,14 +105,18 @@ export function TerminalPane() {
     xtermRef.current = xterm;
     fitAddonRef.current = fitAddon;
 
-    // Welcome
-    xterm.writeln(`${accent}  RealOpen-AI Sandbox Terminal\x1b[0m`);
-    xterm.writeln("\x1b[2;37m  Awaiting commands from AI agent...\x1b[0m");
+    if (mode === "coder") {
+      xterm.writeln(`${accent}  RealOpen-AI Sandbox Terminal\x1b[0m`);
+    } else if (!sandboxId) {
+      xterm.writeln("\x1b[2;37m  Link a running workspace to open a shell.\x1b[0m");
+    } else {
+      xterm.writeln("\x1b[2;37m  Connecting to workspace shell...\x1b[0m");
+    }
     xterm.writeln("");
 
     // ── Replay any pending history that was added while terminal was unmounted ──
-    const history = useSandboxStore.getState().terminalHistory;
-    if (history.length > 0) {
+    const history = mode === "coder" ? useSandboxStore.getState().terminalHistory : [];
+    if (mode === "coder" && history.length > 0) {
       xterm.writeln(""); // visual separator
       for (const entry of history) {
         writeHistoryEntry(xterm, entry, accent);
@@ -112,41 +124,42 @@ export function TerminalPane() {
     }
     lastHistoryLenRef.current = history.length;
 
-    xterm.write(`${accent}❯\x1b[0m `);
-
-    let currentLine = "";
-    xterm.onData((data) => {
-      // Re-read accent color at time of input
-      const currentAccent = hexToAnsi(
-        accentColorMap[useSettingsStore.getState().accentColor].primary,
-      );
-
-      if (data === "\r") {
-        xterm.writeln("");
-        if (currentLine.trim()) {
-          addTerminalLine(`$ ${currentLine}`);
-          xterm.writeln("\x1b[2;37m  [Command sent to sandbox]\x1b[0m");
-        }
-        xterm.write(`${currentAccent}❯\x1b[0m `);
-        currentLine = "";
-      } else if (data === "\u007F") {
-        if (currentLine.length > 0) {
-          currentLine = currentLine.slice(0, -1);
-          xterm.write("\b \b");
-        }
-      } else if (data === "\u0003") {
-        xterm.writeln("^C");
-        xterm.write(`${currentAccent}❯\x1b[0m `);
-        currentLine = "";
-      } else if (data >= " ") {
-        currentLine += data;
-        xterm.write(data);
-      }
-    });
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+    if (mode === "shell" && sandboxId) {
+      const connect = () => {
+        if (disposed) return;
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const nextSocket = new WebSocket(`${protocol}//${window.location.host}/api/sandboxes/${sandboxId}/terminal`);
+        socket = nextSocket;
+        nextSocket.binaryType = "arraybuffer";
+        nextSocket.onopen = () => {
+          if (disposed) {
+            nextSocket.close();
+            return;
+          }
+          nextSocket.send(JSON.stringify({ cols: xterm.cols, rows: xterm.rows }));
+          xterm.focus();
+        };
+        nextSocket.onmessage = (event) => {
+          if (!disposed) xterm.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+        };
+        nextSocket.onclose = () => {
+          if (!disposed && socket === nextSocket) {
+            xterm.writeln("\r\n\x1b[2;37m  Reconnecting to workspace shell...\x1b[0m");
+            reconnectTimer = setTimeout(connect, 1000);
+          }
+        };
+      };
+      connect();
+      xterm.onData((data) => { if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)); });
+    }
 
     const resizeObserver = new ResizeObserver(() => {
       try {
         fitAddon.fit();
+        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols: xterm.cols, rows: xterm.rows }));
       } catch {
         /* ignore — container might be 0-width */
       }
@@ -154,15 +167,32 @@ export function TerminalPane() {
     resizeObserver.observe(terminalRef.current);
 
     return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
+      if (socket?.readyState === WebSocket.OPEN) socket.close();
+      else if (socket?.readyState === WebSocket.CONNECTING) {
+        socket.onopen = () => socket?.close();
+      }
       xterm.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [addTerminalLine]);
+  }, [mode, sandboxId]);
+
+  useEffect(() => {
+    if (!active) return;
+    try {
+      fitAddonRef.current?.fit();
+      xtermRef.current?.focus();
+    } catch {
+      /* the panel can still be transitioning from display:none */
+    }
+  }, [active]);
 
   // Write new terminal history entries (after initial replay)
   useEffect(() => {
+    if (mode !== "coder") return;
     const xterm = xtermRef.current;
     if (!xterm) return;
     const history = useSandboxStore.getState().terminalHistory;
@@ -177,7 +207,7 @@ export function TerminalPane() {
       writeHistoryEntry(xterm, entry, accent);
     }
     lastHistoryLenRef.current = history.length;
-  }, [useSandboxStore((s) => s.terminalHistory.length)]);
+  }, [mode, useSandboxStore((s) => s.terminalHistory.length)]);
 
   // Update xterm theme when accent color changes
   useEffect(() => {

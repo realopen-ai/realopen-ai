@@ -14,6 +14,8 @@ import {
   type ModuleInfo,
 } from "@/api/client";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
+import { persistedToolCallDetails } from "@/store/toolCallPersistence";
+import type { Sandbox } from "@/store/sandboxStore";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -26,7 +28,9 @@ export interface ToolCallResult {
     | "file_read"
     | "file_write"
     | "deepsearch"
-    | "image_gen";
+    | "image_gen"
+    | "sandbox"
+    | "preview";
   status: "running" | "completed" | "error";
   title: string;
   startedAt: number;
@@ -59,6 +63,12 @@ export interface ToolCallResult {
   // Files
   filePath?: string;
   fileContent?: string;
+  diff?: string;
+  previewUrl?: string;
+  previewPort?: number;
+  refreshFiles?: boolean;
+  sandboxId?: string;
+  sandbox?: Sandbox;
   // Error
   error?: string;
   // RAG sources (for rag_search tool calls)
@@ -158,6 +168,7 @@ export interface Conversation {
   title: string;
   messages: Message[];
   model: string;
+  sandboxId?: string | null;
   createdAt: number;
   updatedAt: number;
   pinned: boolean;
@@ -349,6 +360,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
               code: b.tool_call.code,
               output: b.tool_call.output,
               exitCode: b.tool_call.exitCode,
+              ...persistedToolCallDetails(b.tool_call),
               imageDescription: b.tool_call.imageDescription,
               error: b.tool_call.error,
               sources: b.tool_call.sources,

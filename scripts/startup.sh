@@ -67,41 +67,78 @@ start_ollama() {
     fi
 }
 
-start_voice_runtime() {
+start_host_runtime() {
     local url="http://127.0.0.1:8766"
-    local log_file="${PROJECT_ROOT}/data/voice-runtime.log"
-    local pid_file="${PROJECT_ROOT}/data/voice-runtime.pid"
+    local log_file="${PROJECT_ROOT}/data/host-runtime.log"
+    local pid_file="${PROJECT_ROOT}/data/host-runtime.pid"
+    local health_response=""
 
-    if curl -fsS "${url}/health" &> /dev/null; then
-        ok "Native voice runtime is running"
+    host_runtime_is_running() {
+        health_response="$(curl -fsS "${url}/health" 2>/dev/null)" || return 1
+        HEALTH_RESPONSE="${health_response}" python3 - <<'PY'
+import json
+import os
+import sys
+
+try:
+    health = json.loads(os.environ["HEALTH_RESPONSE"])
+except (json.JSONDecodeError, KeyError):
+    sys.exit(1)
+
+if isinstance(health, dict) and "docker" in health:
+    sys.exit(0)
+sys.exit(1)
+PY
+    }
+
+    if host_runtime_is_running; then
+        ok "Host runtime is running"
         return 0
     fi
     if ! command -v poetry &> /dev/null; then
-        warn "Poetry is unavailable; native voice runtime was not started"
+        warn "Poetry is unavailable; host runtime was not started"
         return 0
     fi
 
-    info "Starting native voice runtime (platform accelerator enabled)..."
+    info "Starting host runtime (voice acceleration and coding sandboxes)..."
     (
         cd "${PROJECT_ROOT}/backend"
-        nohup poetry run python ../scripts/voice-runtime-server.py \
+        nohup poetry run python ../scripts/host-runtime-server.py \
             > "${log_file}" 2>&1 &
         echo $! > "${pid_file}"
     )
     for _ in {1..20}; do
-        if curl -fsS "${url}/health" &> /dev/null; then
-            ok "Native voice runtime is running"
+        if host_runtime_is_running; then
+            ok "Host runtime is running"
             return 0
         fi
         sleep 0.5
     done
-    warn "Native voice runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
+    warn "Host runtime did not start. Run 'make voice-install', then 'make'. See ${log_file}"
+}
+
+ensure_sandbox_image() {
+    if ! command -v docker &> /dev/null; then
+        warn "Docker is unavailable; coding sandboxes will be disabled"
+        return 0
+    fi
+    if docker image inspect realopenai-sandbox:latest &> /dev/null; then
+        ok "Sandbox runtime image is available"
+        return 0
+    fi
+    info "Building the sandbox runtime image (first run only)..."
+    if docker build -t realopenai-sandbox:latest "${PROJECT_ROOT}/sandbox"; then
+        ok "Sandbox runtime image built"
+    else
+        warn "Sandbox image build failed; run 'make sandbox-build' to retry"
+    fi
 }
 
 main() {
     create_env_file
     start_ollama
-    start_voice_runtime
+    ensure_sandbox_image
+    start_host_runtime
 }
 
 main "$@"

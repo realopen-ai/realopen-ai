@@ -26,6 +26,14 @@ startup:
 voice-install:
 	@cd backend && poetry run python ../scripts/install-voice-models.py
 
+.PHONY: sandbox-install
+sandbox-install:
+	@cd backend && poetry install
+
+.PHONY: sandbox-build
+sandbox-build:
+	@docker build -t realopenai-sandbox:latest sandbox
+
 # ── Development mode (hot reload, debug ports exposed) ──
 .PHONY: dev
 dev: startup detect-hardware
