@@ -30,6 +30,31 @@ PREVIEW_PORTS = (FRONTEND_PORT, BACKEND_PORT)
 MAX_FILE_READ_BYTES = 5 * 1024 * 1024
 
 
+def repair_python_indentation(data: bytes) -> bytes:
+    """Repair model-generated off-grid indentation when Python cannot parse it."""
+    try:
+        source = data.decode("utf-8")
+        compile(source, "<workspace-write>", "exec")
+        return data
+    except UnicodeDecodeError:
+        return data
+    except IndentationError:
+        lines = source.splitlines(keepends=True)
+        repaired = []
+        for line in lines:
+            match = re.match(r"^( +)(?=\S)", line)
+            if match and len(match.group(1)) % 4:
+                width = max(4, (len(match.group(1)) // 4) * 4)
+                line = " " * width + line[len(match.group(1)) :]
+            repaired.append(line)
+        candidate = "".join(repaired)
+        try:
+            compile(candidate, "<workspace-write>", "exec")
+        except (IndentationError, SyntaxError):
+            return data
+        return candidate.encode("utf-8")
+
+
 def safe_path(path: str) -> str:
     value = path or ""
     # Coder models commonly return repository-relative paths (for example
@@ -75,14 +100,12 @@ class SandboxRuntime:
         container = self._container(spec.container_name)
         if not container or container.status != "running":
             raise RuntimeError("Sandbox is not running")
-        resolved = container.exec_run(
-            ["realpath", "-m", "--", target], demux=True
-        )
+        resolved = container.exec_run(["realpath", "-m", "--", target], demux=True)
         stdout, stderr = resolved.output or (b"", b"")
         if resolved.exit_code:
-            detail = (stderr or b"Could not resolve path").decode(
-                "utf-8", "replace"
-            ).strip()
+            detail = (
+                (stderr or b"Could not resolve path").decode("utf-8", "replace").strip()
+            )
             raise ValueError(detail)
         canonical = stdout.decode("utf-8", "replace").strip()
         if canonical != WORKSPACE and not canonical.startswith(WORKSPACE + "/"):
@@ -292,9 +315,9 @@ class SandboxRuntime:
         )
         stdout, stderr = result.output or (b"", b"")
         if result.exit_code:
-            detail = (stderr or b"Could not read file").decode(
-                "utf-8", "replace"
-            ).strip()
+            detail = (
+                (stderr or b"Could not read file").decode("utf-8", "replace").strip()
+            )
             raise RuntimeError(detail)
         if len(stdout) > max_bytes:
             raise ValueError(
@@ -305,9 +328,7 @@ class SandboxRuntime:
     def file_size(self, spec: SandboxSpec, path: str) -> int | None:
         """Return a file's byte size, or ``None`` when it does not exist."""
         container, target = self._resolved_workspace_path(spec, path)
-        result = container.exec_run(
-            ["stat", "-c", "%s", "--", target], demux=True
-        )
+        result = container.exec_run(["stat", "-c", "%s", "--", target], demux=True)
         stdout, _stderr = result.output or (b"", b"")
         if result.exit_code:
             return None
@@ -318,10 +339,18 @@ class SandboxRuntime:
 
     def write_file(self, spec: SandboxSpec, path: str, data: bytes) -> None:
         container, target = self._resolved_workspace_path(spec, path)
+        if target.endswith(".py"):
+            data = repair_python_indentation(data)
         parent, name = posixpath.split(target)
         info = tarfile.TarInfo(name=name)
         info.size = len(data)
         info.mode = 0o644
+        # Docker extracts archives as root unless ownership is explicit. Files
+        # must remain editable by the unprivileged workspace user.
+        info.uid = 1000
+        info.gid = 1000
+        info.uname = "ubuntu"
+        info.gname = "ubuntu"
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as archive:
             archive.addfile(info, io.BytesIO(data))
@@ -335,6 +364,17 @@ class SandboxRuntime:
             )
         if not container.put_archive(parent, buf.read()):
             raise RuntimeError("Could not write file")
+        if target.endswith(".py"):
+            formatted = container.exec_run(
+                ["autopep8", "--in-place", "--aggressive", "--", target],
+                demux=True,
+            )
+            if formatted.exit_code:
+                _stdout, stderr = formatted.output or (b"", b"")
+                raise RuntimeError(
+                    "Could not format Python file: "
+                    f"{(stderr or b'autopep8 failed').decode('utf-8', 'replace').strip()}"
+                )
 
     def pty_socket(self, spec: SandboxSpec, cols: int, rows: int):
         container = self._container(spec.container_name)

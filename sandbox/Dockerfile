@@ -1,11 +1,11 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH=/home/ubuntu/.local/bin:/root/.local/bin:$PATH
+    PATH=/home/ubuntu/.local/bin:/root/.local/bin:/workspace/.venv/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash ca-certificates curl git jq make ripgrep tree coreutils sqlite3 \
     python3 python3-pip python3-venv nodejs npm && \
-    pip3 install --break-system-packages --no-cache-dir uv && \
+    pip3 install --break-system-packages --no-cache-dir uv autopep8 && \
     npm install --global bun && \
     rm -rf /var/lib/apt/lists/*
 COPY helpers/roai-tree /usr/local/bin/roai-tree
