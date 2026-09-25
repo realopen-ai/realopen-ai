@@ -25,6 +25,7 @@ export interface ToolCallResult {
     | "websearch"
     | "vision"
     | "code_exec"
+    | "skill"
     | "file_read"
     | "file_write"
     | "deepsearch"

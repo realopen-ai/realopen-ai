@@ -10,6 +10,7 @@ import shlex
 from collections.abc import Callable
 
 from app.services import sandbox_host
+from app.services import skills as skill_store
 
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
@@ -62,6 +63,12 @@ COMMAND_PROPERTIES = {
 }
 
 CODER_TOOLS = [
+    _function(
+        "load_skill",
+        "Load the full instructions for one relevant skill from the catalog.",
+        {"name": {"type": "string"}, "resource": {"type": "string"}},
+        ("name",),
+    ),
     _function(
         "setup_python_project",
         "Create a valid uv project and install all dependencies once.",
@@ -124,6 +131,15 @@ CODER_TOOLS = [
 async def dispatch_tool(
     sandbox, name: str, args: dict, progress: Callable[[dict], None] | None = None
 ) -> tuple[str, dict | None]:
+    if name == "load_skill":
+        return (
+            skill_store.load_for_agent(
+                str(args["name"]),
+                "coder",
+                str(args["resource"]) if args.get("resource") else None,
+            ),
+            None,
+        )
     if name == "setup_python_project":
         return await _setup_python_project(sandbox, args, progress)
     if name == "list_files":

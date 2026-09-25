@@ -21,6 +21,7 @@ class ToolType(str, Enum):
     WEB_FETCH = "webfetch"
     VISION = "vision"
     CODE_EXEC = "code_exec"
+    SKILL = "skill"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"
     PREVIEW = "preview"

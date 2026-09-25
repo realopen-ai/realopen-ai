@@ -17,6 +17,7 @@ from app.agent.tools.report_gen import ReportGenTool
 from app.agent.tools.pptx_gen import PptxGenTool
 from app.agent.tools.excel_gen import ExcelGenTool
 from app.agent.tools.delegate_coder import CoderAgent
+from app.agent.tools.load_skill import LoadSkillTool
 
 __all__ = [
     "WebSearchTool",
@@ -31,4 +32,5 @@ __all__ = [
     "PptxGenTool",
     "ExcelGenTool",
     "CoderAgent",
+    "LoadSkillTool",
 ]
