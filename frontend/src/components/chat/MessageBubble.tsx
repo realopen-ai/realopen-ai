@@ -8,6 +8,7 @@ import {
   Globe,
   FileCode,
   Brain,
+  BookOpenCheck,
   Eye,
   Copy,
   Volume2,
@@ -437,6 +438,12 @@ function ToolCallBlockView({
       label: "Ran code",
       runningLabel: "Running code...",
       text: "text-emerald-400",
+    },
+    skill: {
+      icon: BookOpenCheck,
+      label: "Loaded skill",
+      runningLabel: "Loading skill...",
+      text: "text-fuchsia-400",
     },
     file_read: {
       icon: FileCode,

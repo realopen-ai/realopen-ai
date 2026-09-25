@@ -105,6 +105,18 @@ test("read, write, and code-exec tool details use shared highlighting metadata",
   assert.match(messageBubble, /bg-emerald-500\/5 text-emerald-400/);
 });
 
+test("skill instructions and resources use shared syntax highlighting", () => {
+  const skills = readFileSync(
+    new URL("../src/components/brain/SkillsTab.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(skills, /components=\{markdownCodeComponents\}/);
+  assert.match(
+    skills,
+    /code=\{resourceContent \?\? "Loading resource…"\}[\s\S]*filePath=\{selectedResource\}/,
+  );
+});
+
 test("defines readable Starry Night palettes for both application themes", () => {
   const css = readFileSync(
     new URL("../src/index.css", import.meta.url),
