@@ -31,6 +31,7 @@ from app.api.workspace import router as workspace_router  # noqa: E402
 from app.api.deps import router as deps_router  # noqa: E402
 from app.api.providers import router as providers_router  # noqa: E402
 from app.api.tools import router as tools_router  # noqa: E402
+from app.api.skills import router as skills_router  # noqa: E402
 from app.api.voice import router as voice_router  # noqa: E402
 from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa: E402
 from app.core.logger import is_debug  # noqa: E402
@@ -422,6 +423,7 @@ app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
 app.include_router(providers_router, prefix="/api", tags=["providers"])
 app.include_router(tools_router, prefix="/api", tags=["tools"])
+app.include_router(skills_router, prefix="/api", tags=["skills"])
 app.include_router(voice_router, prefix="/api", tags=["voice"])
 app.include_router(sandboxes_router, prefix="/api")
 

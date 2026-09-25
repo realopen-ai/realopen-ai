@@ -18,6 +18,7 @@ from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
 from app.services import sandbox_host
+from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
 from app.services.sandbox_commands import persist_command, split_command_output
 from app.services.sandbox_manager import provision_sandbox
@@ -163,12 +164,16 @@ def _event_for_step(
     sandbox_id=None,
 ) -> dict:
     event_type = (
-        "file_read"
-        if name in READ_TOOLS
+        "skill"
+        if name == "load_skill"
         else (
-            "file_write"
-            if name == "write_file"
-            else "preview" if name == "start_preview" else "code_exec"
+            "file_read"
+            if name in READ_TOOLS
+            else (
+                "file_write"
+                if name == "write_file"
+                else "preview" if name == "start_preview" else "code_exec"
+            )
         )
     )
     title = {
@@ -181,6 +186,7 @@ def _event_for_step(
         "run_command": "Running command",
         "setup_python_project": "Setting up Python project",
         "start_preview": "Starting app preview",
+        "load_skill": f"Loading skill {args.get('name', '')}",
     }.get(name, name)
     event = {
         "id": step_id,
@@ -438,8 +444,12 @@ class CoderAgent(BaseTool):
                 for event in _workspace_events(sandbox, _parent_tool_call_id, task_id):
                     _event_queue.put_nowait(event)
             model = await resolve_task_model("coder")
+            coder_prompt = CODER_SYSTEM_PROMPT
+            skill_catalog = skill_store.routing_catalog("coder")
+            if skill_catalog:
+                coder_prompt += "\n\n" + skill_catalog
             messages = [
-                {"role": "system", "content": CODER_SYSTEM_PROMPT},
+                {"role": "system", "content": coder_prompt},
                 {"role": "user", "content": task},
             ]
             state = RunState()

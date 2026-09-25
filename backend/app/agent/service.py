@@ -26,6 +26,7 @@ from app.services.memory import get_relevant_memories
 from app.services.context_compactor import compact_conversation
 from app.services import model_prefs
 from app.services import providers
+from app.services import skills as skill_store
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
@@ -160,6 +161,7 @@ async def _build_system_prompt(
     tool_names: Set[str],
     interaction_mode: str = "text",
     interaction_instructions: str = "",
+    skill_catalog: str = "",
 ) -> str:
     """Build a compact system prompt with only the selected tools.
 
@@ -181,6 +183,8 @@ async def _build_system_prompt(
     schema_text = "\n".join(lines) if lines else "(no tools available)"
 
     prompt = format_prompt("agent_system", tool_schemas=schema_text)
+    if skill_catalog:
+        prompt += "\n\n" + skill_catalog
     if interaction_mode == "voice":
         prompt += "\n\n" + format_prompt("voice_mode")
         if interaction_instructions.strip():
@@ -201,6 +205,7 @@ _TOOL_TAGS = {
     "use_excel_gen",
     "manage_memory",
     "search_past_conversations",
+    "load_skill",
 }
 
 # Fenced code blocks: ```tool_name\n...\n```
@@ -441,6 +446,10 @@ async def run_agent_stream(
     user_msgs = [m for m in messages if m.get("role") == "user"]
     last_user = user_msgs[-1].get("content", "") if user_msgs else ""
     selected_tools = _select_tools(last_user)
+    skill_role = "voice" if interaction_mode == "voice" else "general"
+    skill_catalog = skill_store.routing_catalog(skill_role)
+    if skill_catalog:
+        selected_tools.add("load_skill")
     _dbg("Selected tools: %s", sorted(selected_tools))
 
     # ── KV-CACHE-AWARE MESSAGE CONSTRUCTION ────────────────────────────
@@ -454,7 +463,10 @@ async def run_agent_stream(
     # prompt is ~1-2k tokens — without this, every turn re-processes the
     # full prompt from scratch because the datetime changed.
     system_prompt = await _build_system_prompt(
-        selected_tools, interaction_mode, interaction_instructions
+        selected_tools,
+        interaction_mode,
+        interaction_instructions,
+        skill_catalog,
     )
 
     # Build the list of dynamic context messages (appended after convo).
@@ -871,6 +883,8 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
+            if tool_name == "load_skill":
+                exec_args["_skill_role"] = skill_role
             try:
                 model_override = await config_store.tool_model_override(tool_name)
             except Exception:
