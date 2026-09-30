@@ -49,6 +49,18 @@ export default function App() {
       <ThemeManager />
       <Routes>
         <Route path="/" element={<AppLayout />} />
+        <Route path="/brain" element={<AppLayout />} />
+        <Route path="/brain/memories" element={<AppLayout />} />
+        <Route path="/brain/history" element={<AppLayout />} />
+        <Route path="/brain/skills" element={<AppLayout />} />
+        <Route path="/brain/tools" element={<AppLayout />} />
+        <Route path="/brain/tools/:toolId" element={<AppLayout />} />
+        <Route path="/workspace" element={<AppLayout />} />
+        <Route path="/workspace/documents" element={<AppLayout />} />
+        <Route path="/workspace/templates" element={<AppLayout />} />
+        <Route path="/workspace/generated" element={<AppLayout />} />
+        <Route path="/workspace/assets" element={<AppLayout />} />
+        <Route path="/workspace/sandboxes" element={<AppLayout />} />
         <Route path="/:conversationId" element={<AppLayout />} />
       </Routes>
     </TooltipProvider>

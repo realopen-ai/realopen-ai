@@ -5,7 +5,6 @@ import {
   searchPastConversations,
   type PastConversationResult,
 } from "@/api/client";
-import { useUIStore } from "@/store/uiStore";
 import { EmptyState } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
 
@@ -130,7 +129,6 @@ export function HistoryTab({
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const setShowBrainPage = useUIStore((s) => s.setShowBrainPage);
 
   const handleSearch = useCallback(async (value: string) => {
     setQuery(value);
@@ -166,7 +164,6 @@ export function HistoryTab({
     if (onOpenConversation) {
       onOpenConversation(conversationId);
     }
-    setShowBrainPage(false);
   };
 
   return (

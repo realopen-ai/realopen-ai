@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import { PageContainer, PageHeader } from "@/components/ui/primitives";
@@ -6,11 +6,16 @@ import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
 import { HistoryTab } from "@/components/brain/HistoryTab";
 import { ToolsTab } from "@/components/brain/ToolsTab";
-
-type BrainTab = "memories" | "history" | "skills" | "tools";
+import {
+  brainTabPath,
+  getBrainRoute,
+  type BrainTab,
+} from "@/lib/appRoutes";
 
 export function BrainPage() {
-  const [tab, setTab] = useState<BrainTab>("memories");
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const { tab, toolId } = getBrainRoute(pathname);
   const t = useT();
 
   const tabs: { key: BrainTab; label: string }[] = [
@@ -40,7 +45,7 @@ export function BrainPage() {
             return (
               <button
                 key={tabItem.key}
-                onClick={() => setTab(tabItem.key)}
+                onClick={() => navigate(brainTabPath(tabItem.key))}
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   "relative px-3.5 py-2.5 text-[13.5px] font-medium transition-colors rounded-t-md",
@@ -62,9 +67,22 @@ export function BrainPage() {
         {/* Consistent content container across all tabs */}
         <div className="pt-7">
           {tab === "memories" && <MemoriesTab />}
-          {tab === "history" && <HistoryTab />}
+          {tab === "history" && (
+            <HistoryTab onOpenConversation={(id) => navigate(`/${id}`)} />
+          )}
           {tab === "skills" && <SkillsTab />}
-          {tab === "tools" && <ToolsTab />}
+          {tab === "tools" && (
+            <ToolsTab
+              selectedTool={toolId}
+              onSelectTool={(id) =>
+                navigate(
+                  id
+                    ? `/brain/tools/${encodeURIComponent(id)}`
+                    : "/brain/tools",
+                )
+              }
+            />
+          )}
         </div>
       </PageContainer>
     </div>

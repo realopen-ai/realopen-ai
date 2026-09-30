@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Search,
   MessageSquare,
@@ -30,6 +30,7 @@ import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
+import { isBrainRoute, isWorkspaceRoute } from "@/lib/appRoutes";
 
 /* ── Shared row primitives (sidebar-local) ─────────────────────── */
 
@@ -135,16 +136,15 @@ export function Sidebar() {
   const profileName = useChatStore((s) => s.profileName);
 
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { conversationId: urlConvId } = useParams<{ conversationId: string }>();
 
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const sidebarMobileOpen = useUIStore((s) => s.sidebarMobileOpen);
   const setSidebarMobileOpen = useUIStore((s) => s.setSidebarMobileOpen);
-  const setShowBrainPage = useUIStore((s) => s.setShowBrainPage);
-  const showBrainPage = useUIStore((s) => s.showBrainPage);
-  const setShowWorkspacePage = useUIStore((s) => s.setShowWorkspacePage);
-  const showWorkspacePage = useUIStore((s) => s.showWorkspacePage);
+  const showBrainPage = isBrainRoute(pathname);
+  const showWorkspacePage = isWorkspaceRoute(pathname);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -184,16 +184,12 @@ export function Sidebar() {
     // Navigate to home page — the user will start a new conversation
     // by sending a message from the welcome screen
     navigate("/");
-    setShowBrainPage(false);
-    setShowWorkspacePage(false);
     setSidebarMobileOpen(false);
   };
 
   const handleSelect = (id: string) => {
     // Navigate to the conversation URL
     navigate(`/${id}`);
-    setShowBrainPage(false);
-    setShowWorkspacePage(false);
     setSidebarMobileOpen(false);
   };
 
@@ -206,12 +202,12 @@ export function Sidebar() {
   };
 
   const handleBrainClick = () => {
-    setShowBrainPage(!showBrainPage);
+    navigate("/brain");
     setSidebarMobileOpen(false);
   };
 
   const handleWorkspaceClick = () => {
-    setShowWorkspacePage(!showWorkspacePage);
+    navigate("/workspace");
     setSidebarMobileOpen(false);
   };
 
@@ -228,8 +224,6 @@ export function Sidebar() {
 
   const handleOpenFromSearch = (conversationId: string) => {
     navigate(`/${conversationId}`);
-    setShowBrainPage(false);
-    setShowWorkspacePage(false);
     setSidebarMobileOpen(false);
     setSearchOpen(false);
   };
