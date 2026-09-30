@@ -1,12 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  Cloud,
-  HardDrive,
-  Search,
-  Sparkles,
-} from "lucide-react";
+import { Check, ChevronDown, Search, Sparkles } from "lucide-react";
 
 import type { AvailableModel } from "@/api/client";
 import { useT } from "@/store/settingsStore";
@@ -23,6 +16,13 @@ import { cn } from "@/lib/utils";
  * - `inheritOption` (Tools tab) adds a first row meaning "no override —
  *   use the general model"; selected when currentModel is null/"".
  */
+
+/** Status dot: green = pulled locally, amber = cloud, grey = not pulled. */
+function modelDotClass(model: AvailableModel) {
+  if (model.provider === "groq") return "bg-warning";
+  if (model.installed === false) return "bg-muted-foreground/40";
+  return "bg-success";
+}
 
 function ModelRow({
   model,
@@ -43,35 +43,25 @@ function ModelRow({
       onClick={() => !disabled && onSelect(model.id)}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
-        disabled
-          ? "opacity-50 cursor-not-allowed"
-          : "hover:bg-accent cursor-pointer",
+        "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors",
+        selected ? "bg-surface-selected" : "hover:bg-surface-hover",
+        disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
       )}
     >
-      {/* Provider badge */}
+      {/* Status dot */}
       <span
         className={cn(
-          "shrink-0 w-5 h-5 rounded-md flex items-center justify-center",
-          model.provider === "groq"
-            ? "bg-amber-500/15 text-amber-500"
-            : model.installed
-              ? "bg-emerald-500/15 text-emerald-500"
-              : "bg-secondary text-muted-foreground",
+          "h-1.75 w-1.75 shrink-0 rounded-full",
+          modelDotClass(model),
         )}
-      >
-        {model.provider === "groq" ? (
-          <Cloud className="w-3 h-3" />
-        ) : (
-          <HardDrive className="w-3 h-3" />
-        )}
-      </span>
+        aria-hidden
+      />
 
-      <span className="flex-1 min-w-0">
-        <span className="block text-[13px] text-foreground truncate">
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] text-foreground">
           {model.description}
         </span>
-        <span className="block text-[11px] text-muted-foreground/60 truncate">
+        <span className="block truncate text-[11px] text-muted-foreground">
           {model.id}
           {model.provider === "ollama" &&
             !model.installed &&
@@ -81,11 +71,11 @@ function ModelRow({
       </span>
 
       {disabled && reason ? (
-        <span className="shrink-0 text-[10px] text-muted-foreground/50">
+        <span className="shrink-0 text-[10.5px] text-muted-foreground">
           {reason}
         </span>
       ) : selected ? (
-        <Check className="shrink-0 w-4 h-4 text-primary" />
+        <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
       ) : null}
     </button>
   );
@@ -159,31 +149,30 @@ export function ModelSelect({
 
   return (
     <div ref={rootRef} className="relative">
-      {/* Trigger */}
+      {/* Trigger — quiet control, matches app inputs */}
       <button
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "w-full md:w-64 flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors text-left",
+          "flex h-9 w-full items-center gap-2 rounded-lg border px-3 text-left transition-colors md:w-64",
           open
-            ? "border-primary/40 ring-1 ring-primary/20 bg-primary/5"
-            : "border-border bg-card hover:border-border/80 hover:bg-accent/40",
+            ? "border-primary/50 bg-secondary/60"
+            : "border-border/60 bg-transparent hover:bg-surface-hover",
         )}
       >
         <span
           className={cn(
-            "shrink-0 w-1.5 h-1.5 rounded-full",
+            "h-1.75 w-1.75 shrink-0 rounded-full",
             isInherit
               ? "bg-muted-foreground/40"
-              : current?.provider === "groq"
-                ? "bg-amber-500"
-                : current?.installed === false
-                  ? "bg-muted-foreground/40"
-                  : "bg-emerald-500",
+              : current
+                ? modelDotClass(current)
+                : "bg-muted-foreground/40",
           )}
+          aria-hidden
         />
-        <span className="flex-1 min-w-0 truncate text-[13px] text-foreground">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
           {isInherit
             ? inheritOption
             : current
@@ -191,24 +180,24 @@ export function ModelSelect({
               : currentModel}
         </span>
         {open ? (
-          <Search className="shrink-0 w-3.5 h-3.5 text-muted-foreground" />
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
-          <ChevronDown className="shrink-0 w-3.5 h-3.5 text-muted-foreground" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
       </button>
 
       {/* Dropdown panel */}
       {open && (
-        <div className="absolute z-50 mt-1.5 left-0 right-0 md:right-0 md:left-auto md:w-80 rounded-xl border border-border bg-popover shadow-2xl overflow-hidden">
+        <div className="absolute left-0 right-0 z-50 mt-1.5 overflow-hidden rounded-lg border border-border/70 bg-popover shadow-[0_12px_32px_-8px_var(--color-shadow-strong)] md:left-auto md:w-80">
           {/* Search */}
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
-            <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <div className="flex h-9 items-center gap-2 border-b border-border/60 px-3">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <input
               ref={searchRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("settings.ai.models.search")}
-              className="flex-1 bg-transparent text-[13px] text-foreground placeholder:text-muted-foreground/50 outline-none"
+              className="flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
             />
           </div>
 
@@ -220,30 +209,26 @@ export function ModelSelect({
                   onSelect(task, null);
                   setOpen(false);
                 }}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-accent cursor-pointer"
+                className="flex w-full cursor-pointer items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-hover"
               >
-                <span className="shrink-0 w-5 h-5 rounded-md bg-secondary text-muted-foreground flex items-center justify-center">
-                  <Sparkles className="w-3 h-3" />
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block text-[13px] text-foreground truncate">
-                    {inheritOption}
-                  </span>
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+                  {inheritOption}
                 </span>
                 {isInherit && (
-                  <Check className="shrink-0 w-4 h-4 text-primary" />
+                  <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
                 )}
               </button>
             )}
 
             {localModels.length === 0 && cloudModels.length === 0 && (
-              <div className="px-3 py-6 text-center text-[12px] text-muted-foreground/60">
+              <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">
                 {t("settings.ai.models.noResults")}
               </div>
             )}
 
             {localModels.length > 0 && (
-              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+              <div className="px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
                 {t("settings.ai.models.local")}
               </div>
             )}
@@ -261,7 +246,7 @@ export function ModelSelect({
             ))}
 
             {groqConnected && cloudModels.length > 0 && (
-              <div className="px-3 py-1 mt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+              <div className="mt-1 px-3 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
                 {t("settings.ai.models.cloud")}
               </div>
             )}

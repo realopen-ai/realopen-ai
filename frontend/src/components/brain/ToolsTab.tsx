@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Brain,
   ChevronLeft,
+  ChevronRight,
   Eye,
   FileSearch,
   FileText,
@@ -35,13 +36,18 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToolsStore } from "@/store/toolsStore";
 import { useAiStore } from "@/store/aiStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import type { ToolInfo } from "@/api/toolsClient";
 import { ModelSelect } from "@/components/settings/ModelSelect";
+import { Button } from "@/components/ui/button";
+import {
+  EmptyState,
+  SectionHeader,
+  StatusDot,
+} from "@/components/ui/primitives";
 import { WebSearchCustom } from "@/components/brain/tools/WebSearchCustom";
 import { ImageGenCustom } from "@/components/brain/tools/ImageGenCustom";
 import { GenericCustomConfig } from "@/components/brain/tools/GenericCustomConfig";
@@ -103,15 +109,16 @@ export function SettingToggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        "relative shrink-0 w-10 h-6 rounded-full transition-colors",
-        checked ? "bg-primary" : "bg-secondary",
-        disabled && "opacity-50 cursor-not-allowed",
+        "relative h-5.5 w-10 shrink-0 rounded-full transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        checked ? "bg-primary" : "bg-secondary hover:bg-surface-hover",
+        disabled && "cursor-not-allowed opacity-50",
       )}
     >
       <span
         className={cn(
-          "absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-background shadow transition-transform",
-          checked && "translate-x-4",
+          "absolute left-0.5 top-0.5 h-4.5 w-4.5 rounded-full bg-background shadow-sm transition-transform",
+          checked && "translate-x-4.5",
         )}
       />
     </button>
@@ -120,21 +127,23 @@ export function SettingToggle({
 
 // ─── Row layout for a universal setting ─────────────────────────────
 
-function SettingRow({
+export function SettingRow({
   label,
   help,
   children,
+  className,
 }: {
   label: string;
   help?: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="flex items-center gap-3 py-2.5">
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] text-foreground">{label}</div>
+    <div className={cn("flex items-center gap-4 py-3.5", className)}>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13.5px] text-foreground">{label}</div>
         {help && (
-          <div className="text-[11px] text-muted-foreground/70 leading-snug mt-0.5">
+          <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground/80">
             {help}
           </div>
         )}
@@ -181,15 +190,19 @@ function TagsField({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-2 py-1.5 min-h-10 cursor-text disabled:opacity-50"
+      className={cn(
+        "flex min-h-9 w-full max-w-md cursor-text flex-wrap items-center gap-1.5 rounded-lg border border-border/60 bg-transparent px-2 py-1.5",
+        "transition-colors focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/20",
+        disabled && "opacity-50",
+      )}
       onClick={() => inputRef.current?.focus()}
     >
       {tags.map((tag) => (
         <span
           key={tag}
-          className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg bg-primary/10 text-primary text-[11.5px] font-medium max-w-45"
+          className="inline-flex h-6 items-center gap-1 rounded-md bg-primary/10 pl-2 pr-1 text-[11.5px] font-medium text-primary"
         >
-          <span className="truncate">{tag}</span>
+          <span className="max-w-45 truncate">{tag}</span>
           <button
             aria-label={`${t("brain.tools.removeTag")}: ${tag}`}
             disabled={disabled}
@@ -197,9 +210,9 @@ function TagsField({
               e.stopPropagation();
               remove(tag);
             }}
-            className="shrink-0 w-4 h-4 rounded flex items-center justify-center hover:bg-primary/20 transition-colors"
+            className="flex h-4 w-4 shrink-0 items-center justify-center rounded transition-colors hover:bg-primary/20"
           >
-            <X className="w-3 h-3" />
+            <X className="h-3 w-3" />
           </button>
         </span>
       ))}
@@ -224,15 +237,15 @@ function TagsField({
             ? t("brain.tools.tagsPlaceholder")
             : t("brain.tools.tagsAddMore")
         }
-        className="flex-1 min-w-27.5 bg-transparent text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+        className="min-w-27.5 flex-1 bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
       />
       {input.trim() && (
         <button
           onClick={() => add(input)}
-          className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-primary"
           aria-label={t("brain.tools.addTag")}
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus className="h-3.5 w-3.5" />
         </button>
       )}
     </div>
@@ -241,54 +254,40 @@ function TagsField({
 
 // ─── Tool list row ─────────────────────────────────────────────────
 
-function ToolCard({ tool, onOpen }: { tool: ToolInfo; onOpen: () => void }) {
+function ToolRow({ tool, onOpen }: { tool: ToolInfo; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
       className={cn(
-        "w-full flex items-center gap-3.5 px-4 py-3.5 text-left transition-colors hover:bg-accent/40 border-b border-border/40 last:border-b-0",
+        "group flex w-full items-center gap-3.5 rounded-lg px-3 py-3 text-left transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
         !tool.config.enabled && "opacity-60",
       )}
     >
       <span
         className={cn(
-          "shrink-0 w-9 h-9 rounded-xl flex items-center justify-center",
+          "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
           tool.config.enabled
             ? "bg-primary/10 text-primary"
-            : "bg-secondary text-muted-foreground/60",
+            : "bg-secondary text-muted-foreground/80",
         )}
       >
-        <ToolIcon toolName={tool.tool} className="w-4.5 h-4.5" />
+        <ToolIcon toolName={tool.tool} className="h-4.5 w-4.5" />
       </span>
-      <span className="flex-1 min-w-0">
-        <span className="flex items-center gap-2">
-          <span className="text-[13.5px] font-medium text-foreground truncate">
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2.5">
+          <span className="truncate text-[13.5px] font-medium text-foreground">
             {tool.display_name}
           </span>
-          <span
-            className={cn(
-              "shrink-0 inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded-full",
-              tool.config.enabled
-                ? "bg-emerald-500/10 text-emerald-500"
-                : "bg-secondary text-muted-foreground/70",
-            )}
-          >
-            <span
-              className={cn(
-                "w-1.5 h-1.5 rounded-full",
-                tool.config.enabled
-                  ? "bg-emerald-500"
-                  : "bg-muted-foreground/50",
-              )}
-            />
-            {tool.config.enabled ? "Enabled" : "Disabled"}
-          </span>
+          <StatusDot
+            tone={tool.config.enabled ? "success" : "neutral"}
+            label={tool.config.enabled ? "Enabled" : "Disabled"}
+          />
         </span>
-        <span className="block text-[12px] text-muted-foreground/80 truncate mt-0.5">
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
           {tool.description}
         </span>
       </span>
-      <ChevronLeft className="shrink-0 w-4 h-4 text-muted-foreground/40 rotate-180" />
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" />
     </button>
   );
 }
@@ -311,148 +310,131 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
   const cfg = tool.config;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="mx-auto w-full max-w-190">
       {/* Header */}
-      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/50">
-        <button
-          onClick={onBack}
-          className="shrink-0 flex items-center gap-1 text-[12.5px] text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ChevronLeft className="w-4 h-4" />
+      <div className="mb-7">
+        <Button variant="ghost" size="sm" className="-ml-2" onClick={onBack}>
+          <ChevronLeft />
           {t("brain.tools.back")}
-        </button>
-        <div className="flex-1 min-w-0 flex items-center gap-2.5 pl-1">
-          <span className="shrink-0 w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
-            <ToolIcon toolName={tool.tool} className="w-4 h-4" />
+        </Button>
+        <div className="mt-2 flex items-start gap-3.5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <ToolIcon toolName={tool.tool} className="h-5 w-5" />
           </span>
-          <div className="min-w-0">
-            <div className="text-[14px] font-semibold text-foreground truncate">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-[18px] font-semibold tracking-[-0.01em] text-foreground">
               {tool.display_name}
-            </div>
-            <div className="text-[11.5px] text-muted-foreground/80 truncate">
+            </h2>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
               {tool.description}
-            </div>
+            </p>
           </div>
+          {isSaving && (
+            <Loader2 className="mt-1.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          )}
         </div>
-        {isSaving && (
-          <Loader2 className="shrink-0 w-4 h-4 animate-spin text-muted-foreground" />
-        )}
       </div>
 
       {/* Body */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="max-w-2xl mx-auto px-4 py-4 space-y-6">
-          {saveError && (
-            <div className="px-3 py-2.5 rounded-xl border border-red-500/30 bg-red-500/10 text-[12px] text-red-400">
-              {saveError}
-            </div>
-          )}
+      <div className="space-y-9">
+        {saveError && (
+          <div className="rounded-lg bg-danger/10 px-3 py-2.5 text-[12.5px] text-danger">
+            {saveError}
+          </div>
+        )}
 
-          {/* ── General ── */}
-          <section className="space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 mb-1">
-              {t("brain.tools.general")}
-            </div>
-            <div className="rounded-xl border border-border bg-card px-4 divide-y divide-border/50">
-              <SettingRow
+        {/* ── General ── */}
+        <section>
+          <SectionHeader title={t("brain.tools.general")} />
+          <div className="divide-y divide-border/50">
+            <SettingRow
+              label={t("brain.tools.enabled")}
+              help={t("brain.tools.enabledHelp")}
+            >
+              <SettingToggle
+                checked={cfg.enabled}
                 label={t("brain.tools.enabled")}
-                help={t("brain.tools.enabledHelp")}
-              >
-                <SettingToggle
-                  checked={cfg.enabled}
-                  label={t("brain.tools.enabled")}
-                  onChange={(v) => updateConfig(tool.tool, { enabled: v })}
-                />
-              </SettingRow>
-              <SettingRow
+                onChange={(v) => updateConfig(tool.tool, { enabled: v })}
+              />
+            </SettingRow>
+            <SettingRow
+              label={t("brain.tools.alwaysLoad")}
+              help={t("brain.tools.alwaysLoadHelp")}
+            >
+              <SettingToggle
+                checked={cfg.always_load}
+                disabled={!cfg.enabled}
                 label={t("brain.tools.alwaysLoad")}
-                help={t("brain.tools.alwaysLoadHelp")}
-              >
-                <SettingToggle
-                  checked={cfg.always_load}
-                  disabled={!cfg.enabled}
-                  label={t("brain.tools.alwaysLoad")}
-                  onChange={(v) =>
-                    updateConfig(tool.tool, {
-                      always_load: v,
-                      // Re-arm the default tags when enabling
-                      // always-load with an empty tag list (so turning
-                      // it off later keeps a working gate)
-                      ...(v && !(cfg.tags?.length ?? 0)
-                        ? { tags: tool.default_tags ?? [] }
-                        : {}),
-                    })
-                  }
-                />
-              </SettingRow>
-              <div className="py-2.5">
-                <div className="flex items-baseline justify-between gap-3 mb-2">
-                  <div className="min-w-0">
-                    <div className="text-[13px] text-foreground">
-                      {t("brain.tools.tags")}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground/70 leading-snug mt-0.5">
-                      {t("brain.tools.tagsHelp")}
-                    </div>
-                  </div>
-                </div>
-                <TagsField
-                  tool={tool.tool}
-                  tags={cfg.tags ?? []}
-                  disabled={cfg.always_load || !cfg.enabled}
-                />
-              </div>
-              <SettingRow
-                label={t("brain.tools.model")}
-                help={
-                  cfg.model
-                    ? undefined
-                    : `${t("brain.tools.modelHelp")}${
-                        tool.effective_model ? ` (${tool.effective_model})` : ""
-                      }`
+                onChange={(v) =>
+                  updateConfig(tool.tool, {
+                    always_load: v,
+                    // Re-arm the default tags when enabling
+                    // always-load with an empty tag list (so turning
+                    // it off later keeps a working gate)
+                    ...(v && !(cfg.tags?.length ?? 0)
+                      ? { tags: tool.default_tags ?? [] }
+                      : {}),
+                  })
                 }
-              >
-                <ModelSelect
-                  task={tool.tool}
-                  models={models}
-                  currentModel={cfg.model}
-                  groqConnected={groqConnected}
-                  localOnly={
-                    tool.tool === "use_image_gen" || tool.tool === "use_vision"
-                  }
-                  inheritOption={t("brain.tools.modelInherit")}
-                  onSelect={(_task, model) =>
-                    updateConfig(tool.tool, { model })
-                  }
-                />
-              </SettingRow>
-            </div>
-          </section>
-
-          {/* ── Custom settings ── */}
-          {tool.has_custom && (
-            <section className="space-y-1">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 mb-1">
-                {t("brain.tools.customSettings")}
+              />
+            </SettingRow>
+            <div className="py-3.5">
+              <div className="mb-2.5">
+                <div className="text-[13.5px] text-foreground">
+                  {t("brain.tools.tags")}
+                </div>
+                <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground/80">
+                  {t("brain.tools.tagsHelp")}
+                </div>
               </div>
-              {tool.tool === "use_websearch" ? (
-                <WebSearchCustom tool={tool} />
-              ) : tool.tool === "use_image_gen" ? (
-                <ImageGenCustom tool={tool} />
-              ) : (
-                <GenericCustomConfig tool={tool} />
-              )}
-            </section>
-          )}
+              <TagsField
+                tool={tool.tool}
+                tags={cfg.tags ?? []}
+                disabled={cfg.always_load || !cfg.enabled}
+              />
+            </div>
+            <SettingRow
+              label={t("brain.tools.model")}
+              help={
+                cfg.model
+                  ? undefined
+                  : `${t("brain.tools.modelHelp")}${
+                      tool.effective_model ? ` (${tool.effective_model})` : ""
+                    }`
+              }
+            >
+              <ModelSelect
+                task={tool.tool}
+                models={models}
+                currentModel={cfg.model}
+                groqConnected={groqConnected}
+                localOnly={
+                  tool.tool === "use_image_gen" || tool.tool === "use_vision"
+                }
+                inheritOption={t("brain.tools.modelInherit")}
+                onSelect={(_task, model) => updateConfig(tool.tool, { model })}
+              />
+            </SettingRow>
+          </div>
+        </section>
 
-          {/* ── Coming soon hint for tools without custom config ── */}
-          {!tool.has_custom && (
-            <p className="text-[11.5px] text-muted-foreground/60 leading-relaxed">
-              {t("brain.tools.noCustomYet")}
-            </p>
-          )}
-        </div>
-      </ScrollArea>
+        {/* ── Custom settings (each renderer draws its own sections) ── */}
+        {tool.has_custom &&
+          (tool.tool === "use_websearch" ? (
+            <WebSearchCustom tool={tool} />
+          ) : tool.tool === "use_image_gen" ? (
+            <ImageGenCustom tool={tool} />
+          ) : (
+            <GenericCustomConfig tool={tool} />
+          ))}
+
+        {/* ── Coming soon hint for tools without custom config ── */}
+        {!tool.has_custom && (
+          <p className="text-[12.5px] leading-relaxed text-muted-foreground/70">
+            {t("brain.tools.noCustomYet")}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -472,45 +454,37 @@ export function ToolsTab() {
 
   const selected = tools.find((x) => x.tool === selectedTool) ?? null;
 
+  if (selected) {
+    return <ToolDetail tool={selected} onBack={() => setSelectedTool(null)} />;
+  }
+
   return (
-    <div className="h-full min-h-0 flex flex-col">
-      {selected ? (
-        <ToolDetail tool={selected} onBack={() => setSelectedTool(null)} />
-      ) : (
-        <div className="flex flex-col h-full min-h-0">
-          <div className="px-5 pt-4 pb-2">
-            <p className="text-[12px] text-muted-foreground leading-relaxed">
-              {t("brain.tools.description")}
-            </p>
-          </div>
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="max-w-2xl mx-auto w-full px-4 pb-4">
-              {isLoading && tools.length === 0 && (
-                <div className="flex items-center gap-2 text-[12px] text-muted-foreground py-8 justify-center">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  {t("brain.tools.loading")}
-                </div>
-              )}
-              <div className="rounded-xl border border-border bg-card overflow-hidden">
-                {tools.map((tool) => (
-                  <ToolCard
-                    key={tool.tool}
-                    tool={tool}
-                    onOpen={() => setSelectedTool(tool.tool)}
-                  />
-                ))}
-              </div>
-              {!isLoading && tools.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <Wrench className="w-10 h-10 text-muted-foreground/20 mb-3" />
-                  <p className="text-[13px] font-medium text-muted-foreground/60">
-                    {t("brain.tools.empty")}
-                  </p>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
+    <div className="flex flex-col">
+      {/* Intro */}
+      <p className="mb-4 max-w-2xl text-[13px] leading-relaxed text-muted-foreground">
+        {t("brain.tools.description")}
+      </p>
+
+      {/* Tool rows */}
+      {isLoading && tools.length === 0 && (
+        <div className="flex items-center justify-center gap-2 py-12 text-[12.5px] text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t("brain.tools.loading")}
         </div>
+      )}
+
+      <div className="divide-y divide-border/50">
+        {tools.map((tool) => (
+          <ToolRow
+            key={tool.tool}
+            tool={tool}
+            onOpen={() => setSelectedTool(tool.tool)}
+          />
+        ))}
+      </div>
+
+      {!isLoading && tools.length === 0 && (
+        <EmptyState icon={<Wrench />} title={t("brain.tools.empty")} />
       )}
     </div>
   );

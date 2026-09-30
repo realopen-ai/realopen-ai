@@ -11,8 +11,8 @@
  *             timeout ceiling is generous (up to 7200 s).
  *   ComfyUI — planned provider, NOT yet configurable: rendered as a
  *             static "coming soon" card so users can see the roadmap
- *             (workflow-based local generation) without being able
- *             to change anything.
+ *             (workflow-based local generation) without being able to
+ *             change anything.
  *
  * Every change persists through PUT /api/tools/use_image_gen and
  * takes effect at runtime immediately.
@@ -25,7 +25,13 @@ import { useToolsStore } from "@/store/toolsStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import type { ToolInfo } from "@/api/toolsClient";
+import { SectionHeader } from "@/components/ui/primitives";
 import { SettingToggle } from "@/components/brain/ToolsTab";
+
+// ─── Shared input styling ──────────────────────────────────────────
+
+const inputClass =
+  "h-9 rounded-lg border border-border/60 bg-transparent px-3 text-[13px] text-foreground placeholder:text-muted-foreground/70 outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20 disabled:opacity-50";
 
 // ─── Provider card shell ───────────────────────────────────────────
 
@@ -52,24 +58,26 @@ function ProviderCard({
   return (
     <div
       className={cn(
-        "rounded-xl border bg-card px-4 py-3 space-y-3 transition-opacity",
+        "rounded-xl border border-border/60 bg-card p-4 transition-opacity",
         !enabled && "opacity-70",
       )}
     >
       <div className="flex items-center gap-3">
         <span
           className={cn(
-            "shrink-0 w-8 h-8 rounded-lg flex items-center justify-center",
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
             enabled
               ? "bg-primary/10 text-primary"
-              : "bg-secondary text-muted-foreground/60",
+              : "bg-secondary text-muted-foreground/80",
           )}
         >
           {icon}
         </span>
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-foreground">{title}</div>
-          <div className="text-[11.5px] text-muted-foreground/80 truncate">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13.5px] font-medium text-foreground">
+            {title}
+          </div>
+          <div className="truncate text-xs text-muted-foreground/80">
             {subtitle}
           </div>
         </div>
@@ -82,7 +90,37 @@ function ProviderCard({
             />
           ))}
       </div>
-      {enabled && children}
+      {enabled && children && (
+        <div className="mt-3 divide-y divide-border/50 border-t border-border/50 pt-1">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── One label + control row inside a provider card ────────────────
+
+function CardField({
+  label,
+  help,
+  children,
+}: {
+  label: string;
+  help?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] text-foreground">{label}</div>
+        {help && (
+          <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground/70">
+            {help}
+          </div>
+        )}
+      </div>
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }
@@ -104,8 +142,7 @@ function NumberField({
 }) {
   const [local, setLocal] = useState(String(value));
   return (
-    <label className="flex items-center gap-3">
-      <span className="flex-1 text-[12.5px] text-foreground">{label}</span>
+    <CardField label={label}>
       <input
         type="number"
         min={min}
@@ -117,9 +154,9 @@ function NumberField({
           setLocal(String(n));
           if (n !== value) onCommit(n);
         }}
-        className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[13px] text-foreground text-right outline-none focus:border-primary/40"
+        className={`${inputClass} w-20 text-right`}
       />
-    </label>
+    </CardField>
   );
 }
 
@@ -151,43 +188,35 @@ export function ImageGenCustom({ tool }: { tool: ToolInfo }) {
   const enabled = (p: ProviderCfg) => p?.enabled !== false;
 
   return (
-    <div className="space-y-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-        {t("brain.tools.imagegen.providers")}
-      </div>
-
-      {/* Ollama */}
-      <ProviderCard
-        icon={<Cpu className="w-4 h-4" />}
-        title="Ollama"
-        subtitle={t("brain.tools.imagegen.ollamaSubtitle")}
-        enabled={enabled(ollama)}
-        canToggle={true}
-        onToggle={(v) => patchProvider("ollama", { enabled: v })}
-      >
-        <div className="space-y-2 pt-1 border-t border-border/40">
-          <div>
-            <label className="flex items-center gap-3">
-              <span className="flex-1 text-[12.5px] text-foreground">
-                {t("brain.tools.imagegen.baseUrl")}
-              </span>
-              <input
-                type="text"
-                defaultValue={(ollama?.base_url as string) || ""}
-                key={String(ollama?.base_url)}
-                placeholder="http://localhost:11434"
-                onBlur={(e) =>
-                  patchProvider("ollama", {
-                    base_url: e.target.value.trim() || null,
-                  })
-                }
-                className="w-48 px-3 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40"
-              />
-            </label>
-            <p className="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
-              {t("brain.tools.imagegen.baseUrlHelp")}
-            </p>
-          </div>
+    <section>
+      <SectionHeader title={t("brain.tools.imagegen.providers")} />
+      <div className="space-y-3">
+        {/* Ollama */}
+        <ProviderCard
+          icon={<Cpu className="h-4 w-4" />}
+          title="Ollama"
+          subtitle={t("brain.tools.imagegen.ollamaSubtitle")}
+          enabled={enabled(ollama)}
+          canToggle={true}
+          onToggle={(v) => patchProvider("ollama", { enabled: v })}
+        >
+          <CardField
+            label={t("brain.tools.imagegen.baseUrl")}
+            help={t("brain.tools.imagegen.baseUrlHelp")}
+          >
+            <input
+              type="text"
+              defaultValue={(ollama?.base_url as string) || ""}
+              key={String(ollama?.base_url)}
+              placeholder="http://localhost:11434"
+              onBlur={(e) =>
+                patchProvider("ollama", {
+                  base_url: e.target.value.trim() || null,
+                })
+              }
+              className={`${inputClass} w-48`}
+            />
+          </CardField>
           <NumberField
             label={t("brain.tools.imagegen.timeout")}
             value={Number(ollama?.timeout_s ?? 600)}
@@ -195,23 +224,23 @@ export function ImageGenCustom({ tool }: { tool: ToolInfo }) {
             max={7200}
             onCommit={(v) => patchProvider("ollama", { timeout_s: v })}
           />
-        </div>
-      </ProviderCard>
+        </ProviderCard>
 
-      {/* ComfyUI — planned provider, not yet configurable */}
-      <ProviderCard
-        icon={<Workflow className="w-4 h-4" />}
-        title="ComfyUI"
-        subtitle={t("brain.tools.imagegen.comfyuiSubtitle")}
-        enabled={false}
-        canToggle={false}
-        onToggle={() => {}}
-        badge={
-          <span className="shrink-0 text-[10.5px] font-medium px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500">
-            {t("brain.tools.imagegen.comingSoon")}
-          </span>
-        }
-      />
-    </div>
+        {/* ComfyUI — planned provider, not yet configurable */}
+        <ProviderCard
+          icon={<Workflow className="h-4 w-4" />}
+          title="ComfyUI"
+          subtitle={t("brain.tools.imagegen.comfyuiSubtitle")}
+          enabled={false}
+          canToggle={false}
+          onToggle={() => {}}
+          badge={
+            <span className="shrink-0 rounded-md bg-warning/10 px-1.5 py-0.5 text-[10.5px] font-medium text-warning">
+              {t("brain.tools.imagegen.comingSoon")}
+            </span>
+          }
+        />
+      </div>
+    </section>
   );
 }

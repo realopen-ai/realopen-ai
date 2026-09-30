@@ -14,5 +14,5 @@ test("skill loading has a dedicated tool-call presentation", () => {
 
   assert.match(store, /\| "skill"/);
   assert.match(message, /skill:\s*\{[\s\S]*label: "Loaded skill"/);
-  assert.match(message, /runningLabel: "Loading skill\.\.\."/);
+  assert.match(message, /runningLabel: "Loading skill"/);
 });

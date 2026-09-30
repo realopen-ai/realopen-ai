@@ -1,20 +1,13 @@
 import { useState, useRef, useCallback } from "react";
-import {
-  Search,
-  X,
-  Loader2,
-  History,
-  MessageSquare,
-  ExternalLink,
-} from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Search, X, Loader2, History, ArrowUpRight } from "lucide-react";
 import { useT } from "@/store/settingsStore";
-import { cn } from "@/lib/utils";
 import {
   searchPastConversations,
   type PastConversationResult,
 } from "@/api/client";
 import { useUIStore } from "@/store/uiStore";
+import { EmptyState } from "@/components/ui/primitives";
+import { Button } from "@/components/ui/button";
 
 // ─── Relative time ──────────────────────────────────────────────
 
@@ -28,59 +21,99 @@ function relativeTime(timestamp: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-// ─── Result Card ─────────────────────────────────────────────────
+// ─── Excerpt with highlighted query matches ──────────────────────
 
-function ResultCard({
+function HighlightedExcerpt({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return <>{text}</>;
+
+  const parts: { value: string; match: boolean }[] = [];
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const idx = lowerText.indexOf(lowerNeedle, cursor);
+    if (idx === -1) {
+      parts.push({ value: text.slice(cursor), match: false });
+      break;
+    }
+    if (idx > cursor) {
+      parts.push({ value: text.slice(cursor, idx), match: false });
+    }
+    parts.push({ value: text.slice(idx, idx + needle.length), match: true });
+    cursor = idx + needle.length;
+  }
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.match ? (
+          <mark
+            key={i}
+            className="rounded-sm bg-primary/15 px-0.5 text-foreground"
+          >
+            {part.value}
+          </mark>
+        ) : (
+          <span key={i}>{part.value}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+// ─── Result row ──────────────────────────────────────────────────
+
+function ResultRow({
   result,
+  query,
   onOpen,
   t,
 }: {
   result: PastConversationResult;
+  query: string;
   onOpen: (conversationId: string) => void;
   t: (key: string) => string;
 }) {
-  const roleColor =
-    result.role === "user"
-      ? "text-primary"
-      : result.role === "assistant"
-        ? "text-emerald-500"
-        : "text-muted-foreground";
-
   return (
-    <div className="group rounded-xl border border-border bg-card p-3.5 transition-all hover:bg-accent/30">
-      <div className="flex items-start gap-2">
-        <MessageSquare className="w-3.5 h-3.5 text-muted-foreground/50 mt-0.5 shrink-0" />
-        <div className="flex-1 min-w-0">
-          {/* Header: conversation title + role + time + rank */}
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-[12px] font-medium text-foreground truncate max-w-40">
-              {result.conversation_title}
+    <article className="group flex items-start gap-3 rounded-lg py-3.5 pl-2 pr-1 transition-colors hover:bg-surface-hover">
+      <div className="min-w-0 flex-1">
+        {/* Title + metadata */}
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="truncate text-[13.5px] font-medium text-foreground">
+            {result.conversation_title}
+          </h3>
+          <p className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{result.role}</span>
+            <span aria-hidden="true" className="text-muted-foreground/70">
+              ·
             </span>
-            <span className={cn("text-[11px] font-medium", roleColor)}>
-              {result.role}
+            <span>{relativeTime(result.created_at)}</span>
+            <span aria-hidden="true" className="text-muted-foreground/70">
+              ·
             </span>
-            <span className="text-[11px] text-muted-foreground/50">
-              {relativeTime(result.created_at)}
+            <span className="tabular-nums">
+              {Math.round(result.rank * 100)}%
             </span>
-            <span className="text-[11px] text-muted-foreground/40">
-              rank {result.rank.toFixed(3)}
-            </span>
-          </div>
-          {/* Snippet */}
-          <p className="text-[12.5px] text-foreground/80 leading-relaxed line-clamp-3">
-            {result.content_snippet}
           </p>
-          {/* Open button */}
-          <button
-            onClick={() => onOpen(result.conversation_id)}
-            className="mt-2 flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
-          >
-            <ExternalLink className="w-3 h-3" />
-            {t("brain.history.open") || "Open conversation"}
-          </button>
         </div>
+        {/* Clamped excerpt */}
+        <p className="mt-1.5 line-clamp-3 wrap-break-word text-[13px] leading-relaxed text-muted-foreground">
+          <HighlightedExcerpt text={result.content_snippet} query={query} />
+        </p>
+        {/* Open conversation */}
+        <Button
+          variant="ghost"
+          size="xs"
+          className="mt-2 -ml-1.5"
+          onClick={() => onOpen(result.conversation_id)}
+        >
+          <ArrowUpRight />
+          {t("brain.history.open") || "Open conversation"}
+        </Button>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -139,7 +172,7 @@ export function HistoryTab({
   return (
     <div className="flex flex-col h-full">
       {/* Search bar */}
-      <div className="px-4 pt-4 pb-3 space-y-3">
+      <div className="space-y-3 pb-5">
         <div className="flex items-center gap-2">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
@@ -150,23 +183,24 @@ export function HistoryTab({
               placeholder={
                 t("brain.history.search") || "Search past conversations..."
               }
-              className="w-full pl-9 pr-9 py-2 rounded-xl border border-border bg-card text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+              className="h-9 w-full rounded-lg border border-border/60 bg-transparent pl-9 pr-8 text-[13px] text-foreground placeholder:text-muted-foreground/80 transition-colors focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
               autoFocus
             />
             {query && (
               <button
                 onClick={handleClear}
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+                aria-label={t("brain.history.search")}
+                className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/80 transition-colors hover:bg-surface-hover hover:text-foreground"
               >
-                <X className="w-3 h-3" />
+                <X className="h-3 w-3" />
               </button>
             )}
           </div>
         </div>
 
-        {/* Info banner */}
+        {/* Info hint — quiet helper text until the first search */}
         {!hasSearched && (
-          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-secondary/50 text-[12px] text-muted-foreground">
+          <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl text-[12px] text-muted-foreground">
             <History className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <span>
               {t("brain.history.info") ||
@@ -177,47 +211,46 @@ export function HistoryTab({
       </div>
 
       {/* Results */}
-      <ScrollArea className="flex-1 px-4">
-        <div className="space-y-2 pb-4">
-          {/* Searching state */}
-          {isSearching && (
-            <div className="flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-[12px]">Searching...</span>
-              </div>
+      <div className="divide-y divide-border/50">
+        {/* Searching state */}
+        {isSearching && (
+          <div className="flex items-center justify-center py-8">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-xs">Searching...</span>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Empty search results */}
-          {!isSearching && hasSearched && results.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Search className="w-8 h-8 text-muted-foreground/20 mb-3" />
-              <p className="text-[13px] text-muted-foreground/60">
-                {t("brain.history.empty") || "No matching conversations found."}
-              </p>
-            </div>
-          )}
+        {/* Empty search results */}
+        {!isSearching && hasSearched && results.length === 0 && (
+          <EmptyState
+            icon={<Search />}
+            title={
+              t("brain.history.empty") || "No matching conversations found."
+            }
+          />
+        )}
 
-          {/* Result cards */}
-          {!isSearching &&
-            results.map((r) => (
-              <ResultCard
-                key={r.message_id}
-                result={r}
-                onOpen={handleOpen}
-                t={t}
-              />
-            ))}
+        {/* Result rows */}
+        {!isSearching &&
+          results.map((r) => (
+            <ResultRow
+              key={r.message_id}
+              result={r}
+              query={query}
+              onOpen={handleOpen}
+              t={t}
+            />
+          ))}
+      </div>
 
-          {/* Result count */}
-          {!isSearching && results.length > 0 && (
-            <p className="text-center text-[11px] text-muted-foreground/50 pt-2">
-              {results.length} {results.length === 1 ? "result" : "results"}
-            </p>
-          )}
-        </div>
-      </ScrollArea>
+      {/* Result count */}
+      {!isSearching && results.length > 0 && (
+        <p className="pt-4 text-center text-xs text-muted-foreground/80">
+          {results.length} {results.length === 1 ? "result" : "results"}
+        </p>
+      )}
     </div>
   );
 }
