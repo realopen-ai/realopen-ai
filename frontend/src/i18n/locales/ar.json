@@ -15,6 +15,7 @@
   "sidebar.unarchiveChat": "إلغاء الأرشفة",
   "sidebar.delete": "حذف",
   "sidebar.confirmDelete": "تأكيد الحذف",
+  "sidebar.generating": "جارٍ إنشاء الرد",
   "sidebar.archived": "المؤرشفة",
   "sidebar.search": "البحث في المحادثات",
   "sidebar.searchConversations": "البحث في المحادثات",

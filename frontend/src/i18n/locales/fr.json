@@ -15,6 +15,7 @@
   "sidebar.unarchiveChat": "Désarchiver",
   "sidebar.delete": "Supprimer",
   "sidebar.confirmDelete": "Confirmer la suppression",
+  "sidebar.generating": "Génération de la réponse",
   "sidebar.archived": "Archivées",
   "sidebar.search": "Rechercher",
   "sidebar.searchConversations": "Rechercher des conversations",
