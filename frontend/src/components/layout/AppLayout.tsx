@@ -117,13 +117,22 @@ export function AppLayout() {
               minSize={35}
               className={panelTransitionClass}
             >
-              {showWorkspacePage ? (
-                <WorkspacePage />
-              ) : showBrainPage ? (
-                <BrainPage />
-              ) : (
+              <div className="relative h-full overflow-hidden">
+                {/* Keep ChatArea mounted while browsing application routes.
+                    It owns live text streams and the voice WebSocket, so
+                    replacing it here would terminate in-flight work. */}
                 <ChatArea />
-              )}
+                {showWorkspacePage && (
+                  <div className="absolute inset-0 z-30">
+                    <WorkspacePage />
+                  </div>
+                )}
+                {showBrainPage && (
+                  <div className="absolute inset-0 z-30">
+                    <BrainPage />
+                  </div>
+                )}
+              </div>
             </Panel>
 
             <PanelResizeHandle
@@ -156,45 +165,54 @@ export function AppLayout() {
         </div>
 
         {/* Mobile: tabbed views */}
-        <div className="flex md:hidden flex-1 flex-col min-h-0">
-          {showWorkspacePage ? (
-            <WorkspacePage />
-          ) : showBrainPage ? (
-            <BrainPage />
-          ) : (
-            <>
-              {mobileTab === "chat" && <ChatArea />}
-              {mobileTab === "files" && (
-                <div className="flex-1 flex flex-col bg-card">
-                  <div className="flex h-11 items-center border-b border-border/60 px-2">
-                    <MobileMenuButton />
-                    <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
-                      {t("panel.fileExplorer")}
-                    </h2>
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <FileExplorer />
-                  </div>
-                </div>
-              )}
-              {mobileTab === "terminal" && (
-                <div className="flex-1 flex flex-col bg-card">
-                  <div className="flex h-11 items-center border-b border-border/60 px-2">
-                    <MobileMenuButton />
-                    <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
-                      {t("panel.terminal")}
-                    </h2>
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <Suspense fallback={<TerminalLoader />}>
-                      <TerminalPane />
-                    </Suspense>
-                  </div>
-                </div>
-              )}
-              <MobileTabBar />
-            </>
+        <div className="relative flex md:hidden flex-1 flex-col min-h-0 overflow-hidden">
+          {/* `hidden` preserves the mounted chat runtime when the user opens
+              a mobile utility tab. Routed pages are layered above it so an
+              active voice call remains controllable. */}
+          <div className={mobileTab === "chat" ? "h-full" : "hidden"}>
+            <ChatArea />
+          </div>
+
+          {!showWorkspacePage && !showBrainPage && mobileTab === "files" && (
+            <div className="flex-1 flex flex-col bg-card">
+              <div className="flex h-11 items-center border-b border-border/60 px-2">
+                <MobileMenuButton />
+                <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
+                  {t("panel.fileExplorer")}
+                </h2>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <FileExplorer />
+              </div>
+            </div>
           )}
+          {!showWorkspacePage && !showBrainPage && mobileTab === "terminal" && (
+            <div className="flex-1 flex flex-col bg-card">
+              <div className="flex h-11 items-center border-b border-border/60 px-2">
+                <MobileMenuButton />
+                <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
+                  {t("panel.terminal")}
+                </h2>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <Suspense fallback={<TerminalLoader />}>
+                  <TerminalPane />
+                </Suspense>
+              </div>
+            </div>
+          )}
+
+          {showWorkspacePage && (
+            <div className="absolute inset-0 z-30">
+              <WorkspacePage />
+            </div>
+          )}
+          {showBrainPage && (
+            <div className="absolute inset-0 z-30">
+              <BrainPage />
+            </div>
+          )}
+          {!showWorkspacePage && !showBrainPage && <MobileTabBar />}
         </div>
       </div>
     </div>

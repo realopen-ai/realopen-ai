@@ -441,23 +441,12 @@ export function useVoiceSession(
     clientRef.current?.stop();
   }, []);
 
-  // ── Conversation switch / unmount cleanup ───────────────────────
+  // ── Unmount cleanup ──────────────────────────────────────────────
 
-  // The WebSocket is bound to one conversation. If the user opens a
-  // different conversation while voice is active, stop the session (the
-  // user can re-toggle — reconnection is deliberately NOT automatic).
-  useEffect(() => {
-    const client = clientRef.current;
-    if (
-      client &&
-      options.conversationId &&
-      client.activeConversationId &&
-      client.activeConversationId !== options.conversationId
-    ) {
-      log("conversation changed — stopping voice session");
-      client.stop();
-    }
-  }, [options.conversationId]);
+  // A live session remains bound to the conversation where it started.
+  // Navigating to another conversation or application page must not stop
+  // capture, generation, or playback; new voice events continue updating
+  // that original conversation until the user explicitly ends the call.
 
   // Unmount: destroy the session entirely.
   useEffect(() => {
@@ -467,5 +456,11 @@ export function useVoiceSession(
     };
   }, []);
 
-  return { toggleVoice, interruptSpeaking, stopVoice, isVoiceActive, voiceState };
+  return {
+    toggleVoice,
+    interruptSpeaking,
+    stopVoice,
+    isVoiceActive,
+    voiceState,
+  };
 }
