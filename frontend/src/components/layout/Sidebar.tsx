@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  Plus,
   Search,
   MessageSquare,
   Archive,
@@ -13,10 +12,17 @@ import {
   Settings,
   Brain,
   FolderOpen,
+  SquarePen,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { SettingsModal } from "@/components/settings/SettingsModal";
 import { ConversationItem } from "@/components/layout/ConversationItem";
 import { SearchConversationsModal } from "@/components/layout/SearchConversationsModal";
@@ -24,6 +30,103 @@ import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
+
+/* ── Shared row primitives (sidebar-local) ─────────────────────── */
+
+/**
+ * Expanded sidebar navigation row: 36px tall, quiet surfaces,
+ * restrained selected state (no pills, no bordered boxes).
+ */
+function NavRow({
+  icon: Icon,
+  label,
+  onClick,
+  active = false,
+  prominent = false,
+  className,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick?: () => void;
+  active?: boolean;
+  /** Slightly stronger text color for the primary action (New chat). */
+  prominent?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13.5px] transition-colors",
+        active
+          ? "bg-primary/10 font-medium text-primary"
+          : prominent
+            ? "text-foreground hover:bg-surface-hover"
+            : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+        className,
+      )}
+    >
+      <Icon className="size-4 shrink-0" />
+      <span className="min-w-0 truncate text-left">{label}</span>
+    </button>
+  );
+}
+
+/**
+ * Collapsed rail button: centered icon, same icon size as the expanded
+ * sidebar, tooltip, and a quiet selected state with a 2px primary
+ * indicator bar on the leading edge.
+ */
+function RailButton({
+  icon: Icon,
+  label,
+  onClick,
+  active = false,
+  activeVariant = "surface",
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick?: () => void;
+  active?: boolean;
+  /** Page nav uses the primary tint; list rows use the selected surface. */
+  activeVariant?: "surface" | "primary";
+}) {
+  return (
+    <Tooltip delayDuration={300}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className={cn(
+            "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+            active
+              ? activeVariant === "primary"
+                ? "bg-primary/10 text-primary"
+                : "bg-surface-selected text-foreground"
+              : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+          )}
+        >
+          {active && (
+            <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
+          )}
+          <Icon className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Hairline separator — spacing instead of bordered boxes. */
+function RailSeparator() {
+  return <div className="my-1 h-px w-6 shrink-0 bg-border/60" />;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────── */
 
 export function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
@@ -102,6 +205,21 @@ export function Sidebar() {
     }
   };
 
+  const handleBrainClick = () => {
+    setShowBrainPage(!showBrainPage);
+    setSidebarMobileOpen(false);
+  };
+
+  const handleWorkspaceClick = () => {
+    setShowWorkspacePage(!showWorkspacePage);
+    setSidebarMobileOpen(false);
+  };
+
+  const handleSettingsClick = () => {
+    setSettingsOpen(true);
+    setSidebarMobileOpen(false);
+  };
+
   const handleOpenSearch = () => {
     setSearchOpen(true);
     // Close the mobile drawer so the modal isn't trapped underneath it
@@ -116,304 +234,271 @@ export function Sidebar() {
     setSearchOpen(false);
   };
 
-  const sidebarContent = (
-    <div className="flex flex-col h-full bg-sidebar-bg">
-      {/* Header */}
-      {/* sidebar-chats-row: inside the mobile drawer, extra right padding keeps
-          the search icon clear of the Sheet's built-in close (X) button */}
-      <div className="px-3 pt-4 pb-2">
-        {!sidebarCollapsed ? (
-          <div className="sidebar-chats-row flex items-center justify-between">
-            <span className="text-[15px] font-semibold text-foreground">
+  /* The sidebar body is rendered from a single builder so the desktop
+     rail and the mobile drawer stay in sync. The mobile drawer always
+     renders the expanded layout (it has plenty of width). */
+  const sidebarContent = (collapsed: boolean) =>
+    collapsed ? (
+      // ── Collapsed icon rail ──────────────────────────────────────
+      <div className="flex h-full flex-col items-center bg-sidebar-bg">
+        {/* Header: search */}
+        <div className="flex h-10 w-full shrink-0 items-center justify-center pb-1 pt-3">
+          <RailButton
+            icon={Search}
+            label={t("sidebar.search")}
+            onClick={handleOpenSearch}
+          />
+        </div>
+
+        {/* Primary navigation */}
+        <nav
+          className="flex shrink-0 flex-col items-center gap-0.5 pb-1.5"
+          aria-label={t("sidebar.chats")}
+        >
+          <RailButton
+            icon={SquarePen}
+            label={t("sidebar.newChat")}
+            onClick={handleNewChat}
+          />
+          <RailButton
+            icon={Brain}
+            label={t("brain.title")}
+            onClick={handleBrainClick}
+            active={showBrainPage}
+            activeVariant="primary"
+          />
+          <RailButton
+            icon={FolderOpen}
+            label={t("workspace.title")}
+            onClick={handleWorkspaceClick}
+            active={showWorkspacePage}
+            activeVariant="primary"
+          />
+        </nav>
+
+        <RailSeparator />
+
+        {/* Conversation list */}
+        <ScrollArea className="min-h-0 w-full flex-1">
+          <div className="flex flex-col items-center gap-0.5 py-1">
+            {activeConversations.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conv={conv}
+                active={conv.id === urlConvId}
+                collapsed
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+              />
+            ))}
+          </div>
+        </ScrollArea>
+
+        {/* Footer: settings · profile · expand */}
+        <div className="mt-1 flex w-full shrink-0 flex-col items-center gap-0.5 border-t border-border/60 px-1 pb-2 pt-1.5">
+          <RailButton
+            icon={Settings}
+            label={t("sidebar.settings")}
+            onClick={handleSettingsClick}
+          />
+
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <div className="flex h-9 w-9 items-center justify-center">
+                <span className="size-1.5 rounded-full bg-success" />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side="right"
+              sideOffset={8}
+              className="max-w-52 truncate"
+            >
+              {profileLabel || profileName || "—"}
+            </TooltipContent>
+          </Tooltip>
+
+          {/* Expand toggle (desktop only) */}
+          <div className="hidden md:block">
+            <RailButton
+              icon={PanelLeftOpen}
+              label={t("sidebar.collapse")}
+              onClick={toggleSidebar}
+            />
+          </div>
+        </div>
+      </div>
+    ) : (
+      // ── Expanded sidebar ─────────────────────────────────────────
+      <div className="flex h-full flex-col bg-sidebar-bg">
+        {/* Header */}
+        {/* sidebar-chats-row: inside the mobile drawer, extra right padding keeps
+            the search icon clear of the Sheet's built-in close (X) button */}
+        <div className="shrink-0 px-2 pb-1 pt-3">
+          <div className="sidebar-chats-row flex h-10 items-center justify-between pl-1.5 pr-1">
+            <span className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">
               {t("sidebar.chats")}
             </span>
             <Button
               onClick={handleOpenSearch}
               variant="ghost"
               size="icon"
-              title={t("sidebar.search")}
               aria-label={t("sidebar.search")}
-              className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
+              className="h-7 w-7 rounded-lg"
             >
-              <Search className="w-4 h-4" />
+              <Search className="size-4" />
             </Button>
           </div>
-        ) : (
-          <div className="flex justify-center">
-            <Button
-              onClick={handleOpenSearch}
-              variant="ghost"
-              size="icon"
-              title={t("sidebar.search")}
-              aria-label={t("sidebar.search")}
-              className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
-            >
-              <Search className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-      </div>
+        </div>
 
-      {/* New Chat Button — full width when expanded, icon when collapsed */}
-      {!sidebarCollapsed ? (
-        <div className="px-2 pb-2">
-          <button
+        {/* Primary navigation */}
+        <nav
+          className="shrink-0 space-y-0.5 px-2 pb-1.5"
+          aria-label={t("sidebar.chats")}
+        >
+          <NavRow
+            icon={SquarePen}
+            label={t("sidebar.newChat")}
             onClick={handleNewChat}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] text-foreground bg-sidebar-accent hover:bg-accent transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            {t("sidebar.newChat")}
-          </button>
-        </div>
-      ) : (
-        <div className="flex justify-center pb-2">
-          <Button
-            onClick={handleNewChat}
-            variant="ghost"
-            size="icon"
-            title={t("sidebar.newChat")}
-            aria-label={t("sidebar.newChat")}
-            className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-sidebar-accent rounded-lg"
-          >
-            <Plus className="w-4 h-4" />
-          </Button>
-        </div>
-      )}
+            prominent
+          />
+          <NavRow
+            icon={Brain}
+            label={t("brain.title")}
+            onClick={handleBrainClick}
+            active={showBrainPage}
+          />
+          <NavRow
+            icon={FolderOpen}
+            label={t("workspace.title")}
+            onClick={handleWorkspaceClick}
+            active={showWorkspacePage}
+          />
+        </nav>
 
-      {/* Brain Button */}
-      {!sidebarCollapsed ? (
-        <div className="px-2 pb-2">
-          <button
-            onClick={() => {
-              setShowBrainPage(!showBrainPage);
-              setSidebarMobileOpen(false);
-            }}
-            className={cn(
-              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] transition-colors",
-              showBrainPage
-                ? "text-primary bg-primary/10 font-medium"
-                : "text-muted-foreground hover:text-foreground bg-sidebar-accent/60 hover:bg-accent",
+        {/* Hairline between navigation and history */}
+        <div className="mx-2 my-1 h-px shrink-0 bg-border/60" />
+
+        {/* Conversation list */}
+        <ScrollArea className="min-h-0 flex-1 px-2">
+          <div className="space-y-0.5 py-1 pb-2">
+            {activeConversations.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <MessageSquare className="mb-2 size-5 text-muted-foreground/70" />
+                <p className="text-[12.5px] text-muted-foreground/70">
+                  {t("sidebar.noConversations")}
+                </p>
+                <p className="mt-0.5 text-[11.5px] text-muted-foreground/70">
+                  {t("sidebar.startNew")}
+                </p>
+              </div>
             )}
-          >
-            <Brain className="w-4 h-4" />
-            {t("brain.title")}
-          </button>
-        </div>
-      ) : (
-        <div className="flex justify-center pb-2">
-          <Button
-            onClick={() => {
-              setShowBrainPage(!showBrainPage);
-              setSidebarMobileOpen(false);
-            }}
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "h-7 w-7 rounded-lg",
-              showBrainPage
-                ? "text-primary bg-primary/10"
-                : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent",
-            )}
-          >
-            <Brain className="w-4 h-4" />
-          </Button>
-        </div>
-      )}
+            {activeConversations.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conv={conv}
+                active={conv.id === urlConvId}
+                collapsed={false}
+                onSelect={handleSelect}
+                onDelete={handleDelete}
+              />
+            ))}
 
-      {/* Workspace Button */}
-      {!sidebarCollapsed ? (
-        <div className="px-2 pb-2">
-          <button
-            onClick={() => {
-              setShowWorkspacePage(!showWorkspacePage);
-              setSidebarMobileOpen(false);
-            }}
-            className={cn(
-              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] transition-colors",
-              showWorkspacePage
-                ? "text-primary bg-primary/10 font-medium"
-                : "text-muted-foreground hover:text-foreground bg-sidebar-accent/60 hover:bg-accent",
-            )}
-          >
-            <FolderOpen className="w-4 h-4" />
-            Workspace
-          </button>
-        </div>
-      ) : (
-        <div className="flex justify-center pb-2">
-          <Button
-            onClick={() => {
-              setShowWorkspacePage(!showWorkspacePage);
-              setSidebarMobileOpen(false);
-            }}
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "h-7 w-7 rounded-lg",
-              showWorkspacePage
-                ? "text-primary bg-primary/10"
-                : "text-muted-foreground hover:text-foreground hover:bg-sidebar-accent",
-            )}
-          >
-            <FolderOpen className="w-4 h-4" />
-          </Button>
-        </div>
-      )}
-
-      <div className="border-t border-sidebar-border opacity-80 pt-2 my-1 mx-5" />
-
-      {/* Conversation List */}
-      <ScrollArea className="flex-1 px-2">
-        <div className="space-y-0.5 pb-2">
-          {activeConversations.length === 0 && !sidebarCollapsed && (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <MessageSquare className="w-6 h-6 text-muted-foreground/40 mb-2" />
-              <p className="text-[12px] text-muted-foreground/60">
-                {t("sidebar.noConversations")}
-              </p>
-              <p className="text-[11px] text-muted-foreground/40">
-                {t("sidebar.startNew")}
-              </p>
-            </div>
-          )}
-          {activeConversations.map((conv) => (
-            <ConversationItem
-              key={conv.id}
-              conv={conv}
-              active={conv.id === urlConvId}
-              collapsed={sidebarCollapsed}
-              onSelect={handleSelect}
-              onDelete={handleDelete}
-            />
-          ))}
-
-          {/* Archived conversations (collapsible) */}
-          {!sidebarCollapsed && archivedConversations.length > 0 && (
-            <div className="pt-2">
-              <button
-                onClick={() => setArchivedOpen((o) => !o)}
-                aria-expanded={archivedOpen}
-                className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70 hover:text-foreground hover:bg-sidebar-accent/60 transition-colors"
-              >
-                {archivedOpen ? (
-                  <ChevronDown className="w-3.5 h-3.5 shrink-0" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+            {/* Archived conversations (collapsible) */}
+            {archivedConversations.length > 0 && (
+              <div className="pt-2">
+                <button
+                  onClick={() => setArchivedOpen((o) => !o)}
+                  aria-expanded={archivedOpen}
+                  className="flex h-7 w-full items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 transition-colors hover:bg-surface-hover hover:text-foreground"
+                >
+                  {archivedOpen ? (
+                    <ChevronDown className="size-3.5 shrink-0" />
+                  ) : (
+                    <ChevronRight className="size-3.5 shrink-0" />
+                  )}
+                  <Archive className="size-3.5 shrink-0" />
+                  <span className="truncate">
+                    {t("sidebar.archived")} ({archivedConversations.length})
+                  </span>
+                </button>
+                {archivedOpen && (
+                  <div className="mt-0.5 space-y-0.5">
+                    {archivedConversations.map((conv) => (
+                      <ConversationItem
+                        key={conv.id}
+                        conv={conv}
+                        active={conv.id === urlConvId}
+                        collapsed={false}
+                        onSelect={handleSelect}
+                        onDelete={handleDelete}
+                      />
+                    ))}
+                  </div>
                 )}
-                <Archive className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">
-                  {t("sidebar.archived")} ({archivedConversations.length})
-                </span>
-              </button>
-              {archivedOpen && (
-                <div className="mt-0.5 space-y-0.5">
-                  {archivedConversations.map((conv) => (
-                    <ConversationItem
-                      key={conv.id}
-                      conv={conv}
-                      active={conv.id === urlConvId}
-                      collapsed={sidebarCollapsed}
-                      onSelect={handleSelect}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-
-      {/* Footer - Hardware Profile + Settings */}
-      <div className="border-t border-sidebar-border">
-        {/* Settings Button */}
-        <div className="px-2 py-1.5">
-          <button
-            onClick={() => {
-              setSettingsOpen(true);
-              setSidebarMobileOpen(false);
-            }}
-            className={cn(
-              "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-[13px] text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors",
-              sidebarCollapsed && "justify-center px-0",
+              </div>
             )}
-          >
-            <Settings className="w-4 h-4 shrink-0" />
-            {!sidebarCollapsed && <span>{t("sidebar.settings")}</span>}
-          </button>
-        </div>
+          </div>
+        </ScrollArea>
 
-        {/* Hardware Profile */}
-        {!sidebarCollapsed && (
-          <div className="px-3 py-2.5 border-t border-sidebar-border">
+        {/* Footer: settings · hardware profile · collapse */}
+        <div className="mt-1 shrink-0 border-t border-border/60 px-2 pb-2 pt-1.5">
+          <NavRow
+            icon={Settings}
+            label={t("sidebar.settings")}
+            onClick={handleSettingsClick}
+          />
+
+          {/* Hardware profile */}
+          <div className="px-2.5 pb-1 pt-2">
             <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-[13px] text-foreground font-medium">
+              <span className="size-1.5 shrink-0 rounded-full bg-success" />
+              <span className="min-w-0 truncate text-[12.5px] font-medium text-foreground">
                 {profileLabel || profileName || "—"}
               </span>
             </div>
-            <p className="text-[11px] text-muted-foreground mt-0.5 ml-4">
+            <p className="mt-0.5 pl-3.5 text-[11px] text-muted-foreground">
               {t("sidebar.hardwareProfile")}
             </p>
-            <p className="text-[10px] text-muted-foreground/50 mt-1 ml-4">
+            <p className="pl-3.5 text-[10.5px] text-muted-foreground/80">
               {t("sidebar.offlinePrivate")}
             </p>
           </div>
-        )}
-        {sidebarCollapsed && (
-          <div className="flex justify-center py-2.5 border-t border-sidebar-border">
-            <div
-              className="w-2 h-2 rounded-full bg-emerald-500"
-              title={profileLabel || profileName}
-            />
-          </div>
-        )}
 
-        {/* Collapse Toggle (desktop only) */}
-        <div className="hidden md:block px-2 py-1.5 border-t border-sidebar-border">
-          <Button
-            onClick={toggleSidebar}
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "w-full text-muted-foreground hover:text-foreground hover:bg-transparent",
-              !sidebarCollapsed ? "justify-start gap-2" : "justify-center",
-            )}
-          >
-            {sidebarCollapsed ? (
-              <PanelLeftOpen className="w-4 h-4" />
-            ) : (
-              <>
-                <PanelLeftClose className="w-4 h-4" />
-                <span className="text-[12px]">{t("sidebar.collapse")}</span>
-              </>
-            )}
-          </Button>
+          {/* Collapse toggle (desktop only) */}
+          <div className="hidden md:block">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+            >
+              <PanelLeftClose className="size-4 shrink-0" />
+              <span>{t("sidebar.collapse")}</span>
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
 
   return (
     <>
-      {/* Desktop: Persistent */}
+      {/* Desktop: persistent rail */}
       <aside
         className={cn(
-          "hidden md:flex flex-col border-r border-sidebar-border transition-[width] duration-100 ease-in-out",
-          sidebarCollapsed ? "w-13" : "w-60",
+          "hidden md:flex flex-col border-r border-sidebar-border transition-[width] duration-200 ease-out",
+          sidebarCollapsed ? "w-13" : "w-65",
         )}
       >
-        {sidebarContent}
+        {sidebarContent(sidebarCollapsed)}
       </aside>
 
-      {/* Mobile: Drawer */}
+      {/* Mobile: drawer (always the expanded layout) */}
       <Sheet open={sidebarMobileOpen} onOpenChange={setSidebarMobileOpen}>
         <SheetContent
           side="left"
           className="sidebar-mobile-sheet w-70 p-0 border-sidebar-border bg-sidebar-bg"
         >
           <SheetTitle className="sr-only">Navigation</SheetTitle>
-          {sidebarContent}
+          {sidebarContent(false)}
         </SheetContent>
       </Sheet>
 
@@ -439,10 +524,11 @@ export function MobileMenuButton() {
     <Button
       variant="ghost"
       size="icon"
+      aria-label="Open menu"
       className="md:hidden text-muted-foreground hover:text-foreground"
       onClick={() => setSidebarMobileOpen(true)}
     >
-      <Menu className="w-5 h-5" />
+      <Menu className="size-5" />
     </Button>
   );
 }

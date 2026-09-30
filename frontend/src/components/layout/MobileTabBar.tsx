@@ -15,22 +15,23 @@ export function MobileTabBar() {
   ];
 
   return (
-    <div className="flex items-center justify-around border-t border-border/50 bg-background px-2 py-1">
+    <nav className="flex items-stretch border-t border-border/60 bg-background">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           onClick={() => setMobileTab(tab.id)}
+          aria-current={mobileTab === tab.id}
           className={cn(
-            "mobile-tab relative flex flex-col items-center gap-0.5 px-5 py-1.5 rounded-lg transition-colors",
+            "mobile-tab relative flex flex-1 flex-col items-center gap-0.5 py-1.5 transition-colors",
             mobileTab === tab.id
               ? "text-foreground active"
-              : "text-muted-foreground/50 hover:text-muted-foreground",
+              : "text-muted-foreground/80 hover:text-muted-foreground",
           )}
         >
-          <tab.icon className="w-4.5 h-4.5" />
-          <span className="text-[10px] font-medium">{tab.label}</span>
+          <tab.icon className="size-4.5" />
+          <span className="text-[11px] font-medium">{tab.label}</span>
         </button>
       ))}
-    </div>
+    </nav>
   );
 }

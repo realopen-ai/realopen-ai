@@ -26,7 +26,7 @@ const TerminalPane = lazy(() =>
 function TerminalLoader() {
   return (
     <div className="flex items-center justify-center h-full bg-terminal-bg">
-      <div className="flex items-center gap-2 text-muted-foreground/50">
+      <div className="flex items-center gap-2 text-muted-foreground/70">
         <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         <span className="text-[12px]">Loading terminal...</span>
       </div>
@@ -124,7 +124,7 @@ export function AppLayout() {
             </Panel>
 
             <PanelResizeHandle
-              className="w-px bg-border hover:bg-primary active:bg-primary transition-colors"
+              className="w-px bg-border/50 transition-colors hover:bg-primary/50 active:bg-primary/70"
               onDragging={(dragging) => setIsResizing(dragging)}
             />
 
@@ -146,7 +146,7 @@ export function AppLayout() {
           </PanelGroup>
 
           {!rightPanelOpen && (
-            <div className="shrink-0 border-l border-border/50 flex items-start pt-2.5 px-1">
+            <div className="flex shrink-0 items-start justify-center pt-2 pr-1 pl-0.5">
               <RightPanelToggle />
             </div>
           )}
@@ -163,9 +163,9 @@ export function AppLayout() {
               {mobileTab === "chat" && <ChatArea />}
               {mobileTab === "files" && (
                 <div className="flex-1 flex flex-col bg-card">
-                  <div className="flex items-center px-3 py-2.5 border-b border-border/50">
+                  <div className="flex h-11 items-center border-b border-border/60 px-2">
                     <MobileMenuButton />
-                    <h2 className="text-[14px] font-medium text-foreground ml-2">
+                    <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
                       {t("panel.fileExplorer")}
                     </h2>
                   </div>
@@ -176,9 +176,9 @@ export function AppLayout() {
               )}
               {mobileTab === "terminal" && (
                 <div className="flex-1 flex flex-col bg-card">
-                  <div className="flex items-center px-3 py-2.5 border-b border-border/50">
+                  <div className="flex h-11 items-center border-b border-border/60 px-2">
                     <MobileMenuButton />
-                    <h2 className="text-[14px] font-medium text-foreground ml-2">
+                    <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
                       {t("panel.terminal")}
                     </h2>
                   </div>
