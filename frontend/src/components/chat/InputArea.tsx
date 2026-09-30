@@ -4,6 +4,8 @@ import {
   Paperclip,
   Globe,
   ChevronDown,
+  Check,
+  Cpu,
   Slash,
   Sparkles,
   Brain,
@@ -76,8 +78,8 @@ function SlashCommandMenu({
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Slash className="w-3.5 h-3.5" />
             <span className="text-[12px] font-medium">{t("input.slash")}</span>
-            <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground/50">
-              <kbd className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-secondary border border-border/50 text-[9px] font-mono leading-none">
+            <span className="ml-auto flex items-center gap-1 text-[11px] text-muted-foreground/70">
+              <kbd className="inline-flex items-center justify-center px-1.5 py-0.5 rounded bg-secondary border border-border/50 text-[10.5px] font-mono leading-none">
                 ↹
               </kbd>
               <span>autocomplete</span>
@@ -156,11 +158,11 @@ function AttachmentPreview({
           className="w-8 h-8 rounded object-cover shrink-0"
         />
       ) : (
-        <div className="w-8 h-8 rounded bg-secondary flex items-center justify-center shrink-0">
+        <div className="w-8 h-8 rounded bg-secondary flex items-center justify-center shrink-0 text-muted-foreground">
           {isImage ? (
-            <ImageIcon className="w-4 h-4 text-blue-400" />
+            <ImageIcon className="w-4 h-4" />
           ) : (
-            <FileText className="w-4 h-4 text-amber-400" />
+            <FileText className="w-4 h-4" />
           )}
         </div>
       )}
@@ -168,7 +170,7 @@ function AttachmentPreview({
         <p className="text-[11px] text-foreground truncate">
           {attachment.file.name}
         </p>
-        <p className="text-[10px] text-muted-foreground/60">
+        <p className="text-[11px] text-muted-foreground/80">
           {(attachment.file.size / 1024).toFixed(0)} KB
         </p>
       </div>
@@ -428,14 +430,20 @@ export function InputArea({
   };
 
   const getSelectedModelLabel = () => {
+    let desc: string | undefined;
     if (selectedModel === "default") {
       const m = models.find((m) => m.role === "default");
-      return m ? m.description : "Default";
+      desc = m?.description;
+    } else {
+      const m = models.find(
+        (m) => m.id === selectedModel || m.role === selectedModel,
+      );
+      desc = m?.description;
     }
-    const m = models.find(
-      (m) => m.id === selectedModel || m.role === selectedModel,
-    );
-    return m ? m.description : selectedModel;
+    // Concise collapsed label — the name only (e.g. "Qwen3.5 4B MLX").
+    // Full description / id / size live inside the dropdown.
+    if (desc) return desc.split("—")[0].split("(")[0].trim();
+    return selectedModel === "default" ? "Default" : selectedModel;
   };
 
   const modelGroups = models.reduce<Record<string, typeof models>>((acc, m) => {
@@ -446,11 +454,10 @@ export function InputArea({
   }, {});
 
   const hasImages = attachments.some((a) => a.type === "image");
-  const hasDocuments = attachments.some((a) => a.type === "document");
 
   return (
-    <div className="px-4 pb-4 pt-2">
-      <div className="max-w-3xl mx-auto relative">
+    <div className="px-4 pb-4 pt-2 sm:px-6">
+      <div className="max-w-210 mx-auto relative">
         {/* Slash Command Menu */}
         {showSlashMenu && filteredCommands.length > 0 && (
           <SlashCommandMenu
@@ -460,30 +467,11 @@ export function InputArea({
           />
         )}
 
-        {voiceState === "inactive" && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                size="icon"
-                onClick={onStartVoice}
-                disabled={voiceSetupDisabled}
-                aria-label={voiceDisabledReason ?? t("voice.call.start")}
-                className="absolute -top-14 right-0 z-10 h-11 w-11 rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/20 transition-transform hover:scale-105 hover:bg-primary/90 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <PhoneCall className="h-4.5 w-4.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="left">
-              {voiceDisabledReason ?? t("voice.call.start")}
-            </TooltipContent>
-          </Tooltip>
-        )}
-
-        {/* Input Container */}
-        <div className="input-glow rounded-2xl border border-border bg-card transition-all">
+        {/* ── Composer — one cohesive floating input surface ── */}
+        <div className="input-glow rounded-xl border border-border/70 bg-card shadow-[0_8px_30px_var(--color-shadow-soft)] transition-all">
           {/* Attachment Previews */}
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-3.5 pt-2.5">
+            <div className="flex flex-wrap gap-1.5 px-3.5 pt-3">
               {attachments.map((att, i) => (
                 <AttachmentPreview
                   key={`${att.file.name}-${i}`}
@@ -494,7 +482,26 @@ export function InputArea({
             </div>
           )}
 
-          <div className="flex items-end gap-1.5 px-3.5 py-2.5">
+          {/* Textarea — comfortable padding, autosizing */}
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              hasImages
+                ? "Describe what you see in the image..."
+                : t("input.placeholder")
+            }
+            className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none px-4 pt-3.5 pb-1.5 min-h-13 max-h-45 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ fontSize: "var(--app-font-size)" }}
+            rows={1}
+            disabled={isStreaming}
+            aria-label={t("input.placeholder")}
+          />
+
+          {/* Control row — inside the composer surface, no mini-borders */}
+          <div className="flex items-center gap-1 px-2 pb-2.5 pt-1">
             {/* Hidden file inputs */}
             <input
               ref={imageInputRef}
@@ -516,45 +523,133 @@ export function InputArea({
             {/* Attach button (opens image picker on click, document on right-click) */}
             <Button
               variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground/50 hover:text-muted-foreground shrink-0"
+              size="icon-sm"
+              className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
               disabled={isStreaming}
               onClick={() => imageInputRef.current?.click()}
               onContextMenu={(e) => {
                 e.preventDefault();
                 docInputRef.current?.click();
               }}
+              aria-label="Attach image (right-click for documents)"
               title="Attach image (right-click for documents)"
             >
-              <Paperclip className="w-4.5 h-4.5" />
+              <Paperclip className="h-4 w-4" />
             </Button>
 
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={
-                hasImages
-                  ? "Describe what you see in the image..."
-                  : t("input.placeholder")
-              }
-              className="flex-1 resize-none bg-transparent text-foreground placeholder:text-muted-foreground/50 focus:outline-none min-h-6 max-h-45 py-1 leading-relaxed"
-              rows={1}
-              disabled={isStreaming}
-            />
+            {/* Model selector — concise name + chevron, details in dropdown */}
+            <div className="relative min-w-0 shrink" ref={menuRef}>
+              <button
+                onClick={() => setShowModelMenu(!showModelMenu)}
+                className="flex items-center gap-1.5 h-7 rounded-md px-2 text-[12px] text-muted-foreground hover:text-foreground hover:bg-surface-hover/60 transition-colors max-w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:opacity-50 disabled:pointer-events-none"
+                disabled={isStreaming}
+                aria-label="Select model"
+                aria-expanded={showModelMenu}
+              >
+                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-[5px] bg-primary/10 text-primary shrink-0">
+                  <Cpu className="h-2.5 w-2.5" />
+                </span>
+                <span className="truncate">{getSelectedModelLabel()}</span>
+                {hasImages && (
+                  <span className="text-[11px] px-1.5 py-0.5 rounded bg-primary/10 text-primary shrink-0">
+                    + vision
+                  </span>
+                )}
+                <ChevronDown className="w-3 h-3 shrink-0" />
+              </button>
+              {showModelMenu && (
+                <div className="absolute bottom-full mb-2 left-0 w-64 rounded-xl border border-border/60 bg-popover shadow-2xl z-50 max-h-70 overflow-y-auto py-1">
+                  {Object.entries(modelGroups).map(([type, groupModels]) => (
+                    <div key={type}>
+                      <div className="px-3 pt-1.5 pb-1 text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-wider">
+                        {type}
+                      </div>
+                      {groupModels.map((m) => {
+                        const isSelected = selectedModel === (m.role || m.id);
+                        // Concise name (text before the "—" descriptor) as the
+                        // primary line — full descriptor would truncate anyway.
+                        const name = (m.description ?? m.id)
+                          .split("—")[0]
+                          .trim();
+                        return (
+                          <button
+                            key={m.id + m.role}
+                            onClick={() => {
+                              setSelectedModel(m.role || m.id);
+                              setShowModelMenu(false);
+                            }}
+                            className={cn(
+                              "w-full text-left px-3 py-1.5 transition-colors",
+                              isSelected
+                                ? "bg-primary/10"
+                                : "hover:bg-surface-hover/60",
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "flex items-center gap-1.5 text-[12.5px]",
+                                isSelected
+                                  ? "font-medium text-foreground"
+                                  : "text-foreground/90",
+                              )}
+                            >
+                              <Check
+                                className={cn(
+                                  "w-3 h-3 shrink-0 text-primary",
+                                  isSelected ? "opacity-100" : "opacity-0",
+                                )}
+                                aria-hidden="true"
+                              />
+                              <span className="truncate">{name}</span>
+                            </div>
+                            <div className="text-[10.5px] text-muted-foreground/70 truncate pl-4.5">
+                              {m.id} · {m.size}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-            {/* Web search toggle indicator */}
+            <span className="flex-1" />
+
+            {/* Web search indicator — available automatically when needed */}
             <Button
               variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground/50 hover:text-muted-foreground shrink-0"
+              size="icon-sm"
+              className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
               disabled={isStreaming}
+              aria-label="Web search is available automatically when needed"
               title="Web search is available automatically when needed"
             >
-              <Globe className="w-4.5 h-4.5" />
+              <Globe className="h-4 w-4" />
             </Button>
 
+            {/* Voice — starts a voice call from the composer */}
+            {voiceState === "inactive" && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={onStartVoice}
+                    disabled={voiceSetupDisabled}
+                    aria-label={voiceDisabledReason ?? t("voice.call.start")}
+                    className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {voiceDisabledReason ?? t("voice.call.start")}
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            {/* Send / stop generation */}
             <Button
               onClick={isStreaming ? onStopResponse : handleSend}
               disabled={
@@ -566,96 +661,27 @@ export function InputArea({
               title={isStreaming ? t("input.stopResponse") : t("input.send")}
               size="icon"
               className={cn(
-                "h-8 w-8 rounded-xl shrink-0 transition-all",
+                "h-9 w-9 rounded-full shrink-0 transition-all",
                 isStreaming
-                  ? "bg-primary hover:bg-primary/90 text-primary-foreground"
+                  ? "bg-secondary border border-border/70 text-foreground hover:bg-surface-hover"
                   : input.trim() || attachments.length > 0
-                    ? "bg-primary hover:bg-primary/90 text-primary-foreground"
-                    : "bg-secondary text-muted-foreground/40",
+                    ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+                    : "bg-secondary text-muted-foreground/70 hover:bg-secondary disabled:opacity-100",
               )}
             >
               {isStreaming ? (
-                <Square className="w-3.5 h-3.5 fill-current" />
+                <Square className="w-3 h-3 fill-current" />
               ) : (
-                <Send className="w-4.5 h-4.5" />
+                <Send className="h-4 w-4" />
               )}
             </Button>
           </div>
         </div>
 
-        {/* Model Selector + Disclaimer */}
-        <div className="flex items-center justify-between mt-2 px-1">
-          <div className="relative" ref={menuRef}>
-            <button
-              onClick={() => setShowModelMenu(!showModelMenu)}
-              className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors"
-              disabled={isStreaming}
-            >
-              <div className="w-4 h-4 rounded-full bg-linear-to-br from-indigo-500 to-blue-600 flex items-center justify-center">
-                <span className="text-[7px] text-white font-bold">AI</span>
-              </div>
-              <span>{getSelectedModelLabel()}</span>
-              {hasImages && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
-                  + vision
-                </span>
-              )}
-              <ChevronDown className="w-3 h-3" />
-            </button>
-            {showModelMenu && (
-              <div className="absolute bottom-full mb-2 left-0 w-56 rounded-xl border border-border bg-popover shadow-2xl z-50 max-h-70 overflow-y-auto">
-                {Object.entries(modelGroups).map(([type, groupModels]) => (
-                  <div key={type}>
-                    <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">
-                      {type}
-                    </div>
-                    {groupModels.map((m) => (
-                      <button
-                        key={m.id + m.role}
-                        onClick={() => {
-                          setSelectedModel(m.role || m.id);
-                          setShowModelMenu(false);
-                        }}
-                        className={cn(
-                          "w-full text-left px-3 py-2 text-[13px] hover:bg-accent transition-colors",
-                          selectedModel === (m.role || m.id)
-                            ? "bg-accent font-medium text-foreground"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        <div>{m.description}</div>
-                        <div className="text-[10px] text-muted-foreground/60">
-                          {m.id} · {m.size}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {hasImages && (
-              <span className="text-[10px] text-blue-400/60">
-                📷 {attachments.filter((a) => a.type === "image").length} image
-                {attachments.filter((a) => a.type === "image").length > 1
-                  ? "s"
-                  : ""}
-              </span>
-            )}
-            {hasDocuments && (
-              <span className="text-[10px] text-amber-400/60">
-                📄 {attachments.filter((a) => a.type === "document").length} doc
-                {attachments.filter((a) => a.type === "document").length > 1
-                  ? "s"
-                  : ""}
-              </span>
-            )}
-            <span className="text-[10px] text-muted-foreground/40">
-              {t("input.runningLocally")}
-            </span>
-          </div>
-        </div>
+        {/* Quiet disclaimer below the surface */}
+        <p className="text-center text-[11px] text-muted-foreground/70 mt-2 select-none">
+          {t("input.runningLocally")}
+        </p>
       </div>
     </div>
   );

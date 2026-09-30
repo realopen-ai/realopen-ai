@@ -7,6 +7,11 @@ import path from "path";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Backend origin for the dev proxy. Defaults to the Docker service hostname;
+// set VITE_PROXY_TARGET (e.g. "http://127.0.0.1:8000") when running the
+// backend outside Docker.
+const backendOrigin = process.env.VITE_PROXY_TARGET || "http://backend:8000";
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -22,7 +27,7 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://backend:8000",
+        target: backendOrigin,
         // Sandbox terminals also live below /api. Without WebSocket proxying
         // enabled, Vite accepts the HTTP routes but drops terminal upgrades.
         ws: true,
@@ -33,13 +38,13 @@ export default defineConfig({
         timeout: 30 * 60 * 1000, // 30 minutes
       },
       "/metrics": {
-        target: "http://backend:8000",
+        target: backendOrigin,
         changeOrigin: true,
       },
       // Voice WebSocket — the backend's /ws/voice endpoint (nginx already
       // proxies /ws in production; this entry makes it work in Docker dev).
       "/ws": {
-        target: "http://backend:8000",
+        target: backendOrigin,
         ws: true,
         changeOrigin: true,
       },

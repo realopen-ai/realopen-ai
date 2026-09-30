@@ -231,18 +231,18 @@ export function FileViewerModal({
 
       {/* Modal */}
       <div
-        className="relative w-full max-w-5xl h-[90vh] mx-4 bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        className="relative w-full max-w-5xl h-[90vh] mx-4 bg-card border border-border/60 rounded-xl shadow-[0_24px_70px_-12px_var(--color-shadow-strong)] overflow-hidden flex flex-col animate-modal-in"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-border shrink-0">
-          <p className="text-[13px] font-medium text-foreground truncate flex-1">
+        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border/60 shrink-0">
+          <p className="text-[13.5px] font-medium text-foreground truncate flex-1">
             {filename}
           </p>
 
           {/* Page indicator */}
           {manifest && count > 0 && (
-            <div className="flex items-center gap-1 text-[12px] tabular-nums text-muted-foreground shrink-0">
+            <div className="flex items-center gap-1 text-[12px] tabular-nums text-muted-foreground shrink-0 px-1">
               <span className="text-foreground font-semibold">{current}</span>
               <span>/</span>
               <span>{count}</span>
@@ -253,10 +253,10 @@ export function FileViewerModal({
           {manifest && hasAnyNotes && (
             <button
               onClick={() => setShowNotes((s) => !s)}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0 ${
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                 showNotes
                   ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-surface-hover"
               }`}
               title={
                 showNotes ? "Hide speaker notes (N)" : "Show speaker notes (N)"
@@ -272,16 +272,17 @@ export function FileViewerModal({
           {manifest && count > 1 && (
             <button
               onClick={() => setShowThumbs((s) => !s)}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                 showThumbs
                   ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                  : "text-muted-foreground hover:text-foreground hover:bg-surface-hover"
               }`}
               title={
                 showThumbs
                   ? `Hide ${pageWord} overview`
                   : `Show ${pageWord} overview`
               }
+              aria-label={`Toggle ${pageWord} overview`}
             >
               <LayoutGrid className="w-4 h-4" />
             </button>
@@ -291,7 +292,7 @@ export function FileViewerModal({
           <a
             href={downloadUrl}
             download={filename}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors"
             title={`Download ${format.toUpperCase()}`}
           >
             <Download className="w-3.5 h-3.5" />
@@ -301,7 +302,8 @@ export function FileViewerModal({
           {/* Close button */}
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            aria-label="Close (Esc)"
             title="Close (Esc)"
           >
             <X className="w-4 h-4" />
@@ -310,7 +312,7 @@ export function FileViewerModal({
 
         {/* Body — slide stage */}
         <div
-          className="flex-1 relative bg-secondary/30 overflow-hidden flex items-center justify-center"
+          className="flex-1 relative bg-background/40 overflow-hidden flex items-center justify-center"
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
         >
@@ -321,7 +323,7 @@ export function FileViewerModal({
               <p className="text-[13px] text-muted-foreground">
                 Rendering {isPresentation ? "slides" : "pages"}...
               </p>
-              <p className="text-[11px] text-muted-foreground/60">
+              <p className="text-[11px] text-muted-foreground/80">
                 This happens once per {documentLabel}, then it&apos;s cached.
               </p>
             </div>
@@ -330,7 +332,7 @@ export function FileViewerModal({
           {/* Error overlay */}
           {error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 px-8 text-center">
-              <AlertCircle className="w-8 h-8 text-red-400" />
+              <AlertCircle className="w-8 h-8 text-danger" />
               <p className="text-[13px] text-foreground font-medium">
                 Failed to load {documentLabel}
               </p>
@@ -367,10 +369,10 @@ export function FileViewerModal({
                 onClick={prev}
                 disabled={atFirst}
                 aria-label={`Previous ${pageWord}`}
-                className={`absolute left-2 sm:left-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-background/80 border border-border shadow-sm backdrop-blur transition-all ${
+                className={`absolute left-2 sm:left-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-card border border-border/60 text-muted-foreground shadow-[0_8px_30px_var(--color-shadow-soft)] backdrop-blur transition-all ${
                   atFirst
                     ? "opacity-30 cursor-not-allowed"
-                    : "hover:bg-background hover:shadow-md active:scale-95"
+                    : "hover:bg-surface-hover hover:text-foreground active:scale-95"
                 }`}
               >
                 <ChevronLeft className="w-5 h-5" />
@@ -381,10 +383,10 @@ export function FileViewerModal({
                 onClick={next}
                 disabled={atLast}
                 aria-label={`Next ${pageWord}`}
-                className={`absolute right-2 sm:right-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-background/80 border border-border shadow-sm backdrop-blur transition-all ${
+                className={`absolute right-2 sm:right-3 z-20 w-10 h-10 rounded-full flex items-center justify-center bg-card border border-border/60 text-muted-foreground shadow-[0_8px_30px_var(--color-shadow-soft)] backdrop-blur transition-all ${
                   atLast
                     ? "opacity-30 cursor-not-allowed"
-                    : "hover:bg-background hover:shadow-md active:scale-95"
+                    : "hover:bg-surface-hover hover:text-foreground active:scale-95"
                 }`}
               >
                 <ChevronRight className="w-5 h-5" />
@@ -416,7 +418,7 @@ export function FileViewerModal({
               />
 
               {/* Mobile page badge (desktop shows it in the header) */}
-              <div className="sm:hidden absolute bottom-2 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-full bg-background/85 border border-border text-[11px] tabular-nums text-muted-foreground backdrop-blur">
+              <div className="sm:hidden absolute bottom-2 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-full bg-card/90 border border-border/60 text-[11px] tabular-nums text-muted-foreground backdrop-blur">
                 <span className="text-foreground font-semibold">{current}</span>
                 <span> / {count}</span>
               </div>
@@ -427,13 +429,13 @@ export function FileViewerModal({
         {/* Speaker notes — current slide */}
         {manifest && showNotes && hasAnyNotes && (
           <div
-            className="shrink-0 border-t border-border bg-card/80 px-4 py-3"
+            className="shrink-0 border-t border-border/60 bg-card/80 px-4 py-3"
             role="region"
             aria-label={`Speaker notes for ${pageWord} ${current}`}
           >
             <div className="flex items-center gap-1.5 mb-1.5">
               <StickyNote className="w-3.5 h-3.5 text-primary shrink-0" />
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Speaker notes — {pageWord} {current} of {count}
               </p>
             </div>
@@ -444,7 +446,7 @@ export function FileViewerModal({
               {currentNotes ? (
                 currentNotes
               ) : (
-                <span className="italic text-muted-foreground/60">
+                <span className="italic text-muted-foreground/80">
                   No notes for this slide.
                 </span>
               )}
@@ -456,7 +458,7 @@ export function FileViewerModal({
         {manifest && count > 1 && showThumbs && (
           <div
             ref={filmstripRef}
-            className="shrink-0 border-t border-border bg-card overflow-x-auto flex gap-2 px-3 py-2.5"
+            className="shrink-0 border-t border-border/60 bg-card overflow-x-auto flex gap-2 px-3 py-2.5"
             style={{ scrollbarWidth: "thin" }}
             role="tablist"
             aria-label="Slides"
@@ -474,7 +476,7 @@ export function FileViewerModal({
                   className={`relative shrink-0 w-28 aspect-video rounded-md overflow-hidden border transition-all ${
                     active
                       ? "border-primary ring-2 ring-primary/30"
-                      : "border-border opacity-60 hover:opacity-100 hover:border-muted-foreground/40"
+                      : "border-border/60 opacity-60 hover:opacity-100 hover:border-muted-foreground/40"
                   }`}
                 >
                   <img
@@ -486,14 +488,14 @@ export function FileViewerModal({
                   />
                   {(s.notes ?? "").trim().length > 0 && (
                     <span
-                      className="absolute top-0.5 left-0.5 p-0.5 rounded bg-black/70 text-amber-300"
+                      className="absolute top-0.5 left-0.5 p-0.5 rounded bg-black/70 text-warning"
                       title="Has speaker notes"
                       aria-hidden="true"
                     >
                       <StickyNote className="w-2.5 h-2.5" />
                     </span>
                   )}
-                  <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/70 text-[9px] font-medium tabular-nums text-white">
+                  <span className="absolute bottom-0.5 right-0.5 px-1 rounded bg-black/70 text-[10.5px] font-medium tabular-nums text-white">
                     {s.index}
                   </span>
                 </button>

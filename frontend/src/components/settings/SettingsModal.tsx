@@ -4,23 +4,18 @@ import {
   Sun,
   Moon,
   Monitor,
-  Palette,
-  Languages,
-  Bell,
-  BellOff,
-  Eye,
   Check,
-  Type,
   Bot,
   Image,
   Download,
   Loader2,
-  AlertTriangle,
   Puzzle,
   SlidersHorizontal,
   Sparkles,
   Package,
   Mic2,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import {
   useSettingsStore,
@@ -37,49 +32,67 @@ import { installModuleModels } from "@/api/client";
 import type { ModuleInfo } from "@/api/client";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import {
+  SectionHeader,
+  EmptyState,
+  StatusDot,
+  FilterChip,
+} from "@/components/ui/primitives";
+import { SettingRow, SettingToggle } from "@/components/brain/ToolsTab";
 import { DependenciesTab } from "@/components/settings/DependenciesTab";
 import { AiTab } from "@/components/settings/AiTab";
 import { VoiceTab } from "@/components/settings/VoiceTab";
 
-type TabKey = "general" | "ai" | "voice" | "modules" | "dependencies" | "notifications";
+type TabKey =
+  | "general"
+  | "ai"
+  | "voice"
+  | "modules"
+  | "dependencies"
+  | "notifications";
 
-// ─── Radio Option ────────────────────────────────────────────────
+// ─── Segmented control (compact option switch) ───────────────────
 
-function RadioOption<T extends string>({
-  value,
-  current,
-  onChange,
-  label,
-  icon,
-}: {
+type SegmentedOption<T extends string> = {
   value: T;
-  current: T;
-  onChange: (v: T) => void;
   label: string;
   icon?: React.ReactNode;
+};
+
+function SegmentedControl<T extends string>({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+}: {
+  value: T;
+  options: SegmentedOption<T>[];
+  onChange: (v: T) => void;
+  ariaLabel?: string;
 }) {
-  const isActive = value === current;
   return (
-    <button
-      onClick={() => onChange(value)}
-      className={cn(
-        "flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] transition-all w-full",
-        isActive
-          ? "bg-primary/10 text-primary font-medium ring-1 ring-primary/20"
-          : "text-muted-foreground hover:bg-accent hover:text-foreground",
-      )}
+    <div
+      className="inline-flex h-8 items-center rounded-lg bg-secondary p-0.5"
+      role="group"
+      aria-label={ariaLabel}
     >
-      <div
-        className={cn(
-          "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors",
-          isActive ? "border-primary" : "border-muted-foreground/30",
-        )}
-      >
-        {isActive && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
-      </div>
-      {icon && <span className="shrink-0">{icon}</span>}
-      <span>{label}</span>
-    </button>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={cn(
+            "inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+            value === option.value
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {option.icon}
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -100,7 +113,7 @@ function AccentSwatch({
     <button
       onClick={() => onChange(color)}
       className={cn(
-        "group relative w-9 h-9 rounded-full flex items-center justify-center transition-all",
+        "group relative flex h-8 w-8 items-center justify-center rounded-full transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
         isActive && "ring-2 ring-offset-2 ring-offset-background",
       )}
       style={{
@@ -110,40 +123,11 @@ function AccentSwatch({
       title={color.charAt(0).toUpperCase() + color.slice(1)}
     >
       {isActive && (
-        <Check className="w-4 h-4" style={{ color: css.primaryForeground }} />
+        <Check
+          className="h-3.5 w-3.5"
+          style={{ color: css.primaryForeground }}
+        />
       )}
-    </button>
-  );
-}
-
-// ─── Font Size Option ────────────────────────────────────────────
-
-function FontSizeOption({
-  size,
-  current,
-  onChange,
-  label,
-}: {
-  size: FontSize;
-  current: FontSize;
-  onChange: (v: FontSize) => void;
-  label: string;
-}) {
-  const isActive = size === current;
-  return (
-    <button
-      onClick={() => onChange(size)}
-      className={cn(
-        "flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[13px] transition-all flex-1",
-        isActive
-          ? "bg-primary/10 text-primary font-medium ring-1 ring-primary/20"
-          : "text-muted-foreground hover:bg-accent hover:text-foreground border border-border/50",
-      )}
-    >
-      <span className="leading-none" style={{ fontSize: size }}>
-        Aa
-      </span>
-      <span>{label}</span>
     </button>
   );
 }
@@ -161,9 +145,9 @@ function ModuleIcon({ icon, className }: { icon: string; className?: string }) {
   }
 }
 
-// ─── Module Card ──────────────────────────────────────────────────
+// ─── Module Row (one row in the Modules list) ─────────────────────
 
-function ModuleCard({
+function ModuleRow({
   module,
   onToggle,
   onInstall,
@@ -187,166 +171,137 @@ function ModuleCard({
   const canToggle = module.can_toggle && isAvailable && requirementsMet;
 
   return (
-    <div
-      className={cn(
-        "rounded-xl border p-4 transition-all",
-        !isAvailable
-          ? "border-border/30 bg-card/50 opacity-50"
-          : module.enabled
-            ? "border-primary/20 bg-primary/5"
-            : "border-border bg-card",
-      )}
-    >
-      <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div
-          className={cn(
-            "shrink-0 w-10 h-10 rounded-lg flex items-center justify-center",
-            module.enabled
-              ? "bg-primary/10 text-primary"
-              : "bg-secondary text-muted-foreground",
+    <div className="flex items-start gap-3.5 py-4">
+      {/* Icon */}
+      <div
+        className={cn(
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+          module.enabled && isAvailable
+            ? "bg-primary/10 text-primary"
+            : "bg-secondary text-muted-foreground/80",
+        )}
+      >
+        <ModuleIcon icon={module.icon} className="h-4.5 w-4.5" />
+      </div>
+
+      {/* Content */}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13.5px] font-medium text-foreground">
+            {module.label}
+          </span>
+          {isRequired && (
+            <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+              {t("modules.required")}
+            </span>
           )}
-        >
-          <ModuleIcon icon={module.icon} className="w-5 h-5" />
+          {module.estimated_size && isAvailable && (
+            <span className="text-[11px] text-muted-foreground">
+              {t("modules.estimatedSize")}: {module.estimated_size}
+            </span>
+          )}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[14px] font-medium text-foreground">
-                {module.label}
-              </span>
-              {isRequired && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
-                  {t("modules.required")}
-                </span>
-              )}
-            </div>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          {module.description}
+        </p>
 
-            {/* Toggle */}
-            {canToggle && (
-              <button
-                onClick={() => onToggle(module.name, !module.enabled)}
-                disabled={isDownloading}
-                className={cn(
-                  "relative w-10 h-5.5 rounded-full transition-colors shrink-0",
-                  module.enabled ? "bg-primary" : "bg-secondary",
-                  isDownloading && "opacity-50 cursor-not-allowed",
-                )}
-              >
-                <div
-                  className={cn(
-                    "absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform shadow-sm",
-                    module.enabled ? "translate-x-5" : "translate-x-0.5",
+        {/* Status indicators */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          {!isAvailable && (
+            <StatusDot
+              tone="neutral"
+              label={t("modules.notAvailableForProfile")}
+            />
+          )}
+          {isAvailable && !requirementsMet && (
+            <StatusDot
+              tone="warning"
+              label={
+                <>
+                  {t("modules.requirementsNotMet")}
+                  {module.minimum_requirements && (
+                    <span>
+                      {" "}
+                      ({module.minimum_requirements.ram} GB RAM,{" "}
+                      {module.minimum_requirements.vram} GB VRAM)
+                    </span>
                   )}
-                />
+                </>
+              }
+            />
+          )}
+          {module.enabled && !module.models_downloaded && isAvailable && (
+            <StatusDot
+              tone="warning"
+              label={t("modules.modelsNotDownloaded")}
+            />
+          )}
+          {module.enabled && module.models_downloaded && (
+            <StatusDot tone="success" label={t("modules.ready")} />
+          )}
+        </div>
+
+        {/* Install button + progress */}
+        {module.enabled && !module.models_downloaded && isAvailable && (
+          <div className="mt-2.5">
+            {isDownloading && progress ? (
+              <div className="max-w-70 space-y-1.5">
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {progress.status}
+                </div>
+                <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-300"
+                    style={{ width: `${progress.percent}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => onInstall(module.name)}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 text-[12.5px] font-medium text-primary transition-colors hover:bg-primary/20"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {t("modules.downloadModels")}
               </button>
             )}
-            {isRequired && (
-              <div className="flex items-center gap-1 text-emerald-500">
-                <Check className="w-4 h-4" />
-              </div>
-            )}
           </div>
+        )}
 
-          <p className="text-[12px] text-muted-foreground mt-1 leading-relaxed">
-            {module.description}
-          </p>
-
-          {/* Status indicators */}
-          <div className="flex items-center gap-3 mt-2.5 flex-wrap">
-            {!isAvailable && (
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
-                <AlertTriangle className="w-3 h-3" />
-                {t("modules.notAvailableForProfile")}
-              </div>
-            )}
-            {isAvailable && !requirementsMet && (
-              <div className="flex items-center gap-1.5 text-[11px] text-amber-500">
-                <AlertTriangle className="w-3 h-3" />
-                {t("modules.requirementsNotMet")}
-                {module.minimum_requirements && (
-                  <span>
-                    ({module.minimum_requirements.ram} GB RAM,{" "}
-                    {module.minimum_requirements.vram} GB VRAM)
-                  </span>
-                )}
-              </div>
-            )}
-            {module.estimated_size && isAvailable && (
-              <span className="text-[11px] text-muted-foreground/60">
-                {t("modules.estimatedSize")}: {module.estimated_size}
+        {/* Models list for optional modules */}
+        {module.models && module.models.length > 0 && isAvailable && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {module.models.map((m, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2 py-0.5 text-[10.5px] text-muted-foreground"
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-1.5 rounded-full",
+                    module.models_downloaded ? "bg-success" : "bg-warning",
+                  )}
+                />
+                {m.description || m.id}
               </span>
-            )}
-            {module.enabled && !module.models_downloaded && isAvailable && (
-              <span className="text-[11px] text-amber-500">
-                {t("modules.modelsNotDownloaded")}
-              </span>
-            )}
-            {module.enabled && module.models_downloaded && (
-              <span className="text-[11px] text-emerald-500">
-                {t("modules.ready")}
-              </span>
-            )}
+            ))}
           </div>
-
-          {/* Install button + progress */}
-          {module.enabled && !module.models_downloaded && isAvailable && (
-            <div className="mt-3">
-              {isDownloading && progress ? (
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    {progress.status}
-                  </div>
-                  <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary rounded-full transition-all duration-300"
-                      style={{ width: `${progress.percent}%` }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => onInstall(module.name)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  {t("modules.downloadModels")}
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Models list for optional modules */}
-          {module.models && module.models.length > 0 && isAvailable && (
-            <div className="mt-2.5">
-              <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider mb-1">
-                {t("modules.models")}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {module.models.map((m, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
-                  >
-                    <span
-                      className={cn(
-                        "w-1.5 h-1.5 rounded-full",
-                        module.models_downloaded
-                          ? "bg-emerald-500"
-                          : "bg-amber-500",
-                      )}
-                    />
-                    {m.description || m.id}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
+
+      {/* Right: toggle (optional) or locked indicator (required) */}
+      {canToggle ? (
+        <SettingToggle
+          checked={module.enabled}
+          onChange={(v) => onToggle(module.name, v)}
+          disabled={isDownloading}
+          label={module.label}
+        />
+      ) : (
+        isRequired && <Check className="mt-1.5 h-4 w-4 shrink-0 text-success" />
+      )}
     </div>
   );
 }
@@ -486,76 +441,63 @@ export function SettingsModal({
     },
   ];
 
-  const activeTab = tabs.find((tb) => tb.key === tab);
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/65 backdrop-blur-sm"
         onClick={onClose}
       />
 
-      {/* Modal — Claude-style two-pane layout: tab rail on the left
-          (desktop) / top tab pills (mobile), content pane on the right. */}
+      {/* Modal — desktop-application settings layout: section nav on the
+          left, settings rows on the right. Mobile: header + chip nav. */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label={t("settings.title")}
-        className="relative w-full max-w-3xl bg-card border border-border rounded-2xl shadow-2xl overflow-hidden animate-fade-in flex flex-col max-h-[88vh]"
+        className="relative flex h-[min(620px,92vh)] w-full max-w-210 animate-fade-in flex-col overflow-hidden rounded-xl border border-border/70 bg-card shadow-[0_24px_70px_-12px_var(--color-shadow-strong)]"
       >
-        {/* ── Mobile: header + horizontal tab pills ── */}
-        <div className="md:hidden">
-          <div className="flex items-center justify-between px-4 pt-4 pb-2">
-            <h2 className="text-[15px] font-semibold text-foreground">
-              {t("settings.title")}
-            </h2>
-            <button
-              onClick={onClose}
-              aria-label={t("common.close")}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="flex gap-1.5 px-3 pb-3 overflow-x-auto scrollbar-none">
-            {tabs.map((tabItem) => (
-              <button
-                key={tabItem.key}
-                onClick={() => setTab(tabItem.key)}
-                className={cn(
-                  "shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors",
-                  tab === tabItem.key
-                    ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                )}
-              >
-                {tabItem.icon}
-                {tabItem.label}
-              </button>
-            ))}
-          </div>
-          <div className="h-px bg-border/50" />
+        {/* ── Header ── */}
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/60 px-5">
+          <h2 className="text-[16.5px] font-semibold tracking-[-0.01em] text-foreground">
+            {t("settings.title")}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label={t("common.close")}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* ── Body: sidebar (desktop) + content ── */}
-        <div className="flex flex-1 min-h-0">
-          {/* Sidebar tab rail */}
-          <nav className="hidden md:flex flex-col w-56 shrink-0 border-r border-border/50 p-3 gap-0.5 overflow-y-auto">
-            <div className="flex items-center justify-between px-2 pt-1.5 pb-3">
-              <h2 className="text-[14px] font-semibold text-foreground">
-                {t("settings.title")}
-              </h2>
-            </div>
+        {/* ── Mobile: horizontal chip nav ── */}
+        <div className="scrollbar-none flex gap-1.5 overflow-x-auto border-b border-border/60 px-3 py-2.5 md:hidden">
+          {tabs.map((tabItem) => (
+            <FilterChip
+              key={tabItem.key}
+              active={tab === tabItem.key}
+              onClick={() => setTab(tabItem.key)}
+            >
+              {tabItem.icon}
+              {tabItem.label}
+            </FilterChip>
+          ))}
+        </div>
+
+        {/* ── Body: section nav (desktop) + content ── */}
+        <div className="flex min-h-0 flex-1">
+          {/* Section nav */}
+          <nav className="hidden w-52 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border/60 p-2.5 md:flex">
             {tabs.map((tabItem) => (
               <button
                 key={tabItem.key}
                 onClick={() => setTab(tabItem.key)}
                 className={cn(
-                  "flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] text-left transition-colors",
+                  "flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] transition-colors",
                   tab === tabItem.key
-                    ? "bg-accent text-foreground font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                    ? "bg-primary/10 font-medium text-primary"
+                    : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                 )}
               >
                 <span
@@ -571,99 +513,51 @@ export function SettingsModal({
                 {tabItem.label}
               </button>
             ))}
-            <div className="mt-auto pt-3 px-2">
-              <p className="text-[10px] text-muted-foreground/40 leading-relaxed">
+            <div className="mt-auto px-2.5 pt-3">
+              <p className="text-[10.5px] leading-relaxed text-muted-foreground/70">
                 RealOpen-AI
               </p>
             </div>
           </nav>
 
-          {/* Content pane */}
-          <div className="flex-1 min-w-0 flex flex-col">
-            {/* Desktop pane header */}
-            <div className="hidden md:flex items-center justify-between px-6 pt-5 pb-3 shrink-0">
-              <h3 className="text-[15px] font-semibold text-foreground">
-                {activeTab?.label}
-              </h3>
-              <button
-                onClick={onClose}
-                aria-label={t("common.close")}
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Scrollable content */}
-            <div className="flex-1 min-h-0 overflow-y-auto px-5 md:px-6 pb-6">
+          {/* Scrollable settings content */}
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            <div className="px-5 py-6 md:px-7 md:py-7">
               {tab === "general" && (
-                <div className="space-y-6">
-                  {/* Appearance */}
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <Palette className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-[13px] font-medium text-foreground">
-                        {t("settings.appearance")}
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      <RadioOption<Appearance>
-                        value="system"
-                        current={appearance}
-                        onChange={setAppearance}
-                        label={t("settings.appearance.system")}
-                        icon={<Monitor className="w-4 h-4" />}
-                      />
-                      <RadioOption<Appearance>
-                        value="dark"
-                        current={appearance}
-                        onChange={setAppearance}
-                        label={t("settings.appearance.dark")}
-                        icon={<Moon className="w-4 h-4" />}
-                      />
-                      <RadioOption<Appearance>
-                        value="light"
-                        current={appearance}
-                        onChange={setAppearance}
-                        label={t("settings.appearance.light")}
-                        icon={<Sun className="w-4 h-4" />}
-                      />
-                    </div>
-                  </div>
+                <div className="divide-y divide-border/50">
+                  <SettingRow
+                    label={t("settings.appearance")}
+                    className="flex-wrap"
+                  >
+                    <SegmentedControl<Appearance>
+                      value={appearance}
+                      onChange={setAppearance}
+                      ariaLabel={t("settings.appearance")}
+                      options={[
+                        {
+                          value: "system",
+                          label: t("settings.appearance.system"),
+                          icon: <Monitor className="w-3.5 h-3.5" />,
+                        },
+                        {
+                          value: "dark",
+                          label: t("settings.appearance.dark"),
+                          icon: <Moon className="w-3.5 h-3.5" />,
+                        },
+                        {
+                          value: "light",
+                          label: t("settings.appearance.light"),
+                          icon: <Sun className="w-3.5 h-3.5" />,
+                        },
+                      ]}
+                    />
+                  </SettingRow>
 
-                  {/* Contrast */}
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-[13px] font-medium text-foreground">
-                        {t("settings.contrast")}
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      <RadioOption<Contrast>
-                        value="medium"
-                        current={contrast}
-                        onChange={setContrast}
-                        label={t("settings.contrast.medium")}
-                      />
-                      <RadioOption<Contrast>
-                        value="increased"
-                        current={contrast}
-                        onChange={setContrast}
-                        label={t("settings.contrast.increased")}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Accent Color */}
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full bg-primary" />
-                      <span className="text-[13px] font-medium text-foreground">
-                        {t("settings.accentColor")}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-2.5 px-1">
+                  <SettingRow
+                    label={t("settings.accentColor")}
+                    className="flex-wrap"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
                       {(Object.keys(accentColorMap) as AccentColor[]).map(
                         (color) => (
                           <AccentSwatch
@@ -675,52 +569,67 @@ export function SettingsModal({
                         ),
                       )}
                     </div>
-                  </div>
+                  </SettingRow>
 
-                  {/* Font Size */}
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <Type className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-[13px] font-medium text-foreground">
-                        {t("settings.fontSize")}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      {fontSizeOptions.map((size) => (
-                        <FontSizeOption
-                          key={size}
-                          size={size}
-                          current={fontSize}
-                          onChange={setFontSize}
-                          label={t(`settings.fontSize.${size}`)}
-                        />
-                      ))}
-                    </div>
-                  </div>
+                  <SettingRow
+                    label={t("settings.fontSize")}
+                    className="flex-wrap"
+                  >
+                    <SegmentedControl<FontSize>
+                      value={fontSize}
+                      onChange={setFontSize}
+                      ariaLabel={t("settings.fontSize")}
+                      options={fontSizeOptions.map((size) => ({
+                        value: size,
+                        label: t(`settings.fontSize.${size}`),
+                        icon: (
+                          <span
+                            className="font-semibold leading-none"
+                            style={{ fontSize: size }}
+                          >
+                            Aa
+                          </span>
+                        ),
+                      }))}
+                    />
+                  </SettingRow>
 
-                  {/* Language */}
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2">
-                      <Languages className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-[13px] font-medium text-foreground">
-                        {t("settings.language")}
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      <RadioOption<Language>
-                        value="en"
-                        current={language}
-                        onChange={setLanguage}
-                        label={t("settings.language.en")}
-                      />
-                      <RadioOption<Language>
-                        value="fr"
-                        current={language}
-                        onChange={setLanguage}
-                        label={t("settings.language.fr")}
-                      />
-                    </div>
-                  </div>
+                  <SettingRow
+                    label={t("settings.contrast")}
+                    className="flex-wrap"
+                  >
+                    <SegmentedControl<Contrast>
+                      value={contrast}
+                      onChange={setContrast}
+                      ariaLabel={t("settings.contrast")}
+                      options={[
+                        {
+                          value: "medium",
+                          label: t("settings.contrast.medium"),
+                        },
+                        {
+                          value: "increased",
+                          label: t("settings.contrast.increased"),
+                        },
+                      ]}
+                    />
+                  </SettingRow>
+
+                  <SettingRow
+                    label={t("settings.language")}
+                    className="flex-wrap"
+                  >
+                    <SegmentedControl<Language>
+                      value={language}
+                      onChange={setLanguage}
+                      ariaLabel={t("settings.language")}
+                      options={[
+                        { value: "en", label: t("settings.language.en") },
+                        { value: "fr", label: t("settings.language.fr") },
+                        { value: "ar", label: t("settings.language.ar") },
+                      ]}
+                    />
+                  </SettingRow>
                 </div>
               )}
 
@@ -729,27 +638,30 @@ export function SettingsModal({
               {tab === "voice" && <VoiceTab />}
 
               {tab === "modules" && (
-                <div className="space-y-3">
-                  <p className="text-[12px] text-muted-foreground leading-relaxed">
-                    {t("modules.description")}
-                  </p>
-                  {modules.map((module) => (
-                    <ModuleCard
-                      key={module.name}
-                      module={module}
-                      onToggle={handleToggleModule}
-                      onInstall={handleInstallModule}
-                      installing={installingModule === module.name}
-                      installProgress={installProgress}
-                    />
-                  ))}
-                  {modules.length === 0 && (
-                    <div className="text-center py-8">
-                      <Puzzle className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-                      <p className="text-[13px] text-muted-foreground/60">
-                        {t("modules.noModules")}
-                      </p>
+                <div>
+                  <SectionHeader
+                    title={t("settings.modules")}
+                    description={t("modules.description")}
+                  />
+                  {modules.length > 0 ? (
+                    <div className="divide-y divide-border/50">
+                      {modules.map((module) => (
+                        <ModuleRow
+                          key={module.name}
+                          module={module}
+                          onToggle={handleToggleModule}
+                          onInstall={handleInstallModule}
+                          installing={installingModule === module.name}
+                          installProgress={installProgress}
+                        />
+                      ))}
                     </div>
+                  ) : (
+                    <EmptyState
+                      icon={<Puzzle />}
+                      title={t("modules.noModules")}
+                      className="py-10"
+                    />
                   )}
                 </div>
               )}
@@ -757,43 +669,37 @@ export function SettingsModal({
               {tab === "dependencies" && <DependenciesTab />}
 
               {tab === "notifications" && (
-                <div className="space-y-4">
-                  {/* DeepSearch notifications */}
-                  <div className="flex items-center justify-between p-4 rounded-xl border border-border bg-card">
-                    <div className="flex items-start gap-3">
-                      {notifyDeepSearch ? (
-                        <Bell className="w-5 h-5 text-primary shrink-0 mt-0.5" />
-                      ) : (
-                        <BellOff className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
-                      )}
-                      <div>
-                        <p className="text-[13px] font-medium text-foreground">
-                          {t("settings.notifyDeepSearch")}
-                        </p>
-                        <p className="text-[12px] text-muted-foreground mt-0.5">
-                          {language === "fr"
-                            ? "Recevez une notification lorsqu'une recherche approfondie est terminée"
-                            : "Get a notification when a deep search task completes"}
-                        </p>
-                      </div>
-                    </div>
-                    {/* Toggle Switch */}
-                    <button
-                      onClick={() => setNotifyDeepSearch(!notifyDeepSearch)}
+                <div className="divide-y divide-border/50">
+                  <div className="flex items-center gap-4 py-3.5">
+                    <div
                       className={cn(
-                        "relative w-10 h-5.5 rounded-full transition-colors shrink-0",
-                        notifyDeepSearch ? "bg-primary" : "bg-secondary",
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                        notifyDeepSearch
+                          ? "bg-primary/10 text-primary"
+                          : "bg-secondary text-muted-foreground/80",
                       )}
                     >
-                      <div
-                        className={cn(
-                          "absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform shadow-sm",
-                          notifyDeepSearch
-                            ? "translate-x-5"
-                            : "translate-x-0.5",
-                        )}
-                      />
-                    </button>
+                      {notifyDeepSearch ? (
+                        <Bell className="h-4.5 w-4.5" />
+                      ) : (
+                        <BellOff className="h-4.5 w-4.5" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] text-foreground">
+                        {t("settings.notifyDeepSearch")}
+                      </div>
+                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                        {language === "fr"
+                          ? "Recevez une notification lorsqu'une recherche approfondie est terminée"
+                          : "Get a notification when a deep search task completes"}
+                      </div>
+                    </div>
+                    <SettingToggle
+                      checked={notifyDeepSearch}
+                      onChange={(v) => setNotifyDeepSearch(v)}
+                      label={t("settings.notifyDeepSearch")}
+                    />
                   </div>
                 </div>
               )}

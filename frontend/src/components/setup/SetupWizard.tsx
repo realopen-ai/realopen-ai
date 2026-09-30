@@ -103,7 +103,7 @@ function WelcomeStep() {
         you configure your hardware profile, choose which features to enable,
         and download the required AI models.
       </p>
-      <p className="text-muted-foreground/60 text-[12px] max-w-sm leading-relaxed mb-8">
+      <p className="text-muted-foreground/80 text-[12px] max-w-sm leading-relaxed mb-8">
         Everything runs locally on your machine — no data is sent to the cloud.
         All models are downloaded from Ollama and run entirely offline.
       </p>
@@ -426,7 +426,7 @@ function ProfileCard({
           </span>
         </div>
         {isRecommended && (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
             Recommended
           </span>
         )}
@@ -438,13 +438,13 @@ function ProfileCard({
         {profile.models.slice(0, 3).map((m) => (
           <span
             key={m.id}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] text-muted-foreground"
           >
             {m.description || m.id}
           </span>
         ))}
         {profile.models.length > 3 && (
-          <span className="text-[10px] text-muted-foreground/50">
+          <span className="text-[11px] text-muted-foreground/70">
             +{profile.models.length - 3} more
           </span>
         )}
@@ -466,7 +466,7 @@ function InfoRow({
     <div className="flex items-start gap-2">
       <span className="text-muted-foreground mt-0.5 shrink-0">{icon}</span>
       <div>
-        <p className="text-[11px] text-muted-foreground/60 uppercase tracking-wider">
+        <p className="text-[11px] text-muted-foreground/80 uppercase tracking-wider">
           {label}
         </p>
         <p className="text-[13px] text-foreground font-medium truncate">
@@ -588,7 +588,7 @@ function ModuleSetupCard({
                 {module.label}
               </span>
               {module.required && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                   Required
                 </span>
               )}
@@ -620,19 +620,19 @@ function ModuleSetupCard({
           </p>
           <div className="flex items-center gap-3 mt-2">
             {!available && (
-              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
                 <AlertTriangle className="w-3 h-3" />
                 Not available for this profile
               </span>
             )}
             {available && exactSize && (
-              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
                 <Download className="w-3 h-3" />
                 Size: {exactSize}
               </span>
             )}
             {available && !exactSize && module.estimated_size && (
-              <span className="text-[11px] text-muted-foreground/60">
+              <span className="text-[11px] text-muted-foreground/80">
                 Est. size: {module.estimated_size}
               </span>
             )}
@@ -643,10 +643,10 @@ function ModuleSetupCard({
               {profileModels.map((m) => (
                 <span
                   key={m.id}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[10px] text-muted-foreground"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] text-muted-foreground"
                 >
                   {m.description || m.id}
-                  <span className="text-muted-foreground/50">{m.size}</span>
+                  <span className="text-muted-foreground/70">{m.size}</span>
                 </span>
               ))}
             </div>
@@ -692,7 +692,7 @@ function ReviewStep() {
 
       {/* Profile review */}
       <div className="rounded-xl border border-border bg-card p-4 mb-3">
-        <p className="text-[11px] text-muted-foreground/50 uppercase tracking-wider mb-1">
+        <p className="text-[11px] text-muted-foreground/70 uppercase tracking-wider mb-1">
           Hardware Profile
         </p>
         <p className="text-[14px] font-medium text-foreground">
@@ -705,7 +705,7 @@ function ReviewStep() {
 
       {/* Modules review */}
       <div className="rounded-xl border border-border bg-card p-4 mb-3">
-        <p className="text-[11px] text-muted-foreground/50 uppercase tracking-wider mb-2">
+        <p className="text-[11px] text-muted-foreground/70 uppercase tracking-wider mb-2">
           Enabled Modules
         </p>
         <div className="space-y-2">
@@ -717,7 +717,7 @@ function ReviewStep() {
               />
               <span className="text-[13px] text-foreground">{mod.label}</span>
               {mod.required && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                   Required
                 </span>
               )}
@@ -728,7 +728,7 @@ function ReviewStep() {
 
       {/* Models to download */}
       <div className="rounded-xl border border-border bg-card p-4 mb-3">
-        <p className="text-[11px] text-muted-foreground/50 uppercase tracking-wider mb-2">
+        <p className="text-[11px] text-muted-foreground/70 uppercase tracking-wider mb-2">
           Models to Download
         </p>
         <div className="space-y-1.5">
@@ -738,7 +738,7 @@ function ReviewStep() {
               <span className="text-[12px] text-foreground">
                 {m.description || m.id}
               </span>
-              <span className="text-[10px] text-muted-foreground/50 ml-auto">
+              <span className="text-[11px] text-muted-foreground/70 ml-auto">
                 {m.size}
               </span>
             </div>
@@ -752,7 +752,7 @@ function ReviewStep() {
                 <span className="text-[12px] text-foreground">
                   {m.description || m.id}
                 </span>
-                <span className="text-[10px] text-muted-foreground/50 ml-auto">
+                <span className="text-[11px] text-muted-foreground/70 ml-auto">
                   {m.size}
                 </span>
               </div>
@@ -811,7 +811,7 @@ function PullRowIcon({ row }: { row: PullRow }) {
   if (row.kind === "voice_runtime") {
     return <Package className="w-3.5 h-3.5 text-primary shrink-0" />;
   }
-  return <Bot className="w-3.5 h-3.5 text-muted-foreground/60 shrink-0" />;
+  return <Bot className="w-3.5 h-3.5 text-muted-foreground/80 shrink-0" />;
 }
 
 /** Provider label for voice rows (ASR model / TTS model / Voice runtime). */
@@ -855,7 +855,7 @@ function InstallRow({ row }: { row: PullRow }) {
         {providerLabel && (
           <span
             className={cn(
-              "text-[9px] px-1.5 py-0.5 rounded-full shrink-0 uppercase tracking-wide",
+              "text-[10.5px] px-1.5 py-0.5 rounded-full shrink-0 uppercase tracking-wide",
               isVoice
                 ? "bg-primary/10 text-primary"
                 : "bg-secondary text-muted-foreground",
@@ -880,7 +880,7 @@ function InstallRow({ row }: { row: PullRow }) {
         )}
         {/* Live percentage when real numbers arrive */}
         {row.status === "running" && row.hasPercent && (
-          <span className="text-[10px] font-medium text-foreground shrink-0">
+          <span className="text-[11px] font-medium text-foreground shrink-0">
             {row.percent ?? 0}%
           </span>
         )}
@@ -903,7 +903,7 @@ function InstallRow({ row }: { row: PullRow }) {
 
       {/* Streamed status / output text (pull_status events) */}
       {row.status === "running" && (row.statusText || row.outputText) && (
-        <p className="mt-1.5 text-[10px] text-muted-foreground/70 truncate">
+        <p className="mt-1.5 text-[11px] text-muted-foreground/70 truncate">
           {row.outputText || row.statusText}
         </p>
       )}
@@ -912,9 +912,9 @@ function InstallRow({ row }: { row: PullRow }) {
       {row.status === "error" && (
         <div className="mt-1">
           {row.error && (
-            <p className="text-[10px] text-red-500 truncate">{row.error}</p>
+            <p className="text-[11px] text-red-500 truncate">{row.error}</p>
           )}
-          <p className="text-[10px] text-muted-foreground/60">
+          <p className="text-[11px] text-muted-foreground/80">
             {t("setup.installing.retryHint")}
           </p>
         </div>
@@ -1030,7 +1030,7 @@ function InstallingStep() {
         {/* Completed models (compact list, kept for quick scanning) */}
         {!showRows && pullProgress.completed.length > 0 && (
           <div className="w-full max-w-sm mt-2">
-            <p className="text-[11px] text-muted-foreground/50 uppercase tracking-wider mb-1">
+            <p className="text-[11px] text-muted-foreground/70 uppercase tracking-wider mb-1">
               {t("setup.installing.completed")}
             </p>
             <div className="space-y-1 max-h-30 overflow-y-auto">
@@ -1079,7 +1079,7 @@ function DoneStep() {
         Your RealOpen-AI is ready. All models have been downloaded and your
         configuration has been applied. You can start chatting now!
       </p>
-      <p className="text-[12px] text-muted-foreground/50 mb-4">
+      <p className="text-[12px] text-muted-foreground/70 mb-4">
         This page will reload automatically...
       </p>
       <Loader2 className="w-5 h-5 text-primary animate-spin" />

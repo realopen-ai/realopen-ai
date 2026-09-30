@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Brain } from "lucide-react";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { PageContainer, PageHeader } from "@/components/ui/primitives";
 import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
 import { HistoryTab } from "@/components/brain/HistoryTab";
@@ -21,45 +21,52 @@ export function BrainPage() {
   ];
 
   return (
-    <div className="flex h-full w-full flex-col bg-background">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-        <div className="flex items-center gap-2">
-          <Brain className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold text-foreground">
-            {t("brain.title")}
-          </h1>
+    <div className="h-full w-full overflow-y-auto bg-background">
+      <PageContainer width="list" className="pb-16">
+        <PageHeader
+          title={t("brain.title")}
+          description={t("brain.description")}
+          className="mb-6"
+        />
+
+        {/* Compact tab navigation — near the content start, not
+            stretched across the page. */}
+        <nav
+          aria-label={t("brain.title")}
+          className="flex items-center gap-1 border-b border-border/60"
+        >
+          {tabs.map((tabItem) => {
+            const active = tab === tabItem.key;
+            return (
+              <button
+                key={tabItem.key}
+                onClick={() => setTab(tabItem.key)}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "relative px-3.5 py-2.5 text-[13.5px] font-medium transition-colors rounded-t-md",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                  active
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {tabItem.label}
+                {active && (
+                  <span className="absolute inset-x-2.5 -bottom-px h-0.5 rounded-full bg-primary" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Consistent content container across all tabs */}
+        <div className="pt-7">
+          {tab === "memories" && <MemoriesTab />}
+          {tab === "history" && <HistoryTab />}
+          {tab === "skills" && <SkillsTab />}
+          {tab === "tools" && <ToolsTab />}
         </div>
-      </div>
-
-      {/* Tab Bar */}
-      <div className="flex border-b border-border/50">
-        {tabs.map((tabItem) => (
-          <button
-            key={tabItem.key}
-            onClick={() => setTab(tabItem.key)}
-            className={cn(
-              "flex-1 py-2.5 text-[13px] font-medium transition-colors relative",
-              tab === tabItem.key
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {tabItem.label}
-            {tab === tabItem.key && (
-              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-0.5 bg-primary rounded-full" />
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {tab === "memories" && <MemoriesTab />}
-        {tab === "history" && <HistoryTab />}
-        {tab === "skills" && <SkillsTab />}
-        {tab === "tools" && <ToolsTab />}
-      </div>
+      </PageContainer>
     </div>
   );
 }

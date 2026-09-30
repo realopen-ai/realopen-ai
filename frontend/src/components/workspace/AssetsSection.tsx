@@ -1,18 +1,20 @@
 import { Package } from "lucide-react";
+import { EmptyState } from "@/components/ui/primitives";
 
 export function AssetsSection() {
   return (
-    <div className="flex flex-col items-center justify-center h-full p-8">
-      <div className="w-16 h-16 rounded-2xl bg-purple-500/10 flex items-center justify-center mb-4">
-        <Package className="w-8 h-8 text-purple-400" />
-      </div>
-      <h2 className="text-[15px] font-medium text-foreground mb-1">Assets</h2>
-      <p className="text-[13px] text-muted-foreground/60 text-center max-w-sm">
-        This section will contain reusable resources such as logos, company
-        branding, custom icons, reusable images, voice assets, and other
-        user-provided resources.
-      </p>
-      <p className="text-[11px] text-muted-foreground/40 mt-4">Coming soon</p>
+    <div className="flex h-full flex-col items-center justify-center p-8">
+      <EmptyState
+        icon={<Package />}
+        title="Assets"
+        description="This section will contain reusable resources such as logos, company branding, custom icons, reusable images, voice assets, and other user-provided resources."
+        action={
+          <span className="inline-flex items-center rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            Coming soon
+          </span>
+        }
+        className="rounded-xl"
+      />
     </div>
   );
 }

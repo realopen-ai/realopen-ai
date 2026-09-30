@@ -12,48 +12,47 @@ import {
   Zap,
   User,
   Bot,
+  MoreHorizontal,
 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { EmptyState, FilterChip } from "@/components/ui/primitives";
 import type { MemoryItem } from "@/api/memoryClient";
 
 // ─── Category Colors ────────────────────────────────────────────
 
-const categoryColors: Record<
-  string,
-  { bg: string; text: string; border: string }
-> = {
+const categoryColors: Record<string, { bg: string; text: string }> = {
   identity: {
     bg: "bg-blue-500/10",
-    text: "text-blue-500",
-    border: "border-blue-500/20",
+    text: "text-blue-600 dark:text-blue-400",
   },
   preference: {
     bg: "bg-purple-500/10",
-    text: "text-purple-500",
-    border: "border-purple-500/20",
+    text: "text-purple-600 dark:text-purple-400",
   },
   fact: {
-    bg: "bg-zinc-500/10",
-    text: "text-zinc-400",
-    border: "border-zinc-500/20",
+    bg: "bg-secondary",
+    text: "text-muted-foreground",
   },
   contact: {
     bg: "bg-emerald-500/10",
-    text: "text-emerald-500",
-    border: "border-emerald-500/20",
+    text: "text-emerald-600 dark:text-emerald-400",
   },
   project: {
     bg: "bg-amber-500/10",
-    text: "text-amber-500",
-    border: "border-amber-500/20",
+    text: "text-amber-700 dark:text-amber-400",
   },
   goal: {
     bg: "bg-pink-500/10",
-    text: "text-pink-500",
-    border: "border-pink-500/20",
+    text: "text-pink-600 dark:text-pink-400",
   },
 };
 
@@ -65,6 +64,9 @@ const categoryList = [
   "project",
   "goal",
 ];
+
+const categoryLabel = (cat: string) =>
+  cat.charAt(0).toUpperCase() + cat.slice(1);
 
 // ─── Relative time ──────────────────────────────────────────────
 
@@ -98,7 +100,7 @@ function SourceIcon({
           className="flex items-center gap-1"
           title={t("brain.memories.source.auto")}
         >
-          <Zap className="w-3 h-3" />
+          <Zap className="w-3 h-3 text-muted-foreground/80" />
         </span>
       );
     case "user":
@@ -107,7 +109,7 @@ function SourceIcon({
           className="flex items-center gap-1"
           title={t("brain.memories.source.user")}
         >
-          <User className="w-3 h-3" />
+          <User className="w-3 h-3 text-muted-foreground/80" />
         </span>
       );
     case "ai_agent":
@@ -116,7 +118,7 @@ function SourceIcon({
           className="flex items-center gap-1"
           title={t("brain.memories.source.ai_agent")}
         >
-          <Bot className="w-3 h-3" />
+          <Bot className="w-3 h-3 text-muted-foreground/80" />
         </span>
       );
     default:
@@ -131,17 +133,17 @@ function CategoryBadge({ category }: { category: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium",
+        "inline-flex h-5 shrink-0 items-center rounded-md px-1.5 text-[11px] font-medium",
         colors.bg,
         colors.text,
       )}
     >
-      {category}
+      {categoryLabel(category)}
     </span>
   );
 }
 
-// ─── Memory Card ─────────────────────────────────────────────────
+// ─── Memory Row ──────────────────────────────────────────────────
 
 function MemoryCard({
   memory,
@@ -174,44 +176,33 @@ function MemoryCard({
 
   if (isEditing) {
     return (
-      <div
-        className={cn(
-          "rounded-xl border p-4 transition-all",
-          "border-border bg-card",
-        )}
-      >
+      <div className="rounded-xl bg-secondary/60 p-4">
         <div className="space-y-3">
           <textarea
             value={editText}
             onChange={(e) => onEditTextChange(e.target.value)}
-            className="w-full min-h-15 px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+            className="w-full min-h-16 px-3 py-2 rounded-lg border border-border/60 bg-background text-[13.5px] text-foreground leading-relaxed placeholder:text-muted-foreground/70 focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20 transition-colors resize-none"
             autoFocus
           />
           <div className="flex items-center gap-2">
             <select
               value={editCategory}
               onChange={(e) => onEditCategoryChange(e.target.value)}
-              className="px-3 py-1.5 rounded-lg border border-border bg-background text-[12px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-8 px-2.5 rounded-lg border border-border/60 bg-background text-[12.5px] text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
             >
               {categoryList.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                  {categoryLabel(cat)}
                 </option>
               ))}
             </select>
             <div className="flex-1" />
-            <button
-              onClick={onCancelEdit}
-              className="px-3 py-1.5 rounded-lg text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-            >
+            <Button variant="ghost" size="xs" onClick={onCancelEdit}>
               {t("brain.memories.cancel")}
-            </button>
-            <button
-              onClick={onSaveEdit}
-              className="px-3 py-1.5 rounded-lg text-[12px] bg-primary/10 text-primary hover:bg-primary/20 font-medium transition-colors"
-            >
+            </Button>
+            <Button variant="default" size="xs" onClick={onSaveEdit}>
               {t("brain.memories.save")}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -219,85 +210,84 @@ function MemoryCard({
   }
 
   return (
-    <div
-      className={cn(
-        "group rounded-xl border p-4 transition-all hover:bg-accent/30",
-        memory.pinned
-          ? "border-amber-500/30 bg-amber-500/5 border-l-2 border-l-amber-500"
-          : "border-border bg-card",
-      )}
-    >
-      <div className="flex items-start gap-3">
-        {/* Content */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1.5">
-            <CategoryBadge category={memory.category} />
-            <SourceIcon source={memory.source} t={t} />
-            <span className="text-[11px] text-muted-foreground/50">
-              {relativeTime(memory.updated_at)}
+    <div className="group flex items-start gap-3 rounded-lg py-3 pl-2 pr-1 transition-colors hover:bg-surface-hover">
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        <p className="text-[13.5px] text-foreground leading-relaxed wrap-break-word">
+          {memory.pinned && (
+            <Pin
+              className="mr-1.5 -mt-0.5 inline h-3 w-3 text-warning"
+              aria-label={t("brain.memories.unpin")}
+            />
+          )}
+          {memory.text}
+        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <CategoryBadge category={memory.category} />
+          <SourceIcon source={memory.source} t={t} />
+          <span>{relativeTime(memory.updated_at)}</span>
+          {memory.uses > 0 && (
+            <span className="hidden sm:inline">
+              {t("brain.memories.used")} {memory.uses}{" "}
+              {t("brain.memories.times")}
             </span>
-            {memory.uses > 0 && (
-              <span className="text-[11px] text-muted-foreground/50">
-                {t("brain.memories.used")} {memory.uses}{" "}
-                {t("brain.memories.times")}
-              </span>
-            )}
-          </div>
-          <p className="text-[13px] text-foreground leading-relaxed">
-            {memory.text}
-          </p>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            onClick={() => onPin(memory.id, !memory.pinned)}
-            className={cn(
-              "w-7 h-7 rounded-lg flex items-center justify-center transition-colors",
-              memory.pinned
-                ? "text-amber-500 hover:bg-amber-500/10"
-                : "text-muted-foreground/50 hover:text-foreground hover:bg-accent",
-            )}
-            title={
-              memory.pinned
-                ? t("brain.memories.unpin")
-                : t("brain.memories.pin")
-            }
-          >
-            <Pin className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onEdit(memory.id)}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
-            title={t("brain.memories.edit")}
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
-          {confirmDelete ? (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => onDelete(memory.id)}
-                className="px-2 py-1 rounded-lg text-[11px] bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors font-medium"
-              >
-                {t("brain.memories.delete")}
-              </button>
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="px-2 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-accent transition-colors"
-              >
-                {t("brain.memories.cancel")}
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
-              title={t("brain.memories.delete")}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
           )}
         </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex shrink-0 items-center gap-0.5 pt-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        {confirmDelete ? (
+          <div className="flex items-center gap-1">
+            <span className="mr-1 hidden text-xs text-muted-foreground sm:inline">
+              {t("brain.memories.deleteConfirm")}
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => setConfirmDelete(false)}
+            >
+              {t("brain.memories.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              size="xs"
+              onClick={() => onDelete(memory.id)}
+            >
+              {t("brain.memories.delete")}
+            </Button>
+          </div>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={t("brain.memories.actions")}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 data-[state=open]:bg-secondary data-[state=open]:text-foreground"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => onPin(memory.id, !memory.pinned)}
+              >
+                <Pin />
+                {memory.pinned
+                  ? t("brain.memories.unpin")
+                  : t("brain.memories.pin")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onEdit(memory.id)}>
+                <Pencil />
+                {t("brain.memories.edit")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-danger focus:text-danger [&_svg]:text-danger"
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 />
+                {t("brain.memories.delete")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   );
@@ -323,46 +313,39 @@ function AddMemoryForm({
   };
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="rounded-xl bg-secondary/60 p-4">
       <div className="space-y-3">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder={t("brain.memories.textPlaceholder")}
-          className="w-full min-h-15 px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+          className="w-full min-h-16 px-3 py-2 rounded-lg border border-border/60 bg-background text-[13.5px] text-foreground leading-relaxed placeholder:text-muted-foreground/70 focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20 transition-colors resize-none"
           autoFocus
         />
         <div className="flex items-center gap-2">
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="px-3 py-1.5 rounded-lg border border-border bg-background text-[12px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-8 px-2.5 rounded-lg border border-border/60 bg-background text-[12.5px] text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           >
             {categoryList.map((cat) => (
               <option key={cat} value={cat}>
-                {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                {categoryLabel(cat)}
               </option>
             ))}
           </select>
           <div className="flex-1" />
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 rounded-lg text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          >
+          <Button variant="ghost" size="xs" onClick={onCancel}>
             {t("brain.memories.cancel")}
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="default"
+            size="xs"
             onClick={handleSave}
             disabled={!text.trim()}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors",
-              text.trim()
-                ? "bg-primary/10 text-primary hover:bg-primary/20"
-                : "bg-secondary text-muted-foreground/50 cursor-not-allowed",
-            )}
           >
             {t("brain.memories.save")}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -509,61 +492,56 @@ export function MemoriesTab() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col">
       {/* Search & Controls */}
-      <div className="px-4 pt-4 pb-3 space-y-3">
+      <div className="space-y-3 pb-5">
         {/* Search bar + Add/Audit buttons */}
         <div className="flex items-center gap-2">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
+          <div className="relative w-full sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/80" />
             <input
               type="text"
               value={localSearch}
               onChange={(e) => handleSearchChange(e.target.value)}
               placeholder={t("brain.memories.search")}
-              className="w-full pl-9 pr-9 py-2 rounded-xl border border-border bg-card text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary transition-colors"
+              className="h-9 w-full rounded-lg border border-border/60 bg-transparent pl-9 pr-8 text-[13px] text-foreground placeholder:text-muted-foreground/80 transition-colors focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
             {localSearch && (
               <button
                 onClick={handleClearSearch}
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full flex items-center justify-center text-muted-foreground/50 hover:text-foreground hover:bg-accent transition-colors"
+                aria-label={t("brain.memories.search")}
+                className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground/80 transition-colors hover:bg-surface-hover hover:text-foreground"
               >
-                <X className="w-3 h-3" />
+                <X className="h-3 w-3" />
               </button>
             )}
           </div>
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{t("brain.memories.add")}</span>
-          </button>
-          <button
+          <div className="flex-1" />
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={handleAudit}
             disabled={isAuditing}
-            className={cn(
-              "shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium transition-colors",
-              isAuditing
-                ? "bg-secondary text-muted-foreground/50 cursor-not-allowed"
-                : "bg-secondary text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
           >
-            {isAuditing ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
+            {isAuditing ? <Loader2 className="animate-spin" /> : <Sparkles />}
             <span className="hidden sm:inline">
               {t("brain.memories.tidyUp")}
             </span>
-          </button>
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setShowAddForm(true)}
+          >
+            <Plus />
+            <span className="hidden sm:inline">{t("brain.memories.add")}</span>
+          </Button>
         </div>
 
         {/* Audit result */}
         {auditResult && auditResult.removed > 0 && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 text-emerald-500 text-[12px]">
-            <Sparkles className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2 text-[12.5px] text-success">
+            <Sparkles className="h-3.5 w-3.5" />
             {t("brain.memories.auditDone").replace(
               "{count}",
               String(auditResult.removed),
@@ -573,132 +551,118 @@ export function MemoriesTab() {
 
         {/* Extracting indicator */}
         {isExtracting && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-primary/10 text-primary text-[12px]">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <div className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-[12.5px] text-primary">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {t("brain.memories.extracting")}
           </div>
         )}
 
-        {/* Category filter pills */}
-        <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-none">
-          <button
+        {/* Category filter chips */}
+        <div className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-0.5">
+          <FilterChip
+            active={activeCategory === "all"}
             onClick={() => setActiveCategory("all")}
-            className={cn(
-              "shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors",
-              activeCategory === "all"
-                ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                : "bg-secondary text-muted-foreground hover:text-foreground",
-            )}
           >
             {t("brain.memories.all")}
-            <span className="text-[10px] opacity-60">
+            <span className="ml-1 tabular-nums opacity-60">
               {getCategoryCount("all")}
             </span>
-          </button>
+          </FilterChip>
           {categoryList.map((cat) => {
-            const colors = categoryColors[cat];
             const count = getCategoryCount(cat);
             return (
-              <button
+              <FilterChip
                 key={cat}
+                active={activeCategory === cat}
                 onClick={() => setActiveCategory(cat)}
-                className={cn(
-                  "shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors",
-                  activeCategory === cat
-                    ? `${colors.bg} ${colors.text} ring-1 ${colors.border}`
-                    : "bg-secondary text-muted-foreground hover:text-foreground",
-                )}
               >
-                {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                {categoryLabel(cat)}
                 {count > 0 && (
-                  <span className="text-[10px] opacity-60">{count}</span>
+                  <span className="ml-1 tabular-nums opacity-60">{count}</span>
                 )}
-              </button>
+              </FilterChip>
             );
           })}
         </div>
       </div>
 
       {/* Memory List */}
-      <ScrollArea className="flex-1 px-4">
-        <div className="space-y-2 pb-4">
-          {/* Add memory form */}
-          {showAddForm && (
+      <div className="divide-y divide-border/50">
+        {/* Add memory form */}
+        {showAddForm && (
+          <div className="pb-4">
             <AddMemoryForm
               onSave={handleAddMemory}
               onCancel={() => setShowAddForm(false)}
               t={t}
             />
-          )}
+          </div>
+        )}
 
-          {/* Loading state */}
-          {isLoading && (
-            <div className="flex items-center justify-center py-12">
-              <div className="flex flex-col items-center gap-3">
-                <Loader2 className="w-6 h-6 text-primary animate-spin" />
-                <p className="text-[12px] text-muted-foreground">Loading...</p>
-              </div>
+        {/* Loading state */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-12">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">Loading...</p>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Searching state */}
-          {isSearching && !isLoading && (
-            <div className="flex items-center justify-center py-8">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className="text-[12px]">Searching...</span>
-              </div>
+        {/* Searching state */}
+        {isSearching && !isLoading && (
+          <div className="flex items-center justify-center py-8">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-xs">Searching...</span>
             </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!isLoading &&
+          !isSearching &&
+          sortedMemories.length === 0 &&
+          !searchQuery.trim() && (
+            <EmptyState
+              icon={<Brain />}
+              title={t("brain.memories.emptyTitle")}
+              description={t("brain.memories.empty")}
+            />
           )}
 
-          {/* Empty state */}
-          {!isLoading &&
-            !isSearching &&
-            sortedMemories.length === 0 &&
-            !searchQuery.trim() && (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <Brain className="w-10 h-10 text-muted-foreground/20 mb-3" />
-                <p className="text-[13px] text-muted-foreground/60 max-w-65">
-                  {t("brain.memories.empty")}
-                </p>
-              </div>
-            )}
+        {/* Empty search results */}
+        {!isLoading &&
+          !isSearching &&
+          sortedMemories.length === 0 &&
+          searchQuery.trim() && (
+            <EmptyState
+              icon={<Search />}
+              title={t("brain.memories.emptySearch")}
+            />
+          )}
 
-          {/* Empty search results */}
-          {!isLoading &&
-            !isSearching &&
-            sortedMemories.length === 0 &&
-            searchQuery.trim() && (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <Search className="w-8 h-8 text-muted-foreground/20 mb-3" />
-                <p className="text-[13px] text-muted-foreground/60">
-                  {t("brain.memories.emptySearch")}
-                </p>
-              </div>
-            )}
-
-          {/* Memory cards */}
-          {!isLoading &&
-            !isSearching &&
-            sortedMemories.map((memory) => (
-              <MemoryCard
-                key={memory.id}
-                memory={memory}
-                onEdit={(_id: string) => handleStartEdit(memory)}
-                onDelete={handleDelete}
-                onPin={handlePin}
-                isEditing={editingId === memory.id}
-                editText={editText}
-                editCategory={editCategory}
-                onEditTextChange={setEditText}
-                onEditCategoryChange={setEditCategory}
-                onSaveEdit={handleSaveEdit}
-                onCancelEdit={handleCancelEdit}
-                t={t}
-              />
-            ))}
-        </div>
-      </ScrollArea>
+        {/* Memory rows */}
+        {!isLoading &&
+          !isSearching &&
+          sortedMemories.map((memory) => (
+            <MemoryCard
+              key={memory.id}
+              memory={memory}
+              onEdit={(_id: string) => handleStartEdit(memory)}
+              onDelete={handleDelete}
+              onPin={handlePin}
+              isEditing={editingId === memory.id}
+              editText={editText}
+              editCategory={editCategory}
+              onEditTextChange={setEditText}
+              onEditCategoryChange={setEditCategory}
+              onSaveEdit={handleSaveEdit}
+              onCancelEdit={handleCancelEdit}
+              t={t}
+            />
+          ))}
+      </div>
     </div>
   );
 }

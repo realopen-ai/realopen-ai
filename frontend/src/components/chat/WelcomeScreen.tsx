@@ -1,4 +1,4 @@
-import { Bot, Lightbulb, Code2, Search, Terminal, Cpu } from "lucide-react";
+import { Lightbulb, Code2, Search, Terminal } from "lucide-react";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 
@@ -7,7 +7,7 @@ export function WelcomeScreen({
 }: {
   onSend: (message: string) => void;
 }) {
-  const { profileLabel, models, selectedModel } = useChatStore();
+  const profileLabel = useChatStore((s) => s.profileLabel);
   const t = useT();
 
   const suggestions = [
@@ -16,8 +16,6 @@ export function WelcomeScreen({
       title: t("welcome.explain"),
       subtitle: t("welcome.explainSub"),
       prompt: "Explain how transformers work in simple terms",
-      color: "text-amber-400",
-      bg: "bg-amber-500/10",
     },
     {
       icon: Code2,
@@ -25,16 +23,12 @@ export function WelcomeScreen({
       subtitle: t("welcome.writeCodeSub"),
       prompt:
         "Write Python code to analyze a CSV dataset with pandas and generate a summary report",
-      color: "text-emerald-400",
-      bg: "bg-emerald-500/10",
     },
     {
       icon: Search,
       title: t("welcome.searchWeb"),
       subtitle: t("welcome.searchWebSub"),
       prompt: "Search the web for the latest breakthroughs in AI research 2026",
-      color: "text-blue-400",
-      bg: "bg-blue-500/10",
     },
     {
       icon: Terminal,
@@ -42,102 +36,51 @@ export function WelcomeScreen({
       subtitle: t("welcome.runCodeSub"),
       prompt:
         "Write and run Python code to calculate fibonacci numbers efficiently",
-      color: "text-purple-400",
-      bg: "bg-purple-500/10",
     },
   ];
 
-  const modelTags = models.slice(0, 6).map((m) => ({
-    name: m.description || m.id,
-    type: m.type,
-  }));
-
-  // Detect if user is on a small model (<8B parameters)
-  const currentModelName = (
-    models.find((m) => m.role === selectedModel)?.id ||
-    selectedModel ||
-    ""
-  ).toLowerCase();
-  const isSmallModel = /(3b|4b|7b|8b|1\.5b|0\.5b)/.test(currentModelName);
-
   return (
-    <div className="flex-1 flex items-center justify-center p-6">
-      <div className="text-center space-y-6 max-w-md w-full">
-        <div className="space-y-3">
-          <div className="w-14 h-14 rounded-2xl bg-linear-to-br from-indigo-500 to-blue-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/20">
-            <Bot className="w-7 h-7 text-white" />
-          </div>
-          <h2 className="text-[28px] font-semibold text-foreground tracking-tight">
+    <div className="flex-1 flex items-center justify-center px-6 py-8 overflow-y-auto">
+      {/* Bias the block slightly above true center so it sits in the optical
+          middle of the space between the top edge and the composer. */}
+      <div className="w-full max-w-xl -translate-y-8 space-y-9">
+        <div className="text-center space-y-3">
+          <h2 className="text-[28px] font-semibold text-foreground tracking-[-0.01em] leading-tight">
             {t("welcome.title")}
           </h2>
-          <p className="text-[14px] text-muted-foreground leading-relaxed max-w-sm mx-auto">
-            {t("welcome.subtitle")}
+          <p className="text-[16px] text-muted-foreground leading-relaxed">
+            {t("welcome.heading")}
           </p>
+          {profileLabel && (
+            <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground/80">
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-success"
+                aria-hidden="true"
+              />
+              {profileLabel}
+            </p>
+          )}
         </div>
 
-        {profileLabel && (
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-[13px] text-emerald-400 font-medium">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            {profileLabel} {t("welcome.profile")}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {suggestions.map((s) => (
             <button
               key={s.title}
               onClick={() => onSend(s.prompt)}
-              className="group flex items-start gap-3 rounded-xl border border-border bg-card p-3.5 text-left hover:bg-accent transition-colors"
+              className="group flex items-center gap-3 rounded-xl bg-secondary/60 px-4 py-3.5 text-left transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             >
-              <div
-                className={`shrink-0 w-8 h-8 rounded-lg ${s.bg} flex items-center justify-center`}
-              >
-                <s.icon className={`w-4 h-4 ${s.color}`} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium text-foreground group-hover:text-primary transition-colors">
+              <s.icon className="h-4.5 w-4.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+              <span className="min-w-0">
+                <span className="block text-[13.5px] font-medium text-foreground leading-snug">
                   {s.title}
-                </p>
-                <p className="text-[12px] text-muted-foreground">
+                </span>
+                <span className="block text-xs text-muted-foreground">
                   {s.subtitle}
-                </p>
-              </div>
+                </span>
+              </span>
             </button>
           ))}
         </div>
-
-        {modelTags.length > 0 && (
-          <div className="pt-2">
-            <p className="text-[11px] text-muted-foreground/60 uppercase tracking-wider mb-2">
-              {t("welcome.availableModels")}
-            </p>
-            <div className="flex flex-wrap justify-center gap-1.5">
-              {modelTags.map((m, i) => (
-                <span
-                  key={i}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-[11px] text-muted-foreground"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                  {m.name}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {isSmallModel && (
-          <div className="pt-2 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-left">
-            <div className="flex items-center gap-2 mb-1">
-              <Cpu className="w-3.5 h-3.5 text-amber-400" />
-              <span className="text-[11px] font-medium text-amber-400">
-                {t("welcome.smallModelTips")}
-              </span>
-            </div>
-            <p className="text-[11px] text-amber-400/80 leading-relaxed">
-              {t("welcome.smallModelTipsSub")}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );

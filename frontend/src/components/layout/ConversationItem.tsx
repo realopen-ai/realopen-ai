@@ -16,6 +16,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useChatStore, type Conversation } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
@@ -35,6 +40,10 @@ interface ConversationItemProps {
  * with: Rename (inline edit), Pin chat, Archive and Delete (two-step
  * confirm). Pinned conversations show a pin icon instead of the chat
  * bubble.
+ *
+ * When the sidebar is collapsed the row shrinks to a centered icon with
+ * a tooltip (conversation title) and a quiet selected state (surface +
+ * 2px primary indicator on the leading edge).
  */
 export function ConversationItem({
   conv,
@@ -82,115 +91,155 @@ export function ConversationItem({
     setDraftTitle(conv.title);
   };
 
+  const leadIcon = conv.pinned ? (
+    <Pin className="size-4 shrink-0 text-primary fill-primary/20" />
+  ) : (
+    collapsed && (
+      <MessageSquare
+        className={cn(
+          "size-4 shrink-0",
+          active ? "text-foreground/70" : "text-muted-foreground/80",
+        )}
+      />
+    )
+  );
+
+  // ── Collapsed rail row: centered icon + tooltip + selected indicator ──
+  if (collapsed) {
+    return (
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <div
+            onClick={() => !renaming && onSelect(conv.id)}
+            className={cn(
+              "relative flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg transition-colors",
+              active
+                ? "bg-surface-selected text-foreground"
+                : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
+            )}
+          >
+            {active && (
+              <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
+            )}
+            {leadIcon}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          sideOffset={8}
+          className="max-w-52 truncate"
+        >
+          {conv.title}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  // ── Expanded row ────────────────────────────────────────────────────
   return (
     <div
       onClick={() => !renaming && onSelect(conv.id)}
       className={cn(
-        "group flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer transition-colors",
+        "group flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 transition-colors",
         active
-          ? "bg-sidebar-accent text-foreground"
-          : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
-        collapsed && "justify-center px-0",
+          ? "bg-surface-selected text-foreground"
+          : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
       )}
     >
-      {conv.pinned ? (
-        <Pin className="w-4 h-4 shrink-0 text-primary fill-primary/20" />
+      {leadIcon}
+
+      {renaming ? (
+        <input
+          ref={inputRef}
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              commitRename();
+            } else if (e.key === "Escape") {
+              cancelRename();
+            }
+          }}
+          className="h-7 w-full min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/60 focus:ring-2 focus:ring-primary/25"
+          aria-label={t("sidebar.rename")}
+          maxLength={120}
+        />
       ) : (
-        <MessageSquare className="w-4 h-4 shrink-0 opacity-50" />
-      )}
+        <>
+          <span
+            className="min-w-0 flex-1 truncate text-[13.5px]"
+            title={conv.title}
+          >
+            {conv.title}
+          </span>
 
-      {!collapsed &&
-        (renaming ? (
-          <input
-            ref={inputRef}
-            value={draftTitle}
-            onChange={(e) => setDraftTitle(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                commitRename();
-              } else if (e.key === "Escape") {
-                cancelRename();
-              }
+          <DropdownMenu
+            onOpenChange={(open) => {
+              // Reset the two-step delete confirm when the menu closes
+              if (!open) setConfirmDelete(false);
             }}
-            className="flex-1 min-w-0 bg-background border border-primary/50 rounded-md px-1.5 py-0.5 text-[13px] text-foreground outline-none focus:ring-1 focus:ring-primary/40"
-            aria-label={t("sidebar.rename")}
-            maxLength={120}
-          />
-        ) : (
-          <>
-            <span className="text-[13px] truncate flex-1" title={conv.title}>
-              {conv.title}
-            </span>
-
-            <DropdownMenu
-              onOpenChange={(open) => {
-                // Reset the two-step delete confirm when the menu closes
-                if (!open) setConfirmDelete(false);
-              }}
-            >
-              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                <button
-                  aria-label={t("sidebar.options")}
-                  className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 p-0.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <MoreHorizontal className="w-4 h-4" />
-                </button>
-              </DropdownMenuTrigger>
-
-              <DropdownMenuContent
-                align="end"
-                onClick={(e) => e.stopPropagation()}
+          >
+            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+              <button
+                aria-label={t("sidebar.options")}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 group-hover:opacity-100 data-[state=open]:opacity-100"
               >
-                <DropdownMenuItem onSelect={() => startRename()}>
-                  <Pencil />
-                  {t("sidebar.rename")}
-                </DropdownMenuItem>
+                <MoreHorizontal className="size-4" />
+              </button>
+            </DropdownMenuTrigger>
 
-                <DropdownMenuItem
-                  onSelect={() => togglePinConversation(conv.id)}
-                >
-                  {conv.pinned ? <PinOff /> : <Pin />}
-                  {conv.pinned ? t("sidebar.unpinChat") : t("sidebar.pinChat")}
-                </DropdownMenuItem>
+            <DropdownMenuContent
+              align="end"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DropdownMenuItem onSelect={() => startRename()}>
+                <Pencil />
+                {t("sidebar.rename")}
+              </DropdownMenuItem>
 
-                <DropdownMenuItem
-                  onSelect={() => toggleArchiveConversation(conv.id)}
-                >
-                  {conv.archived ? <ArchiveRestore /> : <Archive />}
-                  {conv.archived
-                    ? t("sidebar.unarchiveChat")
-                    : t("sidebar.archiveChat")}
-                </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => togglePinConversation(conv.id)}>
+                {conv.pinned ? <PinOff /> : <Pin />}
+                {conv.pinned ? t("sidebar.unpinChat") : t("sidebar.pinChat")}
+              </DropdownMenuItem>
 
-                <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={() => toggleArchiveConversation(conv.id)}
+              >
+                {conv.archived ? <ArchiveRestore /> : <Archive />}
+                {conv.archived
+                  ? t("sidebar.unarchiveChat")
+                  : t("sidebar.archiveChat")}
+              </DropdownMenuItem>
 
-                <DropdownMenuItem
-                  onSelect={(e) => {
-                    if (!confirmDelete) {
-                      // First click arms the confirm; keep the menu open
-                      e.preventDefault();
-                      setConfirmDelete(true);
-                    } else {
-                      onDelete(conv.id);
-                    }
-                  }}
-                  className={cn(
-                    "text-destructive focus:text-destructive focus:bg-destructive/10 [&_svg]:text-destructive",
-                    confirmDelete && "bg-destructive/10 font-semibold",
-                  )}
-                >
-                  <Trash2 />
-                  {confirmDelete
-                    ? t("sidebar.confirmDelete")
-                    : t("sidebar.delete")}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
-        ))}
+              <DropdownMenuSeparator />
+
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  if (!confirmDelete) {
+                    // First click arms the confirm; keep the menu open
+                    e.preventDefault();
+                    setConfirmDelete(true);
+                  } else {
+                    onDelete(conv.id);
+                  }
+                }}
+                className={cn(
+                  "text-destructive focus:text-destructive focus:bg-destructive/10 [&_svg]:text-destructive",
+                  confirmDelete && "bg-destructive/10 font-semibold",
+                )}
+              >
+                <Trash2 />
+                {confirmDelete
+                  ? t("sidebar.confirmDelete")
+                  : t("sidebar.delete")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      )}
     </div>
   );
 }

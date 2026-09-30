@@ -16,7 +16,10 @@ import {
   Pencil,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/primitives";
 import { useSandboxStore, type FileNode } from "@/store/sandboxStore";
+import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 
@@ -56,7 +59,7 @@ function getFileColor(name: string): string {
     yml: "text-purple-400",
     yaml: "text-purple-400",
   };
-  return map[ext] ?? "text-muted-foreground/60";
+  return map[ext] ?? "text-muted-foreground/80";
 }
 
 function formatSize(size?: number): string {
@@ -95,35 +98,49 @@ function FileTreeItem({
 
   return (
     <div>
-      <div
+      <button
+        type="button"
         onClick={handleClick}
+        title={node.name}
+        aria-expanded={isDir ? expanded : undefined}
         className={cn(
-          "flex items-center gap-1.5 py-1.25 px-2 rounded-lg cursor-pointer select-none transition-colors",
+          "group relative flex h-[30px] w-full cursor-pointer select-none items-center gap-1.5 rounded-md pl-1.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
           isActive
             ? "bg-primary/10 text-primary"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
         )}
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
         {isDir ? (
           expanded ? (
-            <ChevronDown className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground/70" />
           ) : (
-            <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />
+            <ChevronRight className="size-3 shrink-0 text-muted-foreground/70" />
           )
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        <Icon className={cn("w-3.5 h-3.5 shrink-0", iconColor)} />
-        <span className="text-[12px] truncate flex-1">{node.name}</span>
+        <Icon className={cn("size-[15px] shrink-0", iconColor)} />
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate text-[13px]",
+            isDir && !isActive && "font-medium text-foreground/85",
+          )}
+        >
+          {node.name}
+        </span>
         {!isDir && node.size && (
-          <span className="text-[10px] text-muted-foreground/40 shrink-0">
+          <span
+            className={cn(
+              "pointer-events-none hidden shrink-0 whitespace-nowrap text-[10.5px] group-hover:inline-block group-focus-visible:inline-block",
+              isActive ? "text-primary/70" : "text-muted-foreground/80",
+            )}
+          >
             {formatSize(node.size)}
           </span>
         )}
-      </div>
+      </button>
       {isDir && expanded && node.children && (
-        <div>
+        <div className="ml-[18px] border-l border-border/40 pl-1">
           {node.children
             .sort((a, b) => {
               if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
@@ -152,6 +169,7 @@ export function FileExplorer() {
   const sandboxId = useSandboxStore((s) => s.sandboxId);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const t = useT();
 
   useEffect(() => {
     if (sandboxId) void fetchFileTree();
@@ -167,56 +185,71 @@ export function FileExplorer() {
   return (
     <div className="flex flex-col h-full">
       {sandboxId && (
-        <div className="flex justify-end gap-1 border-b border-border/50 p-1.5">
-          <input
-            ref={uploadRef}
-            type="file"
-            className="hidden"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              const form = new FormData();
-              form.append("upload", file);
-              await fetch(`/api/sandboxes/${sandboxId}/upload`, {
-                method: "POST",
-                body: form,
-              });
-              await fetchFileTree();
-              e.target.value = "";
-            }}
-          />
-          <button
-            onClick={() => uploadRef.current?.click()}
-            className="rounded p-1.5 text-muted-foreground hover:bg-accent"
-            title="Upload file"
-          >
-            <Upload className="h-3.5 w-3.5" />
-          </button>
-          {activeFile && (
-            <a
-              href={`/api/sandboxes/${sandboxId}/download?path=${encodeURIComponent(activeFile)}`}
-              className="rounded p-1.5 text-muted-foreground hover:bg-accent"
-              title="Download file"
+        <div className="flex h-8 shrink-0 items-center justify-between gap-1 px-2">
+          <span className="truncate text-[12px] font-medium text-muted-foreground/80">
+            {t("panel.files")}
+          </span>
+          <div className="flex items-center gap-0.5">
+            <input
+              ref={uploadRef}
+              type="file"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const form = new FormData();
+                form.append("upload", file);
+                await fetch(`/api/sandboxes/${sandboxId}/upload`, {
+                  method: "POST",
+                  body: form,
+                });
+                await fetchFileTree();
+                e.target.value = "";
+              }}
+            />
+            <button
+              onClick={() => uploadRef.current?.click()}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              aria-label={t("panel.uploadFile")}
+              title={t("panel.uploadFile")}
             >
-              <Download className="h-3.5 w-3.5" />
-            </a>
-          )}
+              <Upload className="size-3.5" />
+            </button>
+            {activeFile && (
+              <a
+                href={`/api/sandboxes/${sandboxId}/download?path=${encodeURIComponent(activeFile)}`}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+                aria-label={t("panel.downloadFile")}
+                title={t("panel.downloadFile")}
+              >
+                <Download className="size-3.5" />
+              </a>
+            )}
+          </div>
         </div>
       )}
       <div className="flex-1 min-h-0">
         <ScrollArea className="h-full">
-          <div className="p-1.5">
+          <div className="px-1 py-1.5">
             {isLoadingTree ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <div className="flex items-center justify-center py-10">
+                <div className="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               </div>
             ) : fileTree.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-[12px] text-muted-foreground/40">
-                  {sandboxId
-                    ? "No files in workspace"
-                    : "Link a workspace to browse files"}
-                </p>
+              <div className="flex flex-col items-center gap-2.5 px-4 py-10 text-center">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-muted-foreground [&_svg]:size-4">
+                  {sandboxId ? <FolderOpen /> : <Folder />}
+                </div>
+                <div>
+                  <p className="text-[12.5px] font-medium text-foreground">
+                    {sandboxId ? t("panel.noFiles") : t("panel.noWorkspace")}
+                  </p>
+                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                    {sandboxId
+                      ? t("panel.noFilesDescription")
+                      : t("panel.linkWorkspaceDescription")}
+                  </p>
+                </div>
               </div>
             ) : (
               fileTree.map((node) => (
@@ -236,6 +269,7 @@ export function FileExplorer() {
 }
 
 export function FileEditorPane() {
+  const t = useT();
   const activeFile = useSandboxStore((s) => s.activeFile);
   const activeFileContent = useSandboxStore((s) => s.activeFileContent);
   const setActiveFile = useSandboxStore((s) => s.setActiveFile);
@@ -250,65 +284,82 @@ export function FileEditorPane() {
 
   if (!activeFile) {
     return (
-      <div className="flex h-full items-center justify-center bg-background text-xs text-muted-foreground/60">
-        Select a file to preview
+      <div className="flex h-full items-center justify-center bg-sandbox-bg">
+        <EmptyState
+          icon={<FileCode2 />}
+          title={t("panel.selectFile")}
+          description={t("panel.selectFileDescription")}
+          className="py-0"
+        />
       </div>
     );
   }
 
   const filename = activeFile.split("/").pop() ?? activeFile;
+  const dirPath = activeFile.slice(0, activeFile.length - filename.length);
   const Icon = getFileIcon(filename);
   const changed = activeFileContent !== null && draft !== activeFileContent;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border/50 bg-card">
-        <div className="flex h-full min-w-0 items-center gap-2 border-r border-border/50 bg-background px-3">
-          <Icon
-            className={cn("h-3.5 w-3.5 shrink-0", getFileColor(filename))}
-          />
-          <span className="truncate text-[11px] font-medium">{activeFile}</span>
+    <div className="flex h-full min-h-0 flex-col bg-sandbox-bg">
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Icon className={cn("size-3.5 shrink-0", getFileColor(filename))} />
+          {dirPath && (
+            <span className="truncate text-[12px] text-muted-foreground/70">
+              {dirPath}
+            </span>
+          )}
+          <span className="truncate text-[12.5px] font-medium text-foreground">
+            {filename}
+          </span>
           {changed && (
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            <span
+              className="size-1.5 shrink-0 rounded-full bg-primary"
+              title={t("panel.unsavedChanges")}
+            />
           )}
           <button
             type="button"
             onClick={() => setActiveFile(null)}
-            className="ml-1 text-muted-foreground/50 hover:text-foreground"
-            aria-label="Close file"
+            className="ml-0.5 -mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-surface-hover hover:text-foreground"
+            aria-label={t("panel.closeFile")}
+            title={t("panel.closeFile")}
           >
-            <X className="h-3 w-3 cursor-pointer" />
+            <X className="size-3.5" />
           </button>
         </div>
-        <div className="mr-2 flex items-center gap-1">
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-6 px-2"
             onClick={() => setEditing((value) => !value)}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
           >
-            <Pencil className="h-3 w-3" />
-            {editing ? "Preview" : "Edit"}
-          </button>
-          <button
-            type="button"
-            disabled={!changed}
+            <Pencil className="size-3" />
+            {editing ? t("panel.preview") : t("panel.edit")}
+          </Button>
+          <Button
+            variant="default"
+            size="xs"
+            className="h-6 px-2.5"
             onClick={() => void saveFileContent(activeFile, draft)}
-            className="rounded-md bg-primary px-2.5 py-1 text-[10px] text-primary-foreground disabled:opacity-35"
+            disabled={!changed}
           >
-            Save
-          </button>
+            {t("panel.save")}
+          </Button>
         </div>
       </div>
       {editing ? (
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          className="h-full min-h-0 w-full flex-1 resize-none bg-background p-4 font-mono text-[12px] leading-relaxed text-foreground/85 outline-none"
+          className="h-full min-h-0 w-full flex-1 resize-none bg-transparent p-4 font-mono text-[12.5px] leading-[1.7] text-foreground/90 outline-none"
           spellCheck={false}
-          aria-label={`Edit ${activeFile}`}
+          aria-label={`${t("panel.edit")} ${activeFile}`}
         />
       ) : (
-        <pre className="m-0 min-h-0 flex-1 overflow-auto bg-background p-4 font-mono text-[12px] leading-relaxed text-foreground/85">
+        <pre className="m-0 min-h-0 flex-1 overflow-auto p-4 font-mono text-[12.5px] leading-[1.7] text-foreground/90">
           <HighlightedCode code={draft} filePath={activeFile} />
         </pre>
       )}

@@ -56,13 +56,20 @@ export function TerminalPane({
     const accentColor = useSettingsStore.getState().accentColor;
     const css = accentColorMap[accentColor];
     const accent = hexToAnsi(css.primary);
+    // Canvas color follows the --color-terminal-bg token (set by ThemeManager,
+    // which keeps the terminal dark in light mode too) so the xterm surface is
+    // seamless with the pane padding around it. Falls back to the classic tone.
+    const terminalBg =
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--color-terminal-bg")
+        .trim() || "#0a0a0a";
 
     const xterm = new XTerm({
       theme: {
-        background: "#0a0a0a",
+        background: terminalBg,
         foreground: "#d4d4d4",
         cursor: css.primary,
-        cursorAccent: "#0a0a0a",
+        cursorAccent: terminalBg,
         selectionBackground: css.primary + "33",
         black: "#1a1a1a",
         red: "#ef4444",
@@ -108,14 +115,17 @@ export function TerminalPane({
     if (mode === "coder") {
       xterm.writeln(`${accent}  RealOpen-AI Sandbox Terminal\x1b[0m`);
     } else if (!sandboxId) {
-      xterm.writeln("\x1b[2;37m  Link a running workspace to open a shell.\x1b[0m");
+      xterm.writeln(
+        "\x1b[2;37m  Link a running workspace to open a shell.\x1b[0m",
+      );
     } else {
       xterm.writeln("\x1b[2;37m  Connecting to workspace shell...\x1b[0m");
     }
     xterm.writeln("");
 
     // ── Replay any pending history that was added while terminal was unmounted ──
-    const history = mode === "coder" ? useSandboxStore.getState().terminalHistory : [];
+    const history =
+      mode === "coder" ? useSandboxStore.getState().terminalHistory : [];
     if (mode === "coder" && history.length > 0) {
       xterm.writeln(""); // visual separator
       for (const entry of history) {
@@ -131,7 +141,9 @@ export function TerminalPane({
       const connect = () => {
         if (disposed) return;
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const nextSocket = new WebSocket(`${protocol}//${window.location.host}/api/sandboxes/${sandboxId}/terminal`);
+        const nextSocket = new WebSocket(
+          `${protocol}//${window.location.host}/api/sandboxes/${sandboxId}/terminal`,
+        );
         socket = nextSocket;
         nextSocket.binaryType = "arraybuffer";
         nextSocket.onopen = () => {
@@ -139,27 +151,46 @@ export function TerminalPane({
             nextSocket.close();
             return;
           }
-          nextSocket.send(JSON.stringify({ cols: xterm.cols, rows: xterm.rows }));
+          nextSocket.send(
+            JSON.stringify({ cols: xterm.cols, rows: xterm.rows }),
+          );
           xterm.focus();
         };
         nextSocket.onmessage = (event) => {
-          if (!disposed) xterm.write(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
+          if (!disposed)
+            xterm.write(
+              typeof event.data === "string"
+                ? event.data
+                : new Uint8Array(event.data),
+            );
         };
         nextSocket.onclose = () => {
           if (!disposed && socket === nextSocket) {
-            xterm.writeln("\r\n\x1b[2;37m  Reconnecting to workspace shell...\x1b[0m");
+            xterm.writeln(
+              "\r\n\x1b[2;37m  Reconnecting to workspace shell...\x1b[0m",
+            );
             reconnectTimer = setTimeout(connect, 1000);
           }
         };
       };
       connect();
-      xterm.onData((data) => { if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)); });
+      xterm.onData((data) => {
+        if (socket?.readyState === WebSocket.OPEN)
+          socket.send(new TextEncoder().encode(data));
+      });
     }
 
     const resizeObserver = new ResizeObserver(() => {
       try {
         fitAddon.fit();
-        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "resize", cols: xterm.cols, rows: xterm.rows }));
+        if (socket?.readyState === WebSocket.OPEN)
+          socket.send(
+            JSON.stringify({
+              type: "resize",
+              cols: xterm.cols,
+              rows: xterm.rows,
+            }),
+          );
       } catch {
         /* ignore — container might be 0-width */
       }
@@ -222,7 +253,7 @@ export function TerminalPane({
   }, [useSettingsStore((s) => s.accentColor)]);
 
   return (
-    <div className="h-full w-full bg-terminal-bg">
+    <div className="h-full w-full bg-terminal-bg px-2 py-1">
       <div ref={terminalRef} className="h-full w-full" />
     </div>
   );

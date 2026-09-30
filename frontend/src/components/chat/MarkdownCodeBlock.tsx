@@ -29,15 +29,16 @@ export function MarkdownPre({ children }: { children?: ReactNode }) {
     }
   };
   return (
-    <div className="chat-code-block my-3 overflow-hidden rounded-[10px] border border-border bg-sandbox-bg">
-      <div className="flex h-8 items-center justify-between border-b border-border bg-card px-3">
-        <span className="font-mono text-[10px] text-muted-foreground">
+    <div className="chat-code-block my-3 overflow-hidden rounded-lg border border-border/60 bg-sandbox-bg">
+      <div className="flex h-8 items-center justify-between border-b border-border/40 bg-card/60 px-3">
+        <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
           {language || "code"}
         </span>
         <button
           type="button"
           onClick={() => void copy()}
-          className="flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-surface-hover hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          aria-label="Copy code"
           title="Copy code"
         >
           {copied ? (
@@ -48,6 +49,7 @@ export function MarkdownPre({ children }: { children?: ReactNode }) {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
+      {/* padding is enforced by .prose .chat-code-block pre (12px) in index.css */}
       <pre className="m-0 overflow-x-auto border-0 bg-transparent p-3">
         <HighlightedCode code={code} language={language} />
       </pre>

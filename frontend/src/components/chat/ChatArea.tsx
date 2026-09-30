@@ -14,7 +14,7 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
-import { Brain, Check, Mic } from "lucide-react";
+import { Brain, Check, ChevronDown, Loader2, Mic } from "lucide-react";
 import {
   streamChat,
   streamChatWithFiles,
@@ -153,6 +153,39 @@ export function ChatArea() {
     }, 100);
     return () => clearTimeout(timeout);
   }, [messages, messages.length, messages[messages.length - 1]?.content]);
+
+  // ── Floating "scroll to bottom" button ──
+  // Appears only when the user has scrolled away from the bottom of the
+  // conversation. Listens on the Radix ScrollArea viewport element.
+  const scrollRootRef = useRef<HTMLDivElement>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const showMessagesArea =
+    !isLoadingConv && (messages.length > 0 || effectiveConvId != null);
+
+  useEffect(() => {
+    if (!showMessagesArea) {
+      setShowScrollButton(false);
+      return;
+    }
+    const root = scrollRootRef.current;
+    if (!root) return;
+    const viewport = root.querySelector<HTMLElement>(
+      "[data-radix-scroll-area-viewport]",
+    );
+    if (!viewport) return;
+    const onScroll = () => {
+      const distanceFromBottom =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      setShowScrollButton(distanceFromBottom > 320);
+    };
+    onScroll();
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [showMessagesArea, effectiveConvId]);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
   // ── Shared stream callbacks (used by BOTH text chat and voice) ──
   // Extracted from handleSend so the voice pipeline (useVoiceSession) can
@@ -675,11 +708,11 @@ export function ChatArea() {
     partialTranscript.length > 0;
   return (
     <div className="relative flex flex-col h-full overflow-hidden bg-background">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-2.75 border-b border-border/50">
-        <div className="flex items-center gap-2">
+      {/* Header — quiet, aligned to the content column */}
+      <div className="px-4 pt-3 pb-2 sm:px-6">
+        <div className="max-w-210 mx-auto flex items-center gap-2">
           <MobileMenuButton />
-          <h2 className="text-[14px] font-medium text-foreground truncate">
+          <h2 className="text-[13.5px] font-medium text-foreground truncate">
             {conv?.title ?? "New Chat"}
           </h2>
         </div>
@@ -694,44 +727,54 @@ export function ChatArea() {
       {/* Messages or Welcome */}
       {isLoadingConv ? (
         <div className="flex-1 flex items-center justify-center">
-          <div className="flex items-center gap-2 text-muted-foreground/50">
-            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-            <span className="text-[12px]">Loading conversation...</span>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="text-[13px]">Loading conversation...</span>
           </div>
         </div>
       ) : messages.length === 0 && !effectiveConvId ? (
         <WelcomeScreen onSend={handleSend} />
-      ) : messages.length === 0 ? (
-        <ScrollArea className="flex-1">
-          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6" />
-        </ScrollArea>
       ) : (
-        <ScrollArea className="flex-1">
-          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-            {messages.map((msg, i) => {
-              // Briefly flash the last assistant bubble when the user
-              // interrupted the assistant (barge-in feedback).
-              const isFlashTarget =
-                flashActive &&
-                msg.role === "assistant" &&
-                i === messages.length - 1;
-              return (
-                <div
-                  key={msg.id}
-                  className={cn(
-                    isFlashTarget && "voice-interrupt-flash rounded-2xl",
-                  )}
-                >
-                  <MessageBubble
-                    message={msg}
-                    conversationId={effectiveConvId!}
-                  />
-                </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
-        </ScrollArea>
+        <div ref={scrollRootRef} className="relative flex-1 min-h-0">
+          <ScrollArea className="h-full">
+            <div className="max-w-210 mx-auto px-4 sm:px-6 pt-8 pb-10 space-y-6">
+              {messages.map((msg, i) => {
+                // Briefly flash the last assistant bubble when the user
+                // interrupted the assistant (barge-in feedback).
+                const isFlashTarget =
+                  flashActive &&
+                  msg.role === "assistant" &&
+                  i === messages.length - 1;
+                return (
+                  <div
+                    key={msg.id}
+                    className={cn(
+                      isFlashTarget && "voice-interrupt-flash rounded-2xl",
+                    )}
+                  >
+                    <MessageBubble
+                      message={msg}
+                      conversationId={effectiveConvId!}
+                    />
+                  </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
+          </ScrollArea>
+
+          {/* Floating scroll-to-bottom — appears when scrolled up */}
+          {showScrollButton && (
+            <button
+              onClick={scrollToBottom}
+              aria-label="Scroll to bottom"
+              title="Scroll to bottom"
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 flex h-9 w-9 items-center justify-center rounded-full bg-card border border-border/60 text-muted-foreground shadow-[0_8px_30px_var(--color-shadow-soft)] transition-colors hover:bg-surface-hover hover:text-foreground animate-fade-in"
+            >
+              <ChevronDown className="h-4.5 w-4.5" />
+            </button>
+          )}
+        </div>
       )}
 
       {/* Memory extraction indicator — appears below the latest assistant
@@ -751,15 +794,15 @@ export function ChatArea() {
       {/* Partial transcript ghost bubble — transient user-style bubble
           while the user speaks; replaced by the persisted user message. */}
       {showPartialBubble && (
-        <div className="px-4 pb-1.5 animate-fade-in">
-          <div className="max-w-3xl mx-auto flex justify-end">
+        <div className="px-4 pb-1.5 sm:px-6 animate-fade-in">
+          <div className="max-w-210 mx-auto flex justify-end">
             <div
-              className="max-w-[85%] md:max-w-[75%] rounded-2xl bg-primary/85 text-primary-foreground px-4 py-2.5 flex items-start gap-2"
+              className="max-w-[85%] md:max-w-[75%] rounded-xl bg-secondary px-4 py-2.5 flex items-start gap-2"
               aria-live="polite"
             >
-              <Mic className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-80" />
+              <Mic className="w-3.5 h-3.5 mt-0.5 shrink-0 text-muted-foreground" />
               <p
-                className="whitespace-pre-wrap leading-relaxed text-[13px]"
+                className="whitespace-pre-wrap leading-relaxed"
                 style={{ fontSize: "var(--app-font-size)" }}
               >
                 {partialTranscript}
@@ -807,9 +850,9 @@ function MemoryExtractionIndicator({
 
   if (isExtracting) {
     return (
-      <div className="flex items-center gap-2 px-4 py-1.5 bg-primary/5 border-t border-primary/10 animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <div className="flex items-center justify-center gap-1.5 px-4 py-1.5 animate-in fade-in slide-in-from-bottom-1 duration-200">
         <Brain className="w-3 h-3 text-primary animate-pulse" />
-        <span className="text-[11px] text-primary/70">
+        <span className="text-[11.5px] text-muted-foreground">
           {t("brain.memories.extracting")}
         </span>
       </div>
@@ -819,9 +862,9 @@ function MemoryExtractionIndicator({
   if (lastExtraction) {
     const count = lastExtraction.count;
     return (
-      <div className="flex items-center gap-2 px-4 py-1.5 bg-emerald-500/5 border-t border-emerald-500/10 animate-in fade-in slide-in-from-bottom-1 duration-200">
-        <Check className="w-3 h-3 text-emerald-500" />
-        <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
+      <div className="flex items-center justify-center gap-1.5 px-4 py-1.5 animate-in fade-in slide-in-from-bottom-1 duration-200">
+        <Check className="w-3 h-3 text-success" />
+        <span className="text-[11.5px] text-muted-foreground">
           {count === 1
             ? t("brain.memories.extracted")
             : t("brain.memories.extractedN", { count })}

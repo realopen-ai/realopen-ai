@@ -9,13 +9,18 @@ import {
   Square,
   MonitorPlay,
   ExternalLink,
-  GripVertical,
-  GripHorizontal,
-  Terminal as TerminalIcon,
-  Loader2,
+  ChevronDown,
+  MoreHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { EmptyState, StatusDot } from "@/components/ui/primitives";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import {
@@ -28,6 +33,7 @@ import { CreateSandboxDialog } from "@/components/workspace/SandboxDialogs";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { shouldLoadConversationWorkspace } from "@/lib/workspaceActivation";
 import { normalizePreviewAddress, previewHostUrl } from "@/lib/previewAddress";
+import { useT } from "@/store/settingsStore";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -38,7 +44,7 @@ const TerminalPane = lazy(() =>
 function TerminalLoader() {
   return (
     <div className="flex items-center justify-center h-full bg-terminal-bg">
-      <div className="flex items-center gap-2 text-muted-foreground/50">
+      <div className="flex items-center gap-2 text-white/40">
         <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         <span className="text-[12px]">Loading terminal...</span>
       </div>
@@ -46,7 +52,59 @@ function TerminalLoader() {
   );
 }
 
+/** Map a sandbox status string to StatusDot tone + pulse. */
+function sandboxStatusTone(status: string): {
+  tone: "success" | "warning" | "danger" | "neutral";
+  pulse: boolean;
+} {
+  const s = status.toLowerCase();
+  if (s === "running") return { tone: "success", pulse: true };
+  if (
+    s === "starting" ||
+    s === "stopping" ||
+    s === "restarting" ||
+    s === "creating"
+  )
+    return { tone: "warning", pulse: true };
+  if (s === "error" || s === "failed") return { tone: "danger", pulse: false };
+  return { tone: "neutral", pulse: false };
+}
+
+/** Quiet mono tab used for the terminal session switcher. */
+function TerminalTab({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex h-6 items-center gap-1.5 rounded-md px-2 font-mono text-[12.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        active
+          ? "text-white/85"
+          : "text-white/50 hover:bg-white/6 hover:text-white/80",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.25 w-1.25 shrink-0 rounded-full transition-colors",
+          active ? "bg-terminal-green" : "bg-white/20",
+        )}
+      />
+      {label}
+    </button>
+  );
+}
+
 export function RightPanel() {
+  const t = useT();
   const [previewKey, setPreviewKey] = useState(0);
   const [createSandboxOpen, setCreateSandboxOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"coder" | "shell">("coder");
@@ -97,29 +155,31 @@ export function RightPanel() {
   };
   const active = sandboxes.find((item) => item.id === sandboxId);
   const activeLifecycle = active ? lifecyclePending[active.id] : undefined;
+  const activeTone = active ? sandboxStatusTone(active.status) : null;
 
   return (
     <div className="flex flex-col h-full bg-card">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
+      {/* Panel header — quiet view tabs + icon actions, then the sandbox line.
+          A single hairline separates the header from the content. */}
+      <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1.5">
         <Tabs
           value={rightPanelTab}
           onValueChange={(v) => setRightPanelTab(v as "code" | "preview")}
         >
-          <TabsList className="h-7 bg-secondary/50 p-0.5">
+          <TabsList className="h-8 gap-0.5 bg-transparent p-0">
             <TabsTrigger
               value="code"
-              className="h-6 text-[11px] gap-1 px-2.5 rounded-md data-[state=active]:bg-accent data-[state=active]:shadow-none"
+              className="h-7 gap-1.5 rounded-md px-2.5 text-[13.5px] font-medium hover:text-foreground data-[state=active]:bg-surface-selected data-[state=active]:text-foreground data-[state=active]:shadow-none"
             >
-              <Code2 className="w-3 h-3" />
-              Code
+              <Code2 className="size-3.5" />
+              {t("panel.code")}
             </TabsTrigger>
             <TabsTrigger
               value="preview"
-              className="h-6 text-[11px] gap-1 px-2.5 rounded-md data-[state=active]:bg-accent data-[state=active]:shadow-none"
+              className="h-7 gap-1.5 rounded-md px-2.5 text-[13.5px] font-medium hover:text-foreground data-[state=active]:bg-surface-selected data-[state=active]:text-foreground data-[state=active]:shadow-none"
             >
-              <MonitorPlay className="w-3 h-3" />
-              Preview
+              <MonitorPlay className="size-3.5" />
+              {t("panel.preview")}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -127,82 +187,113 @@ export function RightPanel() {
           {rightPanelTab === "code" && (
             <Button
               variant="ghost"
-              size="icon"
-              className="h-6 w-6"
+              size="icon-sm"
+              className="h-7 w-7"
               onClick={fetchFileTree}
               disabled={isLoadingTree}
+              aria-label={t("panel.refreshFiles")}
+              title={t("panel.refreshFiles")}
             >
               <RefreshCw
-                className={cn(
-                  "w-3 h-3 text-muted-foreground",
-                  isLoadingTree && "animate-spin",
-                )}
+                className={cn("size-3.5", isLoadingTree && "animate-spin")}
               />
             </Button>
           )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="h-7 w-7"
+                aria-label={t("panel.workspaceActions")}
+                title={t("panel.workspaceActions")}
+              >
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-47.5">
+              {/* Defer one tick so the dropdown (a Radix layer that also
+                  gates body pointer-events) fully unmounts before the modal
+                  dialog mounts — opening both in the same commit leaves
+                  body pointer-events:none stuck after the dialog closes. */}
+              <DropdownMenuItem
+                onSelect={() =>
+                  window.setTimeout(() => setCreateSandboxOpen(true), 0)
+                }
+              >
+                <Plus />
+                {t("panel.newWorkspace")}
+              </DropdownMenuItem>
+              {active && (
+                <DropdownMenuItem
+                  disabled={Boolean(activeLifecycle)}
+                  onSelect={() =>
+                    void lifecycle(
+                      active.status === "running" ? "stop" : "start",
+                    )
+                  }
+                >
+                  {active.status === "running" ? <Square /> : <Play />}
+                  {active.status === "running"
+                    ? t("panel.stopWorkspace")
+                    : t("panel.startWorkspace")}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="ghost"
-            size="icon"
-            className="h-6 w-6"
+            size="icon-sm"
+            className="h-7 w-7"
             onClick={toggleRightPanel}
+            aria-label={t("panel.close")}
+            title={t("panel.close")}
           >
-            <PanelRightClose className="w-3.5 h-3.5 text-muted-foreground" />
+            <PanelRightClose className="size-3.5" />
           </Button>
         </div>
       </div>
-      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border/50 bg-secondary/20">
-        <select
-          className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[11px]"
-          value={sandboxId ?? ""}
-          onChange={(e) =>
-            conversationId &&
-            e.target.value &&
-            void linkSandbox(e.target.value, conversationId)
-          }
-          disabled={!conversationId || Boolean(activeLifecycle)}
-        >
-          <option value="">No workspace linked</option>
-          {sandboxes.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name} · {item.status}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          title="Create workspace"
-          onClick={() => setCreateSandboxOpen(true)}
-        >
-          <Plus className="w-3.5 h-3.5" />
-        </Button>
-        {active && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            title={
-              active.status === "running" ? "Stop workspace" : "Start workspace"
+      <div className="flex items-center gap-1.5 border-b border-border/60 px-2 pb-1.5 pt-0.5">
+        <span className="shrink-0 text-[12px] text-muted-foreground/80">
+          {t("workspace.title")}
+        </span>
+        <div className="relative min-w-0 flex-1">
+          <select
+            aria-label={t("panel.linkedWorkspace")}
+            className="h-7 w-full cursor-pointer appearance-none truncate rounded-md bg-transparent pl-1.5 pr-5 text-[12.5px] font-medium text-foreground outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover disabled:pointer-events-none disabled:opacity-50"
+            value={sandboxId ?? ""}
+            onChange={(e) =>
+              conversationId &&
+              e.target.value &&
+              void linkSandbox(e.target.value, conversationId)
             }
-            onClick={() =>
-              void lifecycle(active.status === "running" ? "stop" : "start")
-            }
-            disabled={Boolean(activeLifecycle)}
+            disabled={!conversationId || Boolean(activeLifecycle)}
           >
-            {activeLifecycle ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : active.status === "running" ? (
-              <Square className="w-3 h-3" />
-            ) : (
-              <Play className="w-3 h-3" />
-            )}
-          </Button>
+            <option value="">{t("panel.noWorkspace")}</option>
+            {sandboxes.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-1 top-1/2 size-3 -translate-y-1/2 text-muted-foreground/70" />
+        </div>
+        {active && activeTone && (
+          <StatusDot
+            tone={activeTone.tone}
+            pulse={activeTone.pulse}
+            label={
+              <span className="capitalize">
+                {t(`workspace.status.${active.status}`)}
+              </span>
+            }
+            className="shrink-0"
+          />
         )}
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden min-h-0">
         {rightPanelTab === "code" ? (
           <PanelGroup
             direction="horizontal"
@@ -210,18 +301,16 @@ export function RightPanel() {
             className="h-full"
           >
             <Panel
-              defaultSize={27}
-              minSize={16}
+              defaultSize={36}
+              minSize={22}
               maxSize={48}
-              className="min-w-0 bg-card"
+              className="min-w-0"
             >
               <FileExplorer />
             </Panel>
-            <PanelResizeHandle className="group relative w-1 shrink-0 border-x border-border/40 bg-border/20 transition-colors hover:bg-primary/20 data-resize-handle-active:bg-primary/30">
-              <div className="absolute left-1/2 top-1/2 flex h-8 w-3 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card shadow-sm group-hover:border-primary/50">
-                <GripVertical className="h-3 w-3 text-muted-foreground" />
-              </div>
-            </PanelResizeHandle>
+            {/* Tree | editor resizer: intentionally unstyled — the global
+                index.css rules make it a subtle 1px line until hover/drag. */}
+            <PanelResizeHandle className="shrink-0" />
             <Panel minSize={40} className="min-w-0">
               <PanelGroup
                 direction="vertical"
@@ -231,45 +320,35 @@ export function RightPanel() {
                 <Panel defaultSize={68} minSize={25} className="min-h-0">
                   <FileEditorPane />
                 </Panel>
-                <PanelResizeHandle className="group relative h-1 shrink-0 border-y border-border/40 bg-border/20 transition-colors hover:bg-primary/20 data-resize-handle-active:bg-primary/30">
-                  <div className="absolute left-1/2 top-1/2 flex h-3 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-card shadow-sm group-hover:border-primary/50">
-                    <GripHorizontal className="h-3 w-3 text-muted-foreground" />
-                  </div>
+                {/* Code | terminal resizer: quiet hairline that lights up on
+                    hover/drag. Doubles as the separator above the terminal.
+                    The invisible overlay widens the drag target a little
+                    without adding any visible chrome. */}
+                <PanelResizeHandle className="group relative h-1.5 shrink-0">
+                  <span
+                    className="absolute -inset-y-1 inset-x-0"
+                    aria-hidden="true"
+                  />
+                  <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border/60 transition-colors group-hover:bg-primary/60 group-data-[resize-handle-state=hover]:bg-primary/60 group-data-[resize-handle-state=drag]:bg-primary/80" />
                 </PanelResizeHandle>
                 <Panel
                   defaultSize={32}
                   minSize={16}
                   maxSize={70}
-                  className="min-h-0 border-t border-border/40"
+                  className="min-h-0"
                 >
                   <div className="flex h-full min-h-0 flex-col bg-terminal-bg">
-                    <div className="flex h-8 shrink-0 items-center border-b border-white/10 bg-card px-1">
-                      <button
-                        type="button"
+                    <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-white/8 px-2">
+                      <TerminalTab
+                        active={terminalTab === "coder"}
+                        label="Terminal"
                         onClick={() => setTerminalTab("coder")}
-                        className={cn(
-                          "flex h-7 items-center gap-1.5 rounded px-2.5 text-[11px] transition-colors",
-                          terminalTab === "coder"
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        <TerminalIcon className="h-3.5 w-3.5" />
-                        Terminal
-                      </button>
-                      <button
-                        type="button"
+                      />
+                      <TerminalTab
+                        active={terminalTab === "shell"}
+                        label="User shell"
                         onClick={() => setTerminalTab("shell")}
-                        className={cn(
-                          "flex h-7 items-center gap-1.5 rounded px-2.5 text-[11px] transition-colors",
-                          terminalTab === "shell"
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        <TerminalIcon className="h-3.5 w-3.5" />
-                        User shell
-                      </button>
+                      />
                     </div>
                     <div
                       className={cn(
@@ -305,39 +384,39 @@ export function RightPanel() {
         ) : previewUrl ? (
           <div className="flex h-full flex-col bg-background">
             <form
-              className="flex items-center justify-between gap-1 border-b border-border/50 px-2 py-1.5"
+              className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border/60 px-1.5"
               onSubmit={(event) => {
                 event.preventDefault();
                 navigatePreview();
               }}
             >
               <input
-                aria-label="Preview address"
+                aria-label={t("panel.previewAddress")}
                 value={previewDraft}
                 onChange={(event) => setPreviewDraft(event.target.value)}
                 onBlur={navigatePreview}
-                className="h-6 min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 font-mono text-[10px] text-muted-foreground outline-none focus:border-border focus:bg-background focus:text-foreground"
+                className="h-7 min-w-0 flex-1 rounded-md bg-transparent px-2 font-mono text-[12px] text-muted-foreground outline-none transition-colors hover:text-foreground focus:bg-secondary/60 focus:text-foreground"
                 spellCheck={false}
               />
-              <div className="flex items-center">
-                <button
-                  type="button"
-                  onClick={navigatePreview}
-                  className="rounded p-1 hover:bg-accent"
-                  title="Reload preview"
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
-                <a
-                  href={previewAddress}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded p-1 hover:bg-accent"
-                  title="Open preview in new tab"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              </div>
+              <button
+                type="button"
+                onClick={navigatePreview}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+                aria-label={t("panel.reloadPreview")}
+                title={t("panel.reloadPreview")}
+              >
+                <RefreshCw className="size-3.5" />
+              </button>
+              <a
+                href={previewAddress}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+                aria-label={t("panel.openPreview")}
+                title={t("panel.openPreview")}
+              >
+                <ExternalLink className="size-3.5" />
+              </a>
             </form>
             <iframe
               key={previewKey}
@@ -348,12 +427,12 @@ export function RightPanel() {
             />
           </div>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">
-            <MonitorPlay className="h-8 w-8 opacity-40" />
-            <p className="text-xs">
-              The app preview will appear here after the coder starts it.
-            </p>
-          </div>
+          <EmptyState
+            icon={<MonitorPlay />}
+              title={t("panel.noPreview")}
+              description={t("panel.noPreviewDescription")}
+            className="h-full"
+          />
         )}
       </div>
       <CreateSandboxDialog
@@ -367,15 +446,17 @@ export function RightPanel() {
 
 export function RightPanelToggle() {
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel);
+  const t = useT();
   return (
     <Button
       variant="ghost"
-      size="icon"
+      size="icon-sm"
       className="h-7 w-7"
       onClick={toggleRightPanel}
-      title="Open sandbox panel"
+      title={t("panel.open")}
+      aria-label={t("panel.open")}
     >
-      <PanelRightOpen className="w-4 h-4 text-muted-foreground hover:text-foreground" />
+      <PanelRightOpen className="size-4" />
     </Button>
   );
 }

@@ -18,6 +18,7 @@ import {
   Table,
   BookOpen,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   downloadDocument,
@@ -32,6 +33,7 @@ import {
 } from "@/api/documentsClient";
 
 function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes)) return "—";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -52,19 +54,26 @@ function fileExt(name: string): string {
 
 function TypeIcon({ name }: { name: string }) {
   const ext = fileExt(name);
-  if (ext === "pdf") return <FileText className="w-5 h-5 text-red-400" />;
+  if (ext === "pdf")
+    return <FileText className="h-5 w-5 text-red-600 dark:text-red-400" />;
   if (["docx", "doc"].includes(ext))
-    return <FileText className="w-5 h-5 text-blue-400" />;
+    return <FileText className="h-5 w-5 text-blue-600 dark:text-blue-400" />;
   if (["xlsx", "xls"].includes(ext))
-    return <FileSpreadsheet className="w-5 h-5 text-emerald-400" />;
+    return (
+      <FileSpreadsheet className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+    );
   if (["pptx", "ppt"].includes(ext))
-    return <Presentation className="w-5 h-5 text-amber-400" />;
+    return (
+      <Presentation className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+    );
   if (["csv", "tsv"].includes(ext))
-    return <Table className="w-5 h-5 text-violet-400" />;
-  return <FileText className="w-5 h-5 text-muted-foreground" />;
+    return <Table className="h-5 w-5 text-violet-600 dark:text-violet-400" />;
+  return <FileText className="h-5 w-5 text-muted-foreground" />;
 }
 
 type KnowledgeAction = "reindex" | "remove" | null;
+
+const sectionLabelClass = "mb-2.5 text-xs font-medium text-muted-foreground";
 
 export function DocumentDetailModal({
   doc,
@@ -230,15 +239,18 @@ export function DocumentDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-3xl max-h-[88vh] rounded-xl border border-border/60 bg-background shadow-xl flex flex-col overflow-hidden"
+        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-[0_24px_70px_-12px_var(--color-shadow-strong)]"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={doc.filename}
       >
         {/* Header */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-border/40 shrink-0">
+        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border/60 px-5">
           <TypeIcon name={doc.filename} />
           {renaming ? (
             <input
@@ -250,48 +262,51 @@ export function DocumentDetailModal({
                 if (e.key === "Escape") setRenaming(false);
               }}
               onBlur={confirmRename}
-              className="flex-1 min-w-0 text-[15px] font-semibold px-2 py-1 rounded bg-background border border-primary/50 focus:outline-none"
+              className="h-8 min-w-0 flex-1 rounded-lg border border-primary/50 bg-transparent px-2.5 text-[15px] font-semibold text-foreground outline-none"
             />
           ) : (
-            <div className="flex-1 min-w-0 flex items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
               <h2
-                className="text-[15px] font-semibold text-foreground truncate"
+                className="truncate text-[15px] font-semibold text-foreground"
                 title={doc.original_filename}
               >
                 {doc.filename}
               </h2>
-              <button
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 onClick={() => {
                   setRenameValue(doc.filename);
                   setRenaming(true);
                 }}
-                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary shrink-0"
+                aria-label="Rename document"
                 title="Rename"
+                className="shrink-0"
               >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
+                <Pencil />
+              </Button>
             </div>
           )}
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             onClick={onClose}
-            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary"
+            aria-label="Close"
           >
-            <X className="w-4 h-4" />
-          </button>
+            <X />
+          </Button>
         </div>
 
         {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="grid md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             {/* ── Preview column ─────────────────────────────────── */}
-            <div className="p-4 border-b md:border-b-0 md:border-r border-border/40">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/60 mb-2">
-                Preview
-              </p>
+            <div className="border-b border-border/60 p-5 md:border-b-0 md:border-r">
+              <p className={sectionLabelClass}>Preview</p>
 
               {pages ? (
                 <div>
-                  <div className="relative rounded-lg border border-border/50 bg-secondary/30 overflow-hidden flex items-center justify-center">
+                  <div className="relative flex items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-secondary/40">
                     <img
                       src={documentPageUrl(
                         doc.id,
@@ -309,36 +324,36 @@ export function DocumentDetailModal({
                             setCurrentPage((p) => Math.max(1, p - 1))
                           }
                           disabled={currentPage <= 1}
-                          className="absolute left-2 w-8 h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-background disabled:opacity-30"
+                          className="absolute left-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:bg-background disabled:opacity-30"
                           title="Previous page"
                         >
-                          <ChevronLeft className="w-4 h-4" />
+                          <ChevronLeft className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() =>
                             setCurrentPage((p) => Math.min(pages.count, p + 1))
                           }
                           disabled={currentPage >= pages.count}
-                          className="absolute right-2 w-8 h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-foreground hover:bg-background disabled:opacity-30"
+                          className="absolute right-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:bg-background disabled:opacity-30"
                           title="Next page"
                         >
-                          <ChevronRight className="w-4 h-4" />
+                          <ChevronRight className="h-4 w-4" />
                         </button>
                       </>
                     )}
                   </div>
                   {pages.count > 1 && (
-                    <div className="flex items-center justify-center gap-1.5 mt-2 flex-wrap">
+                    <div className="mt-2.5 flex flex-wrap items-center justify-center gap-1.5">
                       {Array.from({ length: pages.count }, (_, i) => i + 1).map(
                         (n) => (
                           <button
                             key={n}
                             onClick={() => setCurrentPage(n)}
                             className={cn(
-                              "w-6 h-6 rounded text-[10.5px] font-medium transition-colors",
+                              "h-6 w-6 rounded-md text-[10.5px] font-medium transition-colors",
                               n === currentPage
-                                ? "bg-primary/15 text-primary ring-1 ring-primary/30"
-                                : "text-muted-foreground hover:bg-secondary",
+                                ? "bg-primary/15 text-primary"
+                                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                             )}
                           >
                             {n}
@@ -347,25 +362,25 @@ export function DocumentDetailModal({
                       )}
                     </div>
                   )}
-                  <p className="text-[10.5px] text-muted-foreground/50 text-center mt-2">
+                  <p className="mt-2 text-center text-[11px] text-muted-foreground">
                     {currentPage} / {pages.count} page
                     {pages.count !== 1 ? "s" : ""}
                   </p>
                 </div>
               ) : pagesError ? (
-                <div className="h-48 rounded-lg border border-dashed border-border/50 bg-secondary/20 flex flex-col items-center justify-center text-center px-4">
-                  <BookOpen className="w-7 h-7 text-muted-foreground/25 mb-2" />
-                  <p className="text-[11.5px] text-muted-foreground/60">
+                <div className="flex h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-secondary/30 px-4 text-center">
+                  <BookOpen className="mb-2 h-7 w-7 text-muted-foreground/70" />
+                  <p className="text-[12.5px] text-muted-foreground">
                     {pagesError}
                   </p>
-                  <p className="text-[10.5px] text-muted-foreground/40 mt-0.5">
+                  <p className="mt-0.5 text-[11px] text-muted-foreground/70">
                     Use the download button to open the file directly.
                   </p>
                 </div>
               ) : (
-                <div className="h-48 rounded-lg border border-dashed border-border/50 bg-secondary/20 flex flex-col items-center justify-center">
-                  <Loader2 className="w-5 h-5 animate-spin text-primary/60 mb-2" />
-                  <p className="text-[11.5px] text-muted-foreground/60">
+                <div className="flex h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-secondary/30">
+                  <Loader2 className="mb-2 h-5 w-5 animate-spin text-primary/60" />
+                  <p className="text-[12.5px] text-muted-foreground">
                     Rendering preview…
                   </p>
                 </div>
@@ -373,48 +388,46 @@ export function DocumentDetailModal({
             </div>
 
             {/* ── Info column ────────────────────────────────────── */}
-            <div className="p-4 space-y-5">
+            <div className="space-y-6 p-5">
               {/* Information */}
               <section>
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/60 mb-2">
-                  Information
-                </p>
-                <dl className="space-y-1.5 text-[12px]">
+                <p className={sectionLabelClass}>Information</p>
+                <dl className="space-y-2 text-[13px]">
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground/70">Type</dt>
-                    <dd className="font-medium text-foreground uppercase">
+                    <dt className="text-muted-foreground">Type</dt>
+                    <dd className="font-medium uppercase text-foreground">
                       {fileExt(doc.filename) || "—"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground/70">Size</dt>
+                    <dt className="text-muted-foreground">Size</dt>
                     <dd className="font-medium text-foreground">
                       {formatSize(doc.file_size_bytes)}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground/70">Added</dt>
+                    <dt className="text-muted-foreground">Added</dt>
                     <dd className="font-medium text-foreground">
                       {formatDate(doc.created_at)}
                     </dd>
                   </div>
                   {doc.updated_at && doc.updated_at !== doc.created_at && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground/70">Updated</dt>
+                      <dt className="text-muted-foreground">Updated</dt>
                       <dd className="font-medium text-foreground">
                         {formatDate(doc.updated_at)}
                       </dd>
                     </div>
                   )}
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground/70">Scope</dt>
-                    <dd className="font-medium text-foreground capitalize">
+                    <dt className="text-muted-foreground">Scope</dt>
+                    <dd className="font-medium capitalize text-foreground">
                       {doc.scope}
                     </dd>
                   </div>
                   {totalPages > 0 && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground/70">Pages</dt>
+                      <dt className="text-muted-foreground">Pages</dt>
                       <dd className="font-medium text-foreground">
                         {totalPages}
                       </dd>
@@ -425,45 +438,43 @@ export function DocumentDetailModal({
 
               {/* AI Knowledge */}
               <section>
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/60 mb-2">
-                  AI Knowledge
-                </p>
+                <p className={sectionLabelClass}>AI Knowledge</p>
 
                 {isDigesting ? (
-                  <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2.5">
-                    <div className="flex items-center gap-2 text-[12px] font-medium text-blue-400">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <div className="rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3">
+                    <div className="flex items-center gap-2 text-[13px] font-medium text-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                       {progress
                         ? progress.stage === "done"
                           ? "Done"
                           : progress.stage.replace(/_/g, " ")
                         : "Digesting…"}
                       {progress && (
-                        <span className="ml-auto text-[11px] text-muted-foreground/70">
+                        <span className="ml-auto text-xs text-muted-foreground">
                           {progress.percent}%
                         </span>
                       )}
                     </div>
                     {progress && (
-                      <div className="h-1.5 rounded-full bg-secondary/70 overflow-hidden mt-2">
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-secondary">
                         <div
-                          className="h-full bg-primary transition-all"
+                          className="h-full rounded-full bg-primary transition-all"
                           style={{ width: `${progress.percent}%` }}
                         />
                       </div>
                     )}
                     {progress?.details && (
-                      <p className="text-[10.5px] text-muted-foreground/70 mt-1.5">
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">
                         {progress.details}
                       </p>
                     )}
                   </div>
                 ) : isReady ? (
-                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2.5 space-y-2">
-                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-emerald-400">
-                      <Check className="w-4 h-4" /> Indexed for RAG
+                  <div className="space-y-2.5 rounded-lg border border-success/25 bg-success/5 px-3.5 py-3">
+                    <div className="flex items-center gap-1.5 text-[13px] font-medium text-success">
+                      <Check className="h-4 w-4" /> Indexed for RAG
                     </div>
-                    <p className="text-[11px] text-muted-foreground/70">
+                    <p className="text-xs text-muted-foreground">
                       {doc.total_chunks} chunk
                       {doc.total_chunks !== 1 ? "s" : ""}
                       {doc.total_images > 0
@@ -477,98 +488,101 @@ export function DocumentDetailModal({
                         : "its conversation"}
                     </p>
                     <div className="flex flex-wrap gap-2 pt-0.5">
-                      <button
+                      <Button
+                        variant="outline"
+                        size="xs"
                         onClick={handleReindex}
                         disabled={action !== null}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium rounded-md border border-border/50 hover:border-primary/40 hover:text-primary transition-colors disabled:opacity-40"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
+                        <RefreshCw />
                         Re-index
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
                         onClick={handleRemoveKnowledge}
                         disabled={action !== null}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium rounded-md border border-border/50 text-muted-foreground hover:text-red-400 hover:border-red-500/40 transition-colors disabled:opacity-40"
+                        className="text-danger hover:bg-danger/10 hover:text-danger"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <X />
                         Remove from AI knowledge
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : isFailed ? (
-                  <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2.5 space-y-2">
-                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-red-400">
-                      <AlertCircle className="w-4 h-4" /> Indexing failed
+                  <div className="space-y-2.5 rounded-lg border border-danger/25 bg-danger/5 px-3.5 py-3">
+                    <div className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
+                      <AlertCircle className="h-4 w-4" /> Indexing failed
                     </div>
                     {doc.digestion_error && (
                       <p
-                        className="text-[11px] text-muted-foreground/70 line-clamp-3"
+                        className="line-clamp-3 text-xs text-muted-foreground"
                         title={doc.digestion_error}
                       >
                         {doc.digestion_error}
                       </p>
                     )}
-                    <button
+                    <Button
+                      variant="outline"
+                      size="xs"
                       onClick={handleReindex}
                       disabled={action !== null}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium rounded-md border border-border/50 hover:border-primary/40 hover:text-primary transition-colors disabled:opacity-40"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" />
+                      <RefreshCw />
                       Retry indexing
-                    </button>
+                    </Button>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-border/50 bg-secondary/20 px-3 py-2.5 space-y-2">
-                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground">
-                      <Brain className="w-4 h-4" /> Not indexed
+                  <div className="space-y-2.5 rounded-lg border border-border/60 bg-secondary/40 px-3.5 py-3">
+                    <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+                      <Brain className="h-4 w-4 text-muted-foreground" /> Not
+                      indexed
                     </div>
-                    <p className="text-[11px] text-muted-foreground/70">
+                    <p className="text-xs text-muted-foreground">
                       The file is stored but not searchable by the AI.
                     </p>
-                    <button
+                    <Button
+                      size="xs"
                       onClick={handleReindex}
                       disabled={action !== null}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40"
                     >
-                      <Brain className="w-3.5 h-3.5" />
+                      <Brain />
                       Index for RAG
-                    </button>
+                    </Button>
                   </div>
                 )}
               </section>
 
               {/* Collections */}
               <section>
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/60 mb-2">
-                  Collections
-                </p>
+                <p className={sectionLabelClass}>Collections</p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {collections.length === 0 && !collectionsBusy && (
-                    <p className="text-[11px] text-muted-foreground/50">
+                    <p className="text-xs text-muted-foreground">
                       No collections yet.
                     </p>
                   )}
                   {collections.map((name) => (
                     <span
                       key={name}
-                      className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full bg-primary/10 text-primary text-[11.5px] font-medium ring-1 ring-primary/20"
+                      className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-1 pl-2.5 pr-1 text-[11.5px] font-medium text-primary ring-1 ring-primary/20"
                     >
                       {name}
                       <button
                         onClick={() => removeCollection(name)}
                         disabled={collectionsBusy}
-                        className="w-4 h-4 rounded-full flex items-center justify-center hover:bg-primary/20 transition-colors"
+                        className="flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-primary/20"
                         title={`Remove "${name}"`}
                       >
-                        <X className="w-2.5 h-2.5" />
+                        <X className="h-2.5 w-2.5" />
                       </button>
                     </span>
                   ))}
                   {collectionsBusy && (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground/50" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground/80" />
                   )}
                 </div>
-                <div className="flex gap-1.5 mt-2">
+                <div className="mt-2 flex gap-1.5">
                   <input
                     value={newCollection}
                     onChange={(e) => setNewCollection(e.target.value)}
@@ -576,16 +590,18 @@ export function DocumentDetailModal({
                       if (e.key === "Enter") addCollection();
                     }}
                     placeholder="Add a collection…"
-                    className="flex-1 min-w-0 px-2.5 py-1.5 text-[11.5px] rounded-md bg-secondary/50 border border-border/40 focus:outline-none focus:border-primary/50"
+                    className="h-9 min-w-0 flex-1 rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/80 focus:border-primary/50"
                   />
-                  <button
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
                     onClick={addCollection}
                     disabled={!newCollection.trim() || collectionsBusy}
-                    className="w-8 h-8 rounded-md border border-border/40 flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors disabled:opacity-40"
                     title="Add collection"
+                    aria-label="Add collection"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                  </button>
+                    <Plus />
+                  </Button>
                 </div>
               </section>
             </div>
@@ -593,26 +609,21 @@ export function DocumentDetailModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/40 shrink-0">
-          <button
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-t border-border/60 px-5">
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={handleDelete}
             disabled={deleting || action !== null}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+            className="text-danger hover:bg-danger/10 hover:text-danger"
           >
-            {deleting ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Trash2 className="w-3.5 h-3.5" />
-            )}
+            {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
             Delete
-          </button>
-          <button
-            onClick={() => downloadDocument(doc)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-          >
-            <Download className="w-3.5 h-3.5" />
+          </Button>
+          <Button size="sm" onClick={() => downloadDocument(doc)}>
+            <Download />
             Download
-          </button>
+          </Button>
         </div>
       </div>
     </div>

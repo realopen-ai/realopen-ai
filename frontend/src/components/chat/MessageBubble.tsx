@@ -1,14 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
-  Search,
-  Code2,
-  Zap,
+  Brain,
   ChevronDown,
   ChevronRight,
-  Globe,
-  FileCode,
-  Brain,
-  BookOpenCheck,
   Eye,
   Copy,
   Volume2,
@@ -16,13 +10,14 @@ import {
   Check,
   Loader2,
   Image,
+  FileCode,
   FileText,
-  FileSpreadsheet,
   Quote,
   AlertCircle,
   Download,
   FileType,
   Mic,
+  XCircle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -53,9 +48,9 @@ function SourceImage({ chunkId }: { chunkId: string }) {
   const [errored, setErrored] = useState(false);
   if (errored) return null;
   return (
-    <div className="mt-2 rounded-md overflow-hidden border border-border/30 bg-background/40 max-w-70">
+    <div className="mt-1.5 rounded-md overflow-hidden border border-border/40 bg-background/40 max-w-70">
       {!loaded && (
-        <div className="w-full h-30 flex items-center justify-center text-[10px] text-muted-foreground/60">
+        <div className="w-full h-30 flex items-center justify-center text-[11px] text-muted-foreground/80">
           Loading image…
         </div>
       )}
@@ -78,28 +73,28 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
   if (!sources.length) return null;
 
   return (
-    <div className="mt-2 rounded-lg border border-border/60 bg-secondary/30 overflow-hidden">
+    <div className="mt-1">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/50 transition-colors"
+        className="w-full flex items-center gap-1.5 py-1 text-left text-muted-foreground hover:text-foreground transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         {expanded ? (
-          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+          <ChevronDown className="w-3 h-3 shrink-0" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+          <ChevronRight className="w-3 h-3 shrink-0" />
         )}
-        <Quote className="w-3.5 h-3.5 text-primary" />
-        <span className="text-[12px] font-medium text-foreground">
+        <Quote className="w-3 h-3 shrink-0" />
+        <span className="text-[12px] font-medium">
           {sources.length} Source{sources.length !== 1 ? "s" : ""}
         </span>
-        <span className="text-[11px] text-muted-foreground/70 ml-1">
+        <span className="text-[11px] text-muted-foreground/80 truncate">
           Retrieved from your documents
         </span>
       </button>
 
-      {/* Cards */}
+      {/* Source rows */}
       {expanded && (
-        <div className="px-2 pb-2 space-y-1.5">
+        <div className="mt-1 ml-4.5 rounded-lg bg-background/60 divide-y divide-border/40 overflow-hidden">
           {sources.map((s, i) => {
             const isOpen = openIdx === i;
             const locationParts: string[] = [];
@@ -113,41 +108,40 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
               }
             }
             const location =
-              locationParts.length > 0 ? ` · ${locationParts.join(", ")}` : "";
+              locationParts.length > 0 ? locationParts.join(", ") : "";
             const isImage = s.chunk_type === "image_description" && s.has_image;
             return (
-              <div
-                key={s.chunk_id}
-                className="rounded-md border border-border/40 bg-background/60 overflow-hidden"
-              >
-                {/* Card header */}
+              <div key={s.chunk_id}>
+                {/* Row header */}
                 <button
                   onClick={() => setOpenIdx(isOpen ? null : i)}
-                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-secondary/40 transition-colors"
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-surface-hover/60 transition-colors"
                 >
                   {isOpen ? (
                     <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
                   ) : (
                     <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
                   )}
-                  <FileText className="w-3 h-3 text-amber-400/80 shrink-0" />
+                  <FileText className="w-3 h-3 text-muted-foreground/70 shrink-0" />
                   <span
-                    className="text-[11px] font-medium text-foreground truncate flex-1"
+                    className="text-[11.5px] font-medium text-foreground truncate flex-1"
                     title={s.document_filename}
                   >
                     {s.document_filename}
                   </span>
                   {isImage && (
-                    <Image className="w-3 h-3 text-violet-400 shrink-0" />
+                    <Image className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                   )}
-                  <span className="text-[10px] text-muted-foreground/70 shrink-0">
-                    {location}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground/50 shrink-0">
+                  {location && (
+                    <span className="text-[11px] text-muted-foreground/70 shrink-0">
+                      {location}
+                    </span>
+                  )}
+                  <span className="text-[11px] text-muted-foreground/70 shrink-0 tabular-nums">
                     {(s.score * 100).toFixed(0)}%
                   </span>
                 </button>
-                {/* Card body (snippet / full text + optional image) */}
+                {/* Row body (snippet / full text + optional image) */}
                 {isOpen && (
                   <div className="px-2.5 pb-2 pt-0.5">
                     <p className="text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
@@ -205,12 +199,12 @@ function DigestProgressIndicator({
           <div
             key={filename}
             className={cn(
-              "rounded-md border px-2.5 py-1.5 text-[11px]",
+              "rounded-lg px-2.5 py-1.5 text-[11px]",
               isError
-                ? "border-red-500/40 bg-red-500/10 text-red-300"
+                ? "bg-danger/10 text-danger"
                 : isDone
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                  : "border-amber-500/40 bg-amber-500/10 text-amber-300",
+                  ? "bg-success/10 text-success"
+                  : "bg-warning/10 text-warning",
             )}
           >
             <div className="flex items-center gap-1.5">
@@ -219,29 +213,27 @@ function DigestProgressIndicator({
               ) : isDone ? (
                 <Check className="w-3 h-3 shrink-0" />
               ) : (
-                <span className="shrink-0">⚠</span>
+                <AlertCircle className="w-3 h-3 shrink-0" />
               )}
               <span className="font-medium truncate flex-1" title={filename}>
                 {filename}
               </span>
-              <span className="opacity-80 shrink-0">{p.percent}%</span>
+              <span className="opacity-80 shrink-0 tabular-nums">
+                {p.percent}%
+              </span>
             </div>
             {/* Progress bar */}
-            <div className="mt-1 h-1 rounded-full bg-black/20 overflow-hidden">
+            <div className="mt-1 h-1 rounded-full bg-foreground/10 overflow-hidden">
               <div
                 className={cn(
                   "h-full transition-all duration-300",
-                  isError
-                    ? "bg-red-400"
-                    : isDone
-                      ? "bg-emerald-400"
-                      : "bg-amber-400",
+                  isError ? "bg-danger" : isDone ? "bg-success" : "bg-warning",
                 )}
                 style={{ width: `${p.percent}%` }}
               />
             </div>
             {/* Stage label */}
-            <div className="mt-0.5 text-[10px] opacity-70 truncate">
+            <div className="mt-0.5 text-[11px] opacity-70 truncate">
               {isError ? p.error || p.details : p.details || p.stage}
             </div>
           </div>
@@ -255,56 +247,38 @@ function DigestProgressIndicator({
 
 function ThinkingBlockView({ block }: { block: MessageBlock }) {
   const [expanded, setExpanded] = useState<boolean>(false);
+  const isThinking = block.duration == null;
 
-  // Currently thinking (streaming — no duration yet)
-  if (block.duration == null) {
-    return (
-      <div className="mb-2">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 py-2 text-foreground/60 font-medium mb-2 w-full text-left cursor-pointer"
-          style={{ fontSize: "var(--app-font-size)" }}
-        >
-          <Loader2 className="w-5 h-5 animate-spin" />
-          <span>Thinking...</span>
-          {expanded ? (
-            <ChevronDown className="w-3.5 h-3.5 shrink-0" />
-          ) : (
-            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
-          )}
-        </button>
-        {expanded && (
-          <div className="ml-2.5 mt-1.5 border-l border-foreground/20 overflow-hidden animate-fade-in">
-            <div className="px-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
-              {block.content || "The assistant is formulating a response."}
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Thinking is done — show "Thought for Xs"
+  // Quiet disclosure — muted icon + muted label + chevron. Never competes
+  // with the response below it; expanded content stays clearly secondary.
   return (
     <div className="mb-2">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 py-2 text-foreground/60 font-medium w-full text-left cursor-pointer"
+        className="flex items-center gap-1.5 py-1 w-full text-left cursor-pointer rounded-md text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         style={{ fontSize: "var(--app-font-size)" }}
+        aria-expanded={expanded}
       >
-        <Brain className="w-5 h-5" />
-        <span>Thought for {block.duration}s</span>
-        {expanded ? (
-          <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+        {isThinking ? (
+          <Loader2 className="w-5 h-5 animate-spin shrink-0" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          <Brain className="w-5 h-5 shrink-0" />
+        )}
+        <span>
+          {isThinking ? "Thinking…" : `Thought for ${block.duration}s`}
+        </span>
+        {expanded ? (
+          <ChevronDown className="w-3 h-3 shrink-0" />
+        ) : (
+          <ChevronRight className="w-3 h-3 shrink-0" />
         )}
       </button>
       {expanded && (
-        <div className="ml-2.5 mt-1.5 border-l border-foreground/20 overflow-hidden animate-fade-in">
-          <div className="px-3 text-[12px] text-foreground/70 leading-relaxed whitespace-pre-wrap">
-            {block.content}
-          </div>
+        <div className="ml-1 mt-1 border-l-2 border-border/60 pl-3 animate-fade-in">
+          <p className="text-[13px] text-muted-foreground leading-relaxed whitespace-pre-wrap">
+            {block.content ||
+              (isThinking ? "The assistant is formulating a response." : "")}
+          </p>
         </div>
       )}
     </div>
@@ -342,10 +316,10 @@ function TextBlockView({
 
 function ErrorBlockView({ block }: { block: MessageBlock }) {
   return (
-    <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 mb-2">
+    <div className="rounded-lg border border-danger/25 bg-danger/5 px-3 py-2 my-2">
       <div className="flex items-start gap-2">
-        <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-        <p className="text-[12px] text-red-400 leading-relaxed">
+        <AlertCircle className="w-4 h-4 text-danger shrink-0 mt-0.5" />
+        <p className="text-[12.5px] text-danger leading-relaxed">
           {block.content}
         </p>
       </div>
@@ -353,15 +327,15 @@ function ErrorBlockView({ block }: { block: MessageBlock }) {
   );
 }
 
-// ─── Tool Call Block (inline, expandable with max-height + scroll) ───
+// ─── Tool Call Block (compact activity row, expandable) ───────────
 
 function StatusDot({ status }: { status: string }) {
   if (status === "running")
-    return <span className="w-1.5 h-1.5 rounded-full bg-amber-400 pulse-dot" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-warning pulse-dot" />;
   if (status === "completed")
-    return <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-success" />;
   if (status === "error")
-    return <span className="w-1.5 h-1.5 rounded-full bg-red-400" />;
+    return <span className="w-1.5 h-1.5 rounded-full bg-danger" />;
   return null;
 }
 
@@ -386,7 +360,7 @@ function ToolCallBlockView({
 
   // Detect deliverable-producing tool calls (report_gen / pptx_gen /
   // excel_gen all use ToolType.IMAGE_GEN but carry genResults with type
-  // "report", "presentation" or "excel"). We override the label/icon
+  // "report", "presentation" or "excel"). We override the label
   // for these. Also detect during the "running" phase via the tool call
   // title.
   const hasDeliverable = tc.genResults?.some(
@@ -411,94 +385,70 @@ function ToolCallBlockView({
     isExcelDeliverable ||
     (tc.status === "running" && titleLower.includes("excel"));
 
-  const configs: Record<
-    string,
-    { icon: typeof Search; label: string; runningLabel: string; text: string }
-  > = {
+  // Human-readable action labels per tool type — the collapsed activity
+  // row shows ONLY this (plus status icon / duration / short target),
+  // keeping the conversation quiet. Progressive disclosure: full detail
+  // appears only when the row is expanded.
+  const configs: Record<string, { label: string; runningLabel: string }> = {
     websearch: {
-      icon: Globe,
       label: "Searched the web",
-      runningLabel: "Searching the web...",
-      text: "text-blue-400",
+      runningLabel: "Searching the web",
     },
     vision: {
-      icon: Eye,
       label: "Analyzed image",
-      runningLabel: "Analyzing image...",
-      text: "text-violet-400",
+      runningLabel: "Analyzing image",
     },
     deepsearch: {
-      icon: Brain,
       label: "Deep research",
-      runningLabel: "Researching...",
-      text: "text-purple-400",
+      runningLabel: "Researching",
     },
     code_exec: {
-      icon: Code2,
       label: "Ran code",
-      runningLabel: "Running code...",
-      text: "text-emerald-400",
+      runningLabel: "Running code",
     },
     skill: {
-      icon: BookOpenCheck,
       label: "Loaded skill",
-      runningLabel: "Loading skill...",
-      text: "text-fuchsia-400",
+      runningLabel: "Loading skill",
     },
     file_read: {
-      icon: FileCode,
       label: "Read file",
-      runningLabel: "Reading file...",
-      text: "text-amber-400",
+      runningLabel: "Reading file",
     },
     file_write: {
-      icon: FileCode,
       label: "Wrote file",
-      runningLabel: "Writing file...",
-      text: "text-amber-400",
+      runningLabel: "Writing file",
     },
     image_gen: {
-      icon: Image,
       label: "Generated image",
-      runningLabel: "Generating image...",
-      text: "text-emerald-400",
+      runningLabel: "Generating image",
     },
     sandbox: {
-      icon: Code2,
-      label: "Workspace coding complete",
-      runningLabel: "Coding in workspace...",
-      text: "text-cyan-400",
+      label: "Workspace coding",
+      runningLabel: "Coding in workspace",
     },
     preview: {
-      icon: Eye,
       label: "Started app preview",
-      runningLabel: "Starting app preview...",
-      text: "text-cyan-400",
+      runningLabel: "Starting app preview",
     },
     report_gen: {
-      icon: FileText,
       label: "Generated report",
-      runningLabel: "Generating report...",
-      text: "text-amber-400",
+      runningLabel: "Generating report",
     },
     presentation_gen: {
-      icon: FileText,
       label: "Generated presentation",
-      runningLabel: "Generating presentation...",
-      text: "text-amber-400",
+      runningLabel: "Generating presentation",
     },
     excel_gen: {
-      icon: FileSpreadsheet,
       label: "Generated spreadsheet",
-      runningLabel: "Generating spreadsheet...",
-      text: "text-emerald-400",
+      runningLabel: "Generating spreadsheet",
     },
   };
 
   // For image_gen type with deliverable genResults or report/pptx/excel
-  // title during running, override to show document icon/label instead
-  // of image icon/label.
+  // title during running, override to show document label instead
+  // of image label.
   let effectiveType: string = tc.type;
+
   if (
     tc.type === "image_gen" &&
     (isReportTool || isPresentationTool || isExcelTool)
@@ -510,20 +460,22 @@ function ToolCallBlockView({
         : "report_gen";
   }
 
-  const {
-    icon: Icon,
-    label,
-    runningLabel,
-    text,
-  } = configs[effectiveType] ?? {
-    icon: Zap,
+  const { label, runningLabel } = configs[effectiveType] ?? {
     label: tc.title,
     runningLabel: tc.title,
-    text: "text-muted-foreground",
   };
 
   // Display label: "Generating..." while running, "Generated ..." when done
   const displayLabel = tc.status === "running" ? runningLabel : label;
+
+  // Short target shown inline after the label (file path for file tools,
+  // query for searches) — keeps the row scannable.
+  const shortTarget =
+    tc.filePath && tc.filePath !== "/workspace"
+      ? tc.filePath
+      : tc.type === "websearch" || tc.type === "deepsearch"
+        ? tc.query
+        : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
   const duration =
@@ -542,56 +494,85 @@ function ToolCallBlockView({
   const isExpanded = expanded || autoExpand;
 
   return (
-    <div className="my-2 rounded-xl border border-sandbox-border bg-sandbox-bg overflow-hidden">
-      {/* Badge header — click to toggle */}
+    <div className="my-1">
+      {/* Activity row — click to toggle details */}
       <button
         onClick={() => setExpanded((v) => !v)}
-        className={cn(
-          "w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/50 transition-colors",
-        )}
+        className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+        aria-expanded={isExpanded}
       >
+        {/* Status icon — colored only for terminal states */}
         {tc.status === "running" ? (
-          <span className="w-3.5 h-3.5 border-[1.5px] border-current border-t-transparent rounded-full animate-spin shrink-0" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-muted-foreground" />
+        ) : tc.status === "error" ? (
+          <XCircle className="w-3.5 h-3.5 shrink-0 text-danger" />
         ) : (
-          <Icon className={cn("w-3.5 h-3.5 shrink-0", text)} />
+          <Check className="w-3.5 h-3.5 shrink-0 text-success" />
         )}
-        <span className={cn("text-[12px] font-medium", text)}>
+        <span className="text-[12.5px] text-muted-foreground group-hover:text-foreground transition-colors truncate">
           {displayLabel}
         </span>
-        {tc.query && (
-          <span className="text-[11px] text-muted-foreground truncate">
-            &quot;{tc.query}&quot;
+        {shortTarget && (
+          <span className="text-[11.5px] text-muted-foreground/80 truncate">
+            {shortTarget}
           </span>
         )}
         {resultCount ? (
-          <span className="text-[11px] opacity-60">· {resultCount}</span>
+          <span className="text-[11px] text-muted-foreground/70 shrink-0">
+            · {resultCount}
+          </span>
         ) : null}
+        <span className="flex-1" />
         {duration ? (
-          <span className="text-[11px] opacity-60">· {duration}s</span>
+          <span className="text-[11px] text-muted-foreground/80 tabular-nums shrink-0">
+            {duration}s
+          </span>
         ) : null}
-        <StatusDot status={tc.status} />
-        <div className="flex-1" />
         {isExpanded ? (
-          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <ChevronDown className="w-3 h-3 text-muted-foreground/80 shrink-0" />
         ) : (
-          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <ChevronRight className="w-3 h-3 text-muted-foreground/80 shrink-0" />
         )}
       </button>
 
-      {/* Expandable detail — max height + scroll for big outputs */}
+      {/* Expandable detail — subtle secondary surface, max height + scroll
+          for big outputs. Details only when expanded. */}
       {isExpanded && (
-        <div className="px-3 pb-3 max-h-96 overflow-y-auto border-t border-sandbox-border/50">
-          <div className="pt-3 space-y-2">
-            <ToolCallDetail
-              tc={tc}
-              canViewPptx={canViewPptx}
-              onViewPptx={onViewPptx}
-            />
-            {/* RAG sources inside the tool call block */}
-            {tc.sources && tc.sources.length > 0 && (
-              <SourceCards sources={tc.sources} />
-            )}
-          </div>
+        <div className="ml-5 mt-0.5 mb-1 rounded-lg bg-secondary px-3 py-2.5 max-h-96 overflow-y-auto">
+          <ToolCallDetail
+            tc={tc}
+            canViewPptx={canViewPptx}
+            onViewPptx={onViewPptx}
+          />
+          {/* Live task-progress lines (deep research steps) */}
+          {tc.steps && tc.steps.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {tc.steps.map((s, i) => (
+                <li
+                  key={i}
+                  className="flex items-center gap-2 text-[12px] text-muted-foreground"
+                >
+                  {s.status === "done" ? (
+                    <Check className="w-3 h-3 text-success shrink-0" />
+                  ) : s.status === "running" ? (
+                    <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                  ) : (
+                    <span
+                      className="w-3 h-3 flex items-center justify-center shrink-0"
+                      aria-hidden="true"
+                    >
+                      <span className="w-1 h-1 rounded-full bg-muted-foreground/40" />
+                    </span>
+                  )}
+                  <span className="truncate">{s.label}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* RAG sources inside the tool call block */}
+          {tc.sources && tc.sources.length > 0 && (
+            <SourceCards sources={tc.sources} />
+          )}
         </div>
       )}
     </div>
@@ -668,7 +649,7 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           type="button"
           onClick={() => void openFile()}
           disabled={tc.filePath === "/workspace"}
-          className="flex items-center gap-1.5 font-mono text-[11px] text-amber-300 hover:underline disabled:no-underline disabled:opacity-70"
+          className="flex items-center gap-1.5 font-mono text-[11.5px] text-primary hover:underline disabled:no-underline disabled:opacity-70"
           title={
             tc.filePath === "/workspace"
               ? "Workspace root"
@@ -680,11 +661,11 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
         </button>
       )}
       {tc.diff && (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
+        <div className="overflow-hidden rounded-lg border border-border/60">
+          <div className="border-b border-border/40 bg-card/60 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
             5-line diff
           </div>
-          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed">
+          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11.5px] leading-relaxed">
             {diffLines.map((line, index) => (
               <span
                 key={`${index}-${line}`}
@@ -692,10 +673,10 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
                   "block min-h-lh whitespace-pre",
                   line.startsWith("---") ||
                     (line.startsWith("-") && !line.startsWith("---"))
-                    ? "bg-red-500/5 text-red-400"
+                    ? "bg-danger/5 text-danger"
                     : line.startsWith("+++") || line.startsWith("+")
-                      ? "bg-emerald-500/5 text-emerald-400"
-                      : "text-foreground/65",
+                      ? "bg-success/5 text-success"
+                      : "text-muted-foreground",
                 )}
               >
                 {line}
@@ -705,11 +686,11 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
         </div>
       )}
       {displayedContent && (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <div className="border-b border-border bg-card px-3 py-1.5 text-[10px] text-muted-foreground">
+        <div className="overflow-hidden rounded-lg border border-border/60">
+          <div className="border-b border-border/40 bg-card/60 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
             {tc.type === "file_write" ? "Written content" : "Result"}
           </div>
-          <pre className="max-h-64 overflow-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
+          <pre className="max-h-64 overflow-auto bg-sandbox-bg p-3 font-mono text-[11.5px] leading-relaxed text-foreground/80">
             {highlightContent ? (
               <HighlightedCode code={displayedContent} filePath={tc.filePath} />
             ) : (
@@ -718,7 +699,7 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           </pre>
         </div>
       )}
-      {tc.error && <p className="text-[11px] text-red-400">{tc.error}</p>}
+      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>
   );
 }
@@ -737,7 +718,7 @@ function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
         <button
           type="button"
           onClick={openPreview}
-          className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-medium text-cyan-300 hover:bg-cyan-500/20"
+          className="rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11.5px] font-medium text-primary hover:bg-primary/20 transition-colors"
         >
           Open preview{tc.previewPort ? ` · port ${tc.previewPort}` : ""}
         </button>
@@ -750,34 +731,32 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-3 h-3 border-[1.5px] border-blue-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+          <span className="text-[11.5px] text-muted-foreground">
             Searching the web...
           </span>
         </div>
       )}
       {tc.webResults && tc.webResults.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="rounded-lg bg-background/60 divide-y divide-border/40 overflow-hidden">
           {tc.webResults.map((r, i) => (
             <div
               key={i}
-              className="rounded-lg border border-border bg-card p-2.5 hover:bg-accent transition-colors cursor-pointer"
+              className="p-2.5 hover:bg-surface-hover/50 transition-colors cursor-pointer"
             >
               <div className="flex items-start gap-2.5">
-                <div className="w-5 h-5 rounded bg-blue-500/10 flex items-center justify-center shrink-0 mt-0.5">
-                  <span className="text-[9px] font-bold text-blue-400">
-                    {i + 1}
-                  </span>
-                </div>
+                <span className="text-[11px] text-muted-foreground/80 tabular-nums shrink-0 mt-1 font-mono">
+                  {i + 1}
+                </span>
                 <div className="min-w-0">
-                  <p className="text-[12px] font-medium text-foreground truncate">
+                  <p className="text-[12.5px] font-medium text-foreground truncate">
                     {r.title}
                   </p>
-                  <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed">
+                  <p className="text-[11.5px] text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed">
                     {r.snippet}
                   </p>
-                  <p className="text-[10px] text-primary/50 truncate mt-1">
+                  <p className="text-[10.5px] text-primary/60 truncate mt-1">
                     {r.url}
                   </p>
                 </div>
@@ -794,31 +773,24 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-3 h-3 border-[1.5px] border-violet-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+          <span className="text-[11.5px] text-muted-foreground">
             Analyzing image with vision model...
           </span>
         </div>
       )}
       {tc.imageDescription && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
-            <Eye className="w-3 h-3 text-violet-400" />
-            <span className="text-[10px] text-muted-foreground">
-              Vision Description
-            </span>
-          </div>
-          <div className="p-3 text-[12px] text-foreground/80 leading-relaxed bg-sandbox-bg">
+        <div>
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground/70 mb-1">
+            Vision description
+          </p>
+          <p className="text-[12.5px] text-foreground/85 leading-relaxed">
             {tc.imageDescription}
-          </div>
+          </p>
         </div>
       )}
-      {tc.error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-          <p className="text-[11px] text-red-400">{tc.error}</p>
-        </div>
-      )}
+      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>
   );
 }
@@ -829,21 +801,21 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-3 h-3 border-[1.5px] border-emerald-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+          <span className="text-[11.5px] text-muted-foreground">
             Executing code...
           </span>
         </div>
       )}
       {tc.code && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <div className="px-3 py-1.5 border-b border-border bg-card">
-            <span className="text-[10px] text-muted-foreground font-mono">
+        <div className="rounded-lg border border-border/60 overflow-hidden">
+          <div className="px-3 py-1 border-b border-border/40 bg-card/60">
+            <span className="text-[11px] text-muted-foreground font-mono uppercase tracking-wider">
               {tc.language ?? "code"}
             </span>
           </div>
-          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11px] leading-relaxed text-foreground/75">
+          <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11.5px] leading-relaxed text-foreground/80">
             <HighlightedCode
               code={tc.code}
               language={tc.language ?? "python"}
@@ -852,23 +824,25 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
         </div>
       )}
       {output && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
-            <span className="text-[10px] text-muted-foreground">Output</span>
+        <div className="rounded-lg border border-border/60 overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-1 border-b border-border/40 bg-card/60">
+            <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+              Output
+            </span>
             {tc.exitCode !== undefined && (
               <span
                 className={cn(
-                  "text-[10px] px-1.5 py-0.5 rounded",
+                  "text-[11px] px-1.5 py-0.5 rounded font-medium tabular-nums",
                   tc.exitCode === 0
-                    ? "bg-emerald-500/10 text-emerald-400"
-                    : "bg-red-500/10 text-red-400",
+                    ? "bg-success/10 text-success"
+                    : "bg-danger/10 text-danger",
                 )}
               >
                 exit {tc.exitCode}
               </span>
             )}
           </div>
-          <pre className="p-3 text-[11px] text-terminal-green font-mono overflow-x-auto leading-relaxed bg-sandbox-bg">
+          <pre className="p-3 text-[12px] text-terminal-green font-mono overflow-x-auto leading-relaxed bg-sandbox-bg">
             {output}
           </pre>
         </div>
@@ -881,9 +855,9 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
   return (
     <div className="space-y-2">
       {tc.imageDescription && (
-        <span className="text-[10px] text-muted-foreground">
+        <p className="text-[11.5px] text-muted-foreground/80 italic">
           &quot;{tc.imageDescription}&quot;
-        </span>
+        </p>
       )}
       {tc.genResults && tc.genResults.length > 0 && (
         <div className="space-y-2">
@@ -892,10 +866,10 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
               r.type === "image" && (
                 <div
                   key={i}
-                  className="rounded-lg border border-border overflow-hidden"
+                  className="rounded-lg border border-border/60 overflow-hidden"
                 >
-                  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-card">
-                    <span className="text-[10px] text-muted-foreground">
+                  <div className="px-3 py-1 border-b border-border/40 bg-card/60">
+                    <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
                       Result {i + 1}
                     </span>
                   </div>
@@ -903,7 +877,7 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
                     <img
                       src={`data:image/png;base64,${r.data}`}
                       alt={tc.imageDescription || "Generated image"}
-                      className="mx-auto rounded max-h-64"
+                      className="mx-auto rounded-md max-h-64"
                     />
                   </div>
                 </div>
@@ -911,11 +885,7 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
           )}
         </div>
       )}
-      {tc.error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-          <p className="text-[11px] text-red-400">{tc.error}</p>
-        </div>
-      )}
+      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>
   );
 }
@@ -926,46 +896,19 @@ function ReportDeliverableBadge({
   filename,
   format,
   downloadUrl,
-  thumbnailUrl,
   label,
   onView,
 }: {
   filename: string;
   format: string;
   downloadUrl: string;
-  thumbnailUrl?: string;
   label?: string;
   onView?: () => void;
 }) {
-  const [thumbError, setThumbError] = useState(false);
-  const isPdf = format === "pdf";
   const isPptx = format === "pptx";
   const isXlsx = format === "xlsx";
-  const iconBg = isPdf
-    ? "bg-red-500/10"
-    : isPptx
-      ? "bg-amber-500/10"
-      : isXlsx
-        ? "bg-emerald-500/10"
-        : "bg-blue-500/10";
-  const iconColor = isPdf
-    ? "text-red-400"
-    : isPptx
-      ? "text-amber-400"
-      : isXlsx
-        ? "text-emerald-400"
-        : "text-blue-400";
-  const labelColor = isPdf
-    ? "text-red-400/70"
-    : isPptx
-      ? "text-amber-400/70"
-      : isXlsx
-        ? "text-emerald-400/70"
-        : "text-blue-400/70";
   const displayLabel =
     label ?? (isPptx ? "Presentation" : isXlsx ? "Spreadsheet" : "Report");
-
-  const showThumb = isPptx && thumbnailUrl && !thumbError;
   const canView = Boolean(onView);
   const viewTitle = isPptx
     ? "View presentation"
@@ -974,63 +917,47 @@ function ReportDeliverableBadge({
       : "View document";
 
   return (
-    <div className="flex items-center rounded-lg border border-border bg-card overflow-hidden hover:bg-accent/50 transition-colors group">
-      {/* Clickable area: thumbnail/icon + filename → downloads */}
+    <div className="flex items-center rounded-lg border border-border/60 bg-card px-2 transition-colors hover:bg-surface-hover/50 group">
+      {/* Clickable area: icon + filename → downloads */}
       <a
         href={downloadUrl}
         download={filename}
-        className="flex items-center gap-3 flex-1 min-w-0 pl-2.5 pr-2 py-2 cursor-pointer"
+        className="flex items-center gap-2.5 flex-1 min-w-0 pl-1.5 pr-1 py-1.5 cursor-pointer"
         title={`Download ${filename}`}
       >
-        {/* Thumbnail / Icon area */}
-        {showThumb ? (
-          <div className="w-20 h-14 shrink-0 relative bg-secondary/50 overflow-hidden rounded-md">
-            <img
-              src={thumbnailUrl}
-              alt={filename}
-              onError={() => setThumbError(true)}
-              className="w-full h-full object-cover"
-              loading="lazy"
-            />
-          </div>
-        ) : (
-          <div
-            className={cn(
-              "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-              iconBg,
-            )}
-          >
-            <FileType className={cn("w-4 h-4", iconColor)} />
-          </div>
-        )}
-        <div className="flex-1 min-w-0">
-          <p className="text-[12px] font-medium text-foreground truncate">
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary text-muted-foreground shrink-0">
+          <FileType className="h-3.5 w-3.5" />
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-[12.5px] font-medium text-foreground truncate">
             {filename}
-          </p>
-          <p className={cn("text-[10px] font-medium uppercase", labelColor)}>
-            {format} {displayLabel}
-          </p>
-        </div>
+          </span>
+          <span className="block text-[11px] uppercase tracking-wider text-muted-foreground">
+            {format} · {displayLabel}
+          </span>
+        </span>
       </a>
 
       {/* Action buttons — separate from download link */}
-      <div className="flex items-center gap-0.5 pr-1.5 shrink-0">
+      <div className="flex items-center gap-0.5 pr-1 shrink-0">
         {canView && (
           <button
             onClick={onView}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+            aria-label={viewTitle}
             title={viewTitle}
+            className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
           >
-            <Eye className="w-4 h-4" />
+            <Eye className="w-3.5 h-3.5" />
           </button>
         )}
         <a
           href={downloadUrl}
           download={filename}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          aria-label="Download"
           title="Download"
+          className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors"
         >
-          <Download className="w-4 h-4" />
+          <Download className="w-3.5 h-3.5" />
         </a>
       </div>
     </div>
@@ -1067,9 +994,9 @@ function ReportGenDetail({
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-3 h-3 border-[1.5px] border-emerald-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+          <span className="text-[11.5px] text-muted-foreground">
             {generatingLabel}
           </span>
         </div>
@@ -1089,7 +1016,6 @@ function ReportGenDetail({
                 filename={r.filename ?? "report"}
                 format={r.format ?? "pdf"}
                 downloadUrl={r.download_url ?? "#"}
-                thumbnailUrl={r.thumbnail_url}
                 label={
                   r.type === "presentation"
                     ? "Presentation"
@@ -1113,11 +1039,7 @@ function ReportGenDetail({
           })}
         </div>
       )}
-      {tc.error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-          <p className="text-[11px] text-red-400">{tc.error}</p>
-        </div>
-      )}
+      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>
   );
 }
@@ -1125,9 +1047,8 @@ function ReportGenDetail({
 function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
   return (
     <div className="flex items-center gap-2">
-      <Zap className="w-3.5 h-3.5 text-amber-400" />
-      <span className="text-[12px] font-medium">{tc.title}</span>
       <StatusDot status={tc.status} />
+      <span className="text-[12.5px] text-muted-foreground">{tc.title}</span>
     </div>
   );
 }
@@ -1311,7 +1232,7 @@ export function MessageBubble({
             <div className="flex gap-1.5 mb-1.5 justify-end">
               {message.modality === "voice" && (
                 <span
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-[10px] text-primary"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-[11px] font-medium text-primary"
                   title={t("voice.message.voiceSent")}
                 >
                   <Mic className="w-2.5 h-2.5" />
@@ -1319,14 +1240,16 @@ export function MessageBubble({
                 </span>
               )}
               {message.hasImage && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-[10px] text-blue-400">
-                  📷 {message.imageCount} image
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] font-medium text-muted-foreground">
+                  <Image className="w-2.5 h-2.5" />
+                  {message.imageCount} image
                   {message.imageCount !== 1 ? "s" : ""}
                 </span>
               )}
               {message.hasDocument && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-[10px] text-amber-400">
-                  📄 {message.documentCount} doc
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] font-medium text-muted-foreground">
+                  <FileText className="w-2.5 h-2.5" />
+                  {message.documentCount} doc
                   {message.documentCount !== 1 ? "s" : ""}
                 </span>
               )}
@@ -1340,7 +1263,7 @@ export function MessageBubble({
           {message.digestProgress && message.digestProgress.length > 0 && (
             <DigestProgressIndicator items={message.digestProgress} />
           )}
-          <div className="rounded-2xl bg-primary text-primary-foreground px-4 py-3">
+          <div className="rounded-xl bg-secondary px-4 py-2.5">
             <p
               className="whitespace-pre-wrap leading-relaxed"
               style={{ fontSize: "var(--app-font-size)" }}
@@ -1351,11 +1274,12 @@ export function MessageBubble({
           {/* Copy icon */}
           <button
             onClick={handleCopy}
-            className="absolute -bottom-6 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 p-1 rounded hover:bg-secondary cursor-pointer"
+            className="absolute -bottom-6 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 p-1 rounded-md hover:bg-surface-hover cursor-pointer focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            aria-label="Copy message"
             title="Copy message"
           >
             {copied ? (
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <Check className="w-3.5 h-3.5 text-success" />
             ) : (
               <Copy className="w-3.5 h-3.5 text-muted-foreground" />
             )}
@@ -1403,9 +1327,9 @@ export function MessageBubble({
 
       {/* Streaming placeholder when no blocks yet */}
       {blocks.length === 0 && !message.content && message.isStreaming && (
-        <div className="flex items-center gap-2 text-muted-foreground py-2">
+        <div className="flex items-center gap-2 text-muted-foreground py-1.5">
           <Loader2 className="w-4 h-4 animate-spin" />
-          <span className="text-[12px]">Thinking...</span>
+          <span className="text-[12.5px]">Thinking…</span>
         </div>
       )}
 
@@ -1422,7 +1346,6 @@ export function MessageBubble({
               filename={d.filename}
               format={d.format}
               downloadUrl={d.download_url}
-              thumbnailUrl={d.thumbnail_url}
               onView={
                 d.report_id &&
                 ["pdf", "docx", "pptx", "xlsx"].includes(d.format) &&
@@ -1441,16 +1364,17 @@ export function MessageBubble({
         </div>
       )}
 
-      {/* Action icons + response time */}
+      {/* Action icons + response time — quiet meta row under the content */}
       {!message.isStreaming && hasContent && (
-        <div className="flex items-center gap-1 mt-2.5">
+        <div className="flex items-center gap-0.5 mt-2">
           <button
             onClick={handleCopy}
-            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            className="p-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            aria-label="Copy"
             title="Copy"
           >
             {copied ? (
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <Check className="w-3.5 h-3.5 text-success" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
@@ -1458,32 +1382,34 @@ export function MessageBubble({
           <button
             onClick={handleReadAloud}
             className={cn(
-              "p-1.5 rounded-md transition-colors",
+              "p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
               isReading
                 ? "text-primary bg-primary/10"
-                : "text-muted-foreground hover:text-foreground hover:bg-secondary",
+                : "text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover",
             )}
             title={isReading ? "Stop reading" : "Read aloud"}
+            aria-label={isReading ? "Stop reading" : "Read aloud"}
           >
             <Volume2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={handleRegenerate}
-            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            className="p-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             title="Regenerate"
+            aria-label="Regenerate"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
           {message.modality === "voice" && (
             <span
-              className="ml-1.5 inline-flex items-center select-none text-muted-foreground/50"
+              className="ml-1 inline-flex items-center select-none text-muted-foreground/70"
               title={t("voice.message.voiceSent")}
             >
               <Mic className="w-3 h-3" />
             </span>
           )}
           {responseTime && (
-            <span className="text-[11px] text-muted-foreground/60 ml-1.5 select-none">
+            <span className="text-[11px] text-muted-foreground/70 ml-1.5 select-none tabular-nums">
               {responseTime}
             </span>
           )}

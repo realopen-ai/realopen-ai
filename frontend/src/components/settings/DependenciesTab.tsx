@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
-  Check,
   Download,
   Loader2,
   AlertCircle,
@@ -16,6 +15,7 @@ import {
   type InstallEvent,
 } from "@/api/depsClient";
 import { cn } from "@/lib/utils";
+import { EmptyState, StatusDot } from "@/components/ui/primitives";
 
 export function DependenciesTab() {
   const [deps, setDeps] = useState<DependencyInfo[]>([]);
@@ -97,51 +97,52 @@ export function DependenciesTab() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-5 h-5 text-primary animate-spin" />
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   if (deps.length === 0) {
     return (
-      <div className="text-center py-8">
-        <Package className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-        <p className="text-[13px] text-muted-foreground/60">
-          No optional dependencies available.
-        </p>
-      </div>
+      <EmptyState
+        icon={<Package />}
+        title="No optional dependencies available."
+        className="py-10"
+      />
     );
   }
 
   return (
     <div className="space-y-3">
-      <p className="text-[12px] text-muted-foreground leading-relaxed">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         Optional dependencies extend the capabilities of your AI assistant.
         Install them on demand — they are not included by default to keep the
         installation lightweight.
       </p>
 
-      {deps.map((dep) => (
-        <DependencyCard
-          key={dep.name}
-          dep={dep}
-          isBusy={busy === dep.name}
-          busyAction={busy === dep.name ? busyAction : null}
-          installOutput={busy === dep.name ? installOutput : ""}
-          installError={busy === dep.name ? installError : ""}
-          confirmUninstall={confirmUninstall === dep.name}
-          logsEndRef={logsEndRef}
-          onInstall={() => handleInstall(dep.name)}
-          onUninstall={() => setConfirmUninstall(dep.name)}
-          onConfirmUninstall={() => handleUninstall(dep.name)}
-          onCancelUninstall={() => setConfirmUninstall(null)}
-        />
-      ))}
+      <div className="divide-y divide-border/50">
+        {deps.map((dep) => (
+          <DependencyRow
+            key={dep.name}
+            dep={dep}
+            isBusy={busy === dep.name}
+            busyAction={busy === dep.name ? busyAction : null}
+            installOutput={busy === dep.name ? installOutput : ""}
+            installError={busy === dep.name ? installError : ""}
+            confirmUninstall={confirmUninstall === dep.name}
+            logsEndRef={logsEndRef}
+            onInstall={() => handleInstall(dep.name)}
+            onUninstall={() => setConfirmUninstall(dep.name)}
+            onConfirmUninstall={() => handleUninstall(dep.name)}
+            onCancelUninstall={() => setConfirmUninstall(null)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-function DependencyCard({
+function DependencyRow({
   dep,
   isBusy,
   busyAction,
@@ -169,70 +170,49 @@ function DependencyCard({
   const [showOutput, setShowOutput] = useState(false);
 
   return (
-    <div
-      className={cn(
-        "rounded-xl border p-4 transition-all",
-        dep.installed && !isBusy
-          ? "border-emerald-500/20 bg-emerald-500/5"
-          : isBusy
-            ? "border-amber-500/30 bg-amber-500/5"
-            : "border-border bg-card",
-      )}
-    >
-      {/* Header row */}
-      <div className="flex items-start gap-3">
-        <div
-          className={cn(
-            "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-            dep.installed && !isBusy ? "bg-emerald-500/10" : "bg-secondary",
-          )}
-        >
-          {isBusy ? (
-            <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
-          ) : dep.installed ? (
-            <Check className="w-5 h-5 text-emerald-400" />
-          ) : (
-            <Package className="w-5 h-5 text-muted-foreground" />
-          )}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-[13px] font-medium text-foreground">
+    <div className="py-3.5">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <p className="text-[13.5px] font-medium text-foreground">
               {dep.display_name}
             </p>
             {dep.install_size && (
-              <span className="text-[10px] text-muted-foreground/50">
+              <span className="text-[11px] text-muted-foreground">
                 {dep.install_size}
               </span>
             )}
           </div>
-          <p className="text-[12px] text-muted-foreground/70 mt-0.5 leading-relaxed">
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             {dep.description}
           </p>
 
-          {/* Version / status badge */}
-          <div className="flex items-center gap-2 mt-2 flex-wrap">
-            {dep.installed ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400">
-                <Check className="w-3 h-3" />
-                Installed{dep.version ? ` · ${dep.version}` : ""}
+          {/* Status */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            {isBusy ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {busyAction === "install" ? "Installing…" : "Uninstalling…"}
               </span>
+            ) : dep.installed ? (
+              <StatusDot
+                tone="success"
+                label={`Installed${dep.version ? ` · ${dep.version}` : ""}`}
+              />
             ) : dep.available ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400">
-                Not installed
-              </span>
+              <StatusDot tone="warning" label="Not installed" />
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-secondary text-muted-foreground">
-                Not available on {dep.distro}
-              </span>
+              <StatusDot
+                tone="neutral"
+                label={`Not available on ${dep.distro}`}
+              />
             )}
             {dep.in_overlay && (
               <span
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-sky-500/10 text-sky-400"
+                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
                 title="Stored in a Docker volume — survives container rebuilds without re-downloading"
               >
-                <Package className="w-2.5 h-2.5" />
+                <Package className="h-3 w-3" />
                 Persistent volume
               </span>
             )}
@@ -240,25 +220,16 @@ function DependencyCard({
 
           {/* Features enabled */}
           {dep.enables.length > 0 && (
-            <div className="mt-2 space-y-0.5">
+            <div className="mt-1.5 space-y-0.5">
               {dep.enables.map((feature) => (
                 <div key={feature} className="flex items-center gap-1.5">
-                  <div
-                    className={cn(
-                      "w-1.5 h-1.5 rounded-full",
-                      dep.installed
-                        ? "bg-emerald-400"
-                        : "bg-muted-foreground/30",
-                    )}
-                  />
                   <span
                     className={cn(
-                      "text-[11px]",
-                      dep.installed
-                        ? "text-foreground/70"
-                        : "text-muted-foreground/50",
+                      "h-1.5 w-1.5 rounded-full",
+                      dep.installed ? "bg-success" : "bg-muted-foreground/30",
                     )}
-                  >
+                  />
+                  <span className="text-[11px] text-muted-foreground">
                     {feature}
                   </span>
                 </div>
@@ -268,39 +239,38 @@ function DependencyCard({
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Install button */}
+        <div className="flex shrink-0 items-center gap-1.5">
           {!dep.installed && dep.available && !isBusy && (
             <button
               onClick={onInstall}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 text-[12.5px] font-medium text-primary transition-colors hover:bg-primary/20"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Download className="h-3.5 w-3.5" />
               Install
             </button>
           )}
 
-          {/* Uninstall button / confirmation */}
           {dep.installed && !isBusy && !confirmUninstall && (
             <button
               onClick={onUninstall}
-              className="flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground/50 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              aria-label={`Uninstall ${dep.display_name}`}
               title="Uninstall"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-danger/10 hover:text-danger"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
           {dep.installed && confirmUninstall && !isBusy && (
             <div className="flex items-center gap-1">
               <button
                 onClick={onConfirmUninstall}
-                className="px-2 py-1 rounded-lg text-[11px] bg-red-500/10 text-red-400 hover:bg-red-500/20 font-medium transition-colors"
+                className="rounded-md bg-danger/10 px-2 py-1 text-[11.5px] font-medium text-danger transition-colors hover:bg-danger/20"
               >
                 Uninstall
               </button>
               <button
                 onClick={onCancelUninstall}
-                className="px-2 py-1 rounded-lg text-[11px] text-muted-foreground hover:bg-accent transition-colors"
+                className="rounded-md px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
               >
                 Cancel
               </button>
@@ -311,28 +281,26 @@ function DependencyCard({
 
       {/* Install/uninstall output (collapsible) */}
       {(isBusy || installError) && (
-        <div className="mt-3">
+        <div className="mt-2.5">
           {installError && (
-            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 mb-2">
-              <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-[11px] text-red-400 whitespace-pre-wrap">
-                  {installError}
-                </p>
-              </div>
+            <div className="mb-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
+              <p className="whitespace-pre-wrap text-[11.5px] leading-relaxed text-danger">
+                {installError}
+              </p>
             </div>
           )}
           {installOutput && (
             <div>
               <button
                 onClick={() => setShowOutput(!showOutput)}
-                className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
               >
-                <Terminal className="w-3 h-3" />
+                <Terminal className="h-3 w-3" />
                 {showOutput ? "Hide" : "Show"} {busyAction || "operation"} log
               </button>
               {showOutput && (
-                <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-black/80 p-2.5 text-[10px] font-mono text-green-400/80 leading-relaxed">
+                <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
                   {installOutput}
                   <div className="mt-1.5" ref={logsEndRef} />
                 </pre>

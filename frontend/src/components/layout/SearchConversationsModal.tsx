@@ -73,7 +73,7 @@ export function SearchConversationsModal({
       {/* Backdrop (dark overlay) */}
       <div
         className={cn(
-          "absolute inset-0 bg-black/70 backdrop-blur-sm",
+          "absolute inset-0 bg-black/65 backdrop-blur-sm",
           closing ? "animate-overlay-out" : "animate-overlay-in",
         )}
         onClick={onClose}
@@ -105,12 +105,12 @@ export function SearchConversationsModal({
         </div>
 
         {/* Body — same search as the Brain page's History tab */}
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 m-3">
           <HistoryTab onOpenConversation={onOpenConversation} />
         </div>
 
         {/* Footer — keyboard hints */}
-        <div className="flex items-center gap-4 px-5 py-2.5 border-t border-border/50 shrink-0">
+        <div className="flex items-center gap-4 px-5 py-2.5 border-t bg-card border-border/50 shrink-0">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
             <kbd className="px-1.5 py-0.5 rounded-md border border-border bg-secondary text-[10px] font-mono text-muted-foreground">
               esc

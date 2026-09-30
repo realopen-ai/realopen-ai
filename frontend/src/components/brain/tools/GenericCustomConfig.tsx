@@ -18,9 +18,9 @@ import { useState } from "react";
 
 import { useToolsStore } from "@/store/toolsStore";
 import { useT } from "@/store/settingsStore";
-import { cn } from "@/lib/utils";
 import type { ToolInfo, ToolConfigField } from "@/api/toolsClient";
-import { SettingToggle } from "@/components/brain/ToolsTab";
+import { SectionHeader } from "@/components/ui/primitives";
+import { SettingRow, SettingToggle } from "@/components/brain/ToolsTab";
 
 function setDeep(
   obj: Record<string, unknown>,
@@ -58,6 +58,9 @@ function readDeep(
   return cursor;
 }
 
+const inputClass =
+  "h-9 rounded-lg border border-border/60 bg-transparent px-3 text-[13px] text-foreground placeholder:text-muted-foreground/70 outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20 disabled:opacity-50";
+
 function FieldRow({
   tool,
   field,
@@ -81,85 +84,72 @@ function FieldRow({
   if (field.type === "secret") return null;
 
   return (
-    <div className="flex items-center gap-3 py-2.5">
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] text-foreground">{field.label}</div>
-        {field.help && (
-          <div className="text-[11px] text-muted-foreground/70 leading-snug mt-0.5">
-            {field.help}
-          </div>
-        )}
-      </div>
-      <div className="shrink-0">
-        {field.type === "bool" && (
-          <SettingToggle
-            checked={current === true}
-            disabled={isSaving}
-            label={field.label}
-            onChange={(v) => commit(v)}
-          />
-        )}
-        {field.type === "string" && (
-          <input
-            type="text"
-            defaultValue={(current as string) ?? ""}
-            key={`${field.key}-${String(current ?? "")}`}
-            placeholder={field.placeholder}
-            disabled={isSaving}
-            onBlur={(e) => commit(e.target.value)}
-            className="w-48 px-3 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 disabled:opacity-50"
-          />
-        )}
-        {field.type === "int" && (
-          <input
-            type="number"
-            defaultValue={Number(current ?? field.default ?? 1)}
-            key={`${field.key}-${String(current ?? "")}`}
-            min={1}
-            max={60}
-            disabled={isSaving}
-            onBlur={(e) => {
-              const n = parseInt(e.target.value, 10);
-              if (!isNaN(n)) commit(n);
-            }}
-            className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground text-right outline-none focus:border-primary/40 disabled:opacity-50"
-          />
-        )}
-        {field.type === "float" && (
-          <input
-            type="number"
-            step="0.01"
-            min={0}
-            max={1}
-            defaultValue={Number(current ?? field.default ?? 0.5)}
-            key={`${field.key}-${String(current ?? "")}`}
-            disabled={isSaving}
-            onBlur={(e) => {
-              const n = parseFloat(e.target.value);
-              if (!isNaN(n)) commit(n);
-            }}
-            className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground text-right outline-none focus:border-primary/40 disabled:opacity-50"
-          />
-        )}
-        {field.type === "select" && (
-          <select
-            value={(current as string) ?? field.options?.[0]?.value ?? ""}
-            disabled={isSaving}
-            onChange={(e) => commit(e.target.value)}
-            className={cn(
-              "w-40 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px]",
-              "text-foreground outline-none focus:border-primary/40 disabled:opacity-50",
-            )}
-          >
-            {(field.options ?? []).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-    </div>
+    <SettingRow label={field.label} help={field.help}>
+      {field.type === "bool" && (
+        <SettingToggle
+          checked={current === true}
+          disabled={isSaving}
+          label={field.label}
+          onChange={(v) => commit(v)}
+        />
+      )}
+      {field.type === "string" && (
+        <input
+          type="text"
+          defaultValue={(current as string) ?? ""}
+          key={`${field.key}-${String(current ?? "")}`}
+          placeholder={field.placeholder}
+          disabled={isSaving}
+          onBlur={(e) => commit(e.target.value)}
+          className={`${inputClass} w-48`}
+        />
+      )}
+      {field.type === "int" && (
+        <input
+          type="number"
+          defaultValue={Number(current ?? field.default ?? 1)}
+          key={`${field.key}-${String(current ?? "")}`}
+          min={1}
+          max={60}
+          disabled={isSaving}
+          onBlur={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (!isNaN(n)) commit(n);
+          }}
+          className={`${inputClass} w-20 text-right`}
+        />
+      )}
+      {field.type === "float" && (
+        <input
+          type="number"
+          step="0.01"
+          min={0}
+          max={1}
+          defaultValue={Number(current ?? field.default ?? 0.5)}
+          key={`${field.key}-${String(current ?? "")}`}
+          disabled={isSaving}
+          onBlur={(e) => {
+            const n = parseFloat(e.target.value);
+            if (!isNaN(n)) commit(n);
+          }}
+          className={`${inputClass} w-20 text-right`}
+        />
+      )}
+      {field.type === "select" && (
+        <select
+          value={(current as string) ?? field.options?.[0]?.value ?? ""}
+          disabled={isSaving}
+          onChange={(e) => commit(e.target.value)}
+          className={`${inputClass} w-44`}
+        >
+          {(field.options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      )}
+    </SettingRow>
   );
 }
 
@@ -172,37 +162,39 @@ export function GenericCustomConfig({ tool }: { tool: ToolInfo }) {
   if (sections.length === 0) return null;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-9">
       {sections.map((section) => {
         const fields = section.fields.filter((f) => f.type !== "secret");
         if (fields.length === 0) return null;
         return (
-          <div
-            key={section.key}
-            className="rounded-xl border border-border bg-card px-4 divide-y divide-border/50"
-          >
-            {fields.map((field) => (
-              <FieldRow
-                key={field.key}
-                tool={tool}
-                field={field}
-                custom={custom}
-              />
-            ))}
-          </div>
+          <section key={section.key}>
+            <SectionHeader title={section.label} />
+            <div className="divide-y divide-border/50">
+              {fields.map((field) => (
+                <FieldRow
+                  key={field.key}
+                  tool={tool}
+                  field={field}
+                  custom={custom}
+                />
+              ))}
+            </div>
+          </section>
         );
       })}
-      <button
-        onClick={() => setShowRaw((v) => !v)}
-        className="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors"
-      >
-        {t("brain.tools.showRawConfig")}
-      </button>
-      {showRaw && (
-        <pre className="px-3 py-2.5 rounded-xl border border-border bg-secondary/40 text-[11px] text-muted-foreground overflow-x-auto">
-          {JSON.stringify(tool.config.custom, null, 2)}
-        </pre>
-      )}
+      <div>
+        <button
+          onClick={() => setShowRaw((v) => !v)}
+          className="text-[12px] text-muted-foreground/70 transition-colors hover:text-foreground"
+        >
+          {t("brain.tools.showRawConfig")}
+        </button>
+        {showRaw && (
+          <pre className="mt-2 overflow-x-auto rounded-lg bg-secondary/60 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {JSON.stringify(tool.config.custom, null, 2)}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }

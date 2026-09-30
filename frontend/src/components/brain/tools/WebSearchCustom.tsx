@@ -36,7 +36,14 @@ import { useToolsStore } from "@/store/toolsStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import type { ToolInfo } from "@/api/toolsClient";
+import { Button } from "@/components/ui/button";
+import { SectionHeader } from "@/components/ui/primitives";
 import { SettingToggle } from "@/components/brain/ToolsTab";
+
+// ─── Shared input styling ──────────────────────────────────────────
+
+const inputClass =
+  "h-9 rounded-lg border border-border/60 bg-transparent px-3 text-[13px] text-foreground placeholder:text-muted-foreground/70 outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20 disabled:opacity-50";
 
 // ─── Provider card shell ───────────────────────────────────────────
 
@@ -47,6 +54,7 @@ function ProviderCard({
   enabled,
   onToggle,
   canToggle,
+  badge,
   children,
 }: {
   icon: React.ReactNode;
@@ -55,37 +63,76 @@ function ProviderCard({
   enabled: boolean;
   onToggle: (v: boolean) => void;
   canToggle: boolean;
+  /** Optional element shown instead of the toggle (e.g. "Coming soon"). */
+  badge?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
     <div
       className={cn(
-        "rounded-xl border bg-card px-4 py-3 space-y-3 transition-opacity",
+        "rounded-xl border border-border/60 bg-card p-4 transition-opacity",
         !enabled && "opacity-70",
       )}
     >
       <div className="flex items-center gap-3">
         <span
           className={cn(
-            "shrink-0 w-8 h-8 rounded-lg flex items-center justify-center",
+            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
             enabled
               ? "bg-primary/10 text-primary"
-              : "bg-secondary text-muted-foreground/60",
+              : "bg-secondary text-muted-foreground/80",
           )}
         >
           {icon}
         </span>
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-foreground">{title}</div>
-          <div className="text-[11.5px] text-muted-foreground/80 truncate">
+        <div className="min-w-0 flex-1">
+          <div className="text-[13.5px] font-medium text-foreground">
+            {title}
+          </div>
+          <div className="truncate text-xs text-muted-foreground/80">
             {subtitle}
           </div>
         </div>
-        {canToggle && (
-          <SettingToggle checked={enabled} label={title} onChange={onToggle} />
+        {badge ??
+          (canToggle && (
+            <SettingToggle
+              checked={enabled}
+              label={title}
+              onChange={onToggle}
+            />
+          ))}
+      </div>
+      {enabled && children && (
+        <div className="mt-3 divide-y divide-border/50 border-t border-border/50 pt-1">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── One label + control row inside a provider card ────────────────
+
+function CardField({
+  label,
+  help,
+  children,
+}: {
+  label: string;
+  help?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-4 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] text-foreground">{label}</div>
+        {help && (
+          <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground/70">
+            {help}
+          </div>
         )}
       </div>
-      {enabled && children}
+      <div className="shrink-0">{children}</div>
     </div>
   );
 }
@@ -107,8 +154,7 @@ function NumberField({
 }) {
   const [local, setLocal] = useState(String(value));
   return (
-    <label className="flex items-center gap-3">
-      <span className="flex-1 text-[12.5px] text-foreground">{label}</span>
+    <CardField label={label}>
       <input
         type="number"
         min={min}
@@ -120,9 +166,9 @@ function NumberField({
           setLocal(String(n));
           if (n !== value) onCommit(n);
         }}
-        className="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[13px] text-foreground text-right outline-none focus:border-primary/40"
+        className={`${inputClass} w-20 text-right`}
       />
-    </label>
+    </CardField>
   );
 }
 
@@ -148,34 +194,33 @@ function SecretField({
   const [editing, setEditing] = useState(!status.set);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2 py-2.5">
       <div className="flex items-center gap-2">
-        <KeyRound className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <span className="text-[12.5px] text-foreground">{label}</span>
+        <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+        <span className="text-[13px] text-foreground">{label}</span>
         {status.set && !editing && (
-          <span className="text-[11px] text-muted-foreground/70 truncate">
+          <span className="truncate rounded-md bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
             {status.masked}
           </span>
         )}
       </div>
       {status.set && !editing ? (
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setEditing(true)}
-            className="px-2.5 py-1.5 rounded-lg text-[12px] text-primary hover:bg-primary/10 transition-colors"
-          >
+        <div className="flex items-center gap-1.5">
+          <Button variant="ghost" size="xs" onClick={() => setEditing(true)}>
             {t("brain.tools.websearch.updateKey")}
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-danger hover:bg-danger/10 hover:text-danger"
             onClick={() => {
               onSave(null);
               setEditing(false);
               setValue("");
             }}
-            className="px-2.5 py-1.5 rounded-lg text-[12px] text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
           >
             {t("brain.tools.websearch.removeKey")}
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="flex gap-2">
@@ -186,9 +231,10 @@ function SecretField({
             placeholder={placeholder}
             autoComplete="off"
             spellCheck={false}
-            className="flex-1 px-3 py-2 rounded-xl border border-border bg-card text-[13px] text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
+            className={`${inputClass} w-full sm:max-w-xs`}
           />
-          <button
+          <Button
+            size="sm"
             onClick={() => {
               if (value.trim()) {
                 onSave(value.trim());
@@ -197,25 +243,13 @@ function SecretField({
               }
             }}
             disabled={!value.trim() || isSaving}
-            className={cn(
-              "shrink-0 flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[12px] font-medium transition-colors",
-              !value.trim() || isSaving
-                ? "bg-secondary text-muted-foreground cursor-not-allowed"
-                : "bg-primary text-primary-foreground hover:opacity-90",
-            )}
           >
-            {isSaving ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Check className="w-3.5 h-3.5" />
-            )}
+            {isSaving ? <Loader2 className="animate-spin" /> : <Check />}
             {t("brain.tools.websearch.saveKey")}
-          </button>
+          </Button>
         </div>
       )}
-      <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
-        {help}
-      </p>
+      <p className="text-xs leading-relaxed text-muted-foreground/70">{help}</p>
     </div>
   );
 }
@@ -272,25 +306,19 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
   const enabled = (p: ProviderCfg) => p?.enabled !== false;
 
   return (
-    <div className="space-y-3">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-        {t("brain.tools.websearch.providers")}
-      </div>
-
-      {/* SearXNG */}
-      <ProviderCard
-        icon={<Search className="w-4 h-4" />}
-        title="SearXNG"
-        subtitle={t("brain.tools.websearch.searxngSubtitle")}
-        enabled={enabled(searxng)}
-        canToggle={true}
-        onToggle={(v) => patchProvider("searxng", { enabled: v })}
-      >
-        <div className="space-y-2 pt-1 border-t border-border/40">
-          <label className="flex items-center gap-3">
-            <span className="flex-1 text-[12.5px] text-foreground">
-              {t("brain.tools.websearch.baseUrl")}
-            </span>
+    <section>
+      <SectionHeader title={t("brain.tools.websearch.providers")} />
+      <div className="space-y-3">
+        {/* SearXNG */}
+        <ProviderCard
+          icon={<Search className="h-4 w-4" />}
+          title="SearXNG"
+          subtitle={t("brain.tools.websearch.searxngSubtitle")}
+          enabled={enabled(searxng)}
+          canToggle={true}
+          onToggle={(v) => patchProvider("searxng", { enabled: v })}
+        >
+          <CardField label={t("brain.tools.websearch.baseUrl")}>
             <input
               type="text"
               defaultValue={(searxng?.base_url as string) || ""}
@@ -301,9 +329,9 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
                   base_url: e.target.value.trim() || null,
                 })
               }
-              className="w-48 px-3 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40"
+              className={`${inputClass} w-48`}
             />
-          </label>
+          </CardField>
           <NumberField
             label={t("brain.tools.websearch.maxResults")}
             value={Number(searxng?.max_results ?? 5)}
@@ -318,29 +346,24 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
             max={60}
             onCommit={(v) => patchProvider("searxng", { timeout_s: v })}
           />
-        </div>
-      </ProviderCard>
+        </ProviderCard>
 
-      {/* ArXiv */}
-      <ProviderCard
-        icon={<FlaskConical className="w-4 h-4" />}
-        title="ArXiv"
-        subtitle={t("brain.tools.websearch.arxivSubtitle")}
-        enabled={enabled(arxiv)}
-        canToggle={true}
-        onToggle={(v) => patchProvider("arxiv", { enabled: v })}
-      >
-        <div className="space-y-2 pt-1 border-t border-border/40">
-          <label className="flex items-center gap-3">
-            <span className="flex-1 text-[12.5px] text-foreground">
-              {t("brain.tools.websearch.subject")}
-            </span>
+        {/* ArXiv */}
+        <ProviderCard
+          icon={<FlaskConical className="h-4 w-4" />}
+          title="ArXiv"
+          subtitle={t("brain.tools.websearch.arxivSubtitle")}
+          enabled={enabled(arxiv)}
+          canToggle={true}
+          onToggle={(v) => patchProvider("arxiv", { enabled: v })}
+        >
+          <CardField label={t("brain.tools.websearch.subject")}>
             <select
               value={(arxiv?.subject as string) || ""}
               onChange={(e) =>
                 patchProvider("arxiv", { subject: e.target.value })
               }
-              className="w-44 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground outline-none focus:border-primary/40"
+              className={`${inputClass} w-44`}
             >
               {(subjectOptions.length
                 ? subjectOptions
@@ -351,17 +374,14 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
                 </option>
               ))}
             </select>
-          </label>
-          <label className="flex items-center gap-3">
-            <span className="flex-1 text-[12.5px] text-foreground">
-              {t("brain.tools.websearch.sortBy")}
-            </span>
+          </CardField>
+          <CardField label={t("brain.tools.websearch.sortBy")}>
             <select
               value={(arxiv?.sort_by as string) || "relevance"}
               onChange={(e) =>
                 patchProvider("arxiv", { sort_by: e.target.value })
               }
-              className="w-44 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground outline-none focus:border-primary/40"
+              className={`${inputClass} w-44`}
             >
               {sortOptions.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -373,7 +393,7 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
                 </option>
               ))}
             </select>
-          </label>
+          </CardField>
           <NumberField
             label={t("brain.tools.websearch.maxResults")}
             value={Number(arxiv?.max_results ?? 5)}
@@ -381,29 +401,24 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
             max={10}
             onCommit={(v) => patchProvider("arxiv", { max_results: v })}
           />
-        </div>
-      </ProviderCard>
+        </ProviderCard>
 
-      {/* Wikipedia */}
-      <ProviderCard
-        icon={<BookOpen className="w-4 h-4" />}
-        title="Wikipedia"
-        subtitle={t("brain.tools.websearch.wikipediaSubtitle")}
-        enabled={enabled(wikipedia)}
-        canToggle={true}
-        onToggle={(v) => patchProvider("wikipedia", { enabled: v })}
-      >
-        <div className="space-y-2 pt-1 border-t border-border/40">
-          <label className="flex items-center gap-3">
-            <span className="flex-1 text-[12.5px] text-foreground">
-              {t("brain.tools.websearch.language")}
-            </span>
+        {/* Wikipedia */}
+        <ProviderCard
+          icon={<BookOpen className="h-4 w-4" />}
+          title="Wikipedia"
+          subtitle={t("brain.tools.websearch.wikipediaSubtitle")}
+          enabled={enabled(wikipedia)}
+          canToggle={true}
+          onToggle={(v) => patchProvider("wikipedia", { enabled: v })}
+        >
+          <CardField label={t("brain.tools.websearch.language")}>
             <select
               value={(wikipedia?.language as string) || "en"}
               onChange={(e) =>
                 patchProvider("wikipedia", { language: e.target.value })
               }
-              className="w-32 px-2.5 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground outline-none focus:border-primary/40"
+              className={`${inputClass} w-36`}
             >
               <option value="en">English</option>
               <option value="fr">Français</option>
@@ -412,7 +427,7 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
               <option value="pt-br">Português (BR)</option>
               <option value="ar">العربية</option>
             </select>
-          </label>
+          </CardField>
           <NumberField
             label={t("brain.tools.websearch.maxResults")}
             value={Number(wikipedia?.max_results ?? 3)}
@@ -420,23 +435,18 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
             max={10}
             onCommit={(v) => patchProvider("wikipedia", { max_results: v })}
           />
-        </div>
-      </ProviderCard>
+        </ProviderCard>
 
-      {/* Google */}
-      <ProviderCard
-        icon={<Globe className="w-4 h-4" />}
-        title="Google"
-        subtitle={t("brain.tools.websearch.googleSubtitle")}
-        enabled={enabled(google)}
-        canToggle={true}
-        onToggle={(v) => patchProvider("google", { enabled: v })}
-      >
-        <div className="space-y-3 pt-1 border-t border-border/40">
-          <label className="flex items-center gap-3">
-            <span className="flex-1 text-[12.5px] text-foreground">
-              {t("brain.tools.websearch.cseId")}
-            </span>
+        {/* Google */}
+        <ProviderCard
+          icon={<Globe className="h-4 w-4" />}
+          title="Google"
+          subtitle={t("brain.tools.websearch.googleSubtitle")}
+          enabled={enabled(google)}
+          canToggle={true}
+          onToggle={(v) => patchProvider("google", { enabled: v })}
+        >
+          <CardField label={t("brain.tools.websearch.cseId")}>
             <input
               type="text"
               defaultValue={(google?.cse_id as string) || ""}
@@ -445,9 +455,9 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
               onBlur={(e) =>
                 patchProvider("google", { cse_id: e.target.value.trim() })
               }
-              className="w-48 px-3 py-1.5 rounded-lg border border-border bg-card text-[12.5px] text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40"
+              className={`${inputClass} w-48`}
             />
-          </label>
+          </CardField>
           <NumberField
             label={t("brain.tools.websearch.maxResults")}
             value={Number(google?.max_results ?? 5)}
@@ -463,17 +473,19 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
             isSaving={isSaving}
             onSave={(value) => updateSecret(tool.tool, "google_api_key", value)}
           />
-          <a
-            href="https://programmablesearchengine.google.com/"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground hover:text-primary transition-colors"
-          >
-            {t("brain.tools.websearch.googleSetup")}
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-      </ProviderCard>
-    </div>
+          <div className="pt-2.5">
+            <a
+              href="https://programmablesearchengine.google.com/"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[11.5px] text-muted-foreground transition-colors hover:text-primary"
+            >
+              {t("brain.tools.websearch.googleSetup")}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        </ProviderCard>
+      </div>
+    </section>
   );
 }
