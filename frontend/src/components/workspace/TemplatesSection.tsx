@@ -9,8 +9,18 @@ import {
   Upload,
   X,
   Pencil,
+  MoreHorizontal,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/primitives";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 interface Template {
@@ -26,6 +36,10 @@ interface Template {
 }
 
 type FormMode = "view" | "edit" | "add";
+
+const fieldLabelClass = "mb-1.5 block text-xs font-medium text-foreground";
+const fieldInputClass =
+  "h-9 w-full rounded-lg border border-border/60 bg-transparent px-3 text-[13.5px] text-foreground outline-none transition-colors focus:border-primary/50 placeholder:text-muted-foreground/70";
 
 export function TemplatesSection() {
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -84,65 +98,116 @@ export function TemplatesSection() {
   return (
     <div className="flex h-full">
       {/* Left: grid */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="flex items-center justify-between px-4 pt-4 pb-3">
-          <p className="text-[13px] text-muted-foreground">
-            {templates.length} template(s)
-          </p>
-          <button
-            onClick={handleAdd}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Template
-          </button>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="shrink-0 px-6 pt-5 lg:px-10">
+          <div className="mx-auto flex w-full max-w-300 items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
+              {templates.length} template{templates.length !== 1 ? "s" : ""}
+            </p>
+            <Button size="sm" onClick={handleAdd}>
+              <Plus />
+              Add Template
+            </Button>
+          </div>
         </div>
-        <ScrollArea className="flex-1 px-4">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 pb-4">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="mx-auto w-full max-w-300 px-6 pb-16 pt-4 lg:px-10">
             {isLoading ? (
-              <div className="col-span-full flex items-center justify-center py-12">
-                <Loader2 className="w-5 h-5 text-primary animate-spin" />
+              <div className="flex items-center justify-center py-16 text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
               </div>
             ) : templates.length === 0 ? (
-              <div className="col-span-full flex flex-col items-center justify-center py-12">
-                <FileText className="w-8 h-8 text-muted-foreground/20 mb-2" />
-                <p className="text-[13px] text-muted-foreground/60">
-                  No templates yet. Click "Add Template" to upload one.
-                </p>
-              </div>
+              <EmptyState
+                icon={<FileText />}
+                title="No templates yet"
+                description="Add a PPTX template to make it available to the presentation tool."
+                action={
+                  <Button size="sm" onClick={handleAdd}>
+                    <Plus />
+                    Add Template
+                  </Button>
+                }
+                className="rounded-xl"
+              />
             ) : (
-              templates.map((tpl) => (
-                <button
-                  key={tpl.id}
-                  onClick={() => handleSelect(tpl.id)}
-                  className={cn(
-                    "flex flex-col items-center gap-2 p-3 rounded-xl border transition-all text-left",
-                    selectedId === tpl.id
-                      ? "border-primary bg-primary/5"
-                      : "border-border hover:border-primary/30 hover:bg-accent/30",
-                  )}
-                >
-                  <div className="w-full aspect-video rounded-lg bg-secondary flex items-center justify-center overflow-hidden">
-                    {tpl.thumbnail ? (
-                      <img
-                        src={`data:image/jpeg;base64,${tpl.thumbnail}`}
-                        alt={tpl.display_name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <FileText className="w-8 h-8 text-muted-foreground/30" />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                {templates.map((tpl) => (
+                  <div
+                    key={tpl.id}
+                    className={cn(
+                      "group relative overflow-hidden rounded-xl border text-left transition-colors",
+                      selectedId === tpl.id
+                        ? "border-primary/40 bg-primary/4"
+                        : "border-border/60 bg-card hover:bg-surface-hover",
                     )}
+                  >
+                    <button
+                      onClick={() => handleSelect(tpl.id)}
+                      className="block w-full text-left focus-visible:outline-none"
+                      aria-label={`Open ${tpl.display_name}`}
+                    >
+                      <div className="aspect-4/3 overflow-hidden bg-secondary">
+                        {tpl.thumbnail ? (
+                          <img
+                            src={`data:image/jpeg;base64,${tpl.thumbnail}`}
+                            alt={tpl.display_name}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center">
+                            <FileText className="h-7 w-7 text-muted-foreground/70" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3.5">
+                        <p className="truncate text-[13.5px] font-medium text-foreground">
+                          {tpl.display_name}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                          {tpl.description || "No description"}
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Hover actions */}
+                    <div className="absolute right-1.5 top-1.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Actions for ${tpl.display_name}`}
+                            className="bg-background/80 backdrop-blur-sm"
+                          >
+                            <MoreHorizontal />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => handleEdit(tpl.id)}>
+                            <Pencil />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-danger focus:text-danger [&_svg]:text-danger"
+                            onSelect={() => {
+                              if (
+                                confirm(
+                                  `Delete template "${tpl.display_name}"?`,
+                                )
+                              )
+                                handleDelete(tpl.id);
+                            }}
+                          >
+                            <Trash2 />
+                            Delete…
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </div>
-                  <div className="w-full">
-                    <p className="text-[12px] font-medium text-foreground truncate">
-                      {tpl.display_name}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground/60 truncate">
-                      {tpl.description || "No description"}
-                    </p>
-                  </div>
-                </button>
-              ))
+                ))}
+              </div>
             )}
           </div>
         </ScrollArea>
@@ -150,7 +215,7 @@ export function TemplatesSection() {
 
       {/* Right: split panel (view/edit/add) */}
       {(selectedTemplate || formMode === "add") && (
-        <div className="w-85 shrink-0 border-l border-border/50 flex flex-col bg-card">
+        <div className="flex w-85 shrink-0 flex-col border-l border-border/60 bg-card">
           {formMode === "add" ? (
             <TemplateForm
               mode="add"
@@ -202,90 +267,102 @@ function TemplateDetail({
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-        <span className="text-[13px] font-medium">Template Details</span>
-        <div className="flex gap-1">
-          <button
+    <div className="flex h-full flex-col">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
+        <span className="text-[14px] font-medium text-foreground">
+          Template Details
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
             onClick={onEdit}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            aria-label="Edit template"
+            title="Edit"
           >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
+            <Pencil />
+          </Button>
           {confirmDelete ? (
             <div className="flex items-center gap-1">
               <button
                 onClick={onDelete}
-                className="px-2 py-1 rounded text-[11px] bg-destructive/10 text-destructive hover:bg-destructive/20 font-medium"
+                className="rounded-md bg-danger/10 px-2 py-1 text-[11.5px] font-medium text-danger transition-colors hover:bg-danger/20"
               >
                 Delete
               </button>
-              <button
+              <Button
+                variant="ghost"
+                size="xs"
                 onClick={() => setConfirmDelete(false)}
-                className="px-2 py-1 rounded text-[11px] text-muted-foreground hover:bg-accent"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           ) : (
-            <button
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={() => setConfirmDelete(true)}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
+              aria-label="Delete template"
+              title="Delete"
+              className="text-muted-foreground/80 hover:text-danger hover:bg-danger/10"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+              <Trash2 />
+            </Button>
           )}
         </div>
       </div>
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-4">
-          <div className="aspect-video rounded-lg bg-secondary flex items-center justify-center overflow-hidden">
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-5 p-4">
+          <div className="aspect-4/3 overflow-hidden rounded-lg bg-secondary">
             {template.thumbnail ? (
               <img
                 src={`data:image/jpeg;base64,${template.thumbnail}`}
                 alt={template.display_name}
-                className="w-full h-full object-cover"
+                className="h-full w-full object-cover"
               />
             ) : (
-              <FileText className="w-10 h-10 text-muted-foreground/30" />
+              <div className="flex h-full items-center justify-center">
+                <FileText className="h-10 w-10 text-muted-foreground/30" />
+              </div>
             )}
           </div>
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide">
+            <label className="text-xs font-medium text-muted-foreground">
               Name
             </label>
-            <p className="text-[13px] text-foreground font-medium mt-0.5">
+            <p className="mt-0.5 text-[13.5px] font-medium text-foreground">
               {template.display_name}
             </p>
           </div>
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide">
+            <label className="text-xs font-medium text-muted-foreground">
               Slug
             </label>
-            <p className="text-[12px] text-muted-foreground font-mono mt-0.5">
+            <p className="mt-0.5 font-mono text-[12.5px] text-muted-foreground">
               {template.slug}
             </p>
           </div>
           {template.description && (
             <div>
-              <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide">
+              <label className="text-xs font-medium text-muted-foreground">
                 Description
               </label>
-              <p className="text-[12px] text-foreground/80 mt-0.5">
+              <p className="mt-0.5 text-[13px] text-foreground/80">
                 {template.description}
               </p>
             </div>
           )}
           {template.tags.length > 0 && (
             <div>
-              <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide">
+              <label className="text-xs font-medium text-muted-foreground">
                 Tags
               </label>
-              <div className="flex flex-wrap gap-1.5 mt-1">
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {template.tags.map((tag) => (
                   <span
                     key={tag}
-                    className="px-2 py-0.5 rounded-full text-[11px] bg-primary/10 text-primary"
+                    className="rounded-full bg-primary/10 px-2 py-0.5 text-[11.5px] font-medium text-primary"
                   >
                     {tag}
                   </span>
@@ -443,26 +520,26 @@ function TemplateForm({
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50">
-        <span className="text-[13px] font-medium">
+    <div className="flex h-full flex-col">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
+        <span className="text-[14px] font-medium text-foreground">
           {mode === "add" ? "Add Template" : "Edit Template"}
         </span>
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={onCancel}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          aria-label="Close"
         >
-          <X className="w-4 h-4" />
-        </button>
+          <X />
+        </Button>
       </div>
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-4">
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="space-y-4 p-4">
           {/* PPTX file upload (add mode only) */}
           {mode === "add" && (
             <div>
-              <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide block mb-1.5">
-                PPTX File
-              </label>
+              <label className={fieldLabelClass}>PPTX File</label>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -476,13 +553,13 @@ function TemplateForm({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className={cn(
-                  "w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border text-[12px] transition-colors",
+                  "flex w-full items-center gap-2 rounded-lg border px-3 py-2.5 text-[12.5px] transition-colors",
                   file
-                    ? "border-primary/30 bg-primary/5 text-foreground"
-                    : "border-dashed border-border text-muted-foreground hover:border-primary/30 hover:text-foreground",
+                    ? "border-primary/40 bg-primary/5 text-foreground"
+                    : "border-dashed border-border/70 text-muted-foreground hover:border-primary/40 hover:text-foreground",
                 )}
               >
-                <Upload className="w-4 h-4 shrink-0" />
+                <Upload className="h-4 w-4 shrink-0" />
                 <span className="truncate">
                   {file ? file.name : "Click to upload .pptx file"}
                 </span>
@@ -492,54 +569,46 @@ function TemplateForm({
 
           {/* Display Name */}
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide block mb-1.5">
-              Display Name
-            </label>
+            <label className={fieldLabelClass}>Display Name</label>
             <input
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="e.g. Research Template"
-              className="w-full px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              className={fieldInputClass}
             />
           </div>
 
           {/* Description */}
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide block mb-1.5">
-              Description
-            </label>
+            <label className={fieldLabelClass}>Description</label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="1-4 words (e.g. Navy professional)"
-              className="w-full px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              className={fieldInputClass}
             />
           </div>
 
           {/* Tags */}
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide block mb-1.5">
-              Tags (optional)
-            </label>
+            <label className={fieldLabelClass}>Tags (optional)</label>
             <input
               type="text"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder="corporate, minimal, professional"
-              className="w-full px-3 py-2 rounded-lg border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+              className={fieldInputClass}
             />
-            <p className="text-[10px] text-muted-foreground/50 mt-1">
+            <p className="mt-1 text-[11px] text-muted-foreground">
               Comma-separated keywords
             </p>
           </div>
 
           {/* Thumbnail */}
           <div>
-            <label className="text-[11px] text-muted-foreground/60 uppercase tracking-wide block mb-1.5">
-              Thumbnail (optional)
-            </label>
+            <label className={fieldLabelClass}>Thumbnail (optional)</label>
             <input
               ref={thumbInputRef}
               type="file"
@@ -548,84 +617,86 @@ function TemplateForm({
               className="hidden"
             />
             <div className="flex items-center gap-2">
-              <div className="w-16 h-12 rounded-md bg-secondary flex items-center justify-center overflow-hidden shrink-0">
+              <div className="flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-md bg-secondary">
                 {thumbnail ? (
                   <img
                     src={`data:image/jpeg;base64,${thumbnail}`}
                     alt="Thumbnail"
-                    className="w-full h-full object-cover"
+                    className="h-full w-full object-cover"
                   />
                 ) : (
-                  <FileText className="w-5 h-5 text-muted-foreground/30" />
+                  <FileText className="h-5 w-5 text-muted-foreground/30" />
                 )}
               </div>
-              <button
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() => thumbInputRef.current?.click()}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
               >
                 {thumbnail ? "Change" : "Upload"}
-              </button>
+              </Button>
               {thumbnail && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => {
                     setThumbnail(null);
                     setThumbnailName("");
                   }}
-                  className="px-2.5 py-1.5 rounded-lg text-[11px] text-muted-foreground hover:text-destructive transition-colors"
+                  className="text-muted-foreground hover:text-danger"
                 >
                   Remove
-                </button>
+                </Button>
               )}
             </div>
           </div>
 
           {/* Validation */}
           <div className="space-y-2">
-            <button
-              onClick={handleValidate}
+            <Button
+              variant="outline"
+              className={cn(
+                "w-full",
+                validationState === "validating" &&
+                  "cursor-wait text-muted-foreground",
+                validationState === "valid" &&
+                  "border-success/30 bg-success/10 text-success hover:bg-success/15",
+                validationState === "invalid" &&
+                  "border-danger/30 bg-danger/10 text-danger hover:bg-danger/15",
+              )}
+              onClick={() => void handleValidate()}
               disabled={
                 validationState === "validating" || (mode === "add" && !file)
               }
-              className={cn(
-                "w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors",
-                validationState === "validating"
-                  ? "bg-secondary text-muted-foreground cursor-wait"
-                  : validationState === "valid"
-                    ? "bg-emerald-500/10 text-emerald-400"
-                    : validationState === "invalid"
-                      ? "bg-red-500/10 text-red-400"
-                      : "bg-secondary text-foreground hover:bg-accent",
-              )}
             >
               {validationState === "validating" ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Validating...
+                  <Loader2 className="animate-spin" /> Validating…
                 </>
               ) : validationState === "valid" ? (
                 <>
-                  <Check className="w-3.5 h-3.5" /> Validated
+                  <Check /> Validated
                 </>
               ) : validationState === "invalid" ? (
                 <>
-                  <AlertCircle className="w-3.5 h-3.5" /> Validation Failed —
-                  Retry
+                  <AlertCircle /> Validation Failed — Retry
                 </>
               ) : (
                 <>
-                  <Upload className="w-3.5 h-3.5" /> Test Template
+                  <Upload /> Test Template
                 </>
               )}
-            </button>
+            </Button>
 
             {validationState === "valid" && validationDetails && (
-              <p className="text-[10px] text-emerald-400/70 px-1">
+              <p className="px-1 text-[11px] text-success/80">
                 {validationDetails}
               </p>
             )}
             {validationState === "invalid" && validationError && (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2">
-                <p className="text-[11px] text-red-400">{validationError}</p>
-                <p className="text-[10px] text-red-400/60 mt-1">
+              <div className="rounded-lg border border-danger/25 bg-danger/5 px-3 py-2">
+                <p className="text-[11.5px] text-danger">{validationError}</p>
+                <p className="mt-1 text-[11px] text-danger/70">
                   Fix the template and click "Test Template" to retry.
                 </p>
               </div>
@@ -634,23 +705,14 @@ function TemplateForm({
 
           {/* Save button — only after successful validation */}
           {validationState === "valid" && (
-            <button
-              onClick={handleSave}
+            <Button
+              className="w-full"
+              onClick={() => void handleSave()}
               disabled={isSaving || !displayName.trim()}
-              className={cn(
-                "w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors",
-                isSaving || !displayName.trim()
-                  ? "bg-secondary text-muted-foreground/50 cursor-not-allowed"
-                  : "bg-primary text-primary-foreground hover:bg-primary/90",
-              )}
             >
-              {isSaving ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Check className="w-3.5 h-3.5" />
-              )}
+              {isSaving ? <Loader2 className="animate-spin" /> : <Check />}
               {mode === "add" ? "Add Template" : "Save Changes"}
-            </button>
+            </Button>
           )}
         </div>
       </ScrollArea>

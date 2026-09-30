@@ -1,21 +1,23 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
-  FolderOpen,
-  FileText,
-  FileImage,
-  Package,
-  ChevronLeft,
-  Files,
   Box,
+  ChevronLeft,
+  ChevronRight,
+  FileImage,
+  FileText,
+  Files,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "react-router-dom";
+import { useUIStore } from "@/store/uiStore";
+import { PageContainer, PageHeader } from "@/components/ui/primitives";
 import { TemplatesSection } from "@/components/workspace/TemplatesSection";
 import { GeneratedFilesSection } from "@/components/workspace/GeneratedFilesSection";
 import { AssetsSection } from "@/components/workspace/AssetsSection";
 import { DocumentsSection } from "@/components/workspace/DocumentsSection";
-import { useNavigate } from "react-router-dom";
-import { useUIStore } from "@/store/uiStore";
 import { SandboxesSection } from "@/components/workspace/SandboxesSection";
+import { useT } from "@/store/settingsStore";
 
 type WorkspaceView =
   | "folders"
@@ -25,53 +27,120 @@ type WorkspaceView =
   | "assets"
   | "sandboxes";
 
-const folders = [
+type SectionView = Exclude<WorkspaceView, "folders">;
+
+const folders: {
+  key: SectionView;
+  labelKey: string;
+  icon: typeof Box;
+  iconClass: string;
+  descKey: string;
+}[] = [
   {
-    key: "sandboxes" as const,
-    label: "Sandboxes",
+    key: "sandboxes",
+    labelKey: "workspace.sandboxes",
     icon: Box,
-    color: "text-cyan-400",
-    bg: "bg-cyan-500/10",
-    desc: "Persistent coding workspaces",
+    iconClass: "text-cyan-600 dark:text-cyan-400",
+    descKey: "workspace.sandboxes.shortDescription",
   },
   {
-    key: "documents" as const,
-    label: "Documents",
+    key: "documents",
+    labelKey: "workspace.documents",
     icon: Files,
-    color: "text-emerald-400",
-    bg: "bg-emerald-500/10",
-    desc: "Knowledge base files indexed for RAG",
+    iconClass: "text-emerald-600 dark:text-emerald-400",
+    descKey: "workspace.documents.shortDescription",
   },
   {
-    key: "templates" as const,
-    label: "Templates",
+    key: "templates",
+    labelKey: "workspace.templates",
     icon: FileText,
-    color: "text-amber-400",
-    bg: "bg-amber-500/10",
-    desc: "PPTX presentation templates",
+    iconClass: "text-amber-600 dark:text-amber-400",
+    descKey: "workspace.templates.shortDescription",
   },
   {
-    key: "generated" as const,
-    label: "Generated Files",
+    key: "generated",
+    labelKey: "workspace.generated",
     icon: FileImage,
-    color: "text-blue-400",
-    bg: "bg-blue-500/10",
-    desc: "Reports, presentations, and images",
+    iconClass: "text-blue-600 dark:text-blue-400",
+    descKey: "workspace.generated.shortDescription",
   },
   {
-    key: "assets" as const,
-    label: "Assets",
+    key: "assets",
+    labelKey: "workspace.assets",
     icon: Package,
-    color: "text-purple-400",
-    bg: "bg-purple-500/10",
-    desc: "Logos, branding, and reusable resources",
+    iconClass: "text-purple-600 dark:text-purple-400",
+    descKey: "workspace.assets.shortDescription",
   },
 ];
+
+const sectionMeta: Record<SectionView, { titleKey: string; descriptionKey: string }> =
+  {
+    sandboxes: {
+      titleKey: "workspace.sandboxes",
+      descriptionKey: "workspace.sandboxes.description",
+    },
+    documents: {
+      titleKey: "workspace.documents",
+      descriptionKey: "workspace.documents.description",
+    },
+    templates: {
+      titleKey: "workspace.templates",
+      descriptionKey: "workspace.templates.description",
+    },
+    generated: {
+      titleKey: "workspace.generated",
+      descriptionKey: "workspace.generated.description",
+    },
+    assets: {
+      titleKey: "workspace.assets",
+      descriptionKey: "workspace.assets.description",
+    },
+  };
+
+/** Chrome shared by every workspace sub-section: back link + page header,
+ *  with the section filling the remaining height. */
+function SectionShell({
+  view,
+  onBack,
+  children,
+}: {
+  view: SectionView;
+  onBack: () => void;
+  children: ReactNode;
+}) {
+  const meta = sectionMeta[view];
+  const t = useT();
+  return (
+    <div className="flex h-full w-full flex-col bg-background">
+      <div className="shrink-0 px-6 pt-7 lg:px-10 lg:pt-8">
+        <div className="mx-auto flex w-full max-w-300 items-start gap-2">
+          <button
+            onClick={onBack}
+            aria-label={t("workspace.back")}
+            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="min-w-0">
+            <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-foreground">
+              {t(meta.titleKey)}
+            </h1>
+            <p className="mt-1.5 text-[14px] leading-relaxed text-muted-foreground">
+              {t(meta.descriptionKey)}
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  );
+}
 
 export function WorkspacePage() {
   const [view, setView] = useState<WorkspaceView>("folders");
   const navigate = useNavigate();
   const setShowWorkspacePage = useUIStore((s) => s.setShowWorkspacePage);
+  const t = useT();
 
   const handleOpenConversation = (conversationId: string) => {
     navigate(`/${conversationId}`);
@@ -80,150 +149,84 @@ export function WorkspacePage() {
 
   if (view === "sandboxes") {
     return (
-      <div className="flex h-full w-full flex-col bg-background">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-          <button
-            onClick={() => setView("folders")}
-            className="p-1 rounded hover:bg-accent transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-          </button>
-          <Box className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold">Workspace · Sandboxes</h1>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <SandboxesSection />
-        </div>
-      </div>
+      <SectionShell view="sandboxes" onBack={() => setView("folders")}>
+        <SandboxesSection />
+      </SectionShell>
     );
   }
 
   if (view === "documents") {
     return (
-      <div className="flex h-full w-full flex-col bg-background">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-          <button
-            onClick={() => setView("folders")}
-            className="p-1 rounded hover:bg-accent transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-          </button>
-          <FolderOpen className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold text-foreground">
-            Workspace · Documents
-          </h1>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <DocumentsSection />
-        </div>
-      </div>
+      <SectionShell view="documents" onBack={() => setView("folders")}>
+        <DocumentsSection />
+      </SectionShell>
     );
   }
 
   if (view === "templates") {
     return (
-      <div className="flex h-full w-full flex-col bg-background">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-          <button
-            onClick={() => setView("folders")}
-            className="p-1 rounded hover:bg-accent transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-          </button>
-          <FolderOpen className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold text-foreground">
-            Workspace · Templates
-          </h1>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <TemplatesSection />
-        </div>
-      </div>
+      <SectionShell view="templates" onBack={() => setView("folders")}>
+        <TemplatesSection />
+      </SectionShell>
     );
   }
 
   if (view === "generated") {
     return (
-      <div className="flex h-full w-full flex-col bg-background">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-          <button
-            onClick={() => setView("folders")}
-            className="p-1 rounded hover:bg-accent transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-          </button>
-          <FolderOpen className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold text-foreground">
-            Workspace · Generated Files
-          </h1>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <GeneratedFilesSection onOpenConversation={handleOpenConversation} />
-        </div>
-      </div>
+      <SectionShell view="generated" onBack={() => setView("folders")}>
+        <GeneratedFilesSection onOpenConversation={handleOpenConversation} />
+      </SectionShell>
     );
   }
 
   if (view === "assets") {
     return (
-      <div className="flex h-full w-full flex-col bg-background">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-          <button
-            onClick={() => setView("folders")}
-            className="p-1 rounded hover:bg-accent transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5 text-muted-foreground" />
-          </button>
-          <FolderOpen className="w-5 h-5 text-primary" />
-          <h1 className="text-[16px] font-semibold text-foreground">
-            Workspace · Assets
-          </h1>
-        </div>
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <AssetsSection />
-        </div>
-      </div>
+      <SectionShell view="assets" onBack={() => setView("folders")}>
+        <AssetsSection />
+      </SectionShell>
     );
   }
 
-  // Folder view — icon grid
+  // Folder view — workspace tiles
   return (
-    <div className="flex h-full w-full flex-col bg-background">
-      <div className="flex items-center gap-3 px-5 py-3.5 border-b border-border/50">
-        <FolderOpen className="w-5 h-5 text-primary" />
-        <h1 className="text-[16px] font-semibold text-foreground">Workspace</h1>
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto p-6">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 max-w-5xl">
+    <div className="h-full w-full overflow-y-auto bg-background">
+      <PageContainer width="wide" className="pb-16">
+        <PageHeader
+          title={t("workspace.title")}
+          description={t("workspace.description")}
+          className="mb-8"
+        />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {folders.map((folder) => {
             const Icon = folder.icon;
             return (
               <button
                 key={folder.key}
                 onClick={() => setView(folder.key)}
-                className="flex flex-col items-center gap-3 p-5 rounded-2xl border border-border hover:border-primary/30 hover:bg-accent/30 transition-all group"
+                className="group flex items-center gap-4 rounded-xl border border-border/60 bg-card p-5 text-left transition-all hover:border-border hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 <div
                   className={cn(
-                    "w-16 h-16 rounded-2xl flex items-center justify-center",
-                    folder.bg,
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary [&_svg]:size-5",
+                    folder.iconClass,
                   )}
                 >
-                  <Icon className={cn("w-8 h-8", folder.color)} />
+                  <Icon />
                 </div>
-                <div className="text-center">
-                  <p className="text-[13px] font-medium text-foreground">
-                    {folder.label}
+                <div className="min-w-0 flex-1">
+                  <p className="text-[15px] font-medium text-foreground">
+                    {t(folder.labelKey)}
                   </p>
-                  <p className="text-[11px] text-muted-foreground/60 mt-0.5">
-                    {folder.desc}
+                  <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+                    {t(folder.descKey)}
                   </p>
                 </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70 transition-all group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
               </button>
             );
           })}
         </div>
-      </div>
+      </PageContainer>
     </div>
   );
 }

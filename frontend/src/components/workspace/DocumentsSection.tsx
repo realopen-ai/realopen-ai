@@ -15,10 +15,12 @@ import {
   Loader2,
   AlertCircle,
   FolderOpen,
-  ArrowDownUp,
   Files,
+  ChevronDown,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { EmptyState, FilterChip } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import {
   listDocuments,
@@ -37,6 +39,7 @@ import { DocumentDetailModal } from "@/components/workspace/DocumentDetailModal"
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes)) return "—";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -58,7 +61,7 @@ function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() || "";
 }
 
-// ─── Type groups (filter pills, same style as Generated Files) ───────
+// ─── Type groups (filter chips) ──────────────────────────────────────
 
 const TYPE_GROUPS: { key: string; label: string; exts: string[] }[] = [
   { key: "all", label: "All", exts: [] },
@@ -73,8 +76,7 @@ const TYPE_GROUPS: { key: string; label: string; exts: string[] }[] = [
 function typeOf(doc: DocumentDTO): {
   key: string;
   icon: typeof FileText;
-  color: string;
-  bg: string;
+  tint: string;
 } {
   const ext = fileExt(doc.filename);
   for (const g of TYPE_GROUPS) {
@@ -84,43 +86,37 @@ function typeOf(doc: DocumentDTO): {
           return {
             key: "pdf",
             icon: FileText,
-            color: "text-red-400",
-            bg: "bg-red-500/10",
+            tint: "bg-red-500/10 text-red-600 dark:text-red-400",
           };
         case "word":
           return {
             key: "word",
             icon: FileText,
-            color: "text-blue-400",
-            bg: "bg-blue-500/10",
+            tint: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
           };
         case "excel":
           return {
             key: "excel",
             icon: FileSpreadsheet,
-            color: "text-emerald-400",
-            bg: "bg-emerald-500/10",
+            tint: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
           };
         case "slides":
           return {
             key: "slides",
             icon: Presentation,
-            color: "text-amber-400",
-            bg: "bg-amber-500/10",
+            tint: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
           };
         case "text":
           return {
             key: "text",
             icon: FileText,
-            color: "text-slate-400",
-            bg: "bg-slate-500/10",
+            tint: "bg-slate-500/10 text-slate-600 dark:text-slate-400",
           };
         case "data":
           return {
             key: "data",
             icon: Table,
-            color: "text-violet-400",
-            bg: "bg-violet-500/10",
+            tint: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
           };
       }
     }
@@ -128,8 +124,7 @@ function typeOf(doc: DocumentDTO): {
   return {
     key: "other",
     icon: FileText,
-    color: "text-muted-foreground",
-    bg: "bg-secondary",
+    tint: "bg-secondary text-muted-foreground",
   };
 }
 
@@ -183,38 +178,38 @@ function sortDocs(docs: DocumentDTO[], key: SortKey): DocumentDTO[] {
 function RagStatus({ doc }: { doc: DocumentDTO }) {
   if (doc.digestion_status === "ready") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400">
-        <Check className="w-3 h-3" /> RAG: Indexed
+      <span className="inline-flex items-center gap-1 text-xs text-success">
+        <Check className="h-3 w-3" /> RAG: Indexed
       </span>
     );
   }
   if (doc.digestion_status === "digesting") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-blue-400">
-        <Loader2 className="w-3 h-3 animate-spin" /> RAG: Digesting…
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> RAG: Digesting…
       </span>
     );
   }
   if (doc.digestion_status === "failed") {
     return (
       <span
-        className="inline-flex items-center gap-1 text-[11px] text-red-400"
+        className="inline-flex items-center gap-1 text-xs text-danger"
         title={doc.digestion_error ?? ""}
       >
-        <AlertCircle className="w-3 h-3" /> RAG: Failed
+        <AlertCircle className="h-3 w-3" /> RAG: Failed
       </span>
     );
   }
   if (doc.digestion_status === "not_indexed") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-        <X className="w-3 h-3" /> RAG: Not indexed
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <X className="h-3 w-3" /> RAG: Not indexed
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-      <Loader2 className="w-3 h-3 animate-spin" /> RAG: Pending
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      <Loader2 className="h-3 w-3 animate-spin" /> RAG: Pending
     </span>
   );
 }
@@ -243,21 +238,21 @@ function DocumentCard({
   return (
     <div
       className={cn(
-        "group relative rounded-xl border border-border bg-secondary/20 hover:bg-accent/20 hover:border-primary/30 transition-all overflow-hidden cursor-pointer",
-        busy && "opacity-60 pointer-events-none",
+        "group relative cursor-pointer overflow-hidden rounded-xl border border-border/60 bg-card transition-colors hover:bg-surface-hover",
+        busy && "pointer-events-none opacity-60",
       )}
       onClick={onOpen}
     >
       {/* Thumbnail area */}
-      <div className="relative aspect-4/3 bg-secondary/40 flex items-center justify-center overflow-hidden">
+      <div className="relative flex aspect-4/3 items-center justify-center overflow-hidden bg-secondary">
         {thumbError ? (
           <div
             className={cn(
-              "w-12 h-12 rounded-xl flex items-center justify-center",
-              t.bg,
+              "flex h-12 w-12 items-center justify-center rounded-xl",
+              t.tint,
             )}
           >
-            <Icon className={cn("w-6 h-6", t.color)} />
+            <Icon className="h-6 w-6" />
           </div>
         ) : (
           <img
@@ -265,7 +260,7 @@ function DocumentCard({
             alt={`${doc.filename} preview`}
             loading="lazy"
             onError={() => setThumbError(true)}
-            className="w-full h-full object-cover object-top"
+            className="h-full w-full object-cover object-top"
           />
         )}
 
@@ -280,35 +275,31 @@ function DocumentCard({
               ? "Public — all conversations can search this. Click to make private."
               : "Private — only the attached conversation can search this. Click to make public."
           }
-          className={cn(
-            "absolute top-2 right-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-medium backdrop-blur-sm transition-colors",
-            doc.scope === "public"
-              ? "bg-emerald-500/80 text-white hover:bg-emerald-600"
-              : "bg-blue-500/80 text-white hover:bg-blue-600",
-          )}
+          className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
         >
           {doc.scope === "public" ? (
             <>
-              <Globe className="w-2.5 h-2.5" /> Public
+              <Globe className="h-3 w-3" /> Public
             </>
           ) : (
             <>
-              <Lock className="w-2.5 h-2.5" /> Private
+              <Lock className="h-3 w-3" /> Private
             </>
           )}
         </button>
 
         {/* Quick actions (hover on desktop) */}
-        <div className="absolute top-2 left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute left-2 top-2 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onDownload();
             }}
             title="Download"
-            className="w-7 h-7 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+            aria-label={`Download ${doc.filename}`}
+            className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={(e) => {
@@ -316,30 +307,28 @@ function DocumentCard({
               onDelete();
             }}
             title="Delete"
-            className="w-7 h-7 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-red-400 transition-colors"
+            aria-label={`Delete ${doc.filename}`}
+            className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-danger"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
       {/* Info */}
-      <div className="p-3">
+      <div className="p-3.5">
         <p
-          className="text-[13px] font-medium text-foreground truncate"
+          className="truncate text-[13.5px] font-medium text-foreground"
           title={doc.original_filename}
         >
           {doc.filename}
         </p>
-        <div className="mt-1.5 flex flex-col gap-0.5">
+        <div className="mt-1.5">
           <RagStatus doc={doc} />
-          <span className="text-[10.5px] text-muted-foreground/70">
-            {formatSize(doc.file_size_bytes)}
-          </span>
-          <span className="text-[10.5px] text-muted-foreground/70">
-            {formatDate(doc.created_at)}
-          </span>
         </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {formatSize(doc.file_size_bytes)} · {formatDate(doc.created_at)}
+        </p>
       </div>
     </div>
   );
@@ -369,6 +358,50 @@ const initialUpload: UploadState = {
   doneDoc: null,
 };
 
+const dialogPanelClass =
+  "w-full max-w-md overflow-hidden rounded-xl border border-border/60 bg-card shadow-[0_24px_70px_-12px_var(--color-shadow-strong)]";
+
+const overlayClass =
+  "fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4";
+
+function DialogChrome({
+  title,
+  onClose,
+  closeDisabled,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  closeDisabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={overlayClass} onClick={onClose}>
+      <div
+        className={dialogPanelClass}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
+          <h2 className="text-[15px] font-semibold text-foreground">{title}</h2>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onClose}
+            disabled={closeDisabled}
+            aria-label="Close"
+          >
+            <X />
+          </Button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function UploadDialog({
   state,
   conversations,
@@ -390,218 +423,205 @@ function UploadDialog({
     state;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-      onClick={onClose}
+    <DialogChrome
+      title="Upload document"
+      onClose={onClose}
+      closeDisabled={isUploading}
     >
-      <div
-        className="w-full max-w-md rounded-xl border border-border/60 bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
-          <h2 className="text-[14px] font-semibold">Upload document</h2>
-          <button
-            onClick={onClose}
+      {/* Body */}
+      <div className="max-h-[70vh] space-y-4 overflow-y-auto px-4 py-4">
+        {/* File picker */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-foreground">
+            File
+          </label>
+          <input
+            type="file"
+            accept={ACCEPTED_EXTS}
+            onChange={onFileSelect}
             disabled={isUploading}
-            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-40"
-          >
-            <X className="w-4 h-4" />
-          </button>
+            className="w-full text-[12px] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-primary-foreground file:transition-colors hover:file:bg-primary/90"
+          />
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Accepted: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV (and DOC, XLS, PPT,
+            TSV)
+          </p>
         </div>
 
-        {/* Body */}
-        <div className="px-4 py-4 space-y-3.5 max-h-[70vh] overflow-y-auto">
-          {/* File picker */}
-          <div>
-            <label className="text-[11.5px] text-muted-foreground mb-1.5 block">
-              File
-            </label>
-            <input
-              type="file"
-              accept={ACCEPTED_EXTS}
-              onChange={onFileSelect}
-              disabled={isUploading}
-              className="w-full text-[12px] file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:text-[12px] file:font-medium file:cursor-pointer file:hover:bg-primary/90"
-            />
-            <p className="text-[10.5px] text-muted-foreground/60 mt-1">
-              Accepted: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV (and DOC, XLS, PPT,
-              TSV)
-            </p>
-          </div>
-
-          {/* Scope radio */}
-          <div>
-            <label className="text-[11.5px] text-muted-foreground mb-1.5 block">
-              Scope
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => onScopeChange("public")}
-                disabled={isUploading}
-                className={cn(
-                  "flex flex-col items-start gap-0.5 px-3 py-2 rounded-md border text-left transition-colors",
-                  scope === "public"
-                    ? "border-emerald-500/60 bg-emerald-500/5"
-                    : "border-border/40 hover:bg-secondary/30",
-                )}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-[12px] font-medium">Public</span>
-                </div>
-                <span className="text-[10.5px] text-muted-foreground/70">
-                  Searchable by all conversations
-                </span>
-              </button>
-              <button
-                onClick={() => onScopeChange("private")}
-                disabled={isUploading}
-                className={cn(
-                  "flex flex-col items-start gap-0.5 px-3 py-2 rounded-md border text-left transition-colors",
-                  scope === "private"
-                    ? "border-blue-500/60 bg-blue-500/5"
-                    : "border-border/40 hover:bg-secondary/30",
-                )}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="text-[12px] font-medium">Private</span>
-                </div>
-                <span className="text-[10.5px] text-muted-foreground/70">
-                  Only one conversation
-                </span>
-              </button>
-            </div>
-          </div>
-
-          {/* Conversation picker (only for private) */}
-          {scope === "private" && (
-            <div>
-              <label className="text-[11.5px] text-muted-foreground mb-1.5 block">
-                Attach to conversation
-              </label>
-              {conversations.length === 0 ? (
-                <div className="text-[11.5px] text-amber-400/80 flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  No conversations yet — create one in chat first.
-                </div>
-              ) : (
-                <select
-                  value={conversationId}
-                  onChange={(e) => onConversationChange(e.target.value)}
-                  disabled={isUploading}
-                  className="w-full text-[12px] py-1.5 px-2 rounded-md bg-secondary/50 border border-border/40 focus:outline-none focus:border-primary/50"
-                >
-                  <option value="">— Pick a conversation —</option>
-                  {conversations.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.title || "Untitled"} ·{" "}
-                      {new Date(c.createdAt).toLocaleDateString()}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
-
-          {/* Progress bar */}
-          {progress && (
-            <div className="rounded-md border border-border/40 bg-secondary/20 px-3 py-2">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[11px] font-medium text-foreground">
-                  {progress.stage === "done"
-                    ? "Done"
-                    : progress.stage === "error"
-                      ? "Error"
-                      : progress.stage.replace(/_/g, " ")}
-                </span>
-                <span className="text-[11px] text-muted-foreground/70">
-                  {progress.percent}%
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-secondary/70 overflow-hidden">
-                <div
-                  className={cn(
-                    "h-full transition-all",
-                    progress.stage === "error"
-                      ? "bg-red-500"
-                      : progress.stage === "done"
-                        ? "bg-emerald-500"
-                        : "bg-primary",
-                  )}
-                  style={{ width: `${progress.percent}%` }}
-                />
-              </div>
-              {progress.details && (
-                <p className="text-[10.5px] text-muted-foreground/70 mt-1">
-                  {progress.details}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Done badge */}
-          {doneDoc && (
-            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 flex items-start gap-2">
-              <Check className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-              <div className="text-[11.5px]">
-                <p className="font-medium text-emerald-400">
-                  Document ready for RAG
-                </p>
-                <p className="text-muted-foreground/80">
-                  {doneDoc.filename}: {doneDoc.total_chunks} chunks
-                  {doneDoc.total_images > 0
-                    ? `, ${doneDoc.total_images} images`
-                    : ""}
-                  .
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-              <p className="text-[11.5px] text-red-400">{error}</p>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border/40">
-          <button
-            onClick={onClose}
-            disabled={isUploading}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md hover:bg-secondary disabled:opacity-40"
-          >
-            {doneDoc ? "Close" : "Cancel"}
-          </button>
-          {!doneDoc && (
+        {/* Scope radio */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-foreground">
+            Scope
+          </label>
+          <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={onStart}
-              disabled={
-                isUploading || !file || (scope === "private" && !conversationId)
-              }
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-            >
-              {isUploading ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                <>
-                  <Upload className="w-3.5 h-3.5" />
-                  Upload & digest
-                </>
+              onClick={() => onScopeChange("public")}
+              disabled={isUploading}
+              className={cn(
+                "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                scope === "public"
+                  ? "border-primary/40 bg-primary/5"
+                  : "border-border/60 hover:bg-surface-hover",
               )}
+            >
+              <div className="flex items-center gap-1.5">
+                <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-[12.5px] font-medium text-foreground">
+                  Public
+                </span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">
+                Searchable by all conversations
+              </span>
             </button>
-          )}
+            <button
+              onClick={() => onScopeChange("private")}
+              disabled={isUploading}
+              className={cn(
+                "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                scope === "private"
+                  ? "border-primary/40 bg-primary/5"
+                  : "border-border/60 hover:bg-surface-hover",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-[12.5px] font-medium text-foreground">
+                  Private
+                </span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">
+                Only one conversation
+              </span>
+            </button>
+          </div>
         </div>
+
+        {/* Conversation picker (only for private) */}
+        {scope === "private" && (
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-foreground">
+              Attach to conversation
+            </label>
+            {conversations.length === 0 ? (
+              <div className="flex items-center gap-1.5 text-[12px] text-warning">
+                <AlertCircle className="h-3.5 w-3.5" />
+                No conversations yet — create one in chat first.
+              </div>
+            ) : (
+              <select
+                value={conversationId}
+                onChange={(e) => onConversationChange(e.target.value)}
+                disabled={isUploading}
+                className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
+              >
+                <option value="">— Pick a conversation —</option>
+                {conversations.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title || "Untitled"} ·{" "}
+                    {new Date(c.createdAt).toLocaleDateString()}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        {/* Progress bar */}
+        {progress && (
+          <div className="rounded-lg bg-secondary px-3.5 py-3">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium text-foreground">
+                {progress.stage === "done"
+                  ? "Done"
+                  : progress.stage === "error"
+                    ? "Error"
+                    : progress.stage.replace(/_/g, " ")}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {progress.percent}%
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-border/60">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  progress.stage === "error"
+                    ? "bg-danger"
+                    : progress.stage === "done"
+                      ? "bg-success"
+                      : "bg-primary",
+                )}
+                style={{ width: `${progress.percent}%` }}
+              />
+            </div>
+            {progress.details && (
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                {progress.details}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Done badge */}
+        {doneDoc && (
+          <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/5 px-3.5 py-2.5">
+            <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+            <div className="text-[12.5px]">
+              <p className="font-medium text-success">Document ready for RAG</p>
+              <p className="text-muted-foreground">
+                {doneDoc.filename}: {doneDoc.total_chunks} chunks
+                {doneDoc.total_images > 0
+                  ? `, ${doneDoc.total_images} images`
+                  : ""}
+                .
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3.5 py-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+            <p className="text-[12.5px] text-danger">{error}</p>
+          </div>
+        )}
       </div>
-    </div>
+
+      {/* Footer */}
+      <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-t border-border/60 px-4">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          disabled={isUploading}
+        >
+          {doneDoc ? "Close" : "Cancel"}
+        </Button>
+        {!doneDoc && (
+          <Button
+            size="sm"
+            onClick={onStart}
+            disabled={
+              isUploading || !file || (scope === "private" && !conversationId)
+            }
+          >
+            {isUploading ? (
+              <>
+                <Loader2 className="animate-spin" />
+                Uploading…
+              </>
+            ) : (
+              <>
+                <Upload />
+                Upload & digest
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+    </DialogChrome>
   );
 }
 
@@ -621,72 +641,50 @@ function ScopeDialog({
   const [cid, setCid] = useState("");
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-      onClick={onCancel}
-    >
-      <div
-        className="w-full max-w-sm rounded-xl border border-border/60 bg-background shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
-          <h2 className="text-[14px] font-semibold">Make private</h2>
-          <button
-            onClick={onCancel}
-            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary"
+    <DialogChrome title="Make private" onClose={onCancel}>
+      <div className="space-y-3 px-4 py-4">
+        <p className="text-[13px] text-muted-foreground">
+          Attach{" "}
+          <span className="font-medium text-foreground">{doc.filename}</span> to
+          a conversation — only that conversation will be able to search it.
+        </p>
+        {conversations.length === 0 ? (
+          <div className="flex items-center gap-1.5 text-[12px] text-warning">
+            <AlertCircle className="h-3.5 w-3.5" />
+            No conversations yet — create one in chat first.
+          </div>
+        ) : (
+          <select
+            value={cid}
+            onChange={(e) => setCid(e.target.value)}
+            className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
           >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="px-4 py-4 space-y-3">
-          <p className="text-[12px] text-muted-foreground">
-            Attach{" "}
-            <span className="font-medium text-foreground">{doc.filename}</span>{" "}
-            to a conversation — only that conversation will be able to search
-            it.
-          </p>
-          {conversations.length === 0 ? (
-            <div className="text-[11.5px] text-amber-400/80 flex items-center gap-1.5">
-              <AlertCircle className="w-3.5 h-3.5" />
-              No conversations yet — create one in chat first.
-            </div>
-          ) : (
-            <select
-              value={cid}
-              onChange={(e) => setCid(e.target.value)}
-              className="w-full text-[12px] py-1.5 px-2 rounded-md bg-secondary/50 border border-border/40 focus:outline-none focus:border-primary/50"
-            >
-              <option value="">— Pick a conversation —</option>
-              {conversations.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title || "Untitled"} ·{" "}
-                  {new Date(c.createdAt).toLocaleDateString()}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border/40">
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md hover:bg-secondary"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => cid && onConfirm(cid)}
-            disabled={!cid}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-          >
-            Make private
-          </button>
-        </div>
+            <option value="">— Pick a conversation —</option>
+            {conversations.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.title || "Untitled"} ·{" "}
+                {new Date(c.createdAt).toLocaleDateString()}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
-    </div>
+      <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-t border-border/60 px-4">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={() => cid && onConfirm(cid)} disabled={!cid}>
+          Make private
+        </Button>
+      </div>
+    </DialogChrome>
   );
 }
 
 // ─── DocumentsSection ─────────────────────────────────────────────────
+
+const selectClass =
+  "h-9 cursor-pointer appearance-none rounded-lg border border-border/60 bg-transparent pl-2.5 pr-7 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50";
 
 export function DocumentsSection() {
   const [docs, setDocs] = useState<DocumentDTO[]>([]);
@@ -837,125 +835,116 @@ export function DocumentsSection() {
     search !== "" || filterScope !== "all" || filterType !== "all";
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="px-4 pt-4 pb-2 space-y-2.5 border-b border-border/40">
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Search */}
-          <div className="relative flex-1 min-w-45">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search documents, collections…"
-              className="w-full pl-8 pr-3 py-1.5 text-[12px] rounded-md bg-secondary/50 border border-border/40 focus:outline-none focus:border-primary/50"
-            />
+      <div className="shrink-0 px-6 pt-5 lg:px-10">
+        <div className="mx-auto w-full max-w-300 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search */}
+            <div className="relative min-w-45 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/80" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search documents…"
+                className="h-9 w-full rounded-lg border border-border/60 bg-transparent pl-9 pr-3 text-[13.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/80 focus:border-primary/50"
+              />
+            </div>
+
+            {/* Scope filter */}
+            <div className="relative">
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/80" />
+              <select
+                value={filterScope}
+                onChange={(e) =>
+                  setFilterScope(e.target.value as "all" | DocumentScope)
+                }
+                className={selectClass}
+                title="Filter by scope"
+              >
+                <option value="all">All scopes</option>
+                <option value="public">Public</option>
+                <option value="private">Private</option>
+              </select>
+            </div>
+
+            {/* Sort */}
+            <div className="relative">
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/80" />
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className={selectClass}
+                title="Sort order"
+              >
+                {SORT_OPTIONS.map((o) => (
+                  <option key={o.key} value={o.key}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex-1" />
+
+            <div className="text-xs text-muted-foreground">
+              {filtered.length} doc{filtered.length !== 1 ? "s" : ""}
+            </div>
+
+            <Button size="sm" onClick={openUpload}>
+              <Upload />
+              Upload
+            </Button>
           </div>
 
-          {/* Scope filter */}
-          <select
-            value={filterScope}
-            onChange={(e) =>
-              setFilterScope(e.target.value as "all" | DocumentScope)
-            }
-            className="text-[12px] py-1.5 px-2 rounded-md bg-secondary/50 border border-border/40 focus:outline-none"
-            title="Filter by scope"
-          >
-            <option value="all">All scopes</option>
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-          </select>
-
-          {/* Sort */}
-          <div className="relative">
-            <ArrowDownUp className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3.5 text-muted-foreground/60 pointer-events-none" />
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="pl-7 pr-2 py-1.5 text-[12px] rounded-md bg-secondary/50 border border-border/40 focus:outline-none appearance-none cursor-pointer"
-              title="Sort order"
-            >
-              {SORT_OPTIONS.map((o) => (
-                <option key={o.key} value={o.key}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
+          {/* Type filter chips */}
+          <div className="flex flex-wrap gap-1">
+            {TYPE_GROUPS.map((g) => (
+              <FilterChip
+                key={g.key}
+                active={filterType === g.key}
+                onClick={() => setFilterType(g.key)}
+              >
+                {g.label}
+              </FilterChip>
+            ))}
           </div>
-
-          <div className="flex-1" />
-
-          <div className="text-[11px] text-muted-foreground/60">
-            {filtered.length} doc{filtered.length !== 1 ? "s" : ""}
-          </div>
-
-          <button
-            onClick={openUpload}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            Upload
-          </button>
-        </div>
-
-        {/* Type filter pills (same style as Generated Files) */}
-        <div className="flex gap-1.5 flex-wrap">
-          {TYPE_GROUPS.map((g) => (
-            <button
-              key={g.key}
-              onClick={() => setFilterType(g.key)}
-              className={cn(
-                "px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors",
-                filterType === g.key
-                  ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-                  : "bg-secondary text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {g.label}
-            </button>
-          ))}
         </div>
       </div>
 
       {/* Document card grid */}
-      <ScrollArea className="flex-1">
-        <div className="p-4">
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="mx-auto w-full max-w-300 px-6 pb-16 pt-4 lg:px-10">
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/60">
-              <Loader2 className="w-5 h-5 animate-spin mb-2" />
-              <p className="text-[12px]">Loading documents…</p>
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <p className="text-[13px]">Loading documents…</p>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-3">
-                {hasActiveFilters ? (
-                  <FolderOpen className="w-7 h-7 text-primary/60" />
-                ) : (
-                  <Files className="w-7 h-7 text-primary/60" />
-                )}
-              </div>
-              <p className="text-[13px] font-medium text-muted-foreground/70 mb-1">
-                {hasActiveFilters
+            <EmptyState
+              icon={hasActiveFilters ? <FolderOpen /> : <Files />}
+              title={
+                hasActiveFilters
                   ? "No documents match your filters"
-                  : "No documents yet"}
-              </p>
-              <p className="text-[11.5px] text-muted-foreground/50 max-w-70">
-                {hasActiveFilters
+                  : "No documents yet"
+              }
+              description={
+                hasActiveFilters
                   ? "Try adjusting your search, scope or type filters."
-                  : "Upload a PDF, DOCX, XLSX, PPTX, TXT, MD or CSV file to make it searchable by the AI."}
-              </p>
-              {!hasActiveFilters && (
-                <button
-                  onClick={openUpload}
-                  className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  Upload your first document
-                </button>
-              )}
-            </div>
+                  : "Upload a PDF, DOCX, XLSX, PPTX, TXT, MD or CSV file to make it searchable by the AI."
+              }
+              action={
+                !hasActiveFilters ? (
+                  <Button size="sm" onClick={openUpload}>
+                    <Upload />
+                    Upload
+                  </Button>
+                ) : undefined
+              }
+              className="rounded-xl"
+            />
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5 max-w-6xl">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filtered.map((doc) => (
                 <DocumentCard
                   key={doc.id}

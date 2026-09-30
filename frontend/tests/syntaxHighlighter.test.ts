@@ -79,7 +79,7 @@ test("chat and file views retain their controls and use the shared highlighter",
     files,
     /<HighlightedCode code=\{draft\} filePath=\{activeFile\}/,
   );
-  assert.match(files, />\s*Save\s*</);
+  assert.match(files, /t\("panel\.save"\)/);
 });
 
 test("read, write, and code-exec tool details use shared highlighting metadata", () => {
@@ -100,9 +100,9 @@ test("read, write, and code-exec tool details use shared highlighting metadata",
     /code=\{tc\.code\}[\s\S]*language=\{tc\.language \?\? "python"\}/,
   );
   assert.match(messageBubble, /line\.startsWith\("---"\)/);
-  assert.match(messageBubble, /bg-red-500\/5 text-red-400/);
+  assert.match(messageBubble, /bg-danger\/10 text-danger/);
   assert.match(messageBubble, /line\.startsWith\("\+\+\+"\)/);
-  assert.match(messageBubble, /bg-emerald-500\/5 text-emerald-400/);
+  assert.match(messageBubble, /bg-success\/10 text-success/);
 });
 
 test("skill instructions and resources use shared syntax highlighting", () => {
