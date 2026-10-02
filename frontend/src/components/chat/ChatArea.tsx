@@ -241,10 +241,9 @@ export function ChatArea() {
             assistantMsgId,
             data.generationDuration,
           );
-          // Re-enable the input as soon as generation completes — the
-          // memory extraction step (which runs after this event but before
-          // [DONE]) is non-blocking and shouldn't keep the input disabled.
-          s.setStreaming(capturedConvId, assistantMsgId, false);
+          // `generation_done` closes one model round, not the whole agent
+          // turn. Tool execution may now begin and further rounds may
+          // follow, so streaming remains active until `done` / [DONE].
         },
         onMemoryExtractionStart: () => {
           useMemoryStore.getState().setExtracting(true);
