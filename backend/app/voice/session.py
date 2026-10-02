@@ -870,10 +870,6 @@ class VoiceSession:
         if not builder.blocks:  # no meaningful text — nothing to persist
             return
         blocks = list(builder.to_db_blocks())
-        if interrupted:
-            # Mark the partial reply as interrupted (visible error block —
-            # same block schema the frontend already renders).
-            blocks.append({"type": "error", "content": "Interrupted by user"})
         msg_id: Optional[uuid_mod.UUID] = None
         try:
             msg_id = await persist_message_standalone(
@@ -885,6 +881,7 @@ class VoiceSession:
                 generation_duration=(builder.generation_duration or None),
                 deliverables=(builder.deliverables or None),
                 modality="voice",
+                completion_status="interrupted" if interrupted else "completed",
             )
         except Exception as e:  # noqa: BLE001 — DB errors are non-fatal
             logger.error("voice: assistant message persist failed: %s", e)
@@ -907,6 +904,9 @@ class VoiceSession:
                     "modality": "voice",
                     "model": self._model_label,
                     "generationDuration": builder.generation_duration or None,
+                    "completionStatus": (
+                        "interrupted" if interrupted else "completed"
+                    ),
                 },
             }
         )

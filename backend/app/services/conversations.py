@@ -164,6 +164,7 @@ async def add_message(
     generation_duration: Optional[int] = None,
     deliverables: Optional[list] = None,
     modality: Optional[str] = None,
+    completion_status: str = "completed",
 ) -> Message:
     """Add a message to a conversation.
 
@@ -195,6 +196,7 @@ async def add_message(
         generation_duration=generation_duration,
         deliverables=deliverables,
         modality=modality,
+        completion_status=completion_status,
         created_at=datetime.utcnow(),
     )
     db.add(msg)
@@ -259,6 +261,41 @@ async def persist_message_standalone(
     except Exception as e:
         logger.error("Failed to persist %s message: %s", role, e)
         return None
+
+
+async def update_message_standalone(
+    message_id: uuid.UUID,
+    *,
+    content: str,
+    blocks: Optional[list] = None,
+    generation_duration: Optional[int] = None,
+    deliverables: Optional[list] = None,
+    completion_status: str = "streaming",
+) -> bool:
+    """Update a streamed assistant message using an independent session."""
+    from app.db.session import async_session_factory
+
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                update(Message)
+                .where(Message.id == message_id)
+                .values(
+                    content=content,
+                    blocks=blocks,
+                    generation_duration=generation_duration,
+                    deliverables=deliverables,
+                    completion_status=completion_status,
+                )
+            )
+            await session.commit()
+        if result.rowcount != 1:
+            logger.warning("Streamed message %s was not found for update", message_id)
+            return False
+        return True
+    except Exception as e:
+        logger.error("Failed to update streamed message %s: %s", message_id, e)
+        return False
 
 
 async def save_document(
@@ -356,5 +393,7 @@ async def message_to_dict(msg: Message) -> dict:
     # pipeline, NULL (omitted) for regular text messages.
     if getattr(msg, "modality", None):
         result["modality"] = msg.modality
+
+    result["completionStatus"] = getattr(msg, "completion_status", "completed")
 
     return result

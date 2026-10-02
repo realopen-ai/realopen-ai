@@ -10,6 +10,7 @@ Supports:
 """
 
 import base64
+import asyncio
 import json
 import logging
 import time
@@ -33,9 +34,11 @@ from app.services import providers
 from app.services import rag as rag_service
 from app.services.blocks import BlockBuilder as _BlockBuilder
 from app.services.conversations import persist_message_standalone
+from app.services.conversations import update_message_standalone
 from app.services.conversations import DEFAULT_TITLE
 from app.services.memory_extractor import maybe_run_memory_extraction
 from app.services.title_generator import maybe_generate_and_save_title
+from app.services.chat_streams import get_stream, start_stream, stop_stream
 from app.services.conversation_memory import maybe_summarize_conversation
 from app.services.background_queue import (
     mark_stream_active,
@@ -242,6 +245,33 @@ async def _persist_message(
     return msg_id
 
 
+async def _persist_assistant_snapshot(
+    conv_id: uuid.UUID,
+    model: str,
+    builder: _BlockBuilder,
+    message_id: uuid.UUID | None,
+    completion_status: str,
+) -> uuid.UUID | None:
+    """Create or update the single durable assistant row for a live turn."""
+    values = {
+        "content": builder.get_text_content(),
+        "blocks": builder.to_db_blocks(),
+        "generation_duration": builder.generation_duration,
+        "deliverables": builder.deliverables if builder.deliverables else None,
+        "completion_status": completion_status,
+    }
+    if message_id is None:
+        return await _persist_message(
+            conv_id,
+            "assistant",
+            values.pop("content"),
+            model=model,
+            **values,
+        )
+    await update_message_standalone(message_id, **values)
+    return message_id
+
+
 # ─── Memory extraction helper ──────────────────────────────────────────
 #
 # The implementation moved to app/services/memory_extractor.py (public
@@ -344,6 +374,8 @@ async def chat_stream(request: ChatRequest):
         chunk_count = 0
         request_start = None
         builder = _BlockBuilder()
+        assistant_message_id: uuid.UUID | None = None
+        completion_status = "completed"
         try:
             request_start = time.time()
             async for chunk in run_agent_stream(
@@ -381,6 +413,16 @@ async def chat_stream(request: ChatRequest):
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
                                 builder.on_generation_done(parsed["generationDuration"])
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
 
                         if event_type == "message" and parsed.get("message", {}).get(
                             "content"
@@ -403,15 +445,20 @@ async def chat_stream(request: ChatRequest):
 
                         if event_type == "error" and parsed.get("error"):
                             builder.on_error(str(parsed["error"]))
+                            completion_status = "error"
 
                     except json.JSONDecodeError:
                         pass
                 yield chunk
+        except asyncio.CancelledError:
+            completion_status = "interrupted"
+            _log("   ⏹️ generate() interrupted by user")
         except Exception as e:
             import traceback
 
             _log("   ❌ generate() exception: %s\n%s", e, traceback.format_exc())
             builder.on_error(str(e))
+            completion_status = "error"
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
         full_assistant_content = builder.get_text_content()
@@ -422,28 +469,23 @@ async def chat_stream(request: ChatRequest):
             len(full_assistant_content),
         )
 
-        # Persist the assistant message BEFORE yielding [DONE].
+        # Finalize the same assistant row that was created after round one.
         if _conv_id and builder.blocks:
-            await _persist_message(
+            assistant_message_id = await _persist_assistant_snapshot(
                 _conv_id,
-                "assistant",
-                full_assistant_content,
-                model=_resolved_model,
-                blocks=builder.to_db_blocks(),
-                generation_duration=builder.generation_duration,
-                deliverables=builder.deliverables if builder.deliverables else None,
+                _resolved_model,
+                builder,
+                assistant_message_id,
+                completion_status,
             )
-
-            # Mark the stream as idle so the background extraction queue
-            # knows it's safe to run without evicting the KV cache.
-            if _conv_id:
-                await mark_stream_idle(str(_conv_id))
 
             # Memory extraction — watermark check is inline (fast DB read),
             # the actual LLM extraction is enqueued to the background queue
             # which waits for stream idle before running. See
             # _maybe_run_memory_extraction() for details.
             try:
+                if completion_status != "completed":
+                    raise asyncio.CancelledError
                 yield "data: " + json.dumps(
                     {
                         "event": "memory_extraction_start",
@@ -462,6 +504,8 @@ async def chat_stream(request: ChatRequest):
                         "pending": pending,
                     }
                 ) + "\n\n"
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
                 _log("   ⚠️  memory extraction failed: %s", e)
                 yield "data: " + json.dumps(
@@ -488,6 +532,10 @@ async def chat_stream(request: ChatRequest):
                         _log("   📝 conversation summarized for cross-session memory")
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
+
+        # Release the marker even if an interrupted turn produced no blocks.
+        if _conv_id:
+            await mark_stream_idle(str(_conv_id))
 
         # ── Auto-title from the first user message (LLM via ──
         # default_utility). Runs at most once per conversation: the service
@@ -524,10 +572,23 @@ async def chat_stream(request: ChatRequest):
                 int(token_estimate * 0.4)
             )
 
+        if completion_status == "interrupted":
+            yield "data: " + json.dumps({"event": "interrupted"}) + "\n\n"
         yield "data: [DONE]\n\n"
 
+    if not _conv_id:
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    active_stream = await start_stream(str(_conv_id), generate())
     return StreamingResponse(
-        generate(),
+        active_stream.subscribe(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -655,6 +716,8 @@ async def chat_stream_multipart(
         chunk_count = 0
         request_start = None
         builder = _BlockBuilder()
+        assistant_message_id: uuid.UUID | None = None
+        completion_status = "completed"
         digested_doc_ids: List[str] = []  # for DB link to user message
         # Track digested document filenames so we can inject a system
         # hint into the agent's messages telling it these files are now
@@ -823,6 +886,16 @@ async def chat_stream_multipart(
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
                                 builder.on_generation_done(parsed["generationDuration"])
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
 
                         if event_type == "message" and parsed.get("message", {}).get(
                             "content"
@@ -844,13 +917,18 @@ async def chat_stream_multipart(
 
                         if event_type == "error" and parsed.get("error"):
                             builder.on_error(str(parsed["error"]))
+                            completion_status = "error"
 
                     except json.JSONDecodeError:
                         pass
                 yield chunk
+        except asyncio.CancelledError:
+            completion_status = "interrupted"
+            dbg("   ⏹️ multipart generate() interrupted by user")
         except Exception as e:
             dbg("   ❌ generate() exception: %s", e)
             builder.on_error(str(e))
+            completion_status = "error"
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
         full_assistant_content = builder.get_text_content()
@@ -862,25 +940,21 @@ async def chat_stream_multipart(
             len(full_assistant_content),
         )
 
-        # Persist the assistant message BEFORE yielding [DONE].
+        # Finalize the same assistant row that was created after round one.
         if _conv_id and builder.blocks:
-            await _persist_message(
+            assistant_message_id = await _persist_assistant_snapshot(
                 _conv_id,
-                "assistant",
-                full_assistant_content,
-                model=_resolved_model,
-                blocks=builder.to_db_blocks(),
-                generation_duration=builder.generation_duration,
-                deliverables=builder.deliverables if builder.deliverables else None,
+                _resolved_model,
+                builder,
+                assistant_message_id,
+                completion_status,
             )
-
-            # Mark stream idle so background extraction can proceed.
-            if _conv_id:
-                await mark_stream_idle(str(_conv_id))
 
             # Memory extraction — watermark check inline, LLM extraction
             # enqueued to background queue (KV-cache protection).
             try:
+                if completion_status != "completed":
+                    raise asyncio.CancelledError
                 yield "data: " + json.dumps(
                     {
                         "event": "memory_extraction_start",
@@ -899,6 +973,8 @@ async def chat_stream_multipart(
                         "pending": pending,
                     }
                 ) + "\n\n"
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
                 _log("   ⚠️  memory extraction failed (multipart): %s", e)
                 yield "data: " + json.dumps(
@@ -923,6 +999,10 @@ async def chat_stream_multipart(
                         _log("   📝 conversation summarized (multipart)")
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
+
+        # Release the marker even if an interrupted turn produced no blocks.
+        if _conv_id:
+            await mark_stream_idle(str(_conv_id))
 
         # ── Auto-title from the first user message (LLM via ──
         # default_utility). Same guard + SSE event as /chat/stream.
@@ -956,10 +1036,56 @@ async def chat_stream_multipart(
                 int(token_estimate * 0.4)
             )
 
+        if completion_status == "interrupted":
+            yield "data: " + json.dumps({"event": "interrupted"}) + "\n\n"
         yield "data: [DONE]\n\n"
 
+    if not _conv_id:
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    active_stream = await start_stream(str(_conv_id), generate())
     return StreamingResponse(
-        generate(),
+        active_stream.subscribe(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/chat/stream/{conversation_id}/stop")
+async def stop_chat_stream(conversation_id: str):
+    """Explicitly interrupt the active agent turn for a conversation."""
+    try:
+        normalized = str(_parse_uuid(conversation_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID") from exc
+    if not await stop_stream(normalized):
+        raise HTTPException(status_code=404, detail="No active stream")
+    return {"stopping": True}
+
+
+@router.get("/chat/stream/{conversation_id}/events")
+async def resume_chat_stream(conversation_id: str, after: int = 0):
+    """Reconnect to a buffered agent stream without restarting the turn."""
+    try:
+        normalized = str(_parse_uuid(conversation_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID") from exc
+    stream = get_stream(normalized)
+    if stream is None or stream.done:
+        raise HTTPException(status_code=404, detail="No resumable stream")
+    return StreamingResponse(
+        stream.subscribe(after=after),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

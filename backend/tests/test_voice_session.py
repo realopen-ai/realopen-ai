@@ -647,10 +647,7 @@ async def test_barge_in_cancels_tts_and_captures_new_utterance(env, monkeypatch)
     # of text existed), marked as interrupted.
     assistant_persist = [c for c in env.persist_calls if c["role"] == "assistant"]
     assert len(assistant_persist) == 1
-    assert any(
-        b.get("type") == "error" and "interrupted" in b.get("content", "").lower()
-        for b in assistant_persist[0]["blocks"]
-    )
+    assert assistant_persist[0]["completion_status"] == "interrupted"
 
     # The user's NEW utterance is already being captured — the pre-roll
     # (250 ms = 8000 bytes) was seeded into a fresh ASR stream.
