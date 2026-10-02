@@ -721,6 +721,26 @@ export function ChatArea() {
     ) {
       return;
     }
+
+    // A normal home -> conversation navigation can happen after the agent's
+    // `done` event while the backend is still finishing memory/title work.
+    // That is not a reload recovery: the completed local assistant already
+    // owns the response. Reconnect only when persistence says the assistant
+    // is still streaming, or when the page was reloaded before the first
+    // assistant snapshot and the latest durable message is still the user.
+    const hydratedMessages =
+      useChatStore
+        .getState()
+        .conversations.find((c) => c.id === urlConvId)?.messages ?? [];
+    const hasStreamingAssistant = hydratedMessages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.completionStatus === "streaming",
+    );
+    const latestHydratedMessage = hydratedMessages[hydratedMessages.length - 1];
+    if (!hasStreamingAssistant && latestHydratedMessage?.role !== "user") {
+      return;
+    }
     resumedConversationsRef.current.add(urlConvId);
 
     void resumeChatStream(urlConvId, async () => {

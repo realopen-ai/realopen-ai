@@ -30,6 +30,14 @@ test("reload reconnects to buffered SSE and rebuilds the live message", () => {
   assert.match(chatArea, /current\?\.model === "external" \? undefined/);
 });
 
+test("normal navigation after completion does not create a reconnect bubble", () => {
+  assert.match(chatArea, /const hasStreamingAssistant = hydratedMessages\.some/);
+  assert.match(
+    chatArea,
+    /if \(!hasStreamingAssistant && latestHydratedMessage\?\.role !== "user"\)/,
+  );
+});
+
 test("interrupted assistant messages render a durable badge", () => {
   assert.match(bubble, /message\.completionStatus === "interrupted"/);
   assert.match(bubble, /message\.interrupted/);
