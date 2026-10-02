@@ -1416,6 +1416,13 @@ export function MessageBubble({
         </div>
       )}
 
+      {message.completionStatus === "interrupted" && (
+        <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+          <XCircle className="h-3 w-3" />
+          {t("message.interrupted")}
+        </div>
+      )}
+
       {/* Document Viewer Modal (PPTX / PDF / DOCX) */}
       {viewingPptx && (
         <FileViewerModal

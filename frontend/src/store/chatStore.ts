@@ -114,6 +114,7 @@ export interface Message {
   documentCount?: number;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
+  completionStatus?: "streaming" | "completed" | "interrupted" | "error";
   // Deliverable files (reports, etc.) produced by tool calls. Persisted
   // in the DB so download badges survive page refresh.
   deliverables?: Deliverable[];
@@ -384,13 +385,14 @@ export function dtoToMessage(dto: MessageDTO): Message {
     model: dto.model ?? undefined,
     modality: (dto.modality as "voice" | "text" | undefined) ?? undefined,
     blocks,
-    isStreaming: false,
+    isStreaming: dto.completionStatus === "streaming",
     createdAt: dto.createdAt,
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     generationDuration: dto.generationDuration,
+    completionStatus: dto.completionStatus ?? "completed",
     deliverables: (dto.deliverables ?? undefined)?.map((d) => ({
       ...d,
       thumbnail_url:

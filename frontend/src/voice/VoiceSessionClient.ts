@@ -121,6 +121,7 @@ export interface VoiceAssistantMessageEvent {
   modality?: string;
   model?: string | null;
   generationDuration?: number;
+  completionStatus?: "completed" | "interrupted" | "error";
 }
 
 export interface VoiceTtsAnnounce {

@@ -435,6 +435,7 @@ export interface MessageDTO {
    * assistant messages. NULL for user/system messages. */
   blocks?: BackendBlock[] | null;
   generationDuration?: number;
+  completionStatus?: "streaming" | "completed" | "interrupted" | "error";
   /** Deliverable files (reports, etc.) produced by tool calls. NULL
    * when no deliverables. The frontend renders download badges from
    * this so they survive page refresh. */

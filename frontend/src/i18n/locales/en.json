@@ -16,6 +16,7 @@
   "sidebar.delete": "Delete",
   "sidebar.confirmDelete": "Confirm delete",
   "sidebar.generating": "Generating response",
+  "message.interrupted": "Interrupted by user",
   "sidebar.archived": "Archived",
   "sidebar.search": "Search chats",
   "sidebar.searchConversations": "Search conversations",

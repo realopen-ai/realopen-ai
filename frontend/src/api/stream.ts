@@ -62,6 +62,7 @@ export interface StreamCallbacks {
   }) => void;
   onDocumentDigestError?: (info: { filename?: string; error: string }) => void;
   onDone: () => void;
+  onInterrupted?: () => void;
   onError: (error: string) => void;
 }
 
@@ -88,10 +89,21 @@ const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const activeControllers = new Set<AbortController>();
 
 /** Stop user-visible text generation without treating it as a timeout. */
-export function stopActiveStream(): void {
-  for (const controller of activeControllers) {
-    controller.abort("user_stop");
+export async function stopActiveStream(
+  conversationId?: string | null,
+): Promise<void> {
+  if (conversationId) {
+    try {
+      const response = await fetch(
+        `/api/chat/stream/${encodeURIComponent(conversationId)}/stop`,
+        { method: "POST", keepalive: true },
+      );
+      if (response.ok) return;
+    } catch {
+      // Fall back to closing the local transport below.
+    }
   }
+  for (const controller of activeControllers) controller.abort("user_stop");
   activeControllers.clear();
 }
 
@@ -172,6 +184,7 @@ export async function streamChat(
     log("✅ streamChat complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
+      callbacks.onInterrupted?.();
       callbacks.onDone();
     } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -275,6 +288,7 @@ export async function streamChatWithFiles(
     log("✅ streamChatWithFiles complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
+      callbacks.onInterrupted?.();
       callbacks.onDone();
     } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -351,6 +365,31 @@ async function parseSSEStream(
   // If we reach here, stream ended without [DONE]
   log("   SSE stream ended without [DONE] — calling onDone() manually");
   callbacks.onDone();
+}
+
+/** Reattach to a backend-owned agent turn after a page reload. */
+export async function resumeChatStream(
+  conversationId: string,
+  onConnected: () => StreamCallbacks,
+): Promise<boolean> {
+  const controller = new AbortController();
+  try {
+    const response = await fetch(
+      `/api/chat/stream/${encodeURIComponent(conversationId)}/events`,
+      { signal: controller.signal },
+    );
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const callbacks = onConnected();
+    activeControllers.add(controller);
+    await parseSSEStream(response, callbacks, () => undefined);
+    return true;
+  } catch (error) {
+    if (controller.signal.reason === "user_stop") return true;
+    throw error;
+  } finally {
+    activeControllers.delete(controller);
+  }
 }
 
 /**
@@ -570,6 +609,10 @@ export function dispatchAgentEvent(
     log("   done event received");
     callbacks.onDone();
     return true;
+  }
+
+  if (eventType === "interrupted") {
+    callbacks.onInterrupted?.();
   }
 
   // ── Error event ──

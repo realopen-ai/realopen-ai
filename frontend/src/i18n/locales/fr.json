@@ -16,6 +16,7 @@
   "sidebar.delete": "Supprimer",
   "sidebar.confirmDelete": "Confirmer la suppression",
   "sidebar.generating": "Génération de la réponse",
+  "message.interrupted": "Interrompu par l’utilisateur",
   "sidebar.archived": "Archivées",
   "sidebar.search": "Rechercher",
   "sidebar.searchConversations": "Rechercher des conversations",

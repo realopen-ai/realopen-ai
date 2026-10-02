@@ -19,6 +19,7 @@ import {
   streamChat,
   streamChatWithFiles,
   streamChatDemo,
+  resumeChatStream,
   stopActiveStream,
   type StreamCallbacks,
 } from "@/api/stream";
@@ -61,6 +62,7 @@ export function ChatArea() {
 
   // Loading state for when fetching a conversation from the backend by URL
   const [isLoadingConv, setIsLoadingConv] = useState(false);
+  const [hydratedConvId, setHydratedConvId] = useState<string | null>(null);
 
   // Stream generation counter — prevents stale onDone/onError callbacks
   // from redirecting the user after they've navigated away.
@@ -101,6 +103,7 @@ export function ChatArea() {
       if (!pendingConvId) {
         useChatStore.getState().setActiveConversation(null);
       }
+      setHydratedConvId(null);
       return;
     }
 
@@ -109,9 +112,10 @@ export function ChatArea() {
       .getState()
       .conversations.find((c) => c.id === urlConvId);
 
-    if (existsInStore) {
+    if (existsInStore?.messages.length) {
       // Already in store — just set as active and load messages if needed
       useChatStore.getState().setActiveConversation(urlConvId);
+      setHydratedConvId(urlConvId);
       return;
     }
 
@@ -125,6 +129,8 @@ export function ChatArea() {
         if (!found) {
           log("Conversation %s not found, redirecting to home", urlConvId);
           navigate("/", { replace: true });
+        } else {
+          setHydratedConvId(urlConvId);
         }
       });
   }, [urlConvId, pendingConvId, navigate]);
@@ -468,6 +474,20 @@ export function ChatArea() {
           }
         },
         onDone: () => {
+          const current = useChatStore
+            .getState()
+            .conversations.find((c) => c.id === capturedConvId)
+            ?.messages.find((m) => m.id === assistantMsgId);
+          if (
+            current?.completionStatus !== "interrupted" &&
+            current?.completionStatus !== "error"
+          ) {
+            useChatStore
+              .getState()
+              .updateMessage(capturedConvId, assistantMsgId, {
+                completionStatus: "completed",
+              });
+          }
           useChatStore
             .getState()
             .setStreaming(capturedConvId, assistantMsgId, false);
@@ -481,11 +501,19 @@ export function ChatArea() {
             navigate(`/${capturedConvId}`, { replace: true });
           }
         },
+        onInterrupted: () => {
+          useChatStore
+            .getState()
+            .updateMessage(capturedConvId, assistantMsgId, {
+              completionStatus: "interrupted",
+            });
+        },
         onError: (error: string) => {
           useChatStore
             .getState()
             .updateMessage(capturedConvId, assistantMsgId, {
               content: `Sorry, I encountered an error: ${error}\n\nPlease make sure Ollama is running.`,
+              completionStatus: "error",
             });
           useChatStore
             .getState()
@@ -681,13 +709,65 @@ export function ChatArea() {
     onConversationCreated: (convId) => setPendingConvId(convId),
   });
 
+  // The backend owns active agent turns, so a browser reload only detaches
+  // this viewer. Once the conversation snapshot is hydrated, reconnect and
+  // replay the buffered SSE events into a fresh live assistant bubble.
+  const resumedConversationsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (
+      !urlConvId ||
+      hydratedConvId !== urlConvId ||
+      resumedConversationsRef.current.has(urlConvId)
+    ) {
+      return;
+    }
+    resumedConversationsRef.current.add(urlConvId);
+
+    void resumeChatStream(urlConvId, () => {
+      const store = useChatStore.getState();
+      const current = store.conversations.find((c) => c.id === urlConvId);
+      const persisted = [...(current?.messages ?? [])]
+        .reverse()
+        .find(
+          (message) =>
+            message.role === "assistant" &&
+            message.completionStatus === "streaming",
+        );
+      const assistantMsgId =
+        persisted?.id ??
+        store.addMessage(urlConvId, {
+          role: "assistant",
+          content: "",
+          model: store.selectedModel,
+          completionStatus: "streaming",
+        });
+
+      // Rebuild from the backend buffer so the in-memory message exactly
+      // matches every event emitted before and after the reload.
+      store.updateMessage(urlConvId, assistantMsgId, {
+        content: "",
+        blocks: [],
+        deliverables: [],
+        generationDuration: 0,
+        completionStatus: "streaming",
+      });
+      store.setStreaming(urlConvId, assistantMsgId, true);
+      return buildStreamCallbacks(urlConvId, assistantMsgId, {
+        content: "",
+        isFromHomePage: false,
+      });
+    }).catch((error) => {
+      log("Failed to resume stream for %s: %s", urlConvId, String(error));
+    });
+  }, [urlConvId, hydratedConvId, buildStreamCallbacks]);
+
   const handleStopResponse = useCallback(() => {
     if (responseTransportForStop(voiceState) === "voice") {
       voiceSession.interruptSpeaking();
       return;
     }
-    stopActiveStream();
-  }, [voiceState, voiceSession]);
+    void stopActiveStream(effectiveConvId);
+  }, [voiceState, voiceSession, effectiveConvId]);
 
   // Listen for regenerate events from MessageBubble
   useEffect(() => {
