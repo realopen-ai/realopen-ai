@@ -25,7 +25,9 @@ test("reload reconnects to buffered SSE and rebuilds the live message", () => {
   assert.match(streamApi, /export async function resumeChatStream/);
   assert.match(streamApi, /chat\/stream\/\$\{encodeURIComponent\(conversationId\)\}\/events/);
   assert.match(chatArea, /resumeChatStream\(urlConvId/);
-  assert.match(chatArea, /Rebuild from the backend buffer/);
+  assert.match(chatArea, /Keep the DB-persisted Markdown blocks/);
+  assert.doesNotMatch(chatArea, /content: "",\s*blocks: \[\],\s*deliverables: \[\]/);
+  assert.match(chatArea, /current\?\.model === "external" \? undefined/);
 });
 
 test("interrupted assistant messages render a durable badge", () => {

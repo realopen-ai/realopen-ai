@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -12,6 +13,9 @@ from typing import AsyncIterator
 class ActiveChatStream:
     conversation_id: str
     events: list[str] = field(default_factory=list)
+    # Sequence number of the latest generation_done event. chat.py persists
+    # the assistant snapshot before yielding that event.
+    persisted_through: int = 0
     done: bool = False
     cancel_requested: bool = False
     task: asyncio.Task | None = None
@@ -23,6 +27,13 @@ class ActiveChatStream:
             sequence = len(self.events) + 1
             framed = f"id: {sequence}\n{chunk}" if chunk.startswith("data:") else chunk
             self.events.append(framed)
+            if chunk.startswith("data: "):
+                payload = chunk.split("\n", 1)[0][6:]
+                try:
+                    if json.loads(payload).get("event") == "generation_done":
+                        self.persisted_through = sequence
+                except (json.JSONDecodeError, AttributeError):
+                    pass
             self.condition.notify_all()
 
     async def finish(self) -> None:

@@ -370,7 +370,7 @@ async function parseSSEStream(
 /** Reattach to a backend-owned agent turn after a page reload. */
 export async function resumeChatStream(
   conversationId: string,
-  onConnected: () => StreamCallbacks,
+  onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
 ): Promise<boolean> {
   const controller = new AbortController();
   try {
@@ -380,7 +380,7 @@ export async function resumeChatStream(
     );
     if (response.status === 404) return false;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const callbacks = onConnected();
+    const callbacks = await onConnected();
     activeControllers.add(controller);
     await parseSSEStream(response, callbacks, () => undefined);
     return true;

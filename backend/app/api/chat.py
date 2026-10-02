@@ -1075,7 +1075,7 @@ async def stop_chat_stream(conversation_id: str):
 
 
 @router.get("/chat/stream/{conversation_id}/events")
-async def resume_chat_stream(conversation_id: str, after: int = 0):
+async def resume_chat_stream(conversation_id: str, after: int | None = None):
     """Reconnect to a buffered agent stream without restarting the turn."""
     try:
         normalized = str(_parse_uuid(conversation_id))
@@ -1084,8 +1084,10 @@ async def resume_chat_stream(conversation_id: str, after: int = 0):
     stream = get_stream(normalized)
     if stream is None or stream.done:
         raise HTTPException(status_code=404, detail="No resumable stream")
+    # Preserve DB-rendered blocks and deliver only the unpersisted live tail.
+    cursor = stream.persisted_through if after is None else after
     return StreamingResponse(
-        stream.subscribe(after=after),
+        stream.subscribe(after=cursor),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

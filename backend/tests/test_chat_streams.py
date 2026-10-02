@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.services.chat_streams import start_stream, stop_stream
+from app.services.chat_streams import ActiveChatStream, start_stream, stop_stream
 
 
 @pytest.mark.asyncio
@@ -48,3 +48,21 @@ async def test_explicit_stop_cancels_the_backend_owned_task():
     assert interrupted.is_set()
     assert any('"interrupted"' in event for event in stream.events)
     assert stream.events[-1].endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.asyncio
+async def test_generation_done_tracks_persisted_reconnect_checkpoint():
+    stream = ActiveChatStream(conversation_id="checkpoint")
+    await stream.publish('data: {"event":"message","message":{"content":"# Hi"}}\n\n')
+    await stream.publish(
+        'data: {"event":"generation_done","generationDuration":1}\n\n'
+    )
+    await stream.publish(
+        'data: {"event":"tool_call","tool_call":{"id":"1"}}\n\n'
+    )
+    await stream.finish()
+
+    assert stream.persisted_through == 2
+    resumed = [event async for event in stream.subscribe(stream.persisted_through)]
+    assert len(resumed) == 1
+    assert '"event":"tool_call"' in resumed[0]

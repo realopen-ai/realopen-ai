@@ -723,9 +723,16 @@ export function ChatArea() {
     }
     resumedConversationsRef.current.add(urlConvId);
 
-    void resumeChatStream(urlConvId, () => {
+    void resumeChatStream(urlConvId, async () => {
       const store = useChatStore.getState();
-      const current = store.conversations.find((c) => c.id === urlConvId);
+      // Refresh after the reconnect endpoint chooses its persisted checkpoint.
+      // This closes the race where another round commits between initial page
+      // hydration and establishing the replacement SSE connection.
+      await store.loadMessages(urlConvId);
+      const refreshedStore = useChatStore.getState();
+      const current = refreshedStore.conversations.find(
+        (c) => c.id === urlConvId,
+      );
       const persisted = [...(current?.messages ?? [])]
         .reverse()
         .find(
@@ -735,23 +742,20 @@ export function ChatArea() {
         );
       const assistantMsgId =
         persisted?.id ??
-        store.addMessage(urlConvId, {
+        refreshedStore.addMessage(urlConvId, {
           role: "assistant",
           content: "",
-          model: store.selectedModel,
+          // Routing sentinels are not user-facing model labels.
+          model: current?.model === "external" ? undefined : current?.model,
           completionStatus: "streaming",
         });
 
-      // Rebuild from the backend buffer so the in-memory message exactly
-      // matches every event emitted before and after the reload.
-      store.updateMessage(urlConvId, assistantMsgId, {
-        content: "",
-        blocks: [],
-        deliverables: [],
-        generationDuration: 0,
+      // Keep the DB-persisted Markdown blocks. The backend resumes after its
+      // latest persisted round and sends only the not-yet-saved live tail.
+      refreshedStore.updateMessage(urlConvId, assistantMsgId, {
         completionStatus: "streaming",
       });
-      store.setStreaming(urlConvId, assistantMsgId, true);
+      refreshedStore.setStreaming(urlConvId, assistantMsgId, true);
       return buildStreamCallbacks(urlConvId, assistantMsgId, {
         content: "",
         isFromHomePage: false,
