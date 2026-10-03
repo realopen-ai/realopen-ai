@@ -11,7 +11,7 @@ RUN npm run build
 
 # Stage 2: Production not used directly (Nginx serves the built files)
 # The built output is at /app/dist and will be copied by the Nginx Dockerfile
-FROM alpine:3.22
+FROM alpine:3.24
 
 COPY --from=builder /app/dist /dist
 
