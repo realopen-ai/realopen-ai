@@ -33,7 +33,10 @@ import {
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
 import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
-import { notifyResponseCompleted } from "@/lib/responseNotifications";
+import {
+  completionPreview,
+  notifyResponseCompleted,
+} from "@/lib/responseNotifications";
 import {
   formatCodeExecOutput,
   generalCodeExecCommand,
@@ -527,6 +530,7 @@ export function ChatArea() {
               conversationTitle:
                 completedConversation?.title || t("chat.newChat"),
               origin,
+              responsePreview: completionPreview(current?.content ?? ""),
             });
           }
           // Only redirect if the stream generation matches (user hasn't navigated away)

@@ -5,6 +5,7 @@ import {
   completionAction,
   isViewingConversation,
 } from "../src/lib/completionNotificationPolicy.ts";
+import { readFileSync } from "node:fs";
 
 test("does not notify for the visible conversation", () => {
   assert.equal(
@@ -57,4 +58,25 @@ test("conversation route matching is exact and URL-safe", () => {
   assert.equal(isViewingConversation("/", "abc-123", "abc-123"), true);
   assert.equal(isViewingConversation("/brain", "abc-123"), false);
   assert.equal(isViewingConversation("/other", "abc-123"), false);
+});
+
+test("completion events include an assistant response preview", () => {
+  const source = readFileSync(
+    new URL("../src/components/chat/ChatArea.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /responsePreview:\s*completionPreview\(current\?\.content/);
+});
+
+test("the sound context is unlocked by normal user interaction", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/assets/sounds/response-complete.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /addEventListener\("pointerdown", unlock/);
+  assert.match(source, /audioContext \?\?=/);
+  assert.doesNotMatch(source, /current\.close\(/);
 });

@@ -13,6 +13,17 @@ export interface ResponseCompletion {
   responseId: string;
   conversationTitle: string;
   origin: ResponseOrigin;
+  responsePreview?: string;
+}
+
+export function completionPreview(content: string, maxLength = 180): string {
+  const plain = content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[`*_>#\[\]]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length <= maxLength) return plain;
+  return `${plain.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 const handled = new Set<string>();
@@ -82,17 +93,26 @@ export function notifyResponseCompleted(response: ResponseCompletion) {
     "Notification" in window &&
     Notification.permission === "granted"
   ) {
-    const notification = new Notification("RealOpen-AI", {
-      body: t("notifications.responseCompletedIn", {
-        title: response.conversationTitle,
-      }),
-      tag: `response-${response.responseId}`,
-    });
-    notification.onclick = () => {
-      window.focus();
-      navigateToConversation(response.conversationId);
-      notification.close();
-    };
+    try {
+      const notification = new Notification(
+        `${t("notifications.responseCompleted")} · ${response.conversationTitle}`,
+        {
+          body:
+            response.responsePreview ||
+            t("notifications.responseCompletedIn", {
+              title: response.conversationTitle,
+            }),
+          tag: `response-${response.responseId}`,
+        },
+      );
+      notification.onclick = () => {
+        window.focus();
+        navigateToConversation(response.conversationId);
+        notification.close();
+      };
+    } catch {
+      // OS/browser notification failures must not affect the completed turn.
+    }
   }
 }
 
