@@ -77,6 +77,19 @@ test("the sound context is unlocked by normal user interaction", () => {
     "utf8",
   );
   assert.match(source, /addEventListener\("pointerdown", unlock/);
-  assert.match(source, /audioContext \?\?=/);
-  assert.doesNotMatch(source, /current\.close\(/);
+  assert.match(source, /new Audio\(/);
+  assert.match(source, /audio\.volume = 0/);
+  assert.match(source, /audio\.play\(\)/);
+});
+
+test("enabled browser notifications are not skipped after an in-app toast", () => {
+  const source = readFileSync(
+    new URL("../src/lib/responseNotifications.ts", import.meta.url),
+    "utf8",
+  );
+  const toastBranch = source.match(
+    /if \(action === "toast"[\s\S]*?(?=\n  if \(\n    settings\.browserCompletionNotifications)/,
+  )?.[0];
+  assert.ok(toastBranch);
+  assert.doesNotMatch(toastBranch, /return;/);
 });

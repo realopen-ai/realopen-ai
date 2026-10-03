@@ -84,11 +84,9 @@ export function notifyResponseCompleted(response: ResponseCompletion) {
     window.dispatchEvent(
       new CustomEvent("response-completion-toast", { detail: response }),
     );
-    return;
   }
 
   if (
-    action === "browser" &&
     settings.browserCompletionNotifications &&
     "Notification" in window &&
     Notification.permission === "granted"
