@@ -92,6 +92,7 @@ def make_conv(
         id=CONV_ID,
         title=title,
         model=None,
+        sandbox_id=None,
         created_at=now,
         updated_at=now,
         pinned=pinned,
@@ -238,9 +239,9 @@ def test_list_archived_false_filters():
 def test_list_applies_limit_and_offset():
     db = FakeSession(results=[FakeResult([])])
     run(conv_service.list_conversations(db, limit=7, offset=3))
-    sql = str(db.executed[0])
-    assert "LIMIT 7" in sql  # render as literal on most dialects
-    assert "OFFSET 3" in sql
+    statement = db.executed[0]
+    assert statement._limit_clause.value == 7
+    assert statement._offset_clause.value == 3
 
 
 # ══════════════════════════════════════════════════════════════════════

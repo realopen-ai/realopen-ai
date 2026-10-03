@@ -28,7 +28,7 @@ from app.api import documents  # noqa: E402
 from app.db import models  # noqa: E402
 
 app = FastAPI()
-app.include_router(documents.router)
+app.include_router(documents.router, prefix="/api")
 
 
 def _make_doc(**kwargs) -> models.Document:
@@ -87,7 +87,15 @@ def client(doc_store):
         doc = store.get(str(doc_id))
         if not doc:
             return None
-        doc.collections = [c.strip() for c in collections if c.strip()]
+        cleaned = []
+        seen = set()
+        for raw in collections:
+            value = raw.strip()
+            key = value.casefold()
+            if value and key not in seen:
+                cleaned.append(value)
+                seen.add(key)
+        doc.collections = cleaned
         return doc
 
     async def fake_reindex(db, doc_id, progress=None):
@@ -161,7 +169,7 @@ async def test_thumbnail_serves_jpeg(client, tmp_path, monkeypatch):
 
     from app.services.integrations import libreoffice as lo
 
-    async def fake_resolve(rel):
+    def fake_resolve(rel):
         return src
 
     async def fake_thumb(path, cache_dir=None, max_width=480):
@@ -229,7 +237,7 @@ async def test_reindex_stream_missing_file_404(client, tmp_path):
     doc = _make_doc()
     store[str(doc.id)] = doc
 
-    async def fake_resolve(rel):
+    def fake_resolve(rel):
         return tmp_path / "does-not-exist.pdf"
 
     with patch.object(documents.rag_service, "resolve_document_path", fake_resolve):

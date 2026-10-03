@@ -292,6 +292,7 @@ async def test_task_overview(ollama_up, tmp_state):
     tasks = {row["task"]: row for row in overview}
     assert set(tasks) == {
         "chat",
+        "coder",
         "voice",
         "vision",
         "document_reasoning",
