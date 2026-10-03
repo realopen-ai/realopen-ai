@@ -640,5 +640,17 @@
   "brain.skills.emptyDescription": "Create or import reusable instructions your agents can load on demand.",
   "brain.skills.loadFailed": "Failed to load skills", "brain.skills.openFailed": "Failed to open skill", "brain.skills.previewFailed": "This resource cannot be previewed", "brain.skills.saveFailed": "Failed to save skill", "brain.skills.deleteFailed": "Failed to delete skill", "brain.skills.importFailed": "Failed to import skill",
   "brain.skills.namePlaceholder": "Code review", "brain.skills.descriptionPlaceholder": "Review changes for correctness and regressions",
-  "brain.skills.role.general": "General", "brain.skills.role.coder": "Coder", "brain.skills.role.voice": "Voice", "brain.skills.role.global": "Global"
+  "brain.skills.role.general": "General", "brain.skills.role.coder": "Coder", "brain.skills.role.voice": "Voice", "brain.skills.role.global": "Global",
+  "settings.responseCompletion": "Response completion",
+  "settings.responseCompletionDescription": "Choose how RealOpen-AI lets you know when a text response finishes elsewhere.",
+  "settings.completionSound": "Completion sound",
+  "settings.completionSoundDescription": "Play a subtle sound when you are not viewing the conversation.",
+  "settings.browserNotifications": "Browser notifications",
+  "settings.browserNotificationsDescription": "Show a system notification when the app is hidden or unfocused.",
+  "settings.browserNotificationsBlocked": "Blocked by browser. Allow notifications in your browser settings to enable this.",
+  "settings.inAppNotifications": "In-app notifications",
+  "settings.inAppNotificationsDescription": "Show a clickable notification while you are elsewhere in the app.",
+  "notifications.responseCompleted": "Response completed",
+  "notifications.responseCompletedIn": "Response completed in \"{title}\"",
+  "chat.newChat": "New Chat"
 }

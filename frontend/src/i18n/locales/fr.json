@@ -590,5 +590,17 @@
   "brain.skills.emptySearch": "Aucune compétence correspondante.", "brain.skills.empty": "Aucune compétence", "brain.skills.emptyDescription": "Créez ou importez des instructions réutilisables que vos agents chargeront à la demande.",
   "brain.skills.loadFailed": "Échec du chargement des compétences", "brain.skills.openFailed": "Impossible d’ouvrir la compétence", "brain.skills.previewFailed": "Cette ressource ne peut pas être prévisualisée", "brain.skills.saveFailed": "Échec de l’enregistrement", "brain.skills.deleteFailed": "Échec de la suppression", "brain.skills.importFailed": "Échec de l’importation",
   "brain.skills.namePlaceholder": "Revue de code", "brain.skills.descriptionPlaceholder": "Vérifier les modifications et les régressions",
-  "brain.skills.role.general": "Général", "brain.skills.role.coder": "Codeur", "brain.skills.role.voice": "Voix", "brain.skills.role.global": "Globale"
+  "brain.skills.role.general": "Général", "brain.skills.role.coder": "Codeur", "brain.skills.role.voice": "Voix", "brain.skills.role.global": "Globale",
+  "settings.responseCompletion": "Fin des réponses",
+  "settings.responseCompletionDescription": "Choisissez comment RealOpen-AI vous avertit lorsqu’une réponse textuelle se termine ailleurs.",
+  "settings.completionSound": "Son de fin",
+  "settings.completionSoundDescription": "Jouer un son discret lorsque vous ne consultez pas la conversation.",
+  "settings.browserNotifications": "Notifications du navigateur",
+  "settings.browserNotificationsDescription": "Afficher une notification système lorsque l’application est masquée ou inactive.",
+  "settings.browserNotificationsBlocked": "Bloquées par le navigateur. Autorisez les notifications dans ses réglages.",
+  "settings.inAppNotifications": "Notifications dans l’application",
+  "settings.inAppNotificationsDescription": "Afficher une notification cliquable lorsque vous êtes ailleurs dans l’application.",
+  "notifications.responseCompleted": "Réponse terminée",
+  "notifications.responseCompletedIn": "Réponse terminée dans « {title} »",
+  "chat.newChat": "Nouvelle conversation"
 }

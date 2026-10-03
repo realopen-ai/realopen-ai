@@ -33,6 +33,7 @@ import {
 import { useVoiceStore, INTERRUPT_FLASH_MS } from "@/voice/voiceStore";
 import { responseTransportForStop } from "@/voice/responseControl";
 import { cn } from "@/lib/utils";
+import { notifyResponseCompleted } from "@/lib/responseNotifications";
 import {
   formatCodeExecOutput,
   generalCodeExecCommand,
@@ -204,7 +205,7 @@ export function ChatArea() {
       assistantMsgId: string,
       opts: BuildStreamCallbacksOptions,
     ): StreamCallbacks => {
-      const { userMsgId, isFromHomePage } = opts;
+      const { userMsgId, isFromHomePage, origin } = opts;
 
       // Capture values for the closure — these won't change after this point
       const capturedConvId = convId;
@@ -513,6 +514,21 @@ export function ChatArea() {
           useChatStore
             .getState()
             .setStreaming(capturedConvId, assistantMsgId, false);
+          if (
+            current?.completionStatus !== "interrupted" &&
+            current?.completionStatus !== "error"
+          ) {
+            const completedConversation = useChatStore
+              .getState()
+              .conversations.find((item) => item.id === capturedConvId);
+            notifyResponseCompleted({
+              conversationId: capturedConvId,
+              responseId: assistantMsgId,
+              conversationTitle:
+                completedConversation?.title || t("chat.newChat"),
+              origin,
+            });
+          }
           // Only redirect if the stream generation matches (user hasn't navigated away)
           // and this conversation was created from the home page.
           if (
@@ -660,6 +676,7 @@ export function ChatArea() {
         userMsgId,
         content,
         isFromHomePage: capturedIsFromHomePage,
+        origin: "text",
       });
 
       const streamOptions = {
@@ -803,6 +820,11 @@ export function ChatArea() {
       return buildStreamCallbacks(urlConvId, assistantMsgId, {
         content: "",
         isFromHomePage: false,
+        origin:
+          persisted?.modality === "voice" ||
+          latestHydratedMessage?.modality === "voice"
+            ? "voice"
+            : "text",
       });
     }).catch((error) => {
       log("Failed to resume stream for %s: %s", urlConvId, String(error));

@@ -583,5 +583,17 @@
   "brain.skills.emptySearch": "لا توجد مهارات مطابقة.", "brain.skills.empty": "لا توجد مهارات بعد", "brain.skills.emptyDescription": "أنشئ أو استورد تعليمات قابلة لإعادة الاستخدام ليحمّلها الوكلاء عند الحاجة.",
   "brain.skills.loadFailed": "فشل تحميل المهارات", "brain.skills.openFailed": "فشل فتح المهارة", "brain.skills.previewFailed": "لا يمكن معاينة هذا المورد", "brain.skills.saveFailed": "فشل حفظ المهارة", "brain.skills.deleteFailed": "فشل حذف المهارة", "brain.skills.importFailed": "فشل استيراد المهارة",
   "brain.skills.namePlaceholder": "مراجعة الكود", "brain.skills.descriptionPlaceholder": "مراجعة التغييرات للتأكد من صحتها",
-  "brain.skills.role.general": "عام", "brain.skills.role.coder": "مبرمج", "brain.skills.role.voice": "صوت", "brain.skills.role.global": "عالمي"
+  "brain.skills.role.general": "عام", "brain.skills.role.coder": "مبرمج", "brain.skills.role.voice": "صوت", "brain.skills.role.global": "عالمي",
+  "settings.responseCompletion": "اكتمال الردود",
+  "settings.responseCompletionDescription": "اختر كيف يُعلمك RealOpen-AI عند اكتمال رد نصي في مكان آخر.",
+  "settings.completionSound": "صوت الاكتمال",
+  "settings.completionSoundDescription": "تشغيل صوت خفيف عندما لا تكون في المحادثة.",
+  "settings.browserNotifications": "إشعارات المتصفح",
+  "settings.browserNotificationsDescription": "إظهار إشعار نظام عندما يكون التطبيق مخفيًا أو غير نشط.",
+  "settings.browserNotificationsBlocked": "حظر المتصفح الإشعارات. اسمح بها من إعدادات المتصفح لتفعيلها.",
+  "settings.inAppNotifications": "إشعارات داخل التطبيق",
+  "settings.inAppNotificationsDescription": "إظهار إشعار قابل للنقر عندما تكون في صفحة أخرى من التطبيق.",
+  "notifications.responseCompleted": "اكتمل الرد",
+  "notifications.responseCompletedIn": "اكتمل الرد في «{title}»",
+  "chat.newChat": "محادثة جديدة"
 }

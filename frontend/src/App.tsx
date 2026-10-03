@@ -5,6 +5,7 @@ import { ThemeManager } from "@/components/settings/ThemeManager";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SetupWizard } from "@/components/setup/SetupWizard";
 import { fetchSetupStatus } from "@/api/setupClient";
+import { ResponseCompletionToasts } from "@/components/ui/ResponseCompletionToasts";
 
 export default function App() {
   const [setupNeeded, setSetupNeeded] = useState<boolean | null>(null);
@@ -47,6 +48,7 @@ export default function App() {
   return (
     <TooltipProvider>
       <ThemeManager />
+      <ResponseCompletionToasts />
       <Routes>
         <Route path="/" element={<AppLayout />} />
         <Route path="/brain" element={<AppLayout />} />

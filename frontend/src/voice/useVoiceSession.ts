@@ -52,6 +52,8 @@ export interface BuildStreamCallbacksOptions {
   /** True when this turn created the conversation from the home page —
    * the shared onDone callback navigates to /{convId} after the stream. */
   isFromHomePage: boolean;
+  /** Persisted request origin; never infer this from the current call UI. */
+  origin: "text" | "voice";
 }
 
 export interface UseVoiceSessionOptions {
@@ -207,6 +209,7 @@ export function useVoiceSession(
           userMsgId,
           content: userMsg.content,
           isFromHomePage,
+          origin: "voice",
         },
       ),
     };
