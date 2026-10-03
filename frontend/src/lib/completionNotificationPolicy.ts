@@ -17,6 +17,7 @@ export function completionAction(input: {
   appActive: boolean;
   viewingConversation: boolean;
 }): CompletionAction {
-  if (input.origin === "voice" || input.viewingConversation) return "none";
+  if (input.origin === "voice") return "none";
+  if (input.appActive && input.viewingConversation) return "none";
   return input.appActive ? "toast" : "browser";
 }

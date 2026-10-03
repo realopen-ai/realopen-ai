@@ -40,6 +40,17 @@ test("uses a browser notification when hidden or unfocused", () => {
   );
 });
 
+test("a hidden tab notifies even when it remains on the completed conversation", () => {
+  assert.equal(
+    completionAction({
+      origin: "text",
+      appActive: false,
+      viewingConversation: true,
+    }),
+    "browser",
+  );
+});
+
 test("voice responses never produce completion notifications", () => {
   for (const appActive of [true, false]) {
     assert.equal(
@@ -82,14 +93,13 @@ test("the sound context is unlocked by normal user interaction", () => {
   assert.match(source, /audio\.play\(\)/);
 });
 
-test("enabled browser notifications are not skipped after an in-app toast", () => {
+test("browser notifications remain exclusive to hidden or unfocused tabs", () => {
   const source = readFileSync(
     new URL("../src/lib/responseNotifications.ts", import.meta.url),
     "utf8",
   );
-  const toastBranch = source.match(
-    /if \(action === "toast"[\s\S]*?(?=\n  if \(\n    settings\.browserCompletionNotifications)/,
-  )?.[0];
-  assert.ok(toastBranch);
-  assert.doesNotMatch(toastBranch, /return;/);
+  assert.match(
+    source,
+    /if \(\n    action === "browser" &&\n    settings\.browserCompletionNotifications/,
+  );
 });

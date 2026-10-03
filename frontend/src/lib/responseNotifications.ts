@@ -87,6 +87,7 @@ export function notifyResponseCompleted(response: ResponseCompletion) {
   }
 
   if (
+    action === "browser" &&
     settings.browserCompletionNotifications &&
     "Notification" in window &&
     Notification.permission === "granted"
