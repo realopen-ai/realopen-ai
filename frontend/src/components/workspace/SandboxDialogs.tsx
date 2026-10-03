@@ -187,7 +187,9 @@ export function CreateSandboxDialog({
               !sandboxResourcesAreValid(cpu, memoryGb, storageGb)
             }
           >
-            {submitting ? t("workspace.creating") : t("workspace.createSandbox")}
+            {submitting
+              ? t("workspace.creating")
+              : t("workspace.createSandbox")}
           </Button>
         </DialogFooter>
       </DialogContent>

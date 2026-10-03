@@ -69,29 +69,31 @@ const folders: {
   },
 ];
 
-const sectionMeta: Record<SectionView, { titleKey: string; descriptionKey: string }> =
-  {
-    sandboxes: {
-      titleKey: "workspace.sandboxes",
-      descriptionKey: "workspace.sandboxes.description",
-    },
-    documents: {
-      titleKey: "workspace.documents",
-      descriptionKey: "workspace.documents.description",
-    },
-    templates: {
-      titleKey: "workspace.templates",
-      descriptionKey: "workspace.templates.description",
-    },
-    generated: {
-      titleKey: "workspace.generated",
-      descriptionKey: "workspace.generated.description",
-    },
-    assets: {
-      titleKey: "workspace.assets",
-      descriptionKey: "workspace.assets.description",
-    },
-  };
+const sectionMeta: Record<
+  SectionView,
+  { titleKey: string; descriptionKey: string }
+> = {
+  sandboxes: {
+    titleKey: "workspace.sandboxes",
+    descriptionKey: "workspace.sandboxes.description",
+  },
+  documents: {
+    titleKey: "workspace.documents",
+    descriptionKey: "workspace.documents.description",
+  },
+  templates: {
+    titleKey: "workspace.templates",
+    descriptionKey: "workspace.templates.description",
+  },
+  generated: {
+    titleKey: "workspace.generated",
+    descriptionKey: "workspace.generated.description",
+  },
+  assets: {
+    titleKey: "workspace.assets",
+    descriptionKey: "workspace.assets.description",
+  },
+};
 
 /** Chrome shared by every workspace sub-section: back link + page header,
  *  with the section filling the remaining height. */

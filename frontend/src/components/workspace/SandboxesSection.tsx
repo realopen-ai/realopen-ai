@@ -160,7 +160,11 @@ export function SandboxesSection() {
                           <StatusDot
                             tone={isRunning ? "running" : "neutral"}
                             pulse={isRunning}
-                            label={isRunning ? t("workspace.status.running") : t("workspace.status.stopped")}
+                            label={
+                              isRunning
+                                ? t("workspace.status.running")
+                                : t("workspace.status.stopped")
+                            }
                           />
                         )}
                       </div>
@@ -193,7 +197,9 @@ export function SandboxesSection() {
                           }
                         >
                           {isRunning ? <Square /> : <Play />}
-                          {isRunning ? t("workspace.stop") : t("workspace.start")}
+                          {isRunning
+                            ? t("workspace.stop")
+                            : t("workspace.start")}
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -221,7 +227,8 @@ export function SandboxesSection() {
                       {hasQuota && (
                         <span className="tabular-nums">
                           {formatBytesShort(item.usage_bytes)} /{" "}
-                          {formatBytesShort(item.workspace_quota_bytes)} {t("workspace.used")}
+                          {formatBytesShort(item.workspace_quota_bytes)}{" "}
+                          {t("workspace.used")}
                         </span>
                       )}
                     </div>

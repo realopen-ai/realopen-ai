@@ -93,15 +93,10 @@ export function notifyResponseCompleted(response: ResponseCompletion) {
     Notification.permission === "granted"
   ) {
     try {
-      const notification = new Notification(
-        response.conversationTitle,
-        {
-          body:
-            response.responsePreview ||
-            t("notifications.responseCompleted"),
-          tag: `response-${response.responseId}`,
-        },
-      );
+      const notification = new Notification(response.conversationTitle, {
+        body: response.responsePreview || t("notifications.responseCompleted"),
+        tag: `response-${response.responseId}`,
+      });
       notification.onclick = () => {
         window.focus();
         navigateToConversation(response.conversationId);

@@ -76,7 +76,10 @@ test("completion events include an assistant response preview", () => {
     new URL("../src/components/chat/ChatArea.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /responsePreview:\s*completionPreview\(current\?\.content/);
+  assert.match(
+    source,
+    /responsePreview:\s*completionPreview\(current\?\.content/,
+  );
 });
 
 test("toast and system notification use conversation title plus response body", () => {
@@ -94,16 +97,13 @@ test("toast and system notification use conversation title plus response body", 
   assert.match(toast, /\{item\.conversationTitle\}/);
   assert.match(toast, /item\.responsePreview/);
   assert.match(toast, /whitespace-pre-wrap/);
-  assert.match(manager, /new Notification\(\n\s*response\.conversationTitle/);
-  assert.match(manager, /body:\s*\n\s*response\.responsePreview/);
+  assert.match(manager, /new Notification\(\s*response\.conversationTitle/);
+  assert.match(manager, /body:\s*response\.responsePreview/);
 });
 
 test("the sound context is unlocked by normal user interaction", () => {
   const source = readFileSync(
-    new URL(
-      "../src/assets/sounds/response-complete.ts",
-      import.meta.url,
-    ),
+    new URL("../src/assets/sounds/response-complete.ts", import.meta.url),
     "utf8",
   );
   assert.match(source, /addEventListener\("pointerdown", unlock/);

@@ -38,9 +38,6 @@ test("recognizes and restores Workspace section routes", () => {
   assert.equal(isWorkspaceRoute("/workspace/sandboxes"), true);
   assert.equal(isWorkspaceRoute("/brain"), false);
   assert.equal(getWorkspaceSection("/workspace"), null);
-  assert.equal(
-    getWorkspaceSection("/workspace/sandboxes"),
-    "sandboxes",
-  );
+  assert.equal(getWorkspaceSection("/workspace/sandboxes"), "sandboxes");
   assert.equal(workspaceSectionPath("documents"), "/workspace/documents");
 });

@@ -8,7 +8,10 @@ const source = readFileSync(
 );
 const locales = ["en", "fr", "ar"].map((language) =>
   JSON.parse(
-    readFileSync(new URL(`../src/i18n/locales/${language}.json`, import.meta.url), "utf8"),
+    readFileSync(
+      new URL(`../src/i18n/locales/${language}.json`, import.meta.url),
+      "utf8",
+    ),
   ),
 );
 

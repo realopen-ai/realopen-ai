@@ -174,7 +174,9 @@ export function VoiceTab() {
         <div className="py-3.5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] text-foreground">{t("settings.voice.voice")}</div>
+              <div className="text-[13.5px] text-foreground">
+                {t("settings.voice.voice")}
+              </div>
             </div>
             <select
               value={settings.voice}
@@ -240,7 +242,7 @@ export function VoiceTab() {
             </div>
             <div className="space-y-1.5 rounded-lg bg-secondary/60 p-3 text-[11.5px] leading-relaxed text-muted-foreground">
               <p>
-                {t("settings.voice.cloneTermsPrefix")} {" "}
+                {t("settings.voice.cloneTermsPrefix")}{" "}
                 <a
                   href="https://huggingface.co/kyutai/pocket-tts"
                   target="_blank"
@@ -369,7 +371,9 @@ export function VoiceTab() {
             ) : (
               <Plus className="w-3.5 h-3.5" />
             )}
-            {editingPersonaId ? t("settings.voice.editCustomPersona") : t("settings.voice.customPersona")}
+            {editingPersonaId
+              ? t("settings.voice.editCustomPersona")
+              : t("settings.voice.customPersona")}
           </div>
           <input
             value={name}
@@ -390,7 +394,9 @@ export function VoiceTab() {
               disabled={!name.trim() || !prompt.trim() || saving}
               onClick={savePersona}
             >
-              {editingPersonaId ? t("settings.voice.saveChanges") : t("settings.voice.savePersona")}
+              {editingPersonaId
+                ? t("settings.voice.saveChanges")
+                : t("settings.voice.savePersona")}
             </Button>
             {editingPersonaId && (
               <Button variant="ghost" size="sm" onClick={resetPersonaForm}>

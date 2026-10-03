@@ -15,6 +15,7 @@ export function elapsedMilliseconds(
   if (startedAt == null || completedAt == null) return null;
   const start = epochMilliseconds(startedAt, Number.NaN);
   const end = epochMilliseconds(completedAt, Number.NaN);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
+    return null;
   return end - start;
 }

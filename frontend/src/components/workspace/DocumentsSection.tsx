@@ -297,7 +297,9 @@ function DocumentCard({
               onDownload();
             }}
             title={t("tool.detail.download")}
-            aria-label={t("tool.detail.downloadFile", { filename: doc.filename })}
+            aria-label={t("tool.detail.downloadFile", {
+              filename: doc.filename,
+            })}
             className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
           >
             <Download className="h-3.5 w-3.5" />
@@ -308,7 +310,9 @@ function DocumentCard({
               onDelete();
             }}
             title={t("workspace.common.delete")}
-            aria-label={t("workspace.documents.deleteFile", { filename: doc.filename })}
+            aria-label={t("workspace.documents.deleteFile", {
+              filename: doc.filename,
+            })}
             className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-danger"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -515,7 +519,9 @@ function UploadDialog({
                 disabled={isUploading}
                 className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
               >
-                <option value="">{t("workspace.documents.pickConversationOption")}</option>
+                <option value="">
+                  {t("workspace.documents.pickConversationOption")}
+                </option>
                 {conversations.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.title || t("workspace.documents.untitled")} ·{" "}
@@ -568,7 +574,9 @@ function UploadDialog({
           <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/5 px-3.5 py-2.5">
             <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
             <div className="text-[12.5px]">
-              <p className="font-medium text-success">{t("workspace.documents.ready")}</p>
+              <p className="font-medium text-success">
+                {t("workspace.documents.ready")}
+              </p>
               <p className="text-muted-foreground">
                 {doneDoc.filename}: {doneDoc.total_chunks} chunks
                 {doneDoc.total_images > 0
@@ -641,10 +649,15 @@ function ScopeDialog({
   const [cid, setCid] = useState("");
 
   return (
-    <DialogChrome title={t("workspace.documents.makePrivate")} onClose={onCancel}>
+    <DialogChrome
+      title={t("workspace.documents.makePrivate")}
+      onClose={onCancel}
+    >
       <div className="space-y-3 px-4 py-4">
         <p className="text-[13px] text-muted-foreground">
-          {t("workspace.documents.makePrivateDescription", { filename: doc.filename })}
+          {t("workspace.documents.makePrivateDescription", {
+            filename: doc.filename,
+          })}
         </p>
         {conversations.length === 0 ? (
           <div className="flex items-center gap-1.5 text-[12px] text-warning">
@@ -657,7 +670,9 @@ function ScopeDialog({
             onChange={(e) => setCid(e.target.value)}
             className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
           >
-            <option value="">{t("workspace.documents.pickConversationOption")}</option>
+            <option value="">
+              {t("workspace.documents.pickConversationOption")}
+            </option>
             {conversations.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.title || t("workspace.documents.untitled")} ·{" "}
@@ -861,9 +876,15 @@ export function DocumentsSection() {
                 className={selectClass}
                 title={t("workspace.documents.filterScope")}
               >
-                <option value="all">{t("workspace.documents.allScopes")}</option>
-                <option value="public">{t("workspace.documents.public")}</option>
-                <option value="private">{t("workspace.documents.private")}</option>
+                <option value="all">
+                  {t("workspace.documents.allScopes")}
+                </option>
+                <option value="public">
+                  {t("workspace.documents.public")}
+                </option>
+                <option value="private">
+                  {t("workspace.documents.private")}
+                </option>
               </select>
             </div>
 
@@ -887,7 +908,12 @@ export function DocumentsSection() {
             <div className="flex-1" />
 
             <div className="text-xs text-muted-foreground">
-              {t(filtered.length === 1 ? "workspace.documents.count" : "workspace.documents.countPlural", { count: filtered.length })}
+              {t(
+                filtered.length === 1
+                  ? "workspace.documents.count"
+                  : "workspace.documents.countPlural",
+                { count: filtered.length },
+              )}
             </div>
 
             <Button size="sm" onClick={openUpload}>

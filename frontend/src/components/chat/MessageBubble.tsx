@@ -89,9 +89,7 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
         <Quote className="w-3 h-3 shrink-0" />
         <span className="text-[12px] font-medium">
           {translate(
-            sources.length === 1
-              ? "tool.detail.source"
-              : "tool.detail.sources",
+            sources.length === 1 ? "tool.detail.source" : "tool.detail.sources",
             { count: sources.length },
           )}
         </span>

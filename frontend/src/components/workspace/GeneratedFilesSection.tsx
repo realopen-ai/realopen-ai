@@ -196,7 +196,12 @@ export function GeneratedFilesSection({
           </div>
           <div className="flex-1" />
           <p className="text-xs text-muted-foreground">
-            {t(files.length === 1 ? "workspace.generated.fileCount" : "workspace.generated.fileCountPlural", { count: files.length })}
+            {t(
+              files.length === 1
+                ? "workspace.generated.fileCount"
+                : "workspace.generated.fileCountPlural",
+              { count: files.length },
+            )}
           </p>
         </div>
       </div>
@@ -237,12 +242,17 @@ export function GeneratedFilesSection({
                           {file.filename}
                         </p>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {date} · {t(`workspace.generated.type.${file.deliverable_type}`)}
+                          {date} ·{" "}
+                          {t(
+                            `workspace.generated.type.${file.deliverable_type}`,
+                          )}
                           {size ? ` · ${size}` : ""}
                         </p>
                         {file.conversation_title && (
                           <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
-                          {t("workspace.generated.from", { title: file.conversation_title })}
+                            {t("workspace.generated.from", {
+                              title: file.conversation_title,
+                            })}
                           </p>
                         )}
                       </div>
@@ -257,7 +267,10 @@ export function GeneratedFilesSection({
                             }
                             className={rowActionClass}
                             title={t("workspace.generated.openConversation")}
-                            aria-label={t("workspace.generated.openConversationFor", { filename: file.filename })}
+                            aria-label={t(
+                              "workspace.generated.openConversationFor",
+                              { filename: file.filename },
+                            )}
                           >
                             <ExternalLink className="h-4 w-4" />
                           </button>
@@ -284,7 +297,9 @@ export function GeneratedFilesSection({
                                     ? t("tool.detail.viewSpreadsheet")
                                     : t("tool.detail.viewDocument")
                               }
-                              aria-label={t("workspace.generated.viewFile", { filename: file.filename })}
+                              aria-label={t("workspace.generated.viewFile", {
+                                filename: file.filename,
+                              })}
                             >
                               <Eye className="h-4 w-4" />
                             </button>
@@ -294,7 +309,9 @@ export function GeneratedFilesSection({
                           download={file.filename}
                           className={rowActionClass}
                           title={t("tool.detail.download")}
-                          aria-label={t("tool.detail.downloadFile", { filename: file.filename })}
+                          aria-label={t("tool.detail.downloadFile", {
+                            filename: file.filename,
+                          })}
                         >
                           <Download className="h-4 w-4" />
                         </a>

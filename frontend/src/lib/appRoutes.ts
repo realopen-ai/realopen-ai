@@ -6,12 +6,7 @@ export type WorkspaceSection =
   | "assets"
   | "sandboxes";
 
-const brainTabs = new Set<BrainTab>([
-  "memories",
-  "history",
-  "skills",
-  "tools",
-]);
+const brainTabs = new Set<BrainTab>(["memories", "history", "skills", "tools"]);
 
 const workspaceSections = new Set<WorkspaceSection>([
   "documents",
@@ -42,9 +37,7 @@ export function getBrainRoute(pathname: string): {
   };
 }
 
-export function getWorkspaceSection(
-  pathname: string,
-): WorkspaceSection | null {
+export function getWorkspaceSection(pathname: string): WorkspaceSection | null {
   const candidate = pathname.split("/").filter(Boolean)[1] as
     | WorkspaceSection
     | undefined;

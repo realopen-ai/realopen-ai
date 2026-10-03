@@ -429,8 +429,8 @@ export function RightPanel() {
         ) : (
           <EmptyState
             icon={<MonitorPlay />}
-              title={t("panel.noPreview")}
-              description={t("panel.noPreviewDescription")}
+            title={t("panel.noPreview")}
+            description={t("panel.noPreviewDescription")}
             className="h-full"
           />
         )}

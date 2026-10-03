@@ -764,33 +764,33 @@ export function SettingsModal({
 
                   <div className="mt-6 border-t border-border/50 pt-2">
                     <div className="flex items-center gap-4 py-3.5">
-                    <div
-                      className={cn(
-                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                        notifyDeepSearch
-                          ? "bg-primary/10 text-primary"
-                          : "bg-secondary text-muted-foreground/80",
-                      )}
-                    >
-                      {notifyDeepSearch ? (
-                        <Bell className="h-4.5 w-4.5" />
-                      ) : (
-                        <BellOff className="h-4.5 w-4.5" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13.5px] text-foreground">
-                        {t("settings.notifyDeepSearch")}
+                      <div
+                        className={cn(
+                          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                          notifyDeepSearch
+                            ? "bg-primary/10 text-primary"
+                            : "bg-secondary text-muted-foreground/80",
+                        )}
+                      >
+                        {notifyDeepSearch ? (
+                          <Bell className="h-4.5 w-4.5" />
+                        ) : (
+                          <BellOff className="h-4.5 w-4.5" />
+                        )}
                       </div>
-                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-                        {t("settings.notifyDeepSearchDescription")}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] text-foreground">
+                          {t("settings.notifyDeepSearch")}
+                        </div>
+                        <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                          {t("settings.notifyDeepSearchDescription")}
+                        </div>
                       </div>
-                    </div>
-                    <SettingToggle
-                      checked={notifyDeepSearch}
-                      onChange={(v) => setNotifyDeepSearch(v)}
-                      label={t("settings.notifyDeepSearch")}
-                    />
+                      <SettingToggle
+                        checked={notifyDeepSearch}
+                        onChange={(v) => setNotifyDeepSearch(v)}
+                        label={t("settings.notifyDeepSearch")}
+                      />
                     </div>
                   </div>
                 </div>

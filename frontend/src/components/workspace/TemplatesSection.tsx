@@ -104,7 +104,12 @@ export function TemplatesSection() {
         <div className="shrink-0 px-6 pt-5 lg:px-10">
           <div className="mx-auto flex w-full max-w-300 items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              {t(templates.length === 1 ? "workspace.templates.count" : "workspace.templates.countPlural", { count: templates.length })}
+              {t(
+                templates.length === 1
+                  ? "workspace.templates.count"
+                  : "workspace.templates.countPlural",
+                { count: templates.length },
+              )}
             </p>
             <Button size="sm" onClick={handleAdd}>
               <Plus />
@@ -166,7 +171,8 @@ export function TemplatesSection() {
                           {tpl.display_name}
                         </p>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {tpl.description || t("workspace.templates.noDescription")}
+                          {tpl.description ||
+                            t("workspace.templates.noDescription")}
                         </p>
                       </div>
                     </button>
@@ -195,7 +201,9 @@ export function TemplatesSection() {
                             onSelect={() => {
                               if (
                                 confirm(
-                                  t("workspace.templates.deleteConfirm", { name: tpl.display_name }),
+                                  t("workspace.templates.deleteConfirm", {
+                                    name: tpl.display_name,
+                                  }),
                                 )
                               )
                                 handleDelete(tpl.id);
@@ -459,7 +467,9 @@ function TemplateForm({
           );
         } else {
           setValidationState("invalid");
-          setValidationError(data.error || t("workspace.templates.validationFailed"));
+          setValidationError(
+            data.error || t("workspace.templates.validationFailed"),
+          );
         }
       } else if (mode === "edit") {
         // For edit mode, validate the existing file from the backend
@@ -469,7 +479,9 @@ function TemplateForm({
       }
     } catch (e) {
       setValidationState("invalid");
-      setValidationError(t("workspace.templates.networkError", { error: String(e) }));
+      setValidationError(
+        t("workspace.templates.networkError", { error: String(e) }),
+      );
     }
   };
 
@@ -515,7 +527,9 @@ function TemplateForm({
       onSaved();
     } catch (e) {
       setValidationState("invalid");
-      setValidationError(t("workspace.templates.saveFailed", { error: String(e) }));
+      setValidationError(
+        t("workspace.templates.saveFailed", { error: String(e) }),
+      );
     } finally {
       setIsSaving(false);
     }
@@ -525,7 +539,9 @@ function TemplateForm({
     <div className="flex h-full flex-col">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
         <span className="text-[14px] font-medium text-foreground">
-          {mode === "add" ? t("workspace.templates.add") : t("workspace.templates.edit")}
+          {mode === "add"
+            ? t("workspace.templates.add")
+            : t("workspace.templates.edit")}
         </span>
         <Button
           variant="ghost"
@@ -541,7 +557,9 @@ function TemplateForm({
           {/* PPTX file upload (add mode only) */}
           {mode === "add" && (
             <div>
-              <label className={fieldLabelClass}>{t("workspace.templates.pptxFile")}</label>
+              <label className={fieldLabelClass}>
+                {t("workspace.templates.pptxFile")}
+              </label>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -571,7 +589,9 @@ function TemplateForm({
 
           {/* Display Name */}
           <div>
-            <label className={fieldLabelClass}>{t("workspace.templates.displayName")}</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.displayName")}
+            </label>
             <input
               type="text"
               value={displayName}
@@ -583,7 +603,9 @@ function TemplateForm({
 
           {/* Description */}
           <div>
-            <label className={fieldLabelClass}>{t("workspace.templates.descriptionLabel")}</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.descriptionLabel")}
+            </label>
             <input
               type="text"
               value={description}
@@ -595,7 +617,9 @@ function TemplateForm({
 
           {/* Tags */}
           <div>
-            <label className={fieldLabelClass}>{t("workspace.templates.tagsOptional")}</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.tagsOptional")}
+            </label>
             <input
               type="text"
               value={tags}
@@ -610,7 +634,9 @@ function TemplateForm({
 
           {/* Thumbnail */}
           <div>
-            <label className={fieldLabelClass}>{t("workspace.templates.thumbnailOptional")}</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.thumbnailOptional")}
+            </label>
             <input
               ref={thumbInputRef}
               type="file"
@@ -635,7 +661,9 @@ function TemplateForm({
                 size="xs"
                 onClick={() => thumbInputRef.current?.click()}
               >
-                {thumbnail ? t("workspace.templates.change") : t("workspace.templates.upload")}
+                {thumbnail
+                  ? t("workspace.templates.change")
+                  : t("workspace.templates.upload")}
               </Button>
               {thumbnail && (
                 <Button
@@ -673,7 +701,8 @@ function TemplateForm({
             >
               {validationState === "validating" ? (
                 <>
-                  <Loader2 className="animate-spin" /> {t("workspace.templates.validating")}
+                  <Loader2 className="animate-spin" />{" "}
+                  {t("workspace.templates.validating")}
                 </>
               ) : validationState === "valid" ? (
                 <>
@@ -713,7 +742,9 @@ function TemplateForm({
               disabled={isSaving || !displayName.trim()}
             >
               {isSaving ? <Loader2 className="animate-spin" /> : <Check />}
-              {mode === "add" ? t("workspace.templates.add") : t("workspace.templates.saveChanges")}
+              {mode === "add"
+                ? t("workspace.templates.add")
+                : t("workspace.templates.saveChanges")}
             </Button>
           )}
         </div>

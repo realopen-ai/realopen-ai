@@ -175,7 +175,9 @@ export function DocumentDetailModal({
   const handleRemoveKnowledge = async () => {
     if (
       !confirm(
-        t("workspace.documents.removeKnowledgeConfirm", { filename: doc.filename }),
+        t("workspace.documents.removeKnowledgeConfirm", {
+          filename: doc.filename,
+        }),
       )
     )
       return;
@@ -304,7 +306,9 @@ export function DocumentDetailModal({
           <div className="grid md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             {/* ── Preview column ─────────────────────────────────── */}
             <div className="border-b border-border/60 p-5 md:border-b-0 md:border-r">
-              <p className={sectionLabelClass}>{t("workspace.documents.preview")}</p>
+              <p className={sectionLabelClass}>
+                {t("workspace.documents.preview")}
+              </p>
 
               {pages ? (
                 <div>
@@ -316,7 +320,10 @@ export function DocumentDetailModal({
                         "full",
                         pages.source_mtime,
                       )}
-                      alt={t("workspace.documents.pageAlt", { page: currentPage, filename: doc.filename })}
+                      alt={t("workspace.documents.pageAlt", {
+                        page: currentPage,
+                        filename: doc.filename,
+                      })}
                       className="max-h-80 w-auto object-contain"
                     />
                     {pages.count > 1 && (
@@ -365,7 +372,10 @@ export function DocumentDetailModal({
                     </div>
                   )}
                   <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                    {t("workspace.documents.pageCount", { current: currentPage, total: pages.count })}
+                    {t("workspace.documents.pageCount", {
+                      current: currentPage,
+                      total: pages.count,
+                    })}
                   </p>
                 </div>
               ) : pagesError ? (
@@ -392,43 +402,57 @@ export function DocumentDetailModal({
             <div className="space-y-6 p-5">
               {/* Information */}
               <section>
-                <p className={sectionLabelClass}>{t("workspace.documents.information")}</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.information")}
+                </p>
                 <dl className="space-y-2 text-[13px]">
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">{t("workspace.documents.infoType")}</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoType")}
+                    </dt>
                     <dd className="font-medium uppercase text-foreground">
                       {fileExt(doc.filename) || "—"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">{t("workspace.documents.infoSize")}</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoSize")}
+                    </dt>
                     <dd className="font-medium text-foreground">
                       {formatSize(doc.file_size_bytes)}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">{t("workspace.documents.infoAdded")}</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoAdded")}
+                    </dt>
                     <dd className="font-medium text-foreground">
                       {formatDate(doc.created_at)}
                     </dd>
                   </div>
                   {doc.updated_at && doc.updated_at !== doc.created_at && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">{t("workspace.documents.infoUpdated")}</dt>
+                      <dt className="text-muted-foreground">
+                        {t("workspace.documents.infoUpdated")}
+                      </dt>
                       <dd className="font-medium text-foreground">
                         {formatDate(doc.updated_at)}
                       </dd>
                     </div>
                   )}
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">{t("workspace.documents.scope")}</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.scope")}
+                    </dt>
                     <dd className="font-medium capitalize text-foreground">
                       {t(`workspace.documents.${doc.scope}`)}
                     </dd>
                   </div>
                   {totalPages > 0 && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">{t("workspace.documents.pages")}</dt>
+                      <dt className="text-muted-foreground">
+                        {t("workspace.documents.pages")}
+                      </dt>
                       <dd className="font-medium text-foreground">
                         {totalPages}
                       </dd>
@@ -439,7 +463,9 @@ export function DocumentDetailModal({
 
               {/* AI Knowledge */}
               <section>
-                <p className={sectionLabelClass}>{t("workspace.documents.aiKnowledge")}</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.aiKnowledge")}
+                </p>
 
                 {isDigesting ? (
                   <div className="rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3">
@@ -473,14 +499,20 @@ export function DocumentDetailModal({
                 ) : isReady ? (
                   <div className="space-y-2.5 rounded-lg border border-success/25 bg-success/5 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-success">
-                      <Check className="h-4 w-4" /> {t("workspace.documents.indexed")}
+                      <Check className="h-4 w-4" />{" "}
+                      {t("workspace.documents.indexed")}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {t("workspace.documents.chunkCount", { count: doc.total_chunks })}
+                      {t("workspace.documents.chunkCount", {
+                        count: doc.total_chunks,
+                      })}
                       {doc.total_images > 0
                         ? ` · ${t("workspace.documents.imageCount", { count: doc.total_images })}`
                         : ""}{" "}
-                      · {doc.scope === "public" ? t("workspace.documents.searchableAll") : t("workspace.documents.searchableOne")}
+                      ·{" "}
+                      {doc.scope === "public"
+                        ? t("workspace.documents.searchableAll")
+                        : t("workspace.documents.searchableOne")}
                     </p>
                     <div className="flex flex-wrap gap-2 pt-0.5">
                       <Button
@@ -507,7 +539,8 @@ export function DocumentDetailModal({
                 ) : isFailed ? (
                   <div className="space-y-2.5 rounded-lg border border-danger/25 bg-danger/5 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
-                      <AlertCircle className="h-4 w-4" /> {t("workspace.documents.indexFailed")}
+                      <AlertCircle className="h-4 w-4" />{" "}
+                      {t("workspace.documents.indexFailed")}
                     </div>
                     {doc.digestion_error && (
                       <p
@@ -530,7 +563,8 @@ export function DocumentDetailModal({
                 ) : (
                   <div className="space-y-2.5 rounded-lg border border-border/60 bg-secondary/40 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
-                      <Brain className="h-4 w-4 text-muted-foreground" /> {t("workspace.documents.notIndexed")}
+                      <Brain className="h-4 w-4 text-muted-foreground" />{" "}
+                      {t("workspace.documents.notIndexed")}
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {t("workspace.documents.notIndexedDescription")}
@@ -549,7 +583,9 @@ export function DocumentDetailModal({
 
               {/* Collections */}
               <section>
-                <p className={sectionLabelClass}>{t("workspace.documents.collections")}</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.collections")}
+                </p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {collections.length === 0 && !collectionsBusy && (
                     <p className="text-xs text-muted-foreground">
@@ -566,7 +602,9 @@ export function DocumentDetailModal({
                         onClick={() => removeCollection(name)}
                         disabled={collectionsBusy}
                         className="flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-primary/20"
-                        title={t("workspace.documents.removeCollection", { name })}
+                        title={t("workspace.documents.removeCollection", {
+                          name,
+                        })}
                       >
                         <X className="h-2.5 w-2.5" />
                       </button>

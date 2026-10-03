@@ -55,10 +55,14 @@ export function DependenciesTab() {
           logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }
         if (event.stage === "error") {
-          setInstallError(event.error || t("settings.dependencies.installFailed"));
+          setInstallError(
+            event.error || t("settings.dependencies.installFailed"),
+          );
           if (event.manual_command) {
             setInstallError(
-              event.error + `\n\n${t("settings.dependencies.manualCommand")}:\n` + event.manual_command,
+              event.error +
+                `\n\n${t("settings.dependencies.manualCommand")}:\n` +
+                event.manual_command,
             );
           }
         }
@@ -85,7 +89,9 @@ export function DependenciesTab() {
           logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }
         if (event.stage === "error") {
-          setInstallError(event.error || t("settings.dependencies.uninstallFailed"));
+          setInstallError(
+            event.error || t("settings.dependencies.uninstallFailed"),
+          );
         }
       });
 
@@ -192,7 +198,9 @@ function DependencyRow({
             {isBusy ? (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {busyAction === "install" ? t("settings.dependencies.installing") : t("settings.dependencies.uninstalling")}
+                {busyAction === "install"
+                  ? t("settings.dependencies.installing")
+                  : t("settings.dependencies.uninstalling")}
               </span>
             ) : dep.installed ? (
               <StatusDot
@@ -200,11 +208,16 @@ function DependencyRow({
                 label={`${t("settings.dependencies.installed")}${dep.version ? ` · ${dep.version}` : ""}`}
               />
             ) : dep.available ? (
-              <StatusDot tone="warning" label={t("settings.dependencies.notInstalled")} />
+              <StatusDot
+                tone="warning"
+                label={t("settings.dependencies.notInstalled")}
+              />
             ) : (
               <StatusDot
                 tone="neutral"
-                label={t("settings.dependencies.notAvailable", { distro: dep.distro })}
+                label={t("settings.dependencies.notAvailable", {
+                  distro: dep.distro,
+                })}
               />
             )}
             {dep.in_overlay && (
@@ -253,7 +266,9 @@ function DependencyRow({
           {dep.installed && !isBusy && !confirmUninstall && (
             <button
               onClick={onUninstall}
-              aria-label={t("settings.dependencies.uninstallNamed", { name: dep.display_name })}
+              aria-label={t("settings.dependencies.uninstallNamed", {
+                name: dep.display_name,
+              })}
               title={t("settings.dependencies.uninstall")}
               className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-danger/10 hover:text-danger"
             >
@@ -297,7 +312,9 @@ function DependencyRow({
                 className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Terminal className="h-3 w-3" />
-                {showOutput ? t("settings.dependencies.hideLog") : t("settings.dependencies.showLog")}
+                {showOutput
+                  ? t("settings.dependencies.hideLog")
+                  : t("settings.dependencies.showLog")}
               </button>
               {showOutput && (
                 <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
