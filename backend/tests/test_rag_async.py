@@ -179,7 +179,9 @@ async def test_digest_progress_events_fire_during_digestion(mock_db, conv_id):
         )
 
     # Stub out all the side-effecting pieces of digest_document
-    with patch("app.services.rag.extract_content_async", new=slow_extract), patch(
+    with patch("app.services.rag.async_session_factory", new=_fake_factory), patch(
+        "app.services.rag.extract_content_async", new=slow_extract
+    ), patch(
         "app.services.rag.save_uploaded_file",
         new=AsyncMock(return_value="documents/x/file.txt"),
     ), patch(
@@ -252,7 +254,9 @@ async def test_digest_does_not_block_concurrent_tasks(mock_db, conv_id):
     ticker_task = asyncio.create_task(ticker())
 
     try:
-        with patch("app.services.rag.extract_content_async", new=slow_extract), patch(
+        with patch("app.services.rag.async_session_factory", new=_fake_factory), patch(
+            "app.services.rag.extract_content_async", new=slow_extract
+        ), patch(
             "app.services.rag.save_uploaded_file",
             new=AsyncMock(return_value="documents/x/file.pdf"),
         ), patch(

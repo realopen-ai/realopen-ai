@@ -611,8 +611,12 @@ class TestEmbeddingSemaphore:
             return FakeResp()
 
         # Mock settings + httpx
+        embeddings._resolved_model = None
+        embeddings._ollama_url = None
         with patch.object(
-            embeddings.settings, "resolve_model", return_value="nomic-embed-text:v1.5"
+            type(embeddings.settings),
+            "resolve_model",
+            return_value="nomic-embed-text:v1.5",
         ), patch.object(
             embeddings.settings, "MEMORY_EMBEDDING_MODEL_ROLE", "embedding"
         ), patch.object(

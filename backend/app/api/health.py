@@ -1,7 +1,5 @@
 from fastapi import APIRouter
 
-from app.core.logger import is_debug
-
 router = APIRouter()
 
 
