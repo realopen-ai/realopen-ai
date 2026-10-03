@@ -386,7 +386,9 @@ export interface BackendToolCall {
     error?: string | null;
   };
   error?: string;
+  startedAt?: number;
   completedAt?: number;
+  durationMs?: number;
   sources?: RetrievedSourceDTO[];
 }
 

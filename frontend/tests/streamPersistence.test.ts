@@ -38,6 +38,16 @@ test("normal navigation after completion does not create a reconnect bubble", ()
   );
 });
 
+test("transport completion owns final controls and response duration", () => {
+  assert.match(streamApi, /eventType === "response_duration"/);
+  assert.match(chatArea, /onResponseDuration: \(durationSeconds: number\)/);
+  assert.match(streamApi, /agent loop done; awaiting transport completion/);
+  assert.doesNotMatch(
+    streamApi,
+    /if \(eventType === "done"\) \{[^}]*callbacks\.onDone\(\)/s,
+  );
+});
+
 test("interrupted assistant messages render a durable badge", () => {
   assert.match(bubble, /message\.completionStatus === "interrupted"/);
   assert.match(bubble, /message\.interrupted/);

@@ -161,7 +161,7 @@ async def add_message(
     image_count: int = 0,
     document_count: int = 0,
     blocks: Optional[list] = None,
-    generation_duration: Optional[int] = None,
+    generation_duration: Optional[float] = None,
     deliverables: Optional[list] = None,
     modality: Optional[str] = None,
     completion_status: str = "completed",
@@ -268,7 +268,7 @@ async def update_message_standalone(
     *,
     content: str,
     blocks: Optional[list] = None,
-    generation_duration: Optional[int] = None,
+    generation_duration: Optional[float] = None,
     deliverables: Optional[list] = None,
     completion_status: str = "streaming",
 ) -> bool:

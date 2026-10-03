@@ -40,7 +40,7 @@ class BlockBuilder:
         self._current_thinking: dict | None = None
         self._thinking_started_at: float | None = None
         self._tool_call_blocks: dict[str, dict] = {}  # tc_id -> block ref
-        self.generation_duration: int = 0
+        self.generation_duration: float = 0.0
         self.deliverables: list[dict] = []  # report/file deliverables for DB
 
     def _close_text(self):
@@ -61,7 +61,7 @@ class BlockBuilder:
         if self._current_thinking is not None:
             self._current_thinking["content"] += token
 
-    def on_thinking_done(self, duration: int):
+    def on_thinking_done(self, duration: float):
         if self._current_thinking is not None:
             self._current_thinking["duration"] = duration
         self._close_thinking()
@@ -132,7 +132,7 @@ class BlockBuilder:
         if block is not None:
             block["tool_call"]["sources"] = sources
 
-    def on_generation_done(self, duration: int):
+    def on_generation_done(self, duration: float):
         self.generation_duration += duration
 
     def on_error(self, error: str):

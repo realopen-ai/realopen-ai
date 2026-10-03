@@ -2,6 +2,7 @@ import type { ToolCallResult } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
+import { epochMilliseconds } from "@/lib/timing";
 
 const log = createDebugLogger("stream");
 
@@ -14,6 +15,7 @@ export interface StreamCallbacks {
     thinkingDuration?: number;
     generationDuration: number;
   }) => void;
+  onResponseDuration?: (durationSeconds: number) => void;
   onToolCallStart: (toolCall: ToolCallResult) => void;
   onToolCallUpdate: (
     toolCallId: string,
@@ -452,6 +454,10 @@ export function dispatchAgentEvent(
     });
   }
 
+  if (eventType === "response_duration" && Number.isFinite(p.duration)) {
+    callbacks.onResponseDuration?.(Math.max(0, p.duration));
+  }
+
   // ── Memory extraction start ──
   if (eventType === "memory_extraction_start") {
     log("   🧠 memory_extraction_start event received");
@@ -558,7 +564,7 @@ export function dispatchAgentEvent(
         type: tc.type,
         status: "running",
         title: tc.title ?? tc.type,
-        startedAt: Date.now(),
+        startedAt: epochMilliseconds(tc.startedAt),
         query: tc.query,
         language: tc.language,
         code: tc.code,
@@ -591,7 +597,12 @@ export function dispatchAgentEvent(
       const updates: Partial<ToolCallResult> = {
         status: tc.status,
       };
-      if (tc.completedAt) updates.completedAt = tc.completedAt;
+      if (tc.completedAt != null) {
+        updates.completedAt = epochMilliseconds(tc.completedAt);
+      }
+      if (tc.durationMs != null) {
+        updates.durationMs = tc.durationMs;
+      }
       if (tc.webResults) updates.webResults = tc.webResults;
       if (tc.genResults) updates.genResults = tc.genResults;
       if (tc.output) updates.output = tc.output;
@@ -606,9 +617,9 @@ export function dispatchAgentEvent(
 
   // ── Done event ──
   if (eventType === "done") {
-    log("   done event received");
-    callbacks.onDone();
-    return true;
+    // Agent-loop done precedes persistence, response-duration, title, and
+    // other terminal events. Only the transport-level [DONE] finalizes UI.
+    log("   agent loop done; awaiting transport completion");
   }
 
   if (eventType === "interrupted") {

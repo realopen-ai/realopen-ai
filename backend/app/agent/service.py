@@ -383,7 +383,15 @@ def _sse_event(event: str, data: dict) -> str:
 
 
 def _tool_call_to_dict(tc: ToolCall) -> dict:
-    d = {"id": tc.id, "type": tc.type.value, "status": tc.status, "title": tc.title}
+    d = {
+        "id": tc.id,
+        "type": tc.type.value,
+        "status": tc.status,
+        "title": tc.title,
+        "startedAt": int(tc.started_at * 1000),
+    }
+    if tc.completed_at is not None:
+        d["completedAt"] = int(tc.completed_at * 1000)
     if tc.query:
         d["query"] = tc.query
     if tc.web_results:
@@ -407,7 +415,7 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
 
 def _tool_call_to_update_dict(tc: ToolCall) -> dict:
     d = {"status": tc.status}
-    if tc.completed_at:
+    if tc.completed_at is not None:
         d["completedAt"] = int(tc.completed_at * 1000)
     if tc.web_results:
         d["webResults"] = tc.web_results
@@ -665,7 +673,7 @@ async def run_agent_stream(
         full_response = ""
         thinking_content = ""
         native_tool_calls = []
-        generation_start = time.time()
+        generation_start = time.monotonic()
         thinking_start = None
 
         try:
@@ -693,7 +701,7 @@ async def run_agent_stream(
                 thinking = chunk.get("thinking", "")
                 if thinking:
                     if not thinking_start:
-                        thinking_start = time.time()
+                        thinking_start = time.monotonic()
                         yield _sse_event("thinking_start", {})
                     thinking_content += thinking
                     yield _sse_event("thinking", {"thinking": thinking})
@@ -702,7 +710,7 @@ async def run_agent_stream(
                 token = chunk.get("content", "")
                 if token:
                     if thinking_start is not None:
-                        elapsed = round(time.time() - thinking_start)
+                        elapsed = round(time.monotonic() - thinking_start, 3)
                         yield _sse_event("thinking_done", {"thinkingDuration": elapsed})
                         thinking_start = None
                     full_response += token
@@ -741,10 +749,10 @@ async def run_agent_stream(
         if thinking_start is not None:
             yield _sse_event(
                 "thinking_done",
-                {"thinkingDuration": round(time.time() - thinking_start)},
+                {"thinkingDuration": round(time.monotonic() - thinking_start, 3)},
             )
 
-        gen_elapsed = round(time.time() - generation_start)
+        gen_elapsed = round(time.monotonic() - generation_start, 3)
         yield _sse_event("generation_done", {"generationDuration": gen_elapsed})
 
         # ── Resolve tool calls ──
@@ -848,7 +856,10 @@ async def run_agent_stream(
                 tool_args.setdefault("conversation_id", conversation_id)
 
             # Generate a tool call ID for tracking across start/update events
-            tc_id = f"tc-{tool.tool_type.value}-{int(time.time()*1000)}"
+            tool_started_at = time.time()
+            tool_started_monotonic = time.monotonic()
+            tool_started_at_ms = int(tool_started_at * 1000)
+            tc_id = f"tc-{tool.tool_type.value}-{tool_started_at_ms}"
 
             # Notify frontend that tool is starting
             if on_tool_call_start:
@@ -858,6 +869,7 @@ async def run_agent_stream(
                         "type": tool.tool_type.value,
                         "status": "running",
                         "title": tool.name,
+                        "startedAt": tool_started_at_ms,
                         **tool_args,
                     }
                 )
@@ -870,6 +882,7 @@ async def run_agent_stream(
                         "type": tool.tool_type.value,
                         "status": "running",
                         "title": f"Calling {tool_name}",
+                        "startedAt": tool_started_at_ms,
                         **tool_args,
                     }
                 },
@@ -915,6 +928,10 @@ async def run_agent_stream(
                     await _switch_model(model_override)
             except Exception as e:
                 logger.exception("Tool %s failed: %s", tool_name, e)
+                tool_completed_at_ms = int(time.time() * 1000)
+                tool_duration_ms = round(
+                    (time.monotonic() - tool_started_monotonic) * 1000, 1
+                )
                 yield _sse_event(
                     "tool_call",
                     {
@@ -923,6 +940,9 @@ async def run_agent_stream(
                             "type": tool.tool_type.value,
                             "status": "error",
                             "title": f"{tool_name} failed",
+                            "startedAt": tool_started_at_ms,
+                            "completedAt": tool_completed_at_ms,
+                            "durationMs": tool_duration_ms,
                             "error": str(e),
                         }
                     },
@@ -944,6 +964,9 @@ async def run_agent_stream(
                 update_dict = _tool_call_to_update_dict(result.tool_call)
                 update_dict["id"] = tc_id
                 update_dict["title"] = result.tool_call.title
+                update_dict["durationMs"] = round(
+                    (time.monotonic() - tool_started_monotonic) * 1000, 1
+                )
                 update_dict["type"] = result.tool_call.type.value
                 if on_tool_call_update:
                     on_tool_call_update(tc_id, update_dict)

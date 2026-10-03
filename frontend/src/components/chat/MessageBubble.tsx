@@ -22,6 +22,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
+import { elapsedMilliseconds } from "@/lib/timing";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -478,10 +479,11 @@ function ToolCallBlockView({
         : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
-  const duration =
-    tc.completedAt && tc.startedAt
-      ? ((tc.completedAt - tc.startedAt) / 1000).toFixed(1)
-      : null;
+  const elapsed =
+    Number.isFinite(tc.durationMs) && (tc.durationMs ?? -1) >= 0
+      ? tc.durationMs!
+      : elapsedMilliseconds(tc.startedAt, tc.completedAt);
+  const duration = elapsed == null ? null : (elapsed / 1000).toFixed(1);
 
   // Auto-expand while running so the user sees progress, AND auto-expand
   // when completed with deliverables so the download badge is visible.
@@ -1095,8 +1097,9 @@ function BlockView({
 // ─── Response Time ────────────────────────────────────────────────
 
 function formatResponseTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
+  const safeMs = Math.max(0, ms);
+  if (safeMs < 1000) return `${Math.round(safeMs)}ms`;
+  const seconds = safeMs / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
@@ -1202,7 +1205,7 @@ export function MessageBubble({
   // Calculate response time for assistant messages
   // Prefer DB-persisted generationDuration, fallback to frontend-computed time
   const responseTime = isAssistant
-    ? message.generationDuration
+    ? message.generationDuration != null
       ? formatResponseTime(message.generationDuration * 1000)
       : message.completedAt && message.createdAt
         ? formatResponseTime(message.completedAt - message.createdAt)

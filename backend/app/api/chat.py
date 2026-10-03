@@ -378,7 +378,7 @@ async def chat_stream(request: ChatRequest):
         assistant_message_id: uuid.UUID | None = None
         completion_status = "completed"
         try:
-            request_start = time.time()
+            request_start = time.monotonic()
             async for chunk in run_agent_stream(
                 messages=messages,
                 model=_resolved_model,
@@ -462,6 +462,8 @@ async def chat_stream(request: ChatRequest):
             completion_status = "error"
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
+        response_duration = round(time.monotonic() - request_start, 3)
+        builder.generation_duration = response_duration
         full_assistant_content = builder.get_text_content()
         _log(
             "   ✅ generate() finished — total chunks=%d  blocks=%d  content_len=%d",
@@ -534,6 +536,12 @@ async def chat_stream(request: ChatRequest):
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
 
+        # One authoritative end-to-end duration (model rounds + tools), also
+        # stored on the assistant row above for identical reload rendering.
+        yield "data: " + json.dumps(
+            {"event": "response_duration", "duration": response_duration}
+        ) + "\n\n"
+
         # Release the marker even if an interrupted turn produced no blocks.
         if _conv_id:
             await mark_stream_idle(str(_conv_id))
@@ -559,7 +567,7 @@ async def chat_stream(request: ChatRequest):
 
         # ── Record metrics for the chat request ──
         if request_start:
-            elapsed = time.time() - request_start
+            elapsed = time.monotonic() - request_start
             app_metrics.chat_duration_seconds.labels(model=_resolved_model).observe(
                 elapsed
             )
@@ -851,7 +859,7 @@ async def chat_stream_multipart(
             parsed_messages.append({"role": "user", "content": hint})
 
         try:
-            request_start = time.time()
+            request_start = time.monotonic()
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
                 model=_resolved_model,
@@ -932,6 +940,8 @@ async def chat_stream_multipart(
             completion_status = "error"
             yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
 
+        response_duration = round(time.monotonic() - request_start, 3)
+        builder.generation_duration = response_duration
         full_assistant_content = builder.get_text_content()
         _log(
             "   ✅ generate() finished (multipart) — total chunks=%d  "
@@ -1001,6 +1011,10 @@ async def chat_stream_multipart(
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
 
+        yield "data: " + json.dumps(
+            {"event": "response_duration", "duration": response_duration}
+        ) + "\n\n"
+
         # Release the marker even if an interrupted turn produced no blocks.
         if _conv_id:
             await mark_stream_idle(str(_conv_id))
@@ -1023,7 +1037,7 @@ async def chat_stream_multipart(
 
         # ── Record metrics for the multipart chat request ──
         if request_start:
-            elapsed = time.time() - request_start
+            elapsed = time.monotonic() - request_start
             app_metrics.chat_duration_seconds.labels(model=_resolved_model).observe(
                 elapsed
             )

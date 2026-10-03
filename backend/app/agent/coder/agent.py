@@ -24,6 +24,13 @@ from app.services.sandbox_commands import persist_command, split_command_output
 from app.services.sandbox_manager import provision_sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _now_ms() -> int:
+    """Wall-clock timestamp for persisted/SSE tool events (epoch ms)."""
+    return int(time.time() * 1000)
+
+
 CODER_SYSTEM_PROMPT = "\n\n".join(
     (get_prompt("coder_system"), get_prompt("coder_fastapi_reference"))
 )
@@ -77,7 +84,7 @@ async def _record_command(
             stdout=stdout,
             stderr=stderr,
             exit_code=exit_code,
-            started_at=datetime.utcfromtimestamp(started_at),
+            started_at=datetime.utcfromtimestamp(started_at / 1000),
             completed_at=datetime.utcnow(),
         )
     except Exception as exc:
@@ -131,7 +138,7 @@ async def _create_task(conversation_id: str, task_id: uuid.UUID, request: str):
 
 
 def _workspace_events(sandbox, parent_id: str | None, task_id) -> tuple[dict, dict]:
-    now = time.time()
+    now = _now_ms()
     event = {
         "id": f"{parent_id or task_id}-workspace",
         "parentId": parent_id,
@@ -153,7 +160,12 @@ def _workspace_events(sandbox, parent_id: str | None, task_id) -> tuple[dict, di
             "error": sandbox.error,
         },
     }
-    return event, {**event, "status": "completed", "completedAt": now}
+    return event, {
+        **event,
+        "status": "completed",
+        "completedAt": now,
+        "durationMs": 0,
+    }
 
 
 def _event_for_step(
@@ -194,7 +206,7 @@ def _event_for_step(
         "type": event_type,
         "status": "running",
         "title": title,
-        "startedAt": time.time(),
+        "startedAt": _now_ms(),
     }
     if sandbox_id is not None:
         event["sandboxId"] = str(sandbox_id)
@@ -251,6 +263,7 @@ async def _run_step(
     elif event_queue is not None:
         event_queue.put_nowait(start_event)
     started_at = start_event["startedAt"]
+    started_monotonic = time.monotonic()
 
     def setup_progress(update: dict) -> None:
         nonlocal command_started
@@ -261,7 +274,10 @@ async def _run_step(
                 {
                     **project_event,
                     "status": "completed",
-                    "completedAt": time.time(),
+                    "completedAt": _now_ms(),
+                    "durationMs": round(
+                        (time.monotonic() - started_monotonic) * 1000, 1
+                    ),
                     "output": "Created /workspace/pyproject.toml",
                     "fileContent": update.get("file_content", ""),
                 }
@@ -291,7 +307,10 @@ async def _run_step(
         completed = {
             **start_event,
             "status": "completed",
-            "completedAt": time.time(),
+            "completedAt": _now_ms(),
+            "durationMs": round(
+                (time.monotonic() - started_monotonic) * 1000, 1
+            ),
             "output": output[:20_000],
         }
         if name == "setup_python_project":
@@ -329,7 +348,10 @@ async def _run_step(
                 {
                     **(failed_event or start_event),
                     "status": "error",
-                    "completedAt": time.time(),
+                    "completedAt": _now_ms(),
+                    "durationMs": round(
+                        (time.monotonic() - started_monotonic) * 1000, 1
+                    ),
                     "error": str(exc),
                     "output": str(exc),
                 }
@@ -525,7 +547,7 @@ class CoderAgent(BaseTool):
                         sandbox, "start_preview", {"command": command, "port": port}
                     )
                     if event and _event_queue is not None:
-                        now = time.time()
+                        now = _now_ms()
                         _event_queue.put_nowait(
                             {
                                 "id": f"{_parent_tool_call_id or task_id}-preview",

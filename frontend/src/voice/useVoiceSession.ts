@@ -259,6 +259,7 @@ export function useVoiceSession(
       modality: msg.modality === "voice" ? "voice" : undefined,
       blocks: msg.blocks as MessageDTO["blocks"],
       deliverables: msg.deliverables as MessageDTO["deliverables"],
+      generationDuration: msg.generationDuration,
       completionStatus: msg.completionStatus ?? "completed",
     } satisfies MessageDTO);
 
@@ -268,6 +269,7 @@ export function useVoiceSession(
       deliverables: finalMsg.deliverables,
       modality: finalMsg.modality,
       completionStatus: finalMsg.completionStatus,
+      generationDuration: finalMsg.generationDuration,
     });
     store.setStreaming(turn.convId, turn.assistantMsgId, false);
     turnRef.current = null;

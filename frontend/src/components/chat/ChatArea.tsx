@@ -266,6 +266,13 @@ export function ChatArea() {
           // turn. Tool execution may now begin and further rounds may
           // follow, so streaming remains active until `done` / [DONE].
         },
+        onResponseDuration: (durationSeconds: number) => {
+          useChatStore
+            .getState()
+            .updateMessage(capturedConvId, assistantMsgId, {
+              generationDuration: durationSeconds,
+            });
+        },
         onMemoryExtractionStart: () => {
           useMemoryStore.getState().setExtracting(true);
         },

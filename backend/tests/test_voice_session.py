@@ -473,14 +473,14 @@ async def test_full_voice_turn_happy_path(env):
     assert ap["conv_id"] == env.conv_id
     assert ap["modality"] == "voice"
     assert ap["model"] == "test-model"
-    assert ap["generation_duration"] == 3
+    assert ap["generation_duration"] >= 0
     assert any(b["type"] == "text" for b in ap["blocks"])
     assert any(b["type"] == "thinking" for b in ap["blocks"])
     am = ws.frames_of("assistant_message")[0]["message"]
     assert am["role"] == "assistant"
     assert am["modality"] == "voice"
     assert am["model"] == "test-model"
-    assert am["generationDuration"] == 3
+    assert am["generationDuration"] == ap["generation_duration"]
     assert ASSISTANT_TEXT.strip() == am["content"].strip()
     assert am["blocks"] == ap["blocks"]
 
