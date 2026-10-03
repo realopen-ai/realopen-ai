@@ -421,7 +421,7 @@ export function SettingsModal({
     },
     {
       key: "voice",
-      label: "Voice",
+      label: t("settings.voice"),
       icon: <Mic2 className="w-4 h-4" />,
     },
     {
@@ -431,7 +431,7 @@ export function SettingsModal({
     },
     {
       key: "dependencies",
-      label: "Dependencies",
+      label: t("settings.dependencies"),
       icon: <Package className="w-4 h-4" />,
     },
     {
@@ -690,9 +690,7 @@ export function SettingsModal({
                         {t("settings.notifyDeepSearch")}
                       </div>
                       <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-                        {language === "fr"
-                          ? "Recevez une notification lorsqu'une recherche approfondie est terminée"
-                          : "Get a notification when a deep search task completes"}
+                        {t("settings.notifyDeepSearchDescription")}
                       </div>
                     </div>
                     <SettingToggle

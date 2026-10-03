@@ -113,7 +113,7 @@ test("skill instructions and resources use shared syntax highlighting", () => {
   assert.match(skills, /components=\{markdownCodeComponents\}/);
   assert.match(
     skills,
-    /code=\{resourceContent \?\? "Loading resource…"\}[\s\S]*filePath=\{selectedResource\}/,
+    /code=\{resourceContent \?\? t\("brain\.skills\.loadingResource"\)\}[\s\S]*filePath=\{selectedResource\}/,
   );
 });
 

@@ -16,8 +16,10 @@ import {
 } from "@/api/depsClient";
 import { cn } from "@/lib/utils";
 import { EmptyState, StatusDot } from "@/components/ui/primitives";
+import { t, useT } from "@/store/settingsStore";
 
 export function DependenciesTab() {
+  useT();
   const [deps, setDeps] = useState<DependencyInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null); // name of dep being installed/uninstalled
@@ -53,10 +55,10 @@ export function DependenciesTab() {
           logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }
         if (event.stage === "error") {
-          setInstallError(event.error || "Installation failed");
+          setInstallError(event.error || t("settings.dependencies.installFailed"));
           if (event.manual_command) {
             setInstallError(
-              event.error + "\n\nManual command:\n" + event.manual_command,
+              event.error + `\n\n${t("settings.dependencies.manualCommand")}:\n` + event.manual_command,
             );
           }
         }
@@ -83,7 +85,7 @@ export function DependenciesTab() {
           logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }
         if (event.stage === "error") {
-          setInstallError(event.error || "Uninstallation failed");
+          setInstallError(event.error || t("settings.dependencies.uninstallFailed"));
         }
       });
 
@@ -106,7 +108,7 @@ export function DependenciesTab() {
     return (
       <EmptyState
         icon={<Package />}
-        title="No optional dependencies available."
+        title={t("settings.dependencies.empty")}
         className="py-10"
       />
     );
@@ -115,9 +117,7 @@ export function DependenciesTab() {
   return (
     <div className="space-y-3">
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Optional dependencies extend the capabilities of your AI assistant.
-        Install them on demand — they are not included by default to keep the
-        installation lightweight.
+        {t("settings.dependencies.description")}
       </p>
 
       <div className="divide-y divide-border/50">
@@ -192,28 +192,28 @@ function DependencyRow({
             {isBusy ? (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {busyAction === "install" ? "Installing…" : "Uninstalling…"}
+                {busyAction === "install" ? t("settings.dependencies.installing") : t("settings.dependencies.uninstalling")}
               </span>
             ) : dep.installed ? (
               <StatusDot
                 tone="success"
-                label={`Installed${dep.version ? ` · ${dep.version}` : ""}`}
+                label={`${t("settings.dependencies.installed")}${dep.version ? ` · ${dep.version}` : ""}`}
               />
             ) : dep.available ? (
-              <StatusDot tone="warning" label="Not installed" />
+              <StatusDot tone="warning" label={t("settings.dependencies.notInstalled")} />
             ) : (
               <StatusDot
                 tone="neutral"
-                label={`Not available on ${dep.distro}`}
+                label={t("settings.dependencies.notAvailable", { distro: dep.distro })}
               />
             )}
             {dep.in_overlay && (
               <span
                 className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
-                title="Stored in a Docker volume — survives container rebuilds without re-downloading"
+                title={t("settings.dependencies.volumeHelp")}
               >
                 <Package className="h-3 w-3" />
-                Persistent volume
+                {t("settings.dependencies.persistentVolume")}
               </span>
             )}
           </div>
@@ -246,15 +246,15 @@ function DependencyRow({
               className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary/10 px-2.5 text-[12.5px] font-medium text-primary transition-colors hover:bg-primary/20"
             >
               <Download className="h-3.5 w-3.5" />
-              Install
+              {t("settings.dependencies.install")}
             </button>
           )}
 
           {dep.installed && !isBusy && !confirmUninstall && (
             <button
               onClick={onUninstall}
-              aria-label={`Uninstall ${dep.display_name}`}
-              title="Uninstall"
+              aria-label={t("settings.dependencies.uninstallNamed", { name: dep.display_name })}
+              title={t("settings.dependencies.uninstall")}
               className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-danger/10 hover:text-danger"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -266,13 +266,13 @@ function DependencyRow({
                 onClick={onConfirmUninstall}
                 className="rounded-md bg-danger/10 px-2 py-1 text-[11.5px] font-medium text-danger transition-colors hover:bg-danger/20"
               >
-                Uninstall
+                {t("settings.dependencies.uninstall")}
               </button>
               <button
                 onClick={onCancelUninstall}
                 className="rounded-md px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
               >
-                Cancel
+                {t("workspace.cancel")}
               </button>
             </div>
           )}
@@ -297,7 +297,7 @@ function DependencyRow({
                 className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Terminal className="h-3 w-3" />
-                {showOutput ? "Hide" : "Show"} {busyAction || "operation"} log
+                {showOutput ? t("settings.dependencies.hideLog") : t("settings.dependencies.showLog")}
               </button>
               {showOutput && (
                 <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
