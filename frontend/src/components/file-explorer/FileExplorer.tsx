@@ -104,7 +104,7 @@ function FileTreeItem({
         title={node.name}
         aria-expanded={isDir ? expanded : undefined}
         className={cn(
-          "group relative flex h-[30px] w-full cursor-pointer select-none items-center gap-1.5 rounded-md pl-1.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+          "group relative flex h-7.5 w-full cursor-pointer select-none items-center gap-1.5 rounded-md pl-1.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
           isActive
             ? "bg-primary/10 text-primary"
             : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
@@ -119,7 +119,7 @@ function FileTreeItem({
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        <Icon className={cn("size-[15px] shrink-0", iconColor)} />
+        <Icon className={cn("size-3.75 shrink-0", iconColor)} />
         <span
           className={cn(
             "min-w-0 flex-1 truncate text-[13px]",
@@ -140,7 +140,7 @@ function FileTreeItem({
         )}
       </button>
       {isDir && expanded && node.children && (
-        <div className="ml-[18px] border-l border-border/40 pl-1">
+        <div className="ml-4.5 border-l border-border/40 pl-1">
           {node.children
             .sort((a, b) => {
               if (a.type !== b.type) return a.type === "directory" ? -1 : 1;

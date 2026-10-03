@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { t, useT } from "@/store/settingsStore";
 import {
   downloadDocument,
   deleteDocument,
@@ -87,6 +88,7 @@ export function DocumentDetailModal({
   onChanged: (doc: DocumentDTO | null) => void;
   onDeleted: (id: string) => void;
 }) {
+  useT();
   // ── Preview state ─────────────────────────────────────────────────
   const [pages, setPages] = useState<{
     count: number;
@@ -122,7 +124,7 @@ export function DocumentDetailModal({
       setPages({ count: manifest.count, source_mtime: manifest.source_mtime });
       setCurrentPage((p) => Math.min(p, manifest.count));
     } else {
-      setPagesError("Preview unavailable for this file.");
+      setPagesError(t("workspace.documents.previewUnavailable"));
       setPages(null);
     }
   }, [doc.id]);
@@ -173,7 +175,9 @@ export function DocumentDetailModal({
   const handleRemoveKnowledge = async () => {
     if (
       !confirm(
-        `Remove "${doc.filename}" from AI knowledge? The file is kept, but its indexed chunks and embeddings will be deleted.`,
+        t("workspace.documents.removeKnowledgeConfirm", {
+          filename: doc.filename,
+        }),
       )
     )
       return;
@@ -219,7 +223,7 @@ export function DocumentDetailModal({
   const handleDelete = async () => {
     if (
       !confirm(
-        `Delete "${doc.filename}"? This removes the file and all its chunks.`,
+        t("workspace.documents.deleteConfirm", { filename: doc.filename }),
       )
     )
       return;
@@ -279,8 +283,8 @@ export function DocumentDetailModal({
                   setRenameValue(doc.filename);
                   setRenaming(true);
                 }}
-                aria-label="Rename document"
-                title="Rename"
+                aria-label={t("workspace.documents.rename")}
+                title={t("workspace.documents.rename")}
                 className="shrink-0"
               >
                 <Pencil />
@@ -291,7 +295,7 @@ export function DocumentDetailModal({
             variant="ghost"
             size="icon-sm"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={t("common.close")}
           >
             <X />
           </Button>
@@ -302,7 +306,9 @@ export function DocumentDetailModal({
           <div className="grid md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             {/* ── Preview column ─────────────────────────────────── */}
             <div className="border-b border-border/60 p-5 md:border-b-0 md:border-r">
-              <p className={sectionLabelClass}>Preview</p>
+              <p className={sectionLabelClass}>
+                {t("workspace.documents.preview")}
+              </p>
 
               {pages ? (
                 <div>
@@ -314,7 +320,10 @@ export function DocumentDetailModal({
                         "full",
                         pages.source_mtime,
                       )}
-                      alt={`Page ${currentPage} of ${doc.filename}`}
+                      alt={t("workspace.documents.pageAlt", {
+                        page: currentPage,
+                        filename: doc.filename,
+                      })}
                       className="max-h-80 w-auto object-contain"
                     />
                     {pages.count > 1 && (
@@ -325,7 +334,7 @@ export function DocumentDetailModal({
                           }
                           disabled={currentPage <= 1}
                           className="absolute left-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:bg-background disabled:opacity-30"
-                          title="Previous page"
+                          title={t("workspace.documents.previousPage")}
                         >
                           <ChevronLeft className="h-4 w-4" />
                         </button>
@@ -335,7 +344,7 @@ export function DocumentDetailModal({
                           }
                           disabled={currentPage >= pages.count}
                           className="absolute right-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:bg-background disabled:opacity-30"
-                          title="Next page"
+                          title={t("workspace.documents.nextPage")}
                         >
                           <ChevronRight className="h-4 w-4" />
                         </button>
@@ -363,8 +372,10 @@ export function DocumentDetailModal({
                     </div>
                   )}
                   <p className="mt-2 text-center text-[11px] text-muted-foreground">
-                    {currentPage} / {pages.count} page
-                    {pages.count !== 1 ? "s" : ""}
+                    {t("workspace.documents.pageCount", {
+                      current: currentPage,
+                      total: pages.count,
+                    })}
                   </p>
                 </div>
               ) : pagesError ? (
@@ -374,14 +385,14 @@ export function DocumentDetailModal({
                     {pagesError}
                   </p>
                   <p className="mt-0.5 text-[11px] text-muted-foreground/70">
-                    Use the download button to open the file directly.
+                    {t("workspace.documents.useDownload")}
                   </p>
                 </div>
               ) : (
                 <div className="flex h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border/60 bg-secondary/30">
                   <Loader2 className="mb-2 h-5 w-5 animate-spin text-primary/60" />
                   <p className="text-[12.5px] text-muted-foreground">
-                    Rendering preview…
+                    {t("workspace.documents.renderingPreview")}
                   </p>
                 </div>
               )}
@@ -391,43 +402,57 @@ export function DocumentDetailModal({
             <div className="space-y-6 p-5">
               {/* Information */}
               <section>
-                <p className={sectionLabelClass}>Information</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.information")}
+                </p>
                 <dl className="space-y-2 text-[13px]">
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">Type</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoType")}
+                    </dt>
                     <dd className="font-medium uppercase text-foreground">
                       {fileExt(doc.filename) || "—"}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">Size</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoSize")}
+                    </dt>
                     <dd className="font-medium text-foreground">
                       {formatSize(doc.file_size_bytes)}
                     </dd>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">Added</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.infoAdded")}
+                    </dt>
                     <dd className="font-medium text-foreground">
                       {formatDate(doc.created_at)}
                     </dd>
                   </div>
                   {doc.updated_at && doc.updated_at !== doc.created_at && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">Updated</dt>
+                      <dt className="text-muted-foreground">
+                        {t("workspace.documents.infoUpdated")}
+                      </dt>
                       <dd className="font-medium text-foreground">
                         {formatDate(doc.updated_at)}
                       </dd>
                     </div>
                   )}
                   <div className="flex justify-between gap-3">
-                    <dt className="text-muted-foreground">Scope</dt>
+                    <dt className="text-muted-foreground">
+                      {t("workspace.documents.scope")}
+                    </dt>
                     <dd className="font-medium capitalize text-foreground">
-                      {doc.scope}
+                      {t(`workspace.documents.${doc.scope}`)}
                     </dd>
                   </div>
                   {totalPages > 0 && (
                     <div className="flex justify-between gap-3">
-                      <dt className="text-muted-foreground">Pages</dt>
+                      <dt className="text-muted-foreground">
+                        {t("workspace.documents.pages")}
+                      </dt>
                       <dd className="font-medium text-foreground">
                         {totalPages}
                       </dd>
@@ -438,7 +463,9 @@ export function DocumentDetailModal({
 
               {/* AI Knowledge */}
               <section>
-                <p className={sectionLabelClass}>AI Knowledge</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.aiKnowledge")}
+                </p>
 
                 {isDigesting ? (
                   <div className="rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3">
@@ -446,9 +473,9 @@ export function DocumentDetailModal({
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
                       {progress
                         ? progress.stage === "done"
-                          ? "Done"
+                          ? t("workspace.documents.done")
                           : progress.stage.replace(/_/g, " ")
-                        : "Digesting…"}
+                        : t("workspace.documents.digesting")}
                       {progress && (
                         <span className="ml-auto text-xs text-muted-foreground">
                           {progress.percent}%
@@ -472,20 +499,20 @@ export function DocumentDetailModal({
                 ) : isReady ? (
                   <div className="space-y-2.5 rounded-lg border border-success/25 bg-success/5 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-success">
-                      <Check className="h-4 w-4" /> Indexed for RAG
+                      <Check className="h-4 w-4" />{" "}
+                      {t("workspace.documents.indexed")}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {doc.total_chunks} chunk
-                      {doc.total_chunks !== 1 ? "s" : ""}
+                      {t("workspace.documents.chunkCount", {
+                        count: doc.total_chunks,
+                      })}
                       {doc.total_images > 0
-                        ? ` · ${doc.total_images} image${
-                            doc.total_images !== 1 ? "s" : ""
-                          }`
+                        ? ` · ${t("workspace.documents.imageCount", { count: doc.total_images })}`
                         : ""}{" "}
-                      · searchable by{" "}
+                      ·{" "}
                       {doc.scope === "public"
-                        ? "all conversations"
-                        : "its conversation"}
+                        ? t("workspace.documents.searchableAll")
+                        : t("workspace.documents.searchableOne")}
                     </p>
                     <div className="flex flex-wrap gap-2 pt-0.5">
                       <Button
@@ -495,7 +522,7 @@ export function DocumentDetailModal({
                         disabled={action !== null}
                       >
                         <RefreshCw />
-                        Re-index
+                        {t("workspace.documents.reindex")}
                       </Button>
                       <Button
                         variant="ghost"
@@ -505,14 +532,15 @@ export function DocumentDetailModal({
                         className="text-danger hover:bg-danger/10 hover:text-danger"
                       >
                         <X />
-                        Remove from AI knowledge
+                        {t("workspace.documents.removeKnowledge")}
                       </Button>
                     </div>
                   </div>
                 ) : isFailed ? (
                   <div className="space-y-2.5 rounded-lg border border-danger/25 bg-danger/5 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
-                      <AlertCircle className="h-4 w-4" /> Indexing failed
+                      <AlertCircle className="h-4 w-4" />{" "}
+                      {t("workspace.documents.indexFailed")}
                     </div>
                     {doc.digestion_error && (
                       <p
@@ -529,17 +557,17 @@ export function DocumentDetailModal({
                       disabled={action !== null}
                     >
                       <RefreshCw />
-                      Retry indexing
+                      {t("workspace.documents.retryIndex")}
                     </Button>
                   </div>
                 ) : (
                   <div className="space-y-2.5 rounded-lg border border-border/60 bg-secondary/40 px-3.5 py-3">
                     <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
-                      <Brain className="h-4 w-4 text-muted-foreground" /> Not
-                      indexed
+                      <Brain className="h-4 w-4 text-muted-foreground" />{" "}
+                      {t("workspace.documents.notIndexed")}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      The file is stored but not searchable by the AI.
+                      {t("workspace.documents.notIndexedDescription")}
                     </p>
                     <Button
                       size="xs"
@@ -547,7 +575,7 @@ export function DocumentDetailModal({
                       disabled={action !== null}
                     >
                       <Brain />
-                      Index for RAG
+                      {t("workspace.documents.indexForRag")}
                     </Button>
                   </div>
                 )}
@@ -555,11 +583,13 @@ export function DocumentDetailModal({
 
               {/* Collections */}
               <section>
-                <p className={sectionLabelClass}>Collections</p>
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.collections")}
+                </p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {collections.length === 0 && !collectionsBusy && (
                     <p className="text-xs text-muted-foreground">
-                      No collections yet.
+                      {t("workspace.documents.noCollections")}
                     </p>
                   )}
                   {collections.map((name) => (
@@ -572,7 +602,9 @@ export function DocumentDetailModal({
                         onClick={() => removeCollection(name)}
                         disabled={collectionsBusy}
                         className="flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-primary/20"
-                        title={`Remove "${name}"`}
+                        title={t("workspace.documents.removeCollection", {
+                          name,
+                        })}
                       >
                         <X className="h-2.5 w-2.5" />
                       </button>
@@ -589,7 +621,7 @@ export function DocumentDetailModal({
                     onKeyDown={(e) => {
                       if (e.key === "Enter") addCollection();
                     }}
-                    placeholder="Add a collection…"
+                    placeholder={t("workspace.documents.addCollection")}
                     className="h-9 min-w-0 flex-1 rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/80 focus:border-primary/50"
                   />
                   <Button
@@ -597,8 +629,8 @@ export function DocumentDetailModal({
                     size="icon-sm"
                     onClick={addCollection}
                     disabled={!newCollection.trim() || collectionsBusy}
-                    title="Add collection"
-                    aria-label="Add collection"
+                    title={t("workspace.documents.addCollection")}
+                    aria-label={t("workspace.documents.addCollection")}
                   >
                     <Plus />
                   </Button>

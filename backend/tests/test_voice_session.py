@@ -473,14 +473,14 @@ async def test_full_voice_turn_happy_path(env):
     assert ap["conv_id"] == env.conv_id
     assert ap["modality"] == "voice"
     assert ap["model"] == "test-model"
-    assert ap["generation_duration"] == 3
+    assert ap["generation_duration"] >= 0
     assert any(b["type"] == "text" for b in ap["blocks"])
     assert any(b["type"] == "thinking" for b in ap["blocks"])
     am = ws.frames_of("assistant_message")[0]["message"]
     assert am["role"] == "assistant"
     assert am["modality"] == "voice"
     assert am["model"] == "test-model"
-    assert am["generationDuration"] == 3
+    assert am["generationDuration"] == ap["generation_duration"]
     assert ASSISTANT_TEXT.strip() == am["content"].strip()
     assert am["blocks"] == ap["blocks"]
 
@@ -647,10 +647,7 @@ async def test_barge_in_cancels_tts_and_captures_new_utterance(env, monkeypatch)
     # of text existed), marked as interrupted.
     assistant_persist = [c for c in env.persist_calls if c["role"] == "assistant"]
     assert len(assistant_persist) == 1
-    assert any(
-        b.get("type") == "error" and "interrupted" in b.get("content", "").lower()
-        for b in assistant_persist[0]["blocks"]
-    )
+    assert assistant_persist[0]["completion_status"] == "interrupted"
 
     # The user's NEW utterance is already being captured — the pre-roll
     # (250 ms = 8000 bytes) was seeded into a fresh ASR stream.

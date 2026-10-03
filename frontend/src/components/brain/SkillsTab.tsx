@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/primitives";
 import { SettingToggle } from "@/components/brain/ToolsTab";
 import { cn } from "@/lib/utils";
+import { t, useT } from "@/store/settingsStore";
 
 const ROLES: SkillRole[] = ["general", "coder", "voice"];
 const EMPTY: SkillInput = {
@@ -61,6 +62,7 @@ const RoleIcon = ({ role }: { role: string }) =>
   );
 
 export function SkillsTab() {
+  useT();
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -80,7 +82,7 @@ export function SkillsTab() {
       setError(null);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Failed to load skills",
+        cause instanceof Error ? cause.message : t("brain.skills.loadFailed"),
       );
     }
   };
@@ -113,7 +115,9 @@ export function SkillsTab() {
       setSelectedSkill(null);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to open skill");
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.openFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -127,7 +131,9 @@ export function SkillsTab() {
       setResourceContent(null);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to open skill");
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.openFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -144,7 +150,7 @@ export function SkillsTab() {
       setResourceContent(
         cause instanceof Error
           ? cause.message
-          : "This resource cannot be previewed",
+          : t("brain.skills.previewFailed"),
       );
     }
   };
@@ -159,7 +165,9 @@ export function SkillsTab() {
       setEditingId(null);
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to save skill");
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.saveFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -173,7 +181,7 @@ export function SkillsTab() {
       await refresh();
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Failed to delete skill",
+        cause instanceof Error ? cause.message : t("brain.skills.deleteFailed"),
       );
     } finally {
       setBusy(false);
@@ -196,7 +204,7 @@ export function SkillsTab() {
       await refresh();
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Failed to import skill",
+        cause instanceof Error ? cause.message : t("brain.skills.importFailed"),
       );
     } finally {
       setBusy(false);
@@ -215,12 +223,12 @@ export function SkillsTab() {
             <Button
               variant="ghost"
               size="sm"
-              aria-label="Back to skills"
+              aria-label={t("brain.skills.back")}
               className="-ml-2 mt-0.5"
               onClick={() => setSelectedSkill(null)}
             >
               <ChevronLeft />
-              Skills
+              {t("brain.skills")}
             </Button>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2.5">
@@ -229,7 +237,11 @@ export function SkillsTab() {
                 </h2>
                 <StatusDot
                   tone={selectedSkill.enabled ? "success" : "neutral"}
-                  label={selectedSkill.enabled ? "Enabled" : "Disabled"}
+                  label={
+                    selectedSkill.enabled
+                      ? t("brain.skills.enabled")
+                      : t("brain.skills.disabled")
+                  }
                 />
               </div>
               <p className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-muted-foreground">
@@ -243,22 +255,25 @@ export function SkillsTab() {
             onClick={() => void edit(selectedSkill.id)}
           >
             <Pencil />
-            Edit skill
+            {t("brain.skills.edit")}
           </Button>
         </div>
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_280px]">
           <main className="min-w-0">
             <SectionHeader
-              title="Instructions"
+              title={t("brain.skills.instructions")}
               actions={
                 <span className="font-mono text-[11px] text-muted-foreground/80">
                   SKILL.md
                 </span>
               }
             />
-            <div className="rounded-xl border border-border/60 bg-card p-6">
-              <div className="prose prose-sm dark:prose-invert max-w-none leading-relaxed">
+            <div
+              className="rounded-xl border border-border/60 bg-card p-6"
+              dir="ltr"
+            >
+              <div className="prose prose-sm dark:prose-invert max-w-none text-left leading-relaxed">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={markdownCodeComponents}
@@ -271,7 +286,7 @@ export function SkillsTab() {
 
           <aside className="flex min-w-0 flex-col gap-8">
             <section>
-              <SectionHeader title="Available to" />
+              <SectionHeader title={t("brain.skills.availableTo")} />
               <div className="flex flex-wrap gap-1.5">
                 {(selectedSkill.roles.length
                   ? selectedSkill.roles
@@ -282,7 +297,7 @@ export function SkillsTab() {
                     className="inline-flex h-6 items-center gap-1.5 rounded-md bg-secondary px-2 text-[11.5px] font-medium capitalize text-muted-foreground"
                   >
                     <RoleIcon role={role} />
-                    {role}
+                    {t(`brain.skills.role.${role}`)}
                   </span>
                 ))}
               </div>
@@ -290,7 +305,7 @@ export function SkillsTab() {
 
             <section>
               <SectionHeader
-                title="Resources"
+                title={t("brain.skills.resources")}
                 actions={
                   <span className="text-xs text-muted-foreground tabular-nums">
                     {resources.length}
@@ -317,7 +332,9 @@ export function SkillsTab() {
                 ) : (
                   <div className="flex flex-col items-center px-4 py-8 text-center text-muted-foreground">
                     <Folder className="mb-2 h-5 w-5 opacity-50" />
-                    <span className="text-xs">No bundled resources</span>
+                    <span className="text-xs">
+                      {t("brain.skills.noResources")}
+                    </span>
                   </div>
                 )}
               </div>
@@ -341,13 +358,16 @@ export function SkillsTab() {
                     setResourceContent(null);
                   }}
                 >
-                  Close preview
+                  {t("brain.skills.closePreview")}
                 </button>
               }
             />
-            <pre className="max-h-128 overflow-auto rounded-xl border border-border/60 bg-sandbox-bg p-5 font-mono text-xs leading-5">
+            <pre
+              className="max-h-128 overflow-auto rounded-xl border border-border/60 bg-sandbox-bg p-5 text-left font-mono text-xs leading-5"
+              dir="ltr"
+            >
               <HighlightedCode
-                code={resourceContent ?? "Loading resource…"}
+                code={resourceContent ?? t("brain.skills.loadingResource")}
                 filePath={selectedResource}
               />
             </pre>
@@ -364,16 +384,16 @@ export function SkillsTab() {
         <div className="flex items-start justify-between gap-4 border-b border-border/60 pb-6">
           <div className="min-w-0">
             <h2 className="text-[18px] font-semibold tracking-[-0.01em] text-foreground">
-              {editingId ? "Edit skill" : "Create skill"}
+              {editingId ? t("brain.skills.edit") : t("brain.skills.create")}
             </h2>
             <p className="mt-1 text-[13.5px] text-muted-foreground">
-              Saved as a SKILL.md file with YAML metadata.
+              {t("brain.skills.savedAs")}
             </p>
           </div>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Close editor"
+            aria-label={t("brain.skills.closeEditor")}
             onClick={() => setDraft(null)}
           >
             <X />
@@ -381,30 +401,30 @@ export function SkillsTab() {
         </div>
 
         <section className="grid gap-5 sm:grid-cols-2">
-          <Field label="Name">
+          <Field label={t("brain.skills.name")}>
             <input
               className="h-9 w-full rounded-lg border border-border/60 bg-transparent px-3 text-[13.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
               value={draft.name}
               onChange={(event) =>
                 setDraft({ ...draft, name: event.target.value })
               }
-              placeholder="Code review"
+              placeholder={t("brain.skills.namePlaceholder")}
             />
           </Field>
-          <Field label="Description">
+          <Field label={t("brain.skills.descriptionLabel")}>
             <input
               className="h-9 w-full rounded-lg border border-border/60 bg-transparent px-3 text-[13.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
               value={draft.description}
               onChange={(event) =>
                 setDraft({ ...draft, description: event.target.value })
               }
-              placeholder="Review changes for correctness and regressions"
+              placeholder={t("brain.skills.descriptionPlaceholder")}
             />
           </Field>
         </section>
 
         <section>
-          <Field label="Available to">
+          <Field label={t("brain.skills.availableTo")}>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {ROLES.map((role) => (
                 <button
@@ -426,19 +446,19 @@ export function SkillsTab() {
                   }
                 >
                   <RoleIcon role={role} />
-                  {role}
+                  {t(`brain.skills.role.${role}`)}
                 </button>
               ))}
               <span className="ml-1.5 self-center text-xs text-muted-foreground/70">
                 {draft.roles.length
-                  ? "Selected roles only"
-                  : "Global (all roles)"}
+                  ? t("brain.skills.selectedRoles")
+                  : t("brain.skills.globalRoles")}
               </span>
             </div>
           </Field>
         </section>
 
-        <Field label="Instructions (Markdown)">
+        <Field label={t("brain.skills.instructionsMarkdown")}>
           <textarea
             className="min-h-80 w-full resize-y rounded-xl border border-border/60 bg-card p-4 font-mono text-[13px] leading-6 text-foreground outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
             value={draft.content}
@@ -451,15 +471,15 @@ export function SkillsTab() {
         <div className="flex items-center gap-3 rounded-xl bg-secondary/60 px-4 py-3">
           <div className="flex-1">
             <div className="text-[13.5px] text-foreground">
-              Enabled for agent routing
+              {t("brain.skills.routingEnabled")}
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              Disabled skills stay on disk but are never offered to agents.
+              {t("brain.skills.routingHelp")}
             </div>
           </div>
           <SettingToggle
             checked={draft.enabled}
-            label="Enabled for agent routing"
+            label={t("brain.skills.routingEnabled")}
             onChange={(v) => setDraft({ ...draft, enabled: v })}
           />
         </div>
@@ -467,13 +487,13 @@ export function SkillsTab() {
         {error && <p className="text-[13px] text-danger">{error}</p>}
         <div className="sticky bottom-0 flex justify-end gap-2 border-t border-border/60 bg-background/95 py-4 backdrop-blur">
           <Button variant="ghost" onClick={() => setDraft(null)}>
-            Cancel
+            {t("workspace.cancel")}
           </Button>
           <Button
             disabled={busy || !draft.name.trim() || !draft.description.trim()}
             onClick={() => void save()}
           >
-            {busy ? "Saving…" : "Save skill"}
+            {busy ? t("brain.skills.saving") : t("brain.skills.save")}
           </Button>
         </div>
       </div>
@@ -490,11 +510,16 @@ export function SkillsTab() {
             className="h-9 w-full rounded-lg border border-border/60 bg-transparent pl-9 pr-3 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/80 focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search skills…"
+            placeholder={t("brain.skills.search")}
           />
         </div>
         <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-          {filtered.length} {filtered.length === 1 ? "skill" : "skills"}
+          {t(
+            filtered.length === 1
+              ? "brain.skills.count"
+              : "brain.skills.countPlural",
+            { count: filtered.length },
+          )}
         </span>
         <div className="flex-1" />
         <div className="flex items-center gap-2">
@@ -505,7 +530,9 @@ export function SkillsTab() {
             onClick={() => archiveRef.current?.click()}
           >
             <ArchiveRestore />
-            <span className="hidden md:inline">Import ZIP</span>
+            <span className="hidden md:inline">
+              {t("brain.skills.importZip")}
+            </span>
           </Button>
           <Button
             variant="secondary"
@@ -514,11 +541,13 @@ export function SkillsTab() {
             onClick={() => folderRef.current?.click()}
           >
             <FolderUp />
-            <span className="hidden md:inline">Import folder</span>
+            <span className="hidden md:inline">
+              {t("brain.skills.importFolder")}
+            </span>
           </Button>
           <Button onClick={() => setDraft({ ...EMPTY })}>
             <Plus />
-            <span className="hidden sm:inline">New skill</span>
+            <span className="hidden sm:inline">{t("brain.skills.new")}</span>
           </Button>
           <input
             ref={archiveRef}
@@ -577,7 +606,7 @@ export function SkillsTab() {
                       }}
                     >
                       <Pencil />
-                      Edit
+                      {t("brain.skills.editAction")}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       className="text-danger focus:text-danger [&_svg]:text-danger"
@@ -588,7 +617,7 @@ export function SkillsTab() {
                       }}
                     >
                       <Trash2 />
-                      Delete
+                      {t("workspace.common.delete")}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -602,7 +631,7 @@ export function SkillsTab() {
                 </h3>
                 {!skill.enabled && (
                   <span className="shrink-0 rounded-md bg-secondary px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
-                    Disabled
+                    {t("brain.skills.disabled")}
                   </span>
                 )}
               </div>
@@ -615,7 +644,7 @@ export function SkillsTab() {
               {deletingId === skill.id ? (
                 <div className="flex items-center justify-end gap-2 border-t border-border/60 pt-3">
                   <span className="mr-auto text-xs text-muted-foreground">
-                    Delete this skill?
+                    {t("brain.skills.deleteConfirm")}
                   </span>
                   <Button
                     variant="ghost"
@@ -626,7 +655,7 @@ export function SkillsTab() {
                       setDeletingId(null);
                     }}
                   >
-                    Cancel
+                    {t("workspace.cancel")}
                   </Button>
                   <Button
                     variant="destructive"
@@ -637,7 +666,7 @@ export function SkillsTab() {
                       void remove(skill);
                     }}
                   >
-                    Delete
+                    {t("workspace.common.delete")}
                   </Button>
                 </div>
               ) : (
@@ -650,7 +679,7 @@ export function SkillsTab() {
                           className="inline-flex h-5 items-center gap-1 rounded-md bg-secondary px-1.5 font-medium capitalize"
                         >
                           <RoleIcon role={role} />
-                          {role}
+                          {t(`brain.skills.role.${role}`)}
                         </span>
                       ),
                     )}
@@ -670,16 +699,18 @@ export function SkillsTab() {
       {!filtered.length && (
         <EmptyState
           icon={<Code2 />}
-          title={skills.length ? "No matching skills." : "No skills yet"}
-          description={
+          title={
             skills.length
-              ? undefined
-              : "Create one or import a skill folder — reusable instructions your agents can load on demand."
+              ? t("brain.skills.emptySearch")
+              : t("brain.skills.empty")
+          }
+          description={
+            skills.length ? undefined : t("brain.skills.emptyDescription")
           }
           action={
             <Button onClick={() => setDraft({ ...EMPTY })}>
               <Plus />
-              New skill
+              {t("brain.skills.new")}
             </Button>
           }
         />

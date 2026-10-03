@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { sandboxResourcePayload, sandboxResourcesAreValid } from "../src/store/sandboxResources.ts";
+import {
+  sandboxResourcePayload,
+  sandboxResourcesAreValid,
+} from "../src/store/sandboxResources.ts";
 
 test("sandbox resources convert UI gigabytes to backend units", () => {
   assert.deepEqual(sandboxResourcePayload(2, 5), {

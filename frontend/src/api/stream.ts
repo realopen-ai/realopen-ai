@@ -2,6 +2,7 @@ import type { ToolCallResult } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
+import { epochMilliseconds } from "@/lib/timing";
 
 const log = createDebugLogger("stream");
 
@@ -14,6 +15,7 @@ export interface StreamCallbacks {
     thinkingDuration?: number;
     generationDuration: number;
   }) => void;
+  onResponseDuration?: (durationSeconds: number) => void;
   onToolCallStart: (toolCall: ToolCallResult) => void;
   onToolCallUpdate: (
     toolCallId: string,
@@ -62,6 +64,7 @@ export interface StreamCallbacks {
   }) => void;
   onDocumentDigestError?: (info: { filename?: string; error: string }) => void;
   onDone: () => void;
+  onInterrupted?: () => void;
   onError: (error: string) => void;
 }
 
@@ -88,10 +91,21 @@ const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const activeControllers = new Set<AbortController>();
 
 /** Stop user-visible text generation without treating it as a timeout. */
-export function stopActiveStream(): void {
-  for (const controller of activeControllers) {
-    controller.abort("user_stop");
+export async function stopActiveStream(
+  conversationId?: string | null,
+): Promise<void> {
+  if (conversationId) {
+    try {
+      const response = await fetch(
+        `/api/chat/stream/${encodeURIComponent(conversationId)}/stop`,
+        { method: "POST", keepalive: true },
+      );
+      if (response.ok) return;
+    } catch {
+      // Fall back to closing the local transport below.
+    }
   }
+  for (const controller of activeControllers) controller.abort("user_stop");
   activeControllers.clear();
 }
 
@@ -172,6 +186,7 @@ export async function streamChat(
     log("✅ streamChat complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
+      callbacks.onInterrupted?.();
       callbacks.onDone();
     } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -275,6 +290,7 @@ export async function streamChatWithFiles(
     log("✅ streamChatWithFiles complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
+      callbacks.onInterrupted?.();
       callbacks.onDone();
     } else if (err instanceof DOMException && err.name === "AbortError") {
       callbacks.onError(
@@ -353,6 +369,31 @@ async function parseSSEStream(
   callbacks.onDone();
 }
 
+/** Reattach to a backend-owned agent turn after a page reload. */
+export async function resumeChatStream(
+  conversationId: string,
+  onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
+): Promise<boolean> {
+  const controller = new AbortController();
+  try {
+    const response = await fetch(
+      `/api/chat/stream/${encodeURIComponent(conversationId)}/events`,
+      { signal: controller.signal },
+    );
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const callbacks = await onConnected();
+    activeControllers.add(controller);
+    await parseSSEStream(response, callbacks, () => undefined);
+    return true;
+  } catch (error) {
+    if (controller.signal.reason === "user_stop") return true;
+    throw error;
+  } finally {
+    activeControllers.delete(controller);
+  }
+}
+
 /**
  * Dispatch ONE parsed agent event to the stream callbacks.
  *
@@ -411,6 +452,10 @@ export function dispatchAgentEvent(
       thinkingDuration: p.thinkingDuration ?? undefined,
       generationDuration: p.generationDuration ?? 0,
     });
+  }
+
+  if (eventType === "response_duration" && Number.isFinite(p.duration)) {
+    callbacks.onResponseDuration?.(Math.max(0, p.duration));
   }
 
   // ── Memory extraction start ──
@@ -519,7 +564,7 @@ export function dispatchAgentEvent(
         type: tc.type,
         status: "running",
         title: tc.title ?? tc.type,
-        startedAt: Date.now(),
+        startedAt: epochMilliseconds(tc.startedAt),
         query: tc.query,
         language: tc.language,
         code: tc.code,
@@ -552,7 +597,12 @@ export function dispatchAgentEvent(
       const updates: Partial<ToolCallResult> = {
         status: tc.status,
       };
-      if (tc.completedAt) updates.completedAt = tc.completedAt;
+      if (tc.completedAt != null) {
+        updates.completedAt = epochMilliseconds(tc.completedAt);
+      }
+      if (tc.durationMs != null) {
+        updates.durationMs = tc.durationMs;
+      }
       if (tc.webResults) updates.webResults = tc.webResults;
       if (tc.genResults) updates.genResults = tc.genResults;
       if (tc.output) updates.output = tc.output;
@@ -567,9 +617,13 @@ export function dispatchAgentEvent(
 
   // ── Done event ──
   if (eventType === "done") {
-    log("   done event received");
-    callbacks.onDone();
-    return true;
+    // Agent-loop done precedes persistence, response-duration, title, and
+    // other terminal events. Only the transport-level [DONE] finalizes UI.
+    log("   agent loop done; awaiting transport completion");
+  }
+
+  if (eventType === "interrupted") {
+    callbacks.onInterrupted?.();
   }
 
   // ── Error event ──

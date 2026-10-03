@@ -20,6 +20,9 @@ export function removeCustomPersona(
   return personas.filter((persona) => persona.id !== id);
 }
 
-export function personaAfterDelete(selectedId: string, deletedId: string): string {
+export function personaAfterDelete(
+  selectedId: string,
+  deletedId: string,
+): string {
   return selectedId === deletedId ? "friendly" : selectedId;
 }

@@ -211,7 +211,7 @@ class Message(Base):
     blocks = Column(JSONB, nullable=True)
     # Total generation duration across all agent rounds (seconds). Used
     # for the response-time badge under assistant messages.
-    generation_duration = Column(Integer, nullable=True)
+    generation_duration = Column(Float, nullable=True)
     # Deliverable files (reports, etc.) produced by tool calls during this
     # message. Array of {type, format, filename, file_path, download_url,
     # created_at}. NULL when no deliverables were produced. See migration
@@ -223,6 +223,10 @@ class Message(Base):
     # message everywhere else (same blocks, same search, same UI).
     # See migration c4e8f2a1b6d3.
     modality = Column(String(20), nullable=True)
+    # Durable lifecycle for streamed assistant messages. Existing rows are
+    # "completed"; live turns progress through "streaming" and may finish
+    # as "interrupted" or "error".
+    completion_status = Column(String(20), nullable=False, default="completed")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

@@ -16,6 +16,7 @@ import {
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
 import type { Sandbox } from "@/store/sandboxStore";
+import { epochMilliseconds } from "@/lib/timing";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -36,6 +37,7 @@ export interface ToolCallResult {
   title: string;
   startedAt: number;
   completedAt?: number;
+  durationMs?: number;
   // Web search
   query?: string;
   webResults?: { title: string; url: string; snippet: string }[];
@@ -114,6 +116,7 @@ export interface Message {
   documentCount?: number;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
+  completionStatus?: "streaming" | "completed" | "interrupted" | "error";
   // Deliverable files (reports, etc.) produced by tool calls. Persisted
   // in the DB so download badges survive page refresh.
   deliverables?: Deliverable[];
@@ -352,8 +355,15 @@ export function dtoToMessage(dto: MessageDTO): Message {
               status:
                 (b.tool_call.status as ToolCallResult["status"]) ?? "completed",
               title: b.tool_call.title ?? b.tool_call.type ?? "Tool",
-              startedAt: dto.createdAt,
-              completedAt: b.tool_call.completedAt,
+              startedAt: epochMilliseconds(
+                b.tool_call.startedAt,
+                dto.createdAt,
+              ),
+              completedAt:
+                b.tool_call.completedAt == null
+                  ? undefined
+                  : epochMilliseconds(b.tool_call.completedAt),
+              durationMs: b.tool_call.durationMs,
               query: b.tool_call.query,
               webResults: b.tool_call.webResults,
               genResults: b.tool_call.genResults,
@@ -384,13 +394,14 @@ export function dtoToMessage(dto: MessageDTO): Message {
     model: dto.model ?? undefined,
     modality: (dto.modality as "voice" | "text" | undefined) ?? undefined,
     blocks,
-    isStreaming: false,
+    isStreaming: dto.completionStatus === "streaming",
     createdAt: dto.createdAt,
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     generationDuration: dto.generationDuration,
+    completionStatus: dto.completionStatus ?? "completed",
     deliverables: (dto.deliverables ?? undefined)?.map((d) => ({
       ...d,
       thumbnail_url:

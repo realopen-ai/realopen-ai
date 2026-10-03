@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "@/components/ui/primitives";
 import { SettingRow } from "@/components/brain/ToolsTab";
+import { t, useT } from "@/store/settingsStore";
 import {
   personaAfterDelete,
   removeCustomPersona,
@@ -27,6 +28,7 @@ const controlClass =
   "h-9 rounded-lg border border-border/60 bg-transparent px-3 text-[13px] text-foreground placeholder:text-muted-foreground/70 outline-none transition-colors focus:border-primary/50 focus:ring-2 focus:ring-primary/20";
 
 export function VoiceTab() {
+  useT();
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [voices, setVoices] = useState<{
     builtin: string[];
@@ -143,7 +145,7 @@ export function VoiceTab() {
     return (
       <div className="flex gap-2 text-sm text-muted-foreground">
         <Loader2 className="w-4 h-4 animate-spin" />
-        Loading voice settings…
+        {t("settings.voice.loading")}
       </div>
     );
 
@@ -154,8 +156,8 @@ export function VoiceTab() {
       {/* ── Model / Voice / Speed rows ── */}
       <div className="divide-y divide-border/50">
         <SettingRow
-          label="Model"
-          help="A smaller model keeps spoken replies responsive. This does not change text chat."
+          label={t("settings.voice.model")}
+          help={t("settings.voice.modelHelp")}
         >
           {model && (
             <ModelSelect
@@ -172,15 +174,17 @@ export function VoiceTab() {
         <div className="py-3.5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
             <div className="min-w-0 flex-1">
-              <div className="text-[13.5px] text-foreground">Voice</div>
+              <div className="text-[13.5px] text-foreground">
+                {t("settings.voice.voice")}
+              </div>
             </div>
             <select
               value={settings.voice}
               onChange={(e) => void save({ voice: e.target.value })}
               className={cn(controlClass, "w-full sm:w-64 cursor-pointer")}
-              aria-label="Voice"
+              aria-label={t("settings.voice.voice")}
             >
-              <optgroup label="Pocket TTS voices">
+              <optgroup label={t("settings.voice.builtinVoices")}>
                 {voices.builtin.map((voice) => (
                   <option key={voice} value={voice}>
                     {voice.replace(/_/g, " ")}
@@ -188,7 +192,7 @@ export function VoiceTab() {
                 ))}
               </optgroup>
               {voices.custom.length > 0 && (
-                <optgroup label="My voices">
+                <optgroup label={t("settings.voice.myVoices")}>
                   {voices.custom.map((voice) => (
                     <option key={voice.id} value={voice.voice}>
                       {voice.name}
@@ -230,29 +234,27 @@ export function VoiceTab() {
                 disabled={saving}
               >
                 {saving ? <Loader2 className="animate-spin" /> : <Upload />}
-                Clone from WAV
+                {t("settings.voice.cloneWav")}
               </Button>
               <p className="text-[11.5px] leading-relaxed text-muted-foreground">
-                Use a clean, single-speaker recording. The voice state is
-                precomputed for fast reuse.
+                {t("settings.voice.cloneHelp")}
               </p>
             </div>
             <div className="space-y-1.5 rounded-lg bg-secondary/60 p-3 text-[11.5px] leading-relaxed text-muted-foreground">
               <p>
-                Voice cloning requires access to Kyutai&apos;s gated model.
-                First{" "}
+                {t("settings.voice.cloneTermsPrefix")}{" "}
                 <a
                   href="https://huggingface.co/kyutai/pocket-tts"
                   target="_blank"
                   rel="noreferrer"
                   className="font-medium text-primary underline underline-offset-2"
                 >
-                  accept the Pocket TTS terms on Hugging Face
+                  {t("settings.voice.cloneTermsLink")}
                 </a>
                 .
               </p>
               <p>
-                Then authenticate on the host and restart the app:
+                {t("settings.voice.cloneLogin")}
                 <code className="ml-1 rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-foreground">
                   uvx hf auth login
                 </code>
@@ -261,11 +263,11 @@ export function VoiceTab() {
           </div>
         </div>
 
-        <SettingRow label="Speed">
+        <SettingRow label={t("settings.voice.speed")}>
           <div
             className="inline-flex h-9 items-center rounded-lg bg-secondary p-1"
             role="group"
-            aria-label="Speed"
+            aria-label={t("settings.voice.speed")}
           >
             {speedOptions.map((speed) => (
               <button
@@ -288,8 +290,8 @@ export function VoiceTab() {
       {/* ── Personas ── */}
       <section className="space-y-3">
         <SectionHeader
-          title="Persona"
-          description="How the assistant speaks during voice calls."
+          title={t("settings.voice.persona")}
+          description={t("settings.voice.personaHelp")}
         />
         <div className="grid grid-cols-2 gap-2">
           {personas.map((persona) => (
@@ -321,7 +323,7 @@ export function VoiceTab() {
                     <>
                       <button
                         aria-label={`Confirm delete ${persona.name}`}
-                        title="Confirm delete"
+                        title={t("settings.voice.confirmDelete")}
                         onClick={() => deletePersona(persona.id)}
                         className="rounded-md p-1.5 text-danger transition-colors hover:bg-danger/10"
                       >
@@ -329,7 +331,7 @@ export function VoiceTab() {
                       </button>
                       <button
                         aria-label={`Cancel deleting ${persona.name}`}
-                        title="Cancel"
+                        title={t("workspace.cancel")}
                         onClick={() => setDeleteConfirmId(null)}
                         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-surface-hover"
                       >
@@ -340,7 +342,7 @@ export function VoiceTab() {
                     <>
                       <button
                         aria-label={`Edit ${persona.name}`}
-                        title="Edit persona"
+                        title={t("settings.voice.editPersona")}
                         onClick={() => beginPersonaEdit(persona)}
                         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
                       >
@@ -348,7 +350,7 @@ export function VoiceTab() {
                       </button>
                       <button
                         aria-label={`Delete ${persona.name}`}
-                        title="Delete persona"
+                        title={t("settings.voice.deletePersona")}
                         onClick={() => setDeleteConfirmId(persona.id)}
                         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-danger/10 hover:text-danger"
                       >
@@ -369,18 +371,20 @@ export function VoiceTab() {
             ) : (
               <Plus className="w-3.5 h-3.5" />
             )}
-            {editingPersonaId ? "Edit custom persona" : "Custom persona"}
+            {editingPersonaId
+              ? t("settings.voice.editCustomPersona")
+              : t("settings.voice.customPersona")}
           </div>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Name"
+            placeholder={t("settings.voice.personaName")}
             className={cn(controlClass, "w-full")}
           />
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe how the assistant should speak…"
+            placeholder={t("settings.voice.personaPrompt")}
             rows={3}
             className={cn(controlClass, "w-full resize-none py-2")}
           />
@@ -390,11 +394,13 @@ export function VoiceTab() {
               disabled={!name.trim() || !prompt.trim() || saving}
               onClick={savePersona}
             >
-              {editingPersonaId ? "Save changes" : "Save persona"}
+              {editingPersonaId
+                ? t("settings.voice.saveChanges")
+                : t("settings.voice.savePersona")}
             </Button>
             {editingPersonaId && (
               <Button variant="ghost" size="sm" onClick={resetPersonaForm}>
-                Cancel
+                {t("workspace.cancel")}
               </Button>
             )}
           </div>
@@ -404,7 +410,7 @@ export function VoiceTab() {
       {saving && (
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <Loader2 className="w-3 h-3 animate-spin" />
-          Saving…
+          {t("settings.voice.saving")}
         </div>
       )}
     </div>

@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { t, useT } from "@/store/settingsStore";
 
 interface Template {
   id: string;
@@ -42,6 +43,7 @@ const fieldInputClass =
   "h-9 w-full rounded-lg border border-border/60 bg-transparent px-3 text-[13.5px] text-foreground outline-none transition-colors focus:border-primary/50 placeholder:text-muted-foreground/70";
 
 export function TemplatesSection() {
+  useT();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -102,11 +104,16 @@ export function TemplatesSection() {
         <div className="shrink-0 px-6 pt-5 lg:px-10">
           <div className="mx-auto flex w-full max-w-300 items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              {templates.length} template{templates.length !== 1 ? "s" : ""}
+              {t(
+                templates.length === 1
+                  ? "workspace.templates.count"
+                  : "workspace.templates.countPlural",
+                { count: templates.length },
+              )}
             </p>
             <Button size="sm" onClick={handleAdd}>
               <Plus />
-              Add Template
+              {t("workspace.templates.add")}
             </Button>
           </div>
         </div>
@@ -119,12 +126,12 @@ export function TemplatesSection() {
             ) : templates.length === 0 ? (
               <EmptyState
                 icon={<FileText />}
-                title="No templates yet"
-                description="Add a PPTX template to make it available to the presentation tool."
+                title={t("workspace.templates.empty")}
+                description={t("workspace.templates.emptyDescription")}
                 action={
                   <Button size="sm" onClick={handleAdd}>
                     <Plus />
-                    Add Template
+                    {t("workspace.templates.add")}
                   </Button>
                 }
                 className="rounded-xl"
@@ -164,7 +171,8 @@ export function TemplatesSection() {
                           {tpl.display_name}
                         </p>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {tpl.description || "No description"}
+                          {tpl.description ||
+                            t("workspace.templates.noDescription")}
                         </p>
                       </div>
                     </button>
@@ -185,7 +193,7 @@ export function TemplatesSection() {
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onSelect={() => handleEdit(tpl.id)}>
                             <Pencil />
-                            Edit
+                            {t("workspace.templates.edit")}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
@@ -193,14 +201,16 @@ export function TemplatesSection() {
                             onSelect={() => {
                               if (
                                 confirm(
-                                  `Delete template "${tpl.display_name}"?`,
+                                  t("workspace.templates.deleteConfirm", {
+                                    name: tpl.display_name,
+                                  }),
                                 )
                               )
                                 handleDelete(tpl.id);
                             }}
                           >
                             <Trash2 />
-                            Delete…
+                            {t("workspace.templates.delete")}
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -270,15 +280,15 @@ function TemplateDetail({
     <div className="flex h-full flex-col">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
         <span className="text-[14px] font-medium text-foreground">
-          Template Details
+          {t("workspace.templates.details")}
         </span>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
             size="icon-sm"
             onClick={onEdit}
-            aria-label="Edit template"
-            title="Edit"
+            aria-label={t("workspace.templates.edit")}
+            title={t("workspace.templates.edit")}
           >
             <Pencil />
           </Button>
@@ -288,14 +298,14 @@ function TemplateDetail({
                 onClick={onDelete}
                 className="rounded-md bg-danger/10 px-2 py-1 text-[11.5px] font-medium text-danger transition-colors hover:bg-danger/20"
               >
-                Delete
+                {t("workspace.common.delete")}
               </button>
               <Button
                 variant="ghost"
                 size="xs"
                 onClick={() => setConfirmDelete(false)}
               >
-                Cancel
+                {t("workspace.cancel")}
               </Button>
             </div>
           ) : (
@@ -303,8 +313,8 @@ function TemplateDetail({
               variant="ghost"
               size="icon-sm"
               onClick={() => setConfirmDelete(true)}
-              aria-label="Delete template"
-              title="Delete"
+              aria-label={t("workspace.templates.delete")}
+              title={t("workspace.common.delete")}
               className="text-muted-foreground/80 hover:text-danger hover:bg-danger/10"
             >
               <Trash2 />
@@ -329,7 +339,7 @@ function TemplateDetail({
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">
-              Name
+              {t("workspace.templates.name")}
             </label>
             <p className="mt-0.5 text-[13.5px] font-medium text-foreground">
               {template.display_name}
@@ -337,7 +347,7 @@ function TemplateDetail({
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground">
-              Slug
+              {t("workspace.templates.slug")}
             </label>
             <p className="mt-0.5 font-mono text-[12.5px] text-muted-foreground">
               {template.slug}
@@ -346,7 +356,7 @@ function TemplateDetail({
           {template.description && (
             <div>
               <label className="text-xs font-medium text-muted-foreground">
-                Description
+                {t("workspace.templates.descriptionLabel")}
               </label>
               <p className="mt-0.5 text-[13px] text-foreground/80">
                 {template.description}
@@ -356,7 +366,7 @@ function TemplateDetail({
           {template.tags.length > 0 && (
             <div>
               <label className="text-xs font-medium text-muted-foreground">
-                Tags
+                {t("workspace.templates.tags")}
               </label>
               <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {template.tags.map((tag) => (
@@ -433,7 +443,7 @@ function TemplateForm({
   const handleValidate = async () => {
     if (mode === "add" && !file) {
       setValidationState("invalid");
-      setValidationError("Please select a PPTX file first.");
+      setValidationError(t("workspace.templates.selectPptx"));
       return;
     }
 
@@ -457,17 +467,21 @@ function TemplateForm({
           );
         } else {
           setValidationState("invalid");
-          setValidationError(data.error || "Validation failed");
+          setValidationError(
+            data.error || t("workspace.templates.validationFailed"),
+          );
         }
       } else if (mode === "edit") {
         // For edit mode, validate the existing file from the backend
         // We can't re-upload the file — just mark as valid since it was already validated
         setValidationState("valid");
-        setValidationDetails("Existing template — already validated.");
+        setValidationDetails(t("workspace.templates.alreadyValidated"));
       }
     } catch (e) {
       setValidationState("invalid");
-      setValidationError(`Network error: ${e}`);
+      setValidationError(
+        t("workspace.templates.networkError", { error: String(e) }),
+      );
     }
   };
 
@@ -513,7 +527,9 @@ function TemplateForm({
       onSaved();
     } catch (e) {
       setValidationState("invalid");
-      setValidationError(`Save failed: ${e}`);
+      setValidationError(
+        t("workspace.templates.saveFailed", { error: String(e) }),
+      );
     } finally {
       setIsSaving(false);
     }
@@ -523,13 +539,15 @@ function TemplateForm({
     <div className="flex h-full flex-col">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border/60 px-4">
         <span className="text-[14px] font-medium text-foreground">
-          {mode === "add" ? "Add Template" : "Edit Template"}
+          {mode === "add"
+            ? t("workspace.templates.add")
+            : t("workspace.templates.edit")}
         </span>
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={onCancel}
-          aria-label="Close"
+          aria-label={t("common.close")}
         >
           <X />
         </Button>
@@ -539,7 +557,9 @@ function TemplateForm({
           {/* PPTX file upload (add mode only) */}
           {mode === "add" && (
             <div>
-              <label className={fieldLabelClass}>PPTX File</label>
+              <label className={fieldLabelClass}>
+                {t("workspace.templates.pptxFile")}
+              </label>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -561,7 +581,7 @@ function TemplateForm({
               >
                 <Upload className="h-4 w-4 shrink-0" />
                 <span className="truncate">
-                  {file ? file.name : "Click to upload .pptx file"}
+                  {file ? file.name : t("workspace.templates.uploadPptx")}
                 </span>
               </button>
             </div>
@@ -569,46 +589,54 @@ function TemplateForm({
 
           {/* Display Name */}
           <div>
-            <label className={fieldLabelClass}>Display Name</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.displayName")}
+            </label>
             <input
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Research Template"
+              placeholder={t("workspace.templates.namePlaceholder")}
               className={fieldInputClass}
             />
           </div>
 
           {/* Description */}
           <div>
-            <label className={fieldLabelClass}>Description</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.descriptionLabel")}
+            </label>
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="1-4 words (e.g. Navy professional)"
+              placeholder={t("workspace.templates.descriptionPlaceholder")}
               className={fieldInputClass}
             />
           </div>
 
           {/* Tags */}
           <div>
-            <label className={fieldLabelClass}>Tags (optional)</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.tagsOptional")}
+            </label>
             <input
               type="text"
               value={tags}
               onChange={(e) => setTags(e.target.value)}
-              placeholder="corporate, minimal, professional"
+              placeholder={t("workspace.templates.tagsPlaceholder")}
               className={fieldInputClass}
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Comma-separated keywords
+              {t("workspace.templates.tagsHelp")}
             </p>
           </div>
 
           {/* Thumbnail */}
           <div>
-            <label className={fieldLabelClass}>Thumbnail (optional)</label>
+            <label className={fieldLabelClass}>
+              {t("workspace.templates.thumbnailOptional")}
+            </label>
             <input
               ref={thumbInputRef}
               type="file"
@@ -621,7 +649,7 @@ function TemplateForm({
                 {thumbnail ? (
                   <img
                     src={`data:image/jpeg;base64,${thumbnail}`}
-                    alt="Thumbnail"
+                    alt={t("workspace.templates.thumbnail")}
                     className="h-full w-full object-cover"
                   />
                 ) : (
@@ -633,7 +661,9 @@ function TemplateForm({
                 size="xs"
                 onClick={() => thumbInputRef.current?.click()}
               >
-                {thumbnail ? "Change" : "Upload"}
+                {thumbnail
+                  ? t("workspace.templates.change")
+                  : t("workspace.templates.upload")}
               </Button>
               {thumbnail && (
                 <Button
@@ -645,7 +675,7 @@ function TemplateForm({
                   }}
                   className="text-muted-foreground hover:text-danger"
                 >
-                  Remove
+                  {t("workspace.templates.remove")}
                 </Button>
               )}
             </div>
@@ -671,19 +701,20 @@ function TemplateForm({
             >
               {validationState === "validating" ? (
                 <>
-                  <Loader2 className="animate-spin" /> Validating…
+                  <Loader2 className="animate-spin" />{" "}
+                  {t("workspace.templates.validating")}
                 </>
               ) : validationState === "valid" ? (
                 <>
-                  <Check /> Validated
+                  <Check /> {t("workspace.templates.validated")}
                 </>
               ) : validationState === "invalid" ? (
                 <>
-                  <AlertCircle /> Validation Failed — Retry
+                  <AlertCircle /> {t("workspace.templates.validationRetry")}
                 </>
               ) : (
                 <>
-                  <Upload /> Test Template
+                  <Upload /> {t("workspace.templates.test")}
                 </>
               )}
             </Button>
@@ -697,7 +728,7 @@ function TemplateForm({
               <div className="rounded-lg border border-danger/25 bg-danger/5 px-3 py-2">
                 <p className="text-[11.5px] text-danger">{validationError}</p>
                 <p className="mt-1 text-[11px] text-danger/70">
-                  Fix the template and click "Test Template" to retry.
+                  {t("workspace.templates.fixRetry")}
                 </p>
               </div>
             )}
@@ -711,7 +742,9 @@ function TemplateForm({
               disabled={isSaving || !displayName.trim()}
             >
               {isSaving ? <Loader2 className="animate-spin" /> : <Check />}
-              {mode === "add" ? "Add Template" : "Save Changes"}
+              {mode === "add"
+                ? t("workspace.templates.add")
+                : t("workspace.templates.saveChanges")}
             </Button>
           )}
         </div>

@@ -52,6 +52,8 @@ export interface BuildStreamCallbacksOptions {
   /** True when this turn created the conversation from the home page —
    * the shared onDone callback navigates to /{convId} after the stream. */
   isFromHomePage: boolean;
+  /** Persisted request origin; never infer this from the current call UI. */
+  origin: "text" | "voice";
 }
 
 export interface UseVoiceSessionOptions {
@@ -207,6 +209,7 @@ export function useVoiceSession(
           userMsgId,
           content: userMsg.content,
           isFromHomePage,
+          origin: "voice",
         },
       ),
     };
@@ -259,6 +262,8 @@ export function useVoiceSession(
       modality: msg.modality === "voice" ? "voice" : undefined,
       blocks: msg.blocks as MessageDTO["blocks"],
       deliverables: msg.deliverables as MessageDTO["deliverables"],
+      generationDuration: msg.generationDuration,
+      completionStatus: msg.completionStatus ?? "completed",
     } satisfies MessageDTO);
 
     store.updateMessage(turn.convId, turn.assistantMsgId, {
@@ -266,6 +271,8 @@ export function useVoiceSession(
       blocks: finalMsg.blocks,
       deliverables: finalMsg.deliverables,
       modality: finalMsg.modality,
+      completionStatus: finalMsg.completionStatus,
+      generationDuration: finalMsg.generationDuration,
     });
     store.setStreaming(turn.convId, turn.assistantMsgId, false);
     turnRef.current = null;
@@ -441,23 +448,12 @@ export function useVoiceSession(
     clientRef.current?.stop();
   }, []);
 
-  // ── Conversation switch / unmount cleanup ───────────────────────
+  // ── Unmount cleanup ──────────────────────────────────────────────
 
-  // The WebSocket is bound to one conversation. If the user opens a
-  // different conversation while voice is active, stop the session (the
-  // user can re-toggle — reconnection is deliberately NOT automatic).
-  useEffect(() => {
-    const client = clientRef.current;
-    if (
-      client &&
-      options.conversationId &&
-      client.activeConversationId &&
-      client.activeConversationId !== options.conversationId
-    ) {
-      log("conversation changed — stopping voice session");
-      client.stop();
-    }
-  }, [options.conversationId]);
+  // A live session remains bound to the conversation where it started.
+  // Navigating to another conversation or application page must not stop
+  // capture, generation, or playback; new voice events continue updating
+  // that original conversation until the user explicitly ends the call.
 
   // Unmount: destroy the session entirely.
   useEffect(() => {
@@ -467,5 +463,11 @@ export function useVoiceSession(
     };
   }, []);
 
-  return { toggleVoice, interruptSpeaking, stopVoice, isVoiceActive, voiceState };
+  return {
+    toggleVoice,
+    interruptSpeaking,
+    stopVoice,
+    isVoiceActive,
+    voiceState,
+  };
 }

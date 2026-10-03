@@ -29,6 +29,9 @@ interface SettingsState {
 
   // Notifications
   notifyDeepSearch: boolean;
+  completionSound: boolean;
+  browserCompletionNotifications: boolean;
+  inAppCompletionNotifications: boolean;
 
   // Actions
   setAppearance: (v: Appearance) => void;
@@ -37,6 +40,9 @@ interface SettingsState {
   setLanguage: (v: Language) => void;
   setFontSize: (v: FontSize) => void;
   setNotifyDeepSearch: (v: boolean) => void;
+  setCompletionSound: (v: boolean) => void;
+  setBrowserCompletionNotifications: (v: boolean) => void;
+  setInAppCompletionNotifications: (v: boolean) => void;
 }
 
 // ─── Accent color → CSS values ──────────────────────────────────
@@ -124,6 +130,9 @@ export const useSettingsStore = create<SettingsState>()(
       language: "en",
       fontSize: "14px" as FontSize,
       notifyDeepSearch: true,
+      completionSound: true,
+      browserCompletionNotifications: true,
+      inAppCompletionNotifications: true,
 
       setAppearance: (v) => set({ appearance: v }),
       setContrast: (v) => set({ contrast: v }),
@@ -131,6 +140,11 @@ export const useSettingsStore = create<SettingsState>()(
       setLanguage: (v) => set({ language: v }),
       setFontSize: (v) => set({ fontSize: v }),
       setNotifyDeepSearch: (v) => set({ notifyDeepSearch: v }),
+      setCompletionSound: (v) => set({ completionSound: v }),
+      setBrowserCompletionNotifications: (v) =>
+        set({ browserCompletionNotifications: v }),
+      setInAppCompletionNotifications: (v) =>
+        set({ inAppCompletionNotifications: v }),
     }),
     {
       name: "realopen-ai-settings",

@@ -11,11 +11,26 @@ test("list-files JSON renders as a readable workspace tree", () => {
         path: "/workspace/fastapi-notes-app",
         type: "directory",
         children: [
-          { name: "main.py", path: "/workspace/fastapi-notes-app/main.py", type: "file", size: 1645 },
-          { name: "notes.db", path: "/workspace/fastapi-notes-app/notes.db", type: "file", size: 12288 },
+          {
+            name: "main.py",
+            path: "/workspace/fastapi-notes-app/main.py",
+            type: "file",
+            size: 1645,
+          },
+          {
+            name: "notes.db",
+            path: "/workspace/fastapi-notes-app/notes.db",
+            type: "file",
+            size: 12288,
+          },
         ],
       },
-      { name: "pyproject.toml", path: "/workspace/pyproject.toml", type: "file", size: 202 },
+      {
+        name: "pyproject.toml",
+        path: "/workspace/pyproject.toml",
+        type: "file",
+        size: 202,
+      },
     ],
   });
 

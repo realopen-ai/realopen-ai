@@ -35,6 +35,7 @@ import {
 } from "@/api/documentsClient";
 import { fetchConversations, type ConversationDTO } from "@/api/client";
 import { DocumentDetailModal } from "@/components/workspace/DocumentDetailModal";
+import { t, useT } from "@/store/settingsStore";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -232,8 +233,8 @@ function DocumentCard({
   onToggleScope: () => void;
 }) {
   const [thumbError, setThumbError] = useState(false);
-  const t = typeOf(doc);
-  const Icon = t.icon;
+  const typeInfo = typeOf(doc);
+  const Icon = typeInfo.icon;
 
   return (
     <div
@@ -249,7 +250,7 @@ function DocumentCard({
           <div
             className={cn(
               "flex h-12 w-12 items-center justify-center rounded-xl",
-              t.tint,
+              typeInfo.tint,
             )}
           >
             <Icon className="h-6 w-6" />
@@ -272,18 +273,18 @@ function DocumentCard({
           }}
           title={
             doc.scope === "public"
-              ? "Public — all conversations can search this. Click to make private."
-              : "Private — only the attached conversation can search this. Click to make public."
+              ? t("workspace.documents.publicHint")
+              : t("workspace.documents.privateHint")
           }
           className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
         >
           {doc.scope === "public" ? (
             <>
-              <Globe className="h-3 w-3" /> Public
+              <Globe className="h-3 w-3" /> {t("workspace.documents.public")}
             </>
           ) : (
             <>
-              <Lock className="h-3 w-3" /> Private
+              <Lock className="h-3 w-3" /> {t("workspace.documents.private")}
             </>
           )}
         </button>
@@ -295,8 +296,10 @@ function DocumentCard({
               e.stopPropagation();
               onDownload();
             }}
-            title="Download"
-            aria-label={`Download ${doc.filename}`}
+            title={t("tool.detail.download")}
+            aria-label={t("tool.detail.downloadFile", {
+              filename: doc.filename,
+            })}
             className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground"
           >
             <Download className="h-3.5 w-3.5" />
@@ -306,8 +309,10 @@ function DocumentCard({
               e.stopPropagation();
               onDelete();
             }}
-            title="Delete"
-            aria-label={`Delete ${doc.filename}`}
+            title={t("workspace.common.delete")}
+            aria-label={t("workspace.documents.deleteFile", {
+              filename: doc.filename,
+            })}
             className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80 text-muted-foreground backdrop-blur-sm transition-colors hover:text-danger"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -391,7 +396,7 @@ function DialogChrome({
             size="icon-sm"
             onClick={onClose}
             disabled={closeDisabled}
-            aria-label="Close"
+            aria-label={t("common.close")}
           >
             <X />
           </Button>
@@ -424,7 +429,7 @@ function UploadDialog({
 
   return (
     <DialogChrome
-      title="Upload document"
+      title={t("workspace.documents.uploadDocument")}
       onClose={onClose}
       closeDisabled={isUploading}
     >
@@ -433,7 +438,7 @@ function UploadDialog({
         {/* File picker */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-foreground">
-            File
+            {t("workspace.documents.file")}
           </label>
           <input
             type="file"
@@ -443,15 +448,14 @@ function UploadDialog({
             className="w-full text-[12px] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-[12px] file:font-medium file:text-primary-foreground file:transition-colors hover:file:bg-primary/90"
           />
           <p className="mt-1 text-[11px] text-muted-foreground">
-            Accepted: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV (and DOC, XLS, PPT,
-            TSV)
+            {t("workspace.documents.accepted")}
           </p>
         </div>
 
         {/* Scope radio */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-foreground">
-            Scope
+            {t("workspace.documents.scope")}
           </label>
           <div className="grid grid-cols-2 gap-2">
             <button
@@ -467,11 +471,11 @@ function UploadDialog({
               <div className="flex items-center gap-1.5">
                 <Globe className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-[12.5px] font-medium text-foreground">
-                  Public
+                  {t("workspace.documents.public")}
                 </span>
               </div>
               <span className="text-[11px] text-muted-foreground">
-                Searchable by all conversations
+                {t("workspace.documents.publicDescription")}
               </span>
             </button>
             <button
@@ -487,11 +491,11 @@ function UploadDialog({
               <div className="flex items-center gap-1.5">
                 <Lock className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-[12.5px] font-medium text-foreground">
-                  Private
+                  {t("workspace.documents.private")}
                 </span>
               </div>
               <span className="text-[11px] text-muted-foreground">
-                Only one conversation
+                {t("workspace.documents.privateDescription")}
               </span>
             </button>
           </div>
@@ -501,12 +505,12 @@ function UploadDialog({
         {scope === "private" && (
           <div>
             <label className="mb-1.5 block text-xs font-medium text-foreground">
-              Attach to conversation
+              {t("workspace.documents.attachConversation")}
             </label>
             {conversations.length === 0 ? (
               <div className="flex items-center gap-1.5 text-[12px] text-warning">
                 <AlertCircle className="h-3.5 w-3.5" />
-                No conversations yet — create one in chat first.
+                {t("workspace.documents.noConversations")}
               </div>
             ) : (
               <select
@@ -515,10 +519,12 @@ function UploadDialog({
                 disabled={isUploading}
                 className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
               >
-                <option value="">— Pick a conversation —</option>
+                <option value="">
+                  {t("workspace.documents.pickConversationOption")}
+                </option>
                 {conversations.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.title || "Untitled"} ·{" "}
+                    {c.title || t("workspace.documents.untitled")} ·{" "}
                     {new Date(c.createdAt).toLocaleDateString()}
                   </option>
                 ))}
@@ -533,9 +539,9 @@ function UploadDialog({
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-xs font-medium text-foreground">
                 {progress.stage === "done"
-                  ? "Done"
+                  ? t("workspace.documents.done")
                   : progress.stage === "error"
-                    ? "Error"
+                    ? t("workspace.documents.error")
                     : progress.stage.replace(/_/g, " ")}
               </span>
               <span className="text-xs text-muted-foreground">
@@ -568,7 +574,9 @@ function UploadDialog({
           <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/5 px-3.5 py-2.5">
             <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
             <div className="text-[12.5px]">
-              <p className="font-medium text-success">Document ready for RAG</p>
+              <p className="font-medium text-success">
+                {t("workspace.documents.ready")}
+              </p>
               <p className="text-muted-foreground">
                 {doneDoc.filename}: {doneDoc.total_chunks} chunks
                 {doneDoc.total_images > 0
@@ -597,7 +605,7 @@ function UploadDialog({
           onClick={onClose}
           disabled={isUploading}
         >
-          {doneDoc ? "Close" : "Cancel"}
+          {doneDoc ? t("common.close") : t("workspace.cancel")}
         </Button>
         {!doneDoc && (
           <Button
@@ -610,12 +618,12 @@ function UploadDialog({
             {isUploading ? (
               <>
                 <Loader2 className="animate-spin" />
-                Uploading…
+                {t("workspace.documents.uploading")}
               </>
             ) : (
               <>
                 <Upload />
-                Upload & digest
+                {t("workspace.documents.uploadDigest")}
               </>
             )}
           </Button>
@@ -641,17 +649,20 @@ function ScopeDialog({
   const [cid, setCid] = useState("");
 
   return (
-    <DialogChrome title="Make private" onClose={onCancel}>
+    <DialogChrome
+      title={t("workspace.documents.makePrivate")}
+      onClose={onCancel}
+    >
       <div className="space-y-3 px-4 py-4">
         <p className="text-[13px] text-muted-foreground">
-          Attach{" "}
-          <span className="font-medium text-foreground">{doc.filename}</span> to
-          a conversation — only that conversation will be able to search it.
+          {t("workspace.documents.makePrivateDescription", {
+            filename: doc.filename,
+          })}
         </p>
         {conversations.length === 0 ? (
           <div className="flex items-center gap-1.5 text-[12px] text-warning">
             <AlertCircle className="h-3.5 w-3.5" />
-            No conversations yet — create one in chat first.
+            {t("workspace.documents.noConversations")}
           </div>
         ) : (
           <select
@@ -659,10 +670,12 @@ function ScopeDialog({
             onChange={(e) => setCid(e.target.value)}
             className="h-9 w-full cursor-pointer rounded-lg border border-border/60 bg-transparent px-2.5 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50"
           >
-            <option value="">— Pick a conversation —</option>
+            <option value="">
+              {t("workspace.documents.pickConversationOption")}
+            </option>
             {conversations.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.title || "Untitled"} ·{" "}
+                {c.title || t("workspace.documents.untitled")} ·{" "}
                 {new Date(c.createdAt).toLocaleDateString()}
               </option>
             ))}
@@ -671,10 +684,10 @@ function ScopeDialog({
       </div>
       <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-t border-border/60 px-4">
         <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
+          {t("workspace.cancel")}
         </Button>
         <Button size="sm" onClick={() => cid && onConfirm(cid)} disabled={!cid}>
-          Make private
+          {t("workspace.documents.makePrivate")}
         </Button>
       </div>
     </DialogChrome>
@@ -687,6 +700,7 @@ const selectClass =
   "h-9 cursor-pointer appearance-none rounded-lg border border-border/60 bg-transparent pl-2.5 pr-7 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50";
 
 export function DocumentsSection() {
+  useT();
   const [docs, setDocs] = useState<DocumentDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -764,7 +778,7 @@ export function DocumentsSection() {
     if (upload.scope === "private" && !upload.conversationId) {
       setUpload((u) => ({
         ...u,
-        error: "Pick a conversation to attach this private document to.",
+        error: t("workspace.documents.pickConversation"),
       }));
       return;
     }
@@ -795,7 +809,7 @@ export function DocumentsSection() {
   const handleDelete = async (doc: DocumentDTO) => {
     if (
       !confirm(
-        `Delete "${doc.filename}"? This removes the file and all its chunks.`,
+        t("workspace.documents.deleteConfirm", { filename: doc.filename }),
       )
     )
       return;
@@ -846,7 +860,7 @@ export function DocumentsSection() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search documents…"
+                placeholder={t("workspace.documents.search")}
                 className="h-9 w-full rounded-lg border border-border/60 bg-transparent pl-9 pr-3 text-[13.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/80 focus:border-primary/50"
               />
             </div>
@@ -860,11 +874,17 @@ export function DocumentsSection() {
                   setFilterScope(e.target.value as "all" | DocumentScope)
                 }
                 className={selectClass}
-                title="Filter by scope"
+                title={t("workspace.documents.filterScope")}
               >
-                <option value="all">All scopes</option>
-                <option value="public">Public</option>
-                <option value="private">Private</option>
+                <option value="all">
+                  {t("workspace.documents.allScopes")}
+                </option>
+                <option value="public">
+                  {t("workspace.documents.public")}
+                </option>
+                <option value="private">
+                  {t("workspace.documents.private")}
+                </option>
               </select>
             </div>
 
@@ -875,11 +895,11 @@ export function DocumentsSection() {
                 value={sortKey}
                 onChange={(e) => setSortKey(e.target.value as SortKey)}
                 className={selectClass}
-                title="Sort order"
+                title={t("workspace.documents.sortOrder")}
               >
                 {SORT_OPTIONS.map((o) => (
                   <option key={o.key} value={o.key}>
-                    {o.label}
+                    {t(`workspace.documents.sort.${o.key}`)}
                   </option>
                 ))}
               </select>
@@ -888,12 +908,17 @@ export function DocumentsSection() {
             <div className="flex-1" />
 
             <div className="text-xs text-muted-foreground">
-              {filtered.length} doc{filtered.length !== 1 ? "s" : ""}
+              {t(
+                filtered.length === 1
+                  ? "workspace.documents.count"
+                  : "workspace.documents.countPlural",
+                { count: filtered.length },
+              )}
             </div>
 
             <Button size="sm" onClick={openUpload}>
               <Upload />
-              Upload
+              {t("workspace.documents.upload")}
             </Button>
           </div>
 
@@ -905,7 +930,7 @@ export function DocumentsSection() {
                 active={filterType === g.key}
                 onClick={() => setFilterType(g.key)}
               >
-                {g.label}
+                {t(`workspace.documents.type.${g.key}`)}
               </FilterChip>
             ))}
           </div>
@@ -918,26 +943,26 @@ export function DocumentsSection() {
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
               <Loader2 className="h-5 w-5 animate-spin" />
-              <p className="text-[13px]">Loading documents…</p>
+              <p className="text-[13px]">{t("workspace.documents.loading")}</p>
             </div>
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={hasActiveFilters ? <FolderOpen /> : <Files />}
               title={
                 hasActiveFilters
-                  ? "No documents match your filters"
-                  : "No documents yet"
+                  ? t("workspace.documents.emptyFiltered")
+                  : t("workspace.documents.empty")
               }
               description={
                 hasActiveFilters
-                  ? "Try adjusting your search, scope or type filters."
-                  : "Upload a PDF, DOCX, XLSX, PPTX, TXT, MD or CSV file to make it searchable by the AI."
+                  ? t("workspace.documents.emptyFilteredDescription")
+                  : t("workspace.documents.emptyDescription")
               }
               action={
                 !hasActiveFilters ? (
                   <Button size="sm" onClick={openUpload}>
                     <Upload />
-                    Upload
+                    {t("workspace.documents.upload")}
                   </Button>
                 ) : undefined
               }

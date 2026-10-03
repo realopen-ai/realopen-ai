@@ -441,12 +441,17 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
 
 // ─── Tab root ──────────────────────────────────────────────────────
 
-export function ToolsTab() {
+export function ToolsTab({
+  selectedTool,
+  onSelectTool,
+}: {
+  selectedTool: string | null;
+  onSelectTool: (toolId: string | null) => void;
+}) {
   const t = useT();
   const tools = useToolsStore((s) => s.tools);
   const isLoading = useToolsStore((s) => s.isLoading);
   const load = useToolsStore((s) => s.load);
-  const [selectedTool, setSelectedTool] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -455,7 +460,7 @@ export function ToolsTab() {
   const selected = tools.find((x) => x.tool === selectedTool) ?? null;
 
   if (selected) {
-    return <ToolDetail tool={selected} onBack={() => setSelectedTool(null)} />;
+    return <ToolDetail tool={selected} onBack={() => onSelectTool(null)} />;
   }
 
   return (
@@ -478,7 +483,7 @@ export function ToolsTab() {
           <ToolRow
             key={tool.tool}
             tool={tool}
-            onOpen={() => setSelectedTool(tool.tool)}
+            onOpen={() => onSelectTool(tool.tool)}
           />
         ))}
       </div>

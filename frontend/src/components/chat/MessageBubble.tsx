@@ -22,13 +22,14 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
+import { elapsedMilliseconds } from "@/lib/timing";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
 import { useChatStore } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { isLibreOfficeInstalled } from "@/api/depsClient";
-import { t } from "@/store/settingsStore";
+import { t, useT } from "@/store/settingsStore";
 import {
   FileViewerModal,
   type ViewerFormat,
@@ -41,6 +42,7 @@ import { useSandboxStore } from "@/store/sandboxStore";
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
 function SourceImage({ chunkId }: { chunkId: string }) {
+  const translate = useT();
   // Lazy-load the image only when the card is expanded. We use a simple
   // <img> tag — the browser handles caching via the Cache-Control header
   // the backend sets.
@@ -51,12 +53,12 @@ function SourceImage({ chunkId }: { chunkId: string }) {
     <div className="mt-1.5 rounded-md overflow-hidden border border-border/40 bg-background/40 max-w-70">
       {!loaded && (
         <div className="w-full h-30 flex items-center justify-center text-[11px] text-muted-foreground/80">
-          Loading image…
+          {translate("tool.detail.loadingImage")}
         </div>
       )}
       <img
         src={`/api/documents/chunks/${chunkId}/image`}
-        alt="Document excerpt image"
+        alt={translate("tool.detail.documentImage")}
         className={cn("w-full h-auto", loaded ? "block" : "hidden")}
         onLoad={() => setLoaded(true)}
         onError={() => setErrored(true)}
@@ -67,6 +69,7 @@ function SourceImage({ chunkId }: { chunkId: string }) {
 }
 
 function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
+  const translate = useT();
   const [expanded, setExpanded] = useState(true);
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
@@ -85,10 +88,13 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
         )}
         <Quote className="w-3 h-3 shrink-0" />
         <span className="text-[12px] font-medium">
-          {sources.length} Source{sources.length !== 1 ? "s" : ""}
+          {translate(
+            sources.length === 1 ? "tool.detail.source" : "tool.detail.sources",
+            { count: sources.length },
+          )}
         </span>
         <span className="text-[11px] text-muted-foreground/80 truncate">
-          Retrieved from your documents
+          {translate("tool.detail.retrievedDocuments")}
         </span>
       </button>
 
@@ -246,8 +252,10 @@ function DigestProgressIndicator({
 // ─── Thinking Block (per-segment, collapsible) ──────────────────────
 
 function ThinkingBlockView({ block }: { block: MessageBlock }) {
+  const translate = useT();
   const [expanded, setExpanded] = useState<boolean>(false);
   const isThinking = block.duration == null;
+  const roundedDuration = Math.max(0, Math.round(block.duration ?? 0));
 
   // Quiet disclosure — muted icon + muted label + chevron. Never competes
   // with the response below it; expanded content stays clearly secondary.
@@ -265,7 +273,9 @@ function ThinkingBlockView({ block }: { block: MessageBlock }) {
           <Brain className="w-5 h-5 shrink-0" />
         )}
         <span>
-          {isThinking ? "Thinking…" : `Thought for ${block.duration}s`}
+          {isThinking
+            ? translate("message.thinking")
+            : translate("message.thoughtFor", { seconds: roundedDuration })}
         </span>
         {expanded ? (
           <ChevronDown className="w-3 h-3 shrink-0" />
@@ -277,7 +287,7 @@ function ThinkingBlockView({ block }: { block: MessageBlock }) {
         <div className="ml-1 mt-1 border-l-2 border-border/60 pl-3 animate-fade-in">
           <p className="text-[13px] text-muted-foreground leading-relaxed whitespace-pre-wrap">
             {block.content ||
-              (isThinking ? "The assistant is formulating a response." : "")}
+              (isThinking ? translate("message.thinkingDescription") : "")}
           </p>
         </div>
       )}
@@ -354,6 +364,7 @@ function ToolCallBlockView({
     format: ViewerFormat,
   ) => void;
 }) {
+  const translate = useT();
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
   if (!tc) return null;
@@ -391,56 +402,56 @@ function ToolCallBlockView({
   // appears only when the row is expanded.
   const configs: Record<string, { label: string; runningLabel: string }> = {
     websearch: {
-      label: "Searched the web",
-      runningLabel: "Searching the web",
+      label: translate("tool.websearch.done"),
+      runningLabel: translate("tool.websearch.running"),
     },
     vision: {
-      label: "Analyzed image",
-      runningLabel: "Analyzing image",
+      label: translate("tool.vision.done"),
+      runningLabel: translate("tool.vision.running"),
     },
     deepsearch: {
-      label: "Deep research",
-      runningLabel: "Researching",
+      label: translate("tool.deepsearch.done"),
+      runningLabel: translate("tool.deepsearch.running"),
     },
     code_exec: {
-      label: "Ran code",
-      runningLabel: "Running code",
+      label: translate("tool.code.done"),
+      runningLabel: translate("tool.code.running"),
     },
     skill: {
-      label: "Loaded skill",
-      runningLabel: "Loading skill",
+      label: translate("tool.skill.done"),
+      runningLabel: translate("tool.skill.running"),
     },
     file_read: {
-      label: "Read file",
-      runningLabel: "Reading file",
+      label: translate("tool.fileRead.done"),
+      runningLabel: translate("tool.fileRead.running"),
     },
     file_write: {
-      label: "Wrote file",
-      runningLabel: "Writing file",
+      label: translate("tool.fileWrite.done"),
+      runningLabel: translate("tool.fileWrite.running"),
     },
     image_gen: {
-      label: "Generated image",
-      runningLabel: "Generating image",
+      label: translate("tool.image.done"),
+      runningLabel: translate("tool.image.running"),
     },
     sandbox: {
-      label: "Workspace coding",
-      runningLabel: "Coding in workspace",
+      label: translate("tool.workspace.done"),
+      runningLabel: translate("tool.workspace.running"),
     },
     preview: {
-      label: "Started app preview",
-      runningLabel: "Starting app preview",
+      label: translate("tool.preview.done"),
+      runningLabel: translate("tool.preview.running"),
     },
     report_gen: {
-      label: "Generated report",
-      runningLabel: "Generating report",
+      label: translate("tool.report.done"),
+      runningLabel: translate("tool.report.running"),
     },
     presentation_gen: {
-      label: "Generated presentation",
-      runningLabel: "Generating presentation",
+      label: translate("tool.presentation.done"),
+      runningLabel: translate("tool.presentation.running"),
     },
     excel_gen: {
-      label: "Generated spreadsheet",
-      runningLabel: "Generating spreadsheet",
+      label: translate("tool.spreadsheet.done"),
+      runningLabel: translate("tool.spreadsheet.running"),
     },
   };
 
@@ -478,10 +489,11 @@ function ToolCallBlockView({
         : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
-  const duration =
-    tc.completedAt && tc.startedAt
-      ? ((tc.completedAt - tc.startedAt) / 1000).toFixed(1)
-      : null;
+  const elapsed =
+    Number.isFinite(tc.durationMs) && (tc.durationMs ?? -1) >= 0
+      ? tc.durationMs!
+      : elapsedMilliseconds(tc.startedAt, tc.completedAt);
+  const duration = elapsed == null ? null : (elapsed / 1000).toFixed(1);
 
   // Auto-expand while running so the user sees progress, AND auto-expand
   // when completed with deliverables so the download badge is visible.
@@ -628,6 +640,7 @@ function ToolCallDetail({
 }
 
 function FileToolDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   const displayedContent = tc.fileContent
     ? formatWorkspaceTreeOutput(tc.fileContent)
     : "";
@@ -652,8 +665,8 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
           className="flex items-center gap-1.5 font-mono text-[11.5px] text-primary hover:underline disabled:no-underline disabled:opacity-70"
           title={
             tc.filePath === "/workspace"
-              ? "Workspace root"
-              : "Open in Files panel"
+              ? translate("tool.detail.workspaceRoot")
+              : translate("tool.detail.openFiles")
           }
         >
           <FileCode className="h-3.5 w-3.5" />
@@ -663,7 +676,7 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
       {tc.diff && (
         <div className="overflow-hidden rounded-lg border border-border/60">
           <div className="border-b border-border/40 bg-card/60 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-            5-line diff
+            {translate("tool.detail.diff")}
           </div>
           <pre className="overflow-x-auto bg-sandbox-bg p-3 font-mono text-[11.5px] leading-relaxed">
             {diffLines.map((line, index) => (
@@ -688,7 +701,9 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
       {displayedContent && (
         <div className="overflow-hidden rounded-lg border border-border/60">
           <div className="border-b border-border/40 bg-card/60 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-            {tc.type === "file_write" ? "Written content" : "Result"}
+            {tc.type === "file_write"
+              ? translate("tool.detail.writtenContent")
+              : translate("tool.detail.result")}
           </div>
           <pre className="max-h-64 overflow-auto bg-sandbox-bg p-3 font-mono text-[11.5px] leading-relaxed text-foreground/80">
             {highlightContent ? (
@@ -705,6 +720,7 @@ function FileToolDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   const openPreview = () => {
     if (tc.previewUrl)
       useSandboxStore.getState().selectPreview(tc.previewUrl, tc.previewPort);
@@ -720,7 +736,10 @@ function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
           onClick={openPreview}
           className="rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11.5px] font-medium text-primary hover:bg-primary/20 transition-colors"
         >
-          Open preview{tc.previewPort ? ` · port ${tc.previewPort}` : ""}
+          {translate("tool.detail.openPreview")}
+          {tc.previewPort
+            ? ` · ${translate("tool.detail.port", { port: tc.previewPort })}`
+            : ""}
         </button>
       )}
     </div>
@@ -728,13 +747,14 @@ function PreviewToolDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
         <div className="flex items-center gap-2">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           <span className="text-[11.5px] text-muted-foreground">
-            Searching the web...
+            {translate("tool.websearch.running")}
           </span>
         </div>
       )}
@@ -770,20 +790,21 @@ function WebSearchDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function VisionDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   return (
     <div className="space-y-2">
       {tc.status === "running" && (
         <div className="flex items-center gap-2">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           <span className="text-[11.5px] text-muted-foreground">
-            Analyzing image with vision model...
+            {translate("tool.detail.analyzingVision")}
           </span>
         </div>
       )}
       {tc.imageDescription && (
         <div>
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground/70 mb-1">
-            Vision description
+            {translate("tool.detail.visionDescription")}
           </p>
           <p className="text-[12.5px] text-foreground/85 leading-relaxed">
             {tc.imageDescription}
@@ -796,6 +817,7 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   const output = formatCodeExecOutput(tc.output);
 
   return (
@@ -804,7 +826,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
         <div className="flex items-center gap-2">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           <span className="text-[11.5px] text-muted-foreground">
-            Executing code...
+            {translate("tool.detail.executingCode")}
           </span>
         </div>
       )}
@@ -827,7 +849,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
         <div className="rounded-lg border border-border/60 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-1 border-b border-border/40 bg-card/60">
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-              Output
+              {translate("tool.detail.output")}
             </span>
             {tc.exitCode !== undefined && (
               <span
@@ -838,7 +860,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
                     : "bg-danger/10 text-danger",
                 )}
               >
-                exit {tc.exitCode}
+                {translate("tool.detail.exitCode", { code: tc.exitCode })}
               </span>
             )}
           </div>
@@ -852,6 +874,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
 }
 
 function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
   return (
     <div className="space-y-2">
       {tc.imageDescription && (
@@ -870,13 +893,15 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
                 >
                   <div className="px-3 py-1 border-b border-border/40 bg-card/60">
                     <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      Result {i + 1}
+                      {translate("tool.detail.numberedResult", {
+                        number: i + 1,
+                      })}
                     </span>
                   </div>
                   <div className="p-3 text-center bg-sandbox-bg">
                     <img
                       src={`data:image/png;base64,${r.data}`}
-                      alt={tc.imageDescription || "Generated image"}
+                      alt={tc.imageDescription || translate("tool.image.done")}
                       className="mx-auto rounded-md max-h-64"
                     />
                   </div>
@@ -905,16 +930,22 @@ function ReportDeliverableBadge({
   label?: string;
   onView?: () => void;
 }) {
+  const translate = useT();
   const isPptx = format === "pptx";
   const isXlsx = format === "xlsx";
   const displayLabel =
-    label ?? (isPptx ? "Presentation" : isXlsx ? "Spreadsheet" : "Report");
+    label ??
+    (isPptx
+      ? translate("tool.detail.presentation")
+      : isXlsx
+        ? translate("tool.detail.spreadsheet")
+        : translate("tool.detail.report"));
   const canView = Boolean(onView);
   const viewTitle = isPptx
-    ? "View presentation"
+    ? translate("tool.detail.viewPresentation")
     : isXlsx
-      ? "View spreadsheet"
-      : "View document";
+      ? translate("tool.detail.viewSpreadsheet")
+      : translate("tool.detail.viewDocument");
 
   return (
     <div className="flex items-center rounded-lg border border-border/60 bg-card px-2 transition-colors hover:bg-surface-hover/50 group">
@@ -923,7 +954,7 @@ function ReportDeliverableBadge({
         href={downloadUrl}
         download={filename}
         className="flex items-center gap-2.5 flex-1 min-w-0 pl-1.5 pr-1 py-1.5 cursor-pointer"
-        title={`Download ${filename}`}
+        title={translate("tool.detail.downloadFile", { filename })}
       >
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary text-muted-foreground shrink-0">
           <FileType className="h-3.5 w-3.5" />
@@ -953,8 +984,8 @@ function ReportDeliverableBadge({
         <a
           href={downloadUrl}
           download={filename}
-          aria-label="Download"
-          title="Download"
+          aria-label={translate("tool.detail.download")}
+          title={translate("tool.detail.download")}
           className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors"
         >
           <Download className="w-3.5 h-3.5" />
@@ -978,6 +1009,7 @@ function ReportGenDetail({
     format: ViewerFormat,
   ) => void;
 }) {
+  const translate = useT();
   const deliverableResults =
     tc.genResults?.filter(
       (r) =>
@@ -986,10 +1018,10 @@ function ReportGenDetail({
   // During "running" phase, detect via title since genResults aren't set yet
   const titleLower = (tc.title || "").toLowerCase();
   const generatingLabel = titleLower.includes("pptx")
-    ? "Generating presentation..."
+    ? translate("tool.presentation.running")
     : titleLower.includes("excel")
-      ? "Generating spreadsheet..."
-      : "Generating report...";
+      ? translate("tool.spreadsheet.running")
+      : translate("tool.report.running");
 
   return (
     <div className="space-y-2">
@@ -1018,10 +1050,10 @@ function ReportGenDetail({
                 downloadUrl={r.download_url ?? "#"}
                 label={
                   r.type === "presentation"
-                    ? "Presentation"
+                    ? translate("tool.detail.presentation")
                     : r.type === "excel"
-                      ? "Spreadsheet"
-                      : "Report"
+                      ? translate("tool.detail.spreadsheet")
+                      : translate("tool.detail.report")
                 }
                 onView={
                   viewable
@@ -1095,8 +1127,9 @@ function BlockView({
 // ─── Response Time ────────────────────────────────────────────────
 
 function formatResponseTime(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
+  const safeMs = Math.max(0, ms);
+  if (safeMs < 1000) return `${Math.round(safeMs)}ms`;
+  const seconds = safeMs / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
@@ -1202,7 +1235,7 @@ export function MessageBubble({
   // Calculate response time for assistant messages
   // Prefer DB-persisted generationDuration, fallback to frontend-computed time
   const responseTime = isAssistant
-    ? message.generationDuration
+    ? message.generationDuration != null
       ? formatResponseTime(message.generationDuration * 1000)
       : message.completedAt && message.createdAt
         ? formatResponseTime(message.completedAt - message.createdAt)
@@ -1413,6 +1446,13 @@ export function MessageBubble({
               {responseTime}
             </span>
           )}
+        </div>
+      )}
+
+      {message.completionStatus === "interrupted" && (
+        <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-[11px] font-medium text-muted-foreground">
+          <XCircle className="h-3 w-3" />
+          {t("message.interrupted")}
         </div>
       )}
 

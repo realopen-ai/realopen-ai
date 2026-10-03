@@ -216,6 +216,7 @@ class VoiceSession:
         self._tts_task: Optional[asyncio.Task] = None
         self._tts_queue: Optional[asyncio.Queue] = None
         self._agent_builder: Optional[BlockBuilder] = None
+        self._agent_turn_started_at: Optional[float] = None
         self.generation_id: Optional[str] = None
         self._tts_interrupted = False
         self._model_label = "default"
@@ -763,6 +764,7 @@ class VoiceSession:
         persist, and hand the turn back to LISTENING."""
         builder = BlockBuilder()
         self._agent_builder = builder
+        self._agent_turn_started_at = time.monotonic()
         conv_id_str = str(self.conversation_id)
         tts_task: Optional[asyncio.Task] = None
         try:
@@ -810,6 +812,10 @@ class VoiceSession:
             # Let TTS finish playing (tts_end) before finalizing the turn.
             if tts_task is not None:
                 await _suppress(tts_task)
+            if self._agent_turn_started_at is not None:
+                builder.generation_duration = round(
+                    time.monotonic() - self._agent_turn_started_at, 3
+                )
             await self._finish_turn(builder)
         except asyncio.CancelledError:
             # Barge-in — the interrupt handler owns cancel/persist.
@@ -857,6 +863,7 @@ class VoiceSession:
         if self.state_machine.in_state(VoiceState.PROCESSING, VoiceState.SPEAKING):
             await self._apply_state(VoiceState.LISTENING, "turn_complete")
         self._agent_builder = None
+        self._agent_turn_started_at = None
         self.generation_id = None
         self._current_transcript = ""
         self._history_messages = []
@@ -866,14 +873,15 @@ class VoiceSession:
     ) -> None:
         """Persist (and announce) the assistant message — shared by the
         normal end-of-turn and the barge-in partial path."""
+        builder.finish_open_thinking()
+        if self._agent_turn_started_at is not None:
+            builder.generation_duration = round(
+                time.monotonic() - self._agent_turn_started_at, 3
+            )
         content = builder.get_text_content()
         if not builder.blocks:  # no meaningful text — nothing to persist
             return
         blocks = list(builder.to_db_blocks())
-        if interrupted:
-            # Mark the partial reply as interrupted (visible error block —
-            # same block schema the frontend already renders).
-            blocks.append({"type": "error", "content": "Interrupted by user"})
         msg_id: Optional[uuid_mod.UUID] = None
         try:
             msg_id = await persist_message_standalone(
@@ -882,9 +890,10 @@ class VoiceSession:
                 content,
                 model=self._model_label,
                 blocks=blocks,
-                generation_duration=(builder.generation_duration or None),
+                generation_duration=builder.generation_duration,
                 deliverables=(builder.deliverables or None),
                 modality="voice",
+                completion_status="interrupted" if interrupted else "completed",
             )
         except Exception as e:  # noqa: BLE001 — DB errors are non-fatal
             logger.error("voice: assistant message persist failed: %s", e)
@@ -906,7 +915,10 @@ class VoiceSession:
                     "deliverables": builder.deliverables or None,
                     "modality": "voice",
                     "model": self._model_label,
-                    "generationDuration": builder.generation_duration or None,
+                    "generationDuration": builder.generation_duration,
+                    "completionStatus": (
+                        "interrupted" if interrupted else "completed"
+                    ),
                 },
             }
         )
@@ -1089,6 +1101,7 @@ class VoiceSession:
         except Exception:  # noqa: BLE001 — best-effort reset
             pass
         self._tts_interrupted = False
+        self._agent_turn_started_at = None
         self._agent_builder = None
         self.generation_id = None
         self._current_transcript = ""

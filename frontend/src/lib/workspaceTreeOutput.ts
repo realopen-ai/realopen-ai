@@ -48,7 +48,9 @@ export function formatWorkspaceTreeOutput(content: string): string {
     ) {
       return content;
     }
-    return tree.length ? ["/workspace", ...renderNodes(tree)].join("\n") : "/workspace (empty)";
+    return tree.length
+      ? ["/workspace", ...renderNodes(tree)].join("\n")
+      : "/workspace (empty)";
   } catch {
     return content;
   }

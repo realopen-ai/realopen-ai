@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
@@ -24,6 +25,7 @@ import {
 import { useChatStore, type Conversation } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { isConversationStreaming } from "@/lib/conversationActivity";
 
 interface ConversationItemProps {
   conv: Conversation;
@@ -63,6 +65,7 @@ export function ConversationItem({
   const [draftTitle, setDraftTitle] = useState(conv.title);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isStreaming = isConversationStreaming(conv);
 
   // Focus + select the whole title when entering rename mode
   useEffect(() => {
@@ -91,18 +94,24 @@ export function ConversationItem({
     setDraftTitle(conv.title);
   };
 
-  const leadIcon = conv.pinned ? (
-    <Pin className="size-4 shrink-0 text-primary fill-primary/20" />
-  ) : (
-    collapsed && (
-      <MessageSquare
-        className={cn(
-          "size-4 shrink-0",
-          active ? "text-foreground/70" : "text-muted-foreground/80",
-        )}
+  const leadIcon =
+    isStreaming && collapsed ? (
+      <Loader2
+        className="size-4 shrink-0 animate-spin text-primary"
+        aria-label={t("sidebar.generating")}
       />
-    )
-  );
+    ) : conv.pinned ? (
+      <Pin className="size-4 shrink-0 text-primary fill-primary/20" />
+    ) : (
+      collapsed && (
+        <MessageSquare
+          className={cn(
+            "size-4 shrink-0",
+            active ? "text-foreground/70" : "text-muted-foreground/80",
+          )}
+        />
+      )
+    );
 
   // ── Collapsed rail row: centered icon + tooltip + selected indicator ──
   if (collapsed) {
@@ -176,68 +185,77 @@ export function ConversationItem({
             {conv.title}
           </span>
 
-          <DropdownMenu
-            onOpenChange={(open) => {
-              // Reset the two-step delete confirm when the menu closes
-              if (!open) setConfirmDelete(false);
-            }}
-          >
-            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-              <button
-                aria-label={t("sidebar.options")}
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 group-hover:opacity-100 data-[state=open]:opacity-100"
-              >
-                <MoreHorizontal className="size-4" />
-              </button>
-            </DropdownMenuTrigger>
-
-            <DropdownMenuContent
-              align="end"
-              onClick={(e) => e.stopPropagation()}
+          {isStreaming ? (
+            <Loader2
+              className="size-4 shrink-0 animate-spin text-primary"
+              aria-label={t("sidebar.generating")}
+            />
+          ) : (
+            <DropdownMenu
+              onOpenChange={(open) => {
+                // Reset the two-step delete confirm when the menu closes
+                if (!open) setConfirmDelete(false);
+              }}
             >
-              <DropdownMenuItem onSelect={() => startRename()}>
-                <Pencil />
-                {t("sidebar.rename")}
-              </DropdownMenuItem>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <button
+                  aria-label={t("sidebar.options")}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-secondary hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 group-hover:opacity-100 data-[state=open]:opacity-100"
+                >
+                  <MoreHorizontal className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
 
-              <DropdownMenuItem onSelect={() => togglePinConversation(conv.id)}>
-                {conv.pinned ? <PinOff /> : <Pin />}
-                {conv.pinned ? t("sidebar.unpinChat") : t("sidebar.pinChat")}
-              </DropdownMenuItem>
-
-              <DropdownMenuItem
-                onSelect={() => toggleArchiveConversation(conv.id)}
+              <DropdownMenuContent
+                align="end"
+                onClick={(e) => e.stopPropagation()}
               >
-                {conv.archived ? <ArchiveRestore /> : <Archive />}
-                {conv.archived
-                  ? t("sidebar.unarchiveChat")
-                  : t("sidebar.archiveChat")}
-              </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => startRename()}>
+                  <Pencil />
+                  {t("sidebar.rename")}
+                </DropdownMenuItem>
 
-              <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => togglePinConversation(conv.id)}
+                >
+                  {conv.pinned ? <PinOff /> : <Pin />}
+                  {conv.pinned ? t("sidebar.unpinChat") : t("sidebar.pinChat")}
+                </DropdownMenuItem>
 
-              <DropdownMenuItem
-                onSelect={(e) => {
-                  if (!confirmDelete) {
-                    // First click arms the confirm; keep the menu open
-                    e.preventDefault();
-                    setConfirmDelete(true);
-                  } else {
-                    onDelete(conv.id);
-                  }
-                }}
-                className={cn(
-                  "text-destructive focus:text-destructive focus:bg-destructive/10 [&_svg]:text-destructive",
-                  confirmDelete && "bg-destructive/10 font-semibold",
-                )}
-              >
-                <Trash2 />
-                {confirmDelete
-                  ? t("sidebar.confirmDelete")
-                  : t("sidebar.delete")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <DropdownMenuItem
+                  onSelect={() => toggleArchiveConversation(conv.id)}
+                >
+                  {conv.archived ? <ArchiveRestore /> : <Archive />}
+                  {conv.archived
+                    ? t("sidebar.unarchiveChat")
+                    : t("sidebar.archiveChat")}
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    if (!confirmDelete) {
+                      // First click arms the confirm; keep the menu open
+                      e.preventDefault();
+                      setConfirmDelete(true);
+                    } else {
+                      onDelete(conv.id);
+                    }
+                  }}
+                  className={cn(
+                    "text-destructive focus:text-destructive focus:bg-destructive/10 [&_svg]:text-destructive",
+                    confirmDelete && "bg-destructive/10 font-semibold",
+                  )}
+                >
+                  <Trash2 />
+                  {confirmDelete
+                    ? t("sidebar.confirmDelete")
+                    : t("sidebar.delete")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </>
       )}
     </div>

@@ -324,6 +324,13 @@ export function SettingsModal({
   const language = useSettingsStore((s) => s.language);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const notifyDeepSearch = useSettingsStore((s) => s.notifyDeepSearch);
+  const completionSound = useSettingsStore((s) => s.completionSound);
+  const browserCompletionNotifications = useSettingsStore(
+    (s) => s.browserCompletionNotifications,
+  );
+  const inAppCompletionNotifications = useSettingsStore(
+    (s) => s.inAppCompletionNotifications,
+  );
 
   const setAppearance = useSettingsStore((s) => s.setAppearance);
   const setContrast = useSettingsStore((s) => s.setContrast);
@@ -331,6 +338,41 @@ export function SettingsModal({
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const setFontSize = useSettingsStore((s) => s.setFontSize);
   const setNotifyDeepSearch = useSettingsStore((s) => s.setNotifyDeepSearch);
+  const setCompletionSound = useSettingsStore((s) => s.setCompletionSound);
+  const setBrowserCompletionNotifications = useSettingsStore(
+    (s) => s.setBrowserCompletionNotifications,
+  );
+  const setInAppCompletionNotifications = useSettingsStore(
+    (s) => s.setInAppCompletionNotifications,
+  );
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() =>
+    typeof Notification === "undefined"
+      ? "unsupported"
+      : Notification.permission,
+  );
+
+  const toggleBrowserNotifications = useCallback(
+    async (enabled: boolean) => {
+      if (!enabled) {
+        setBrowserCompletionNotifications(false);
+        return;
+      }
+      if (typeof Notification === "undefined") {
+        setNotificationPermission("unsupported");
+        setBrowserCompletionNotifications(false);
+        return;
+      }
+      let permission = Notification.permission;
+      if (permission === "default") {
+        permission = await Notification.requestPermission();
+      }
+      setNotificationPermission(permission);
+      setBrowserCompletionNotifications(permission === "granted");
+    },
+    [setBrowserCompletionNotifications],
+  );
 
   const modules = useChatStore((s) => s.modules);
   const toggleModule = useChatStore((s) => s.toggleModule);
@@ -421,7 +463,7 @@ export function SettingsModal({
     },
     {
       key: "voice",
-      label: "Voice",
+      label: t("settings.voice"),
       icon: <Mic2 className="w-4 h-4" />,
     },
     {
@@ -431,7 +473,7 @@ export function SettingsModal({
     },
     {
       key: "dependencies",
-      label: "Dependencies",
+      label: t("settings.dependencies"),
       icon: <Package className="w-4 h-4" />,
     },
     {
@@ -669,37 +711,87 @@ export function SettingsModal({
               {tab === "dependencies" && <DependenciesTab />}
 
               {tab === "notifications" && (
-                <div className="divide-y divide-border/50">
-                  <div className="flex items-center gap-4 py-3.5">
-                    <div
-                      className={cn(
-                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                        notifyDeepSearch
-                          ? "bg-primary/10 text-primary"
-                          : "bg-secondary text-muted-foreground/80",
-                      )}
+                <div>
+                  <SectionHeader
+                    title={t("settings.responseCompletion")}
+                    description={t("settings.responseCompletionDescription")}
+                  />
+                  <div className="divide-y divide-border/50">
+                    <SettingRow
+                      label={t("settings.completionSound")}
+                      help={t("settings.completionSoundDescription")}
                     >
-                      {notifyDeepSearch ? (
-                        <Bell className="h-4.5 w-4.5" />
-                      ) : (
-                        <BellOff className="h-4.5 w-4.5" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13.5px] text-foreground">
-                        {t("settings.notifyDeepSearch")}
+                      <SettingToggle
+                        checked={completionSound}
+                        onChange={setCompletionSound}
+                        label={t("settings.completionSound")}
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      label={t("settings.browserNotifications")}
+                      help={
+                        notificationPermission === "denied"
+                          ? t("settings.browserNotificationsBlocked")
+                          : t("settings.browserNotificationsDescription")
+                      }
+                    >
+                      <SettingToggle
+                        checked={
+                          browserCompletionNotifications &&
+                          notificationPermission === "granted"
+                        }
+                        onChange={(value) =>
+                          void toggleBrowserNotifications(value)
+                        }
+                        disabled={
+                          notificationPermission === "denied" ||
+                          notificationPermission === "unsupported"
+                        }
+                        label={t("settings.browserNotifications")}
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      label={t("settings.inAppNotifications")}
+                      help={t("settings.inAppNotificationsDescription")}
+                    >
+                      <SettingToggle
+                        checked={inAppCompletionNotifications}
+                        onChange={setInAppCompletionNotifications}
+                        label={t("settings.inAppNotifications")}
+                      />
+                    </SettingRow>
+                  </div>
+
+                  <div className="mt-6 border-t border-border/50 pt-2">
+                    <div className="flex items-center gap-4 py-3.5">
+                      <div
+                        className={cn(
+                          "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                          notifyDeepSearch
+                            ? "bg-primary/10 text-primary"
+                            : "bg-secondary text-muted-foreground/80",
+                        )}
+                      >
+                        {notifyDeepSearch ? (
+                          <Bell className="h-4.5 w-4.5" />
+                        ) : (
+                          <BellOff className="h-4.5 w-4.5" />
+                        )}
                       </div>
-                      <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-                        {language === "fr"
-                          ? "Recevez une notification lorsqu'une recherche approfondie est terminée"
-                          : "Get a notification when a deep search task completes"}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] text-foreground">
+                          {t("settings.notifyDeepSearch")}
+                        </div>
+                        <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                          {t("settings.notifyDeepSearchDescription")}
+                        </div>
                       </div>
+                      <SettingToggle
+                        checked={notifyDeepSearch}
+                        onChange={(v) => setNotifyDeepSearch(v)}
+                        label={t("settings.notifyDeepSearch")}
+                      />
                     </div>
-                    <SettingToggle
-                      checked={notifyDeepSearch}
-                      onChange={(v) => setNotifyDeepSearch(v)}
-                      label={t("settings.notifyDeepSearch")}
-                    />
                   </div>
                 </div>
               )}

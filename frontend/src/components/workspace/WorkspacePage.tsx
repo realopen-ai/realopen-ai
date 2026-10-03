@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   Box,
   ChevronLeft,
@@ -9,8 +9,7 @@ import {
   Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useNavigate } from "react-router-dom";
-import { useUIStore } from "@/store/uiStore";
+import { useLocation, useNavigate } from "react-router-dom";
 import { PageContainer, PageHeader } from "@/components/ui/primitives";
 import { TemplatesSection } from "@/components/workspace/TemplatesSection";
 import { GeneratedFilesSection } from "@/components/workspace/GeneratedFilesSection";
@@ -18,16 +17,13 @@ import { AssetsSection } from "@/components/workspace/AssetsSection";
 import { DocumentsSection } from "@/components/workspace/DocumentsSection";
 import { SandboxesSection } from "@/components/workspace/SandboxesSection";
 import { useT } from "@/store/settingsStore";
+import {
+  getWorkspaceSection,
+  workspaceSectionPath,
+  type WorkspaceSection,
+} from "@/lib/appRoutes";
 
-type WorkspaceView =
-  | "folders"
-  | "documents"
-  | "templates"
-  | "generated"
-  | "assets"
-  | "sandboxes";
-
-type SectionView = Exclude<WorkspaceView, "folders">;
+type SectionView = WorkspaceSection;
 
 const folders: {
   key: SectionView;
@@ -73,29 +69,31 @@ const folders: {
   },
 ];
 
-const sectionMeta: Record<SectionView, { titleKey: string; descriptionKey: string }> =
-  {
-    sandboxes: {
-      titleKey: "workspace.sandboxes",
-      descriptionKey: "workspace.sandboxes.description",
-    },
-    documents: {
-      titleKey: "workspace.documents",
-      descriptionKey: "workspace.documents.description",
-    },
-    templates: {
-      titleKey: "workspace.templates",
-      descriptionKey: "workspace.templates.description",
-    },
-    generated: {
-      titleKey: "workspace.generated",
-      descriptionKey: "workspace.generated.description",
-    },
-    assets: {
-      titleKey: "workspace.assets",
-      descriptionKey: "workspace.assets.description",
-    },
-  };
+const sectionMeta: Record<
+  SectionView,
+  { titleKey: string; descriptionKey: string }
+> = {
+  sandboxes: {
+    titleKey: "workspace.sandboxes",
+    descriptionKey: "workspace.sandboxes.description",
+  },
+  documents: {
+    titleKey: "workspace.documents",
+    descriptionKey: "workspace.documents.description",
+  },
+  templates: {
+    titleKey: "workspace.templates",
+    descriptionKey: "workspace.templates.description",
+  },
+  generated: {
+    titleKey: "workspace.generated",
+    descriptionKey: "workspace.generated.description",
+  },
+  assets: {
+    titleKey: "workspace.assets",
+    descriptionKey: "workspace.assets.description",
+  },
+};
 
 /** Chrome shared by every workspace sub-section: back link + page header,
  *  with the section filling the remaining height. */
@@ -137,19 +135,18 @@ function SectionShell({
 }
 
 export function WorkspacePage() {
-  const [view, setView] = useState<WorkspaceView>("folders");
   const navigate = useNavigate();
-  const setShowWorkspacePage = useUIStore((s) => s.setShowWorkspacePage);
+  const { pathname } = useLocation();
+  const view = getWorkspaceSection(pathname);
   const t = useT();
 
   const handleOpenConversation = (conversationId: string) => {
     navigate(`/${conversationId}`);
-    setShowWorkspacePage(false);
   };
 
   if (view === "sandboxes") {
     return (
-      <SectionShell view="sandboxes" onBack={() => setView("folders")}>
+      <SectionShell view="sandboxes" onBack={() => navigate("/workspace")}>
         <SandboxesSection />
       </SectionShell>
     );
@@ -157,7 +154,7 @@ export function WorkspacePage() {
 
   if (view === "documents") {
     return (
-      <SectionShell view="documents" onBack={() => setView("folders")}>
+      <SectionShell view="documents" onBack={() => navigate("/workspace")}>
         <DocumentsSection />
       </SectionShell>
     );
@@ -165,7 +162,7 @@ export function WorkspacePage() {
 
   if (view === "templates") {
     return (
-      <SectionShell view="templates" onBack={() => setView("folders")}>
+      <SectionShell view="templates" onBack={() => navigate("/workspace")}>
         <TemplatesSection />
       </SectionShell>
     );
@@ -173,7 +170,7 @@ export function WorkspacePage() {
 
   if (view === "generated") {
     return (
-      <SectionShell view="generated" onBack={() => setView("folders")}>
+      <SectionShell view="generated" onBack={() => navigate("/workspace")}>
         <GeneratedFilesSection onOpenConversation={handleOpenConversation} />
       </SectionShell>
     );
@@ -181,7 +178,7 @@ export function WorkspacePage() {
 
   if (view === "assets") {
     return (
-      <SectionShell view="assets" onBack={() => setView("folders")}>
+      <SectionShell view="assets" onBack={() => navigate("/workspace")}>
         <AssetsSection />
       </SectionShell>
     );
@@ -202,7 +199,7 @@ export function WorkspacePage() {
             return (
               <button
                 key={folder.key}
-                onClick={() => setView(folder.key)}
+                onClick={() => navigate(workspaceSectionPath(folder.key))}
                 className="group flex items-center gap-4 rounded-xl border border-border/60 bg-card p-5 text-left transition-all hover:border-border hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 <div
