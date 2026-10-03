@@ -10,7 +10,7 @@ COPY frontend/ .
 RUN npm run build
 
 # Stage 2: Nginx with Built Frontend
-FROM nginx:1.29-alpine
+FROM nginx:1.31-alpine
 
 # Remove default config
 RUN rm /etc/nginx/conf.d/default.conf
