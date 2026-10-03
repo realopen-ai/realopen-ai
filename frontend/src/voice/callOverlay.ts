@@ -1,8 +1,5 @@
 export type CallOverlayCorner =
-  | "top-left"
-  | "top-right"
-  | "bottom-left"
-  | "bottom-right";
+  "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
 export function nearestCallOverlayCorner(
   point: { x: number; y: number },

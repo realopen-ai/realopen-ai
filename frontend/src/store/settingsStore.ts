@@ -9,14 +9,7 @@ export type { TranslationKey } from "@/i18n";
 export type Appearance = "system" | "dark" | "light";
 export type Contrast = "medium" | "increased";
 export type AccentColor =
-  | "gray"
-  | "blue"
-  | "green"
-  | "yellow"
-  | "pink"
-  | "orange"
-  | "purple"
-  | "black";
+  "gray" | "blue" | "green" | "yellow" | "pink" | "orange" | "purple" | "black";
 export type FontSize = "14px" | "16px" | "18px";
 
 interface SettingsState {

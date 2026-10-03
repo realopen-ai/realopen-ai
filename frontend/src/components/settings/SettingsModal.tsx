@@ -44,12 +44,7 @@ import { AiTab } from "@/components/settings/AiTab";
 import { VoiceTab } from "@/components/settings/VoiceTab";
 
 type TabKey =
-  | "general"
-  | "ai"
-  | "voice"
-  | "modules"
-  | "dependencies"
-  | "notifications";
+  "general" | "ai" | "voice" | "modules" | "dependencies" | "notifications";
 
 // ─── Segmented control (compact option switch) ───────────────────
 

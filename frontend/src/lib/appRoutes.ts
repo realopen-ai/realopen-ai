@@ -1,10 +1,6 @@
 export type BrainTab = "memories" | "history" | "skills" | "tools";
 export type WorkspaceSection =
-  | "documents"
-  | "templates"
-  | "generated"
-  | "assets"
-  | "sandboxes";
+  "documents" | "templates" | "generated" | "assets" | "sandboxes";
 
 const brainTabs = new Set<BrainTab>(["memories", "history", "skills", "tools"]);
 
@@ -39,8 +35,7 @@ export function getBrainRoute(pathname: string): {
 
 export function getWorkspaceSection(pathname: string): WorkspaceSection | null {
   const candidate = pathname.split("/").filter(Boolean)[1] as
-    | WorkspaceSection
-    | undefined;
+    WorkspaceSection | undefined;
   return candidate && workspaceSections.has(candidate) ? candidate : null;
 }
 
