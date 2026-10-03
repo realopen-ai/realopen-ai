@@ -79,6 +79,25 @@ test("completion events include an assistant response preview", () => {
   assert.match(source, /responsePreview:\s*completionPreview\(current\?\.content/);
 });
 
+test("toast and system notification use conversation title plus response body", () => {
+  const toast = readFileSync(
+    new URL(
+      "../src/components/ui/ResponseCompletionToasts.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const manager = readFileSync(
+    new URL("../src/lib/responseNotifications.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(toast, /\{item\.conversationTitle\}/);
+  assert.match(toast, /item\.responsePreview/);
+  assert.match(toast, /whitespace-pre-wrap/);
+  assert.match(manager, /new Notification\(\n\s*response\.conversationTitle/);
+  assert.match(manager, /body:\s*\n\s*response\.responsePreview/);
+});
+
 test("the sound context is unlocked by normal user interaction", () => {
   const source = readFileSync(
     new URL(

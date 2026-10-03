@@ -94,13 +94,11 @@ export function notifyResponseCompleted(response: ResponseCompletion) {
   ) {
     try {
       const notification = new Notification(
-        `${t("notifications.responseCompleted")} · ${response.conversationTitle}`,
+        response.conversationTitle,
         {
           body:
             response.responsePreview ||
-            t("notifications.responseCompletedIn", {
-              title: response.conversationTitle,
-            }),
+            t("notifications.responseCompleted"),
           tag: `response-${response.responseId}`,
         },
       );

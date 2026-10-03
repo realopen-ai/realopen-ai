@@ -47,10 +47,10 @@ export function ResponseCompletionToasts() {
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-[13.5px] font-medium text-foreground">
-              {t("notifications.responseCompleted")}
-            </div>
-            <div className="mt-0.5 truncate text-xs text-muted-foreground">
               {item.conversationTitle}
+            </div>
+            <div className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+              {item.responsePreview || t("notifications.responseCompleted")}
             </div>
           </div>
           <button
