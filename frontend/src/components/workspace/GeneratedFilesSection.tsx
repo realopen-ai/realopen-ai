@@ -18,6 +18,7 @@ import {
   type ViewerFormat,
 } from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
+import { useT } from "@/store/settingsStore";
 
 interface GeneratedFile {
   filename: string;
@@ -81,17 +82,6 @@ function formatDate(epoch: number): string {
   });
 }
 
-const deliverableLabels: Record<string, string> = {
-  presentation: "Presentation Generation",
-  report: "Report Generation",
-  excel: "Excel Generation",
-  image: "Image Generation",
-};
-
-function deliverableLabel(deliverableType: string): string {
-  return deliverableLabels[deliverableType] ?? deliverableType;
-}
-
 /** Thumbnail with onError fallback to a file-type icon.
  */
 function FileThumbnail({
@@ -140,6 +130,7 @@ export function GeneratedFilesSection({
 }: {
   onOpenConversation: (conversationId: string) => void;
 }) {
+  const t = useT();
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
@@ -180,7 +171,7 @@ export function GeneratedFilesSection({
   }, [loadFiles]);
 
   const filterButtons = [
-    { key: "all", label: "All" },
+    { key: "all", label: t("workspace.common.all") },
     { key: "pdf", label: "PDF" },
     { key: "docx", label: "DOCX" },
     { key: "pptx", label: "PPTX" },
@@ -205,7 +196,7 @@ export function GeneratedFilesSection({
           </div>
           <div className="flex-1" />
           <p className="text-xs text-muted-foreground">
-            {files.length} file{files.length !== 1 ? "s" : ""}
+            {t(files.length === 1 ? "workspace.generated.fileCount" : "workspace.generated.fileCountPlural", { count: files.length })}
           </p>
         </div>
       </div>
@@ -220,8 +211,8 @@ export function GeneratedFilesSection({
           ) : files.length === 0 ? (
             <EmptyState
               icon={<FileImage />}
-              title="No generated files yet"
-              description="Generate a report, presentation, or spreadsheet in chat to see files here."
+              title={t("workspace.generated.empty")}
+              description={t("workspace.generated.emptyDescription")}
               className="rounded-xl"
             />
           ) : (
@@ -246,12 +237,12 @@ export function GeneratedFilesSection({
                           {file.filename}
                         </p>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {date} · {deliverableLabel(file.deliverable_type)}
+                          {date} · {t(`workspace.generated.type.${file.deliverable_type}`)}
                           {size ? ` · ${size}` : ""}
                         </p>
                         {file.conversation_title && (
                           <p className="mt-0.5 truncate text-xs text-muted-foreground/80">
-                            From: {file.conversation_title}
+                          {t("workspace.generated.from", { title: file.conversation_title })}
                           </p>
                         )}
                       </div>
@@ -265,8 +256,8 @@ export function GeneratedFilesSection({
                               onOpenConversation(file.conversation_id)
                             }
                             className={rowActionClass}
-                            title="Open conversation"
-                            aria-label={`Open conversation for ${file.filename}`}
+                            title={t("workspace.generated.openConversation")}
+                            aria-label={t("workspace.generated.openConversationFor", { filename: file.filename })}
                           >
                             <ExternalLink className="h-4 w-4" />
                           </button>
@@ -288,12 +279,12 @@ export function GeneratedFilesSection({
                               className={rowActionClass}
                               title={
                                 file.file_type === "pptx"
-                                  ? "View presentation"
+                                  ? t("tool.detail.viewPresentation")
                                   : file.file_type === "xlsx"
-                                    ? "View spreadsheet"
-                                    : "View document"
+                                    ? t("tool.detail.viewSpreadsheet")
+                                    : t("tool.detail.viewDocument")
                               }
-                              aria-label={`View ${file.filename}`}
+                              aria-label={t("workspace.generated.viewFile", { filename: file.filename })}
                             >
                               <Eye className="h-4 w-4" />
                             </button>
@@ -302,8 +293,8 @@ export function GeneratedFilesSection({
                           href={file.download_url}
                           download={file.filename}
                           className={rowActionClass}
-                          title="Download"
-                          aria-label={`Download ${file.filename}`}
+                          title={t("tool.detail.download")}
+                          aria-label={t("tool.detail.downloadFile", { filename: file.filename })}
                         >
                           <Download className="h-4 w-4" />
                         </a>
