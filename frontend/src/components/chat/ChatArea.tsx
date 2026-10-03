@@ -774,9 +774,8 @@ export function ChatArea() {
     // is still streaming, or when the page was reloaded before the first
     // assistant snapshot and the latest durable message is still the user.
     const hydratedMessages =
-      useChatStore
-        .getState()
-        .conversations.find((c) => c.id === urlConvId)?.messages ?? [];
+      useChatStore.getState().conversations.find((c) => c.id === urlConvId)
+        ?.messages ?? [];
     const hasStreamingAssistant = hydratedMessages.some(
       (message) =>
         message.role === "assistant" &&

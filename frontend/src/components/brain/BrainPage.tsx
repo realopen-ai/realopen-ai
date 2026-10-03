@@ -6,11 +6,7 @@ import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
 import { HistoryTab } from "@/components/brain/HistoryTab";
 import { ToolsTab } from "@/components/brain/ToolsTab";
-import {
-  brainTabPath,
-  getBrainRoute,
-  type BrainTab,
-} from "@/lib/appRoutes";
+import { brainTabPath, getBrainRoute, type BrainTab } from "@/lib/appRoutes";
 
 export function BrainPage() {
   const navigate = useNavigate();

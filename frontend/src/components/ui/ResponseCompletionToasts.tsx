@@ -16,22 +16,28 @@ export function ResponseCompletionToasts() {
     const onToast = (event: Event) => {
       const detail = (event as CustomEvent<ResponseCompletion>).detail;
       const timeout = window.setTimeout(
-        () => setItems((current) => current.filter((item) => item.responseId !== detail.responseId)),
+        () =>
+          setItems((current) =>
+            current.filter((item) => item.responseId !== detail.responseId),
+          ),
         6500,
       );
       setItems((current) => [...current, { ...detail, timeout }]);
     };
     window.addEventListener("response-completion-toast", onToast);
-    return () => window.removeEventListener("response-completion-toast", onToast);
+    return () =>
+      window.removeEventListener("response-completion-toast", onToast);
   }, []);
 
   const dismiss = (item: ToastItem) => {
     window.clearTimeout(item.timeout);
-    setItems((current) => current.filter((candidate) => candidate.responseId !== item.responseId));
+    setItems((current) =>
+      current.filter((candidate) => candidate.responseId !== item.responseId),
+    );
   };
 
   return (
-    <div className="pointer-events-none fixed end-4 top-4 z-[100] flex w-[min(360px,calc(100vw-2rem))] flex-col gap-2">
+    <div className="pointer-events-none fixed inset-e-4 top-4 z-100 flex w-[min(360px,calc(100vw-2rem))] flex-col gap-2">
       {items.map((item) => (
         <div
           key={item.responseId}
@@ -49,7 +55,7 @@ export function ResponseCompletionToasts() {
             <div className="text-[13.5px] font-medium text-foreground">
               {item.conversationTitle}
             </div>
-            <div className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+            <div className="mt-1 max-h-20 overflow-hidden whitespace-pre-wrap wrap-break-word text-xs leading-relaxed text-muted-foreground">
               {item.responsePreview || t("notifications.responseCompleted")}
             </div>
           </div>

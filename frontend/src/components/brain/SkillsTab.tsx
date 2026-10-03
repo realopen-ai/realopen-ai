@@ -115,7 +115,9 @@ export function SkillsTab() {
       setSelectedSkill(null);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("brain.skills.openFailed"));
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.openFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -129,7 +131,9 @@ export function SkillsTab() {
       setResourceContent(null);
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("brain.skills.openFailed"));
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.openFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -161,7 +165,9 @@ export function SkillsTab() {
       setEditingId(null);
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("brain.skills.saveFailed"));
+      setError(
+        cause instanceof Error ? cause.message : t("brain.skills.saveFailed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -231,7 +237,11 @@ export function SkillsTab() {
                 </h2>
                 <StatusDot
                   tone={selectedSkill.enabled ? "success" : "neutral"}
-                  label={selectedSkill.enabled ? t("brain.skills.enabled") : t("brain.skills.disabled")}
+                  label={
+                    selectedSkill.enabled
+                      ? t("brain.skills.enabled")
+                      : t("brain.skills.disabled")
+                  }
                 />
               </div>
               <p className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-muted-foreground">
@@ -259,7 +269,10 @@ export function SkillsTab() {
                 </span>
               }
             />
-            <div className="rounded-xl border border-border/60 bg-card p-6" dir="ltr">
+            <div
+              className="rounded-xl border border-border/60 bg-card p-6"
+              dir="ltr"
+            >
               <div className="prose prose-sm dark:prose-invert max-w-none text-left leading-relaxed">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
@@ -319,7 +332,9 @@ export function SkillsTab() {
                 ) : (
                   <div className="flex flex-col items-center px-4 py-8 text-center text-muted-foreground">
                     <Folder className="mb-2 h-5 w-5 opacity-50" />
-                    <span className="text-xs">{t("brain.skills.noResources")}</span>
+                    <span className="text-xs">
+                      {t("brain.skills.noResources")}
+                    </span>
                   </div>
                 )}
               </div>
@@ -347,7 +362,10 @@ export function SkillsTab() {
                 </button>
               }
             />
-            <pre className="max-h-128 overflow-auto rounded-xl border border-border/60 bg-sandbox-bg p-5 text-left font-mono text-xs leading-5" dir="ltr">
+            <pre
+              className="max-h-128 overflow-auto rounded-xl border border-border/60 bg-sandbox-bg p-5 text-left font-mono text-xs leading-5"
+              dir="ltr"
+            >
               <HighlightedCode
                 code={resourceContent ?? t("brain.skills.loadingResource")}
                 filePath={selectedResource}
@@ -496,7 +514,12 @@ export function SkillsTab() {
           />
         </div>
         <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-          {t(filtered.length === 1 ? "brain.skills.count" : "brain.skills.countPlural", { count: filtered.length })}
+          {t(
+            filtered.length === 1
+              ? "brain.skills.count"
+              : "brain.skills.countPlural",
+            { count: filtered.length },
+          )}
         </span>
         <div className="flex-1" />
         <div className="flex items-center gap-2">
@@ -507,7 +530,9 @@ export function SkillsTab() {
             onClick={() => archiveRef.current?.click()}
           >
             <ArchiveRestore />
-            <span className="hidden md:inline">{t("brain.skills.importZip")}</span>
+            <span className="hidden md:inline">
+              {t("brain.skills.importZip")}
+            </span>
           </Button>
           <Button
             variant="secondary"
@@ -516,7 +541,9 @@ export function SkillsTab() {
             onClick={() => folderRef.current?.click()}
           >
             <FolderUp />
-            <span className="hidden md:inline">{t("brain.skills.importFolder")}</span>
+            <span className="hidden md:inline">
+              {t("brain.skills.importFolder")}
+            </span>
           </Button>
           <Button onClick={() => setDraft({ ...EMPTY })}>
             <Plus />
@@ -672,11 +699,13 @@ export function SkillsTab() {
       {!filtered.length && (
         <EmptyState
           icon={<Code2 />}
-          title={skills.length ? t("brain.skills.emptySearch") : t("brain.skills.empty")}
-          description={
+          title={
             skills.length
-              ? undefined
-              : t("brain.skills.emptyDescription")
+              ? t("brain.skills.emptySearch")
+              : t("brain.skills.empty")
+          }
+          description={
+            skills.length ? undefined : t("brain.skills.emptyDescription")
           }
           action={
             <Button onClick={() => setDraft({ ...EMPTY })}>
