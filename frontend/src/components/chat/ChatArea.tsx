@@ -212,6 +212,19 @@ export function ChatArea() {
       const capturedGeneration = ++streamGenerationRef.current;
       const terminalToolIds = new Set<string>();
       const streamedToolTypes = new Map<string, ToolCallResult["type"]>();
+      let thinkingStartedAt: number | null = null;
+
+      const finishInterruptedThinking = () => {
+        if (thinkingStartedAt === null) return;
+        const duration = Math.max(
+          1,
+          Math.round((Date.now() - thinkingStartedAt) / 1000),
+        );
+        useChatStore
+          .getState()
+          .finishThinkingBlock(capturedConvId, assistantMsgId, duration);
+        thinkingStartedAt = null;
+      };
 
       return {
         onToken: (token: string) =>
@@ -219,6 +232,7 @@ export function ChatArea() {
             .getState()
             .appendTextToken(capturedConvId, assistantMsgId, token),
         onThinkingStart: () => {
+          thinkingStartedAt = Date.now();
           useChatStore
             .getState()
             .startThinkingBlock(capturedConvId, assistantMsgId);
@@ -236,6 +250,7 @@ export function ChatArea() {
               assistantMsgId,
               durationSeconds,
             );
+          thinkingStartedAt = null;
         },
         onGenerationDone: (data: {
           thinkingDuration?: number;
@@ -502,6 +517,7 @@ export function ChatArea() {
           }
         },
         onInterrupted: () => {
+          finishInterruptedThinking();
           useChatStore
             .getState()
             .updateMessage(capturedConvId, assistantMsgId, {
@@ -509,6 +525,7 @@ export function ChatArea() {
             });
         },
         onError: (error: string) => {
+          finishInterruptedThinking();
           useChatStore
             .getState()
             .updateMessage(capturedConvId, assistantMsgId, {

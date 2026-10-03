@@ -38,6 +38,7 @@ class BlockBuilder:
         self.blocks: list[dict] = []
         self._current_text: dict | None = None
         self._current_thinking: dict | None = None
+        self._thinking_started_at: float | None = None
         self._tool_call_blocks: dict[str, dict] = {}  # tc_id -> block ref
         self.generation_duration: int = 0
         self.deliverables: list[dict] = []  # report/file deliverables for DB
@@ -47,11 +48,13 @@ class BlockBuilder:
 
     def _close_thinking(self):
         self._current_thinking = None
+        self._thinking_started_at = None
 
     def on_thinking_start(self):
         """Open a new thinking block (closes any open text block)."""
         self._close_text()
         self._current_thinking = {"type": "thinking", "content": "", "duration": None}
+        self._thinking_started_at = time.monotonic()
         self.blocks.append(self._current_thinking)
 
     def on_thinking_token(self, token: str):
@@ -62,6 +65,17 @@ class BlockBuilder:
         if self._current_thinking is not None:
             self._current_thinking["duration"] = duration
         self._close_thinking()
+
+    def finish_open_thinking(self) -> None:
+        """Finalize a thinking block when a stream ends without thinking_done."""
+        if self._current_thinking is None:
+            return
+        elapsed = (
+            round(time.monotonic() - self._thinking_started_at)
+            if self._thinking_started_at is not None
+            else 0
+        )
+        self.on_thinking_done(max(0, elapsed))
 
     def on_message_token(self, token: str):
         """Append a text token. Opens a new text block if needed."""
@@ -124,7 +138,7 @@ class BlockBuilder:
     def on_error(self, error: str):
         """Append an error block."""
         self._close_text()
-        self._close_thinking()
+        self.finish_open_thinking()
         self.blocks.append({"type": "error", "content": error})
 
     def get_text_content(self) -> str:

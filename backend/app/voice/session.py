@@ -866,6 +866,7 @@ class VoiceSession:
     ) -> None:
         """Persist (and announce) the assistant message — shared by the
         normal end-of-turn and the barge-in partial path."""
+        builder.finish_open_thinking()
         content = builder.get_text_content()
         if not builder.blocks:  # no meaningful text — nothing to persist
             return

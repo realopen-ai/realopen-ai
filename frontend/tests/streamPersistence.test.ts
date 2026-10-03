@@ -41,4 +41,6 @@ test("normal navigation after completion does not create a reconnect bubble", ()
 test("interrupted assistant messages render a durable badge", () => {
   assert.match(bubble, /message\.completionStatus === "interrupted"/);
   assert.match(bubble, /message\.interrupted/);
+  assert.match(chatArea, /const finishInterruptedThinking = \(\) =>/);
+  assert.match(chatArea, /onInterrupted: \(\) => \{\s*finishInterruptedThinking\(\)/);
 });

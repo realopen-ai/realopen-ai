@@ -253,6 +253,7 @@ async def _persist_assistant_snapshot(
     completion_status: str,
 ) -> uuid.UUID | None:
     """Create or update the single durable assistant row for a live turn."""
+    builder.finish_open_thinking()
     values = {
         "content": builder.get_text_content(),
         "blocks": builder.to_db_blocks(),
