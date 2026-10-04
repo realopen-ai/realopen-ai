@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:25.10
 
 ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PATH=/home/ubuntu/.local/bin:/root/.local/bin:/workspace/.venv/bin:$PATH
