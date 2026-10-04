@@ -90,7 +90,7 @@ jobs:
           test "$(poetry run alembic heads | grep -c '(head)')" -eq 1
           poetry run alembic history >/dev/null
       - name: Run backend tests
-        run: poetry run pytest -q
+        run: poetry run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=80
 
   validation:
     name: Configuration validation

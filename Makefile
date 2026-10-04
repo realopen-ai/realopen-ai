@@ -184,3 +184,23 @@ pull-module-models:
 reset-setup:
 	@rm -f data/.setup-complete
 	@echo "Setup marker removed. Run 'make setup' or restart the app to go through setup again."
+
+# ── Tests (local dependencies required; no running Ollama needed) ──
+# Install with: cd backend && poetry install --with dev
+#               cd frontend && npm ci
+# Optional filters: make test-backend PYTEST_ARGS='tests/test_core_metrics.py'
+PYTEST_ARGS ?=
+COVERAGE_MIN ?= 80
+
+.PHONY: test-backend test-frontend test coverage
+test-backend:
+	cd backend && poetry run pytest -q $(PYTEST_ARGS)
+
+test-frontend:
+	cd frontend && npm test
+
+test: test-backend test-frontend
+
+# Backend coverage gate, matching CI; frontend currently has no coverage gate.
+coverage:
+	cd backend && poetry run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN) $(PYTEST_ARGS)

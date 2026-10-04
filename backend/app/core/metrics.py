@@ -40,6 +40,14 @@ chat_streaming_tokens_per_second = Gauge(
     ["model"],
 )
 
+# In-flight chat requests. A Counter cannot be decremented (prometheus_client
+# removed Counter.dec), so running requests are tracked with a Gauge.
+chat_requests_running = Gauge(
+    "realopen_chat_requests_running",
+    "Currently in-flight chat requests",
+    ["model"],
+)
+
 
 # ── Tool call metrics ─────────────────────────────────────────────
 
@@ -171,15 +179,15 @@ def track_chat_request(model: str):
     """Track a chat request: duration, status, active model."""
     start = time.monotonic()
     status = "success"
+    chat_requests_running.labels(model=model).inc()
     try:
-        chat_requests_total.labels(model=model, status="running").inc()
         yield
     except Exception:
         status = "error"
         raise
     finally:
         elapsed = time.monotonic() - start
-        chat_requests_total.labels(model=model, status="running").dec()
+        chat_requests_running.labels(model=model).dec()
         chat_requests_total.labels(model=model, status=status).inc()
         chat_duration_seconds.labels(model=model).observe(elapsed)
 

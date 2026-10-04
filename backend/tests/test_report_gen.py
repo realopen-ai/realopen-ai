@@ -215,7 +215,7 @@ def _pdf_stack_available() -> bool:
         import weasyprint  # noqa: F401
 
         return True
-    except ImportError:
+    except (ImportError, OSError):
         return False
 
 
@@ -229,7 +229,8 @@ def _fitz_available() -> bool:
 
 
 PDF_GATED = pytest.mark.skipif(
-    not _pdf_stack_available(), reason="weasyprint/markdown not installed"
+    not _pdf_stack_available(),
+    reason="PDF Python packages or WeasyPrint native libraries unavailable",
 )
 FITZ_GATED = pytest.mark.skipif(not _fitz_available(), reason="PyMuPDF not installed")
 
@@ -531,6 +532,7 @@ def test_docx_inline_formatting(tmp_path):
 
 
 @pytest.mark.asyncio
+@PDF_GATED
 async def test_generate_report_pdf_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(report_gen, "_generate_markdown", _fake_markdown)
     monkeypatch.setattr(report_gen, "_get_reports_dir", lambda: tmp_path)
@@ -561,6 +563,7 @@ async def test_generate_report_docx_contract(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@PDF_GATED
 async def test_generate_report_invalid_format_defaults_pdf(tmp_path, monkeypatch):
     monkeypatch.setattr(report_gen, "_generate_markdown", _fake_markdown)
     monkeypatch.setattr(report_gen, "_get_reports_dir", lambda: tmp_path)

@@ -1045,7 +1045,7 @@ async def chat_stream_multipart(
                 model=_resolved_model, status="success"
             ).inc()
             token_estimate = len(full_assistant_content) + sum(
-                len(m.get("content", "")) for m in messages
+                len(m.get("content", "")) for m in parsed_messages
             )
             app_metrics.chat_tokens_total.labels(model=_resolved_model).inc(
                 int(token_estimate * 0.4)

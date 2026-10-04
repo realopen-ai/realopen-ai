@@ -351,7 +351,10 @@ class PocketTtsEngine(TtsProvider):
 
     def _import_voice_state_from_file(self, get_state: Any, voice_file: Path) -> Any:
         for args, kwargs in (
-            ((str(voice_file)), {}),
+            # NOTE: ((str(voice_file),), {}) — the inner tuple needs its
+            # comma; ((str(voice_file)), {}) is just (str, {}) and would
+            # splat the PATH STRING character-by-character into *args.
+            ((str(voice_file),), {}),
             ((), {"voice": str(voice_file)}),
             ((), {"audio_conditioning": str(voice_file)}),
         ):
