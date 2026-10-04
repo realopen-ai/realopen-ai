@@ -30,11 +30,7 @@ const log = createDebugLogger("documentsClient");
 
 export type DocumentScope = "private" | "public";
 export type DigestionStatus =
-  | "pending"
-  | "digesting"
-  | "ready"
-  | "failed"
-  | "not_indexed";
+  "pending" | "digesting" | "ready" | "failed" | "not_indexed";
 
 export interface DocumentChunkDTO {
   id: string;
