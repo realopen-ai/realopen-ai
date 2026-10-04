@@ -400,8 +400,24 @@ class Qwen3AsrEngine(AsrProvider):
                 pipe = hf_pipeline(
                     "automatic-speech-recognition", model=source, **load_kwargs
                 )
-                return _LoadedModel(processor, None, pipe, torch, str(source))
-            return _LoadedModel(processor, model, None, torch, str(source))
+                # keyword args: _LoadedModel's first positional slot is
+                # ``qwen_asr`` — passing (processor, None, pipe, torch, src)
+                # positionally wired the processor into the qwen_asr slot
+                # and every transcription then failed with AttributeError.
+                return _LoadedModel(
+                    processor=processor,
+                    model=None,
+                    pipeline=pipe,
+                    torch=torch,
+                    source=str(source),
+                )
+            return _LoadedModel(
+                processor=processor,
+                model=model,
+                pipeline=None,
+                torch=torch,
+                source=str(source),
+            )
         except AsrError:
             raise
         except Exception as e:
