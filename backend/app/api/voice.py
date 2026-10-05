@@ -103,7 +103,8 @@ async def put_voice_settings(request: VoiceSettingsRequest):
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Could not prepare voice: {exc}") from exc
+        logger.exception("Voice preparation failed")
+        raise HTTPException(502, "Could not prepare voice. Check server logs.") from exc
 
 
 @router.get("/voice/voices")
@@ -169,7 +170,8 @@ async def upload_voice(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, f"Could not import voice: {exc}") from exc
+        logger.exception("Voice import failed")
+        raise HTTPException(502, "Could not import voice. Check server logs.") from exc
 
 
 def _side_missing(label: str, side: dict) -> Optional[str]:
@@ -219,12 +221,13 @@ async def get_voice_status():
                 "runtime": "host-native",
             }
         except Exception as exc:
+            logger.warning("Host voice runtime unavailable: %s", exc)
             return {
                 "ready": False,
                 "enabled": settings.VOICE_ENABLED,
                 "asr": {"valid": False, "reason": "host_runtime_unavailable"},
                 "tts": {"valid": False, "reason": "host_runtime_unavailable"},
-                "missing": [f"Host voice runtime: {exc}"],
+                "missing": ["Host voice runtime unavailable. Check server logs."],
                 "runtime": "host-native",
             }
     status = models_store.voice_dependency_status()

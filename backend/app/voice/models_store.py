@@ -495,7 +495,7 @@ def _missing_runtime_entries() -> list:
         return voice_runtime_entries()
     except Exception as e:  # noqa: BLE001 — status must remain available
         logger.debug("voice runtime readiness probe failed: %s", e)
-        return [{"id": "unknown", "description": str(e)}]
+        return [{"id": "unknown", "description": "Voice runtime dependencies unavailable"}]
 
 
 # ── installer hooks (optional; probed via getattr by the installer) ──
