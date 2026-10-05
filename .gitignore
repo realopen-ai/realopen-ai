@@ -68,3 +68,4 @@ backend/app/templates/pptx/custom/
 
 # Data directory
 data/
+state/
