@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from unittest.mock import AsyncMock
 from fastapi import FastAPI
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -61,6 +62,35 @@ def sse_events(body: str):
         if frame.startswith("data: "):
             events.append(json.loads(frame[6:]))
     return events
+
+
+@pytest.mark.asyncio
+async def test_persistent_install_failure_does_not_disclose_exception(monkeypatch):
+    from app.services import deps_manager, pip_persistence
+
+    async def broken_install(*args):
+        raise RuntimeError("private-token /private/server/path")
+        yield  # make this an async generator
+
+    process = SimpleNamespace(
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=b"")),
+        wait=AsyncMock(return_value=1),
+        returncode=1,
+    )
+    monkeypatch.setattr(pip_persistence, "pip_install_persistent", broken_install)
+    monkeypatch.setattr(
+        deps_manager.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+    )
+    events = [
+        event async for event in deps_manager._install_pip(
+            make_dep(kind="pip", pip_name="example")
+        )
+    ]
+    output = json.dumps(events)
+    assert "plain pip fallback" in output
+    assert "private-token" not in output
+    assert "/private/server/path" not in output
+    assert events[-1]["stage"] == "error"
 
 
 @pytest.fixture

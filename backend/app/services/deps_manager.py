@@ -583,10 +583,11 @@ async def _install_pip(
                     if progress_callback:
                         progress_callback(event)
                     yield event
-        except Exception as e:  # noqa: BLE001 — fall back to plain pip
+        except Exception:  # noqa: BLE001 — fall back to plain pip
+            logger.exception("Persistent dependency installation failed")
             yield {
                 "stage": "installing",
-                "output": f"persistent install failed ({e}) — plain pip fallback",
+                "output": "Persistent install failed — plain pip fallback. Check server logs.",
             }
             failed = True
         if not failed:

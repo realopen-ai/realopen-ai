@@ -4,26 +4,39 @@ Reject symlinks in every relative component, including dangling links. This
 guards against pre-existing links, not concurrent mutation by a hostile OS user.
 """
 
+import os
 from pathlib import Path
 
 
 def confined_path(root: Path, relative: str | Path) -> Path:
-    root = Path(root).absolute()
+    root = Path(os.path.abspath(root))
     relative = Path(relative)
-    if relative.is_absolute() or ".." in relative.parts:
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
         raise ValueError("Unsafe file path")
-    target = root / relative
+    # Normalize BEFORE prefix validation. Include the trailing separator so
+    # /storage-extra never passes a check against /storage. Keep this explicit:
+    # security analyzers recognize abspath/realpath + startswith as a guard.
+    target_name = os.path.abspath(os.path.join(str(root), str(relative)))
+    root_prefix = os.path.join(str(root), "")
+    if not target_name.startswith(root_prefix):
+        raise ValueError("File path escapes storage directory")
+    target = Path(target_name)
     # Check the root too: application storage must not itself be redirected.
     current = root
     if current.is_symlink():
         raise ValueError("Symbolic links are not allowed")
     for part in relative.parts:
-        current = current / part
+        current_name = os.path.abspath(os.path.join(str(current), part))
+        if not current_name.startswith(root_prefix):
+            raise ValueError("File path escapes storage directory")
+        current = Path(current_name)
         if current.is_symlink():
             raise ValueError("Symbolic links are not allowed")
-    if not target.resolve().is_relative_to(root.resolve()):
+    resolved_name = os.path.realpath(target)
+    resolved_prefix = os.path.join(os.path.realpath(root), "")
+    if not resolved_name.startswith(resolved_prefix):
         raise ValueError("File path escapes storage directory")
-    return target
+    return Path(resolved_name)
 
 
 def bounded_text(path: Path, limit: int) -> str:
