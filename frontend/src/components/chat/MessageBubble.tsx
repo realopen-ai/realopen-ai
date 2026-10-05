@@ -18,6 +18,11 @@ import {
   FileType,
   Mic,
   XCircle,
+  Pause,
+  Play,
+  Square,
+  RotateCcw,
+  RotateCw,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -38,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { formatCodeExecOutput } from "@/lib/codeExecOutput";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
+import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -1147,7 +1153,15 @@ export function MessageBubble({
 }) {
   const [copied, setCopied] = useState(false);
   const [isReading, setIsReading] = useState(false);
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [readingState, setReadingState] = useState<ReadingState>({
+    loading: true,
+    paused: false,
+    canSeek: false,
+    speed: 1,
+  });
+  const translate = useT();
+  const speechRef = useRef<ReadAloudPlayer | null>(null);
+  useEffect(() => () => speechRef.current?.stop(), []);
   const isAssistant = message.role === "assistant";
 
   // PPTX viewer modal state
@@ -1183,24 +1197,19 @@ export function MessageBubble({
   }, [message.content]);
 
   const handleReadAloud = useCallback(() => {
-    if (!("speechSynthesis" in window)) return;
-
     if (isReading) {
-      window.speechSynthesis.cancel();
+      speechRef.current?.stop();
       setIsReading(false);
       return;
     }
 
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(message.content);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.onend = () => setIsReading(false);
-    utterance.onerror = () => setIsReading(false);
-    speechRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
+    speechRef.current ??= new ReadAloudPlayer();
     setIsReading(true);
+    void speechRef.current.play(
+      message.content,
+      () => setIsReading(false),
+      setReadingState,
+    );
   }, [message.content, isReading]);
 
   const handleRegenerate = useCallback(() => {
@@ -1399,7 +1408,7 @@ export function MessageBubble({
 
       {/* Action icons + response time — quiet meta row under the content */}
       {!message.isStreaming && hasContent && (
-        <div className="flex items-center gap-0.5 mt-2">
+        <div className="flex flex-wrap items-center gap-0.5 mt-2">
           <button
             onClick={handleCopy}
             className="p-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
@@ -1420,11 +1429,93 @@ export function MessageBubble({
                 ? "text-primary bg-primary/10"
                 : "text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover",
             )}
-            title={isReading ? "Stop reading" : "Read aloud"}
-            aria-label={isReading ? "Stop reading" : "Read aloud"}
+            title={translate(isReading ? "reading.stop" : "reading.start")}
+            aria-label={translate(isReading ? "reading.stop" : "reading.start")}
           >
             <Volume2 className="w-3.5 h-3.5" />
           </button>
+          {isReading && (
+            <div
+              role="group"
+              aria-label={translate("reading.controls")}
+              className="inline-flex h-6.5 items-center gap-0.5 text-muted-foreground/70"
+            >
+              {readingState.loading && (
+                <Loader2
+                  aria-label={translate("reading.loading")}
+                  className="w-3.5 h-3.5 animate-spin text-muted-foreground"
+                />
+              )}
+              <button
+                className="inline-flex h-6.5 items-center gap-0.5 px-1.5 rounded-md hover:text-foreground hover:bg-surface-hover disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                disabled={readingState.loading || !readingState.canSeek}
+                title={translate(
+                  readingState.canSeek ? "reading.back" : "reading.noSeek",
+                )}
+                aria-label={translate("reading.back")}
+                onClick={() => speechRef.current?.seek(-5)}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span className="text-[9px]">5s</span>
+              </button>
+              <button
+                className="inline-flex h-6.5 items-center p-1.5 rounded-md hover:text-foreground hover:bg-surface-hover disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                disabled={readingState.loading}
+                title={translate(
+                  readingState.paused ? "reading.resume" : "reading.pause",
+                )}
+                aria-label={translate(
+                  readingState.paused ? "reading.resume" : "reading.pause",
+                )}
+                onClick={() => void speechRef.current?.togglePause()}
+              >
+                {readingState.paused ? (
+                  <Play className="w-3.5 h-3.5" />
+                ) : (
+                  <Pause className="w-3.5 h-3.5" />
+                )}
+              </button>
+              <button
+                className="inline-flex h-6.5 items-center gap-0.5 px-1.5 rounded-md hover:text-foreground hover:bg-surface-hover disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                disabled={readingState.loading || !readingState.canSeek}
+                title={translate(
+                  readingState.canSeek ? "reading.forward" : "reading.noSeek",
+                )}
+                aria-label={translate("reading.forward")}
+                onClick={() => speechRef.current?.seek(5)}
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+                <span className="text-[9px]">5s</span>
+              </button>
+              <button
+                className="inline-flex h-6.5 items-center p-1.5 rounded-md hover:text-foreground hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                title={translate("reading.stop")}
+                aria-label={translate("reading.stop")}
+                onClick={() => speechRef.current?.stop()}
+              >
+                <Square className="w-3.5 h-3.5" />
+              </button>
+              <select
+                className="h-6.5 bg-transparent text-[11px] rounded-md px-1 hover:text-foreground disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                aria-label={translate("reading.speed")}
+                title={translate(
+                  readingState.canSeek ? "reading.speed" : "reading.noSeek",
+                )}
+                disabled={readingState.loading || !readingState.canSeek}
+                value={readingState.speed}
+                onChange={(event) =>
+                  speechRef.current?.setSpeed(Number(event.target.value))
+                }
+              >
+                {readingState.speed === 0.5 && (
+                  <option value={0.5}>×0.5</option>
+                )}
+                <option value={1}>×1</option>
+                <option value={1.5}>×1.5</option>
+                <option value={2}>×2</option>
+              </select>
+            </div>
+          )}
           <button
             onClick={handleRegenerate}
             className="p-1.5 rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
