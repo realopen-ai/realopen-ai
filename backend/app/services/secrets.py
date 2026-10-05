@@ -35,7 +35,7 @@ def _state_dir() -> Path:
 def _secret_path(scope: str, field: str) -> Optional[Path]:
     """Path of a secret file, or None when the names are unsafe."""
     if not _SAFE_NAME.match(scope) or not _SAFE_NAME.match(field):
-        logger.warning("Unsafe secret scope/field rejected: %r/%r", scope, field)
+        logger.warning("Unsafe secret scope/field rejected")
         return None
     return _state_dir() / "tool_secrets" / scope / field
 
@@ -68,7 +68,7 @@ def set_secret(scope: str, field: str, value: str) -> bool:
             pass
         return True
     except OSError as e:
-        logger.error("Failed to store secret %s/%s: %s", scope, field, e)
+        logger.error("Failed to store secret: %s", e)
         return False
 
 
