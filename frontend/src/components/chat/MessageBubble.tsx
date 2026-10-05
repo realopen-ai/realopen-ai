@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { formatCodeExecOutput } from "@/lib/codeExecOutput";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
+import { ReadAloudPlayer } from "@/voice/readAloud";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -1147,7 +1148,8 @@ export function MessageBubble({
 }) {
   const [copied, setCopied] = useState(false);
   const [isReading, setIsReading] = useState(false);
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speechRef = useRef<ReadAloudPlayer | null>(null);
+  useEffect(() => () => speechRef.current?.stop(), []);
   const isAssistant = message.role === "assistant";
 
   // PPTX viewer modal state
@@ -1183,24 +1185,15 @@ export function MessageBubble({
   }, [message.content]);
 
   const handleReadAloud = useCallback(() => {
-    if (!("speechSynthesis" in window)) return;
-
     if (isReading) {
-      window.speechSynthesis.cancel();
+      speechRef.current?.stop();
       setIsReading(false);
       return;
     }
 
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(message.content);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.onend = () => setIsReading(false);
-    utterance.onerror = () => setIsReading(false);
-    speechRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
+    speechRef.current ??= new ReadAloudPlayer();
     setIsReading(true);
+    void speechRef.current.play(message.content, () => setIsReading(false));
   }, [message.content, isReading]);
 
   const handleRegenerate = useCallback(() => {

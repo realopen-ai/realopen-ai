@@ -24,10 +24,14 @@ GET /api/setup/status → ``voice`` summary (app/services/voice_model_installer)
 """
 
 import logging
+import asyncio
+import io
+import wave
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel, Field
 import httpx
 
 from app.config import settings
@@ -37,6 +41,51 @@ from app.services import model_prefs, voice_settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class ReadAloudRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20000)
+
+
+@router.post("/voice/speech")
+async def read_aloud(request: ReadAloudRequest):
+    """Render message audio with the voice-call provider and saved voice."""
+    from app.voice.tts import create_tts_engine
+
+    if not settings.VOICE_ENABLED:
+        raise HTTPException(503, "Voice is disabled")
+    if not request.text.strip():
+        raise HTTPException(400, "Speech text is empty")
+    selected = voice_settings.get()
+    spec = settings.get_voice_config().tts
+    engine = None
+    try:
+        engine = create_tts_engine(SimpleNamespace(
+            provider=spec.provider, model=spec.model, voice=selected["voice"],
+        ))
+        pcm = bytearray()
+        async with asyncio.timeout(120):
+            async for chunk in engine.synthesize(request.text):
+                if len(pcm) + len(chunk) > 32 * 1024 * 1024:
+                    raise ValueError("Speech audio limit exceeded")
+                pcm.extend(chunk)
+        if not pcm or len(pcm) % 2:
+            raise ValueError("Invalid speech audio")
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(settings.VOICE_TTS_SAMPLE_RATE)
+            wav.writeframes(pcm)
+        return Response(audio.getvalue(), media_type="audio/wav", headers={
+            "X-Playback-Speed": str(selected["speed"]), "Cache-Control": "no-store",
+        })
+    except Exception as exc:
+        logger.exception("Read aloud synthesis failed")
+        raise HTTPException(502, "Speech unavailable") from exc
+    finally:
+        if engine is not None:
+            await engine.cancel()
 
 
 @router.post("/voice/transcribe")
