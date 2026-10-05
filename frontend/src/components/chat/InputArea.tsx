@@ -15,6 +15,8 @@ import {
   FileText,
   PhoneCall,
   Square,
+  Mic,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +28,8 @@ import { useChatStore } from "@/store/chatStore";
 import { t } from "@/store/settingsStore";
 import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
+import { DictationRecorder, appendDictation } from "@/voice/dictation";
+import { DictationWaveform, WAVEFORM_BARS } from "./DictationWaveform";
 
 // ─── Slash Command Definitions ────────────────────────────────────
 
@@ -234,6 +238,85 @@ export function InputArea({
   onStopResponse: () => void;
 }) {
   const [input, setInput] = useState("");
+  const dictationConversation = useChatStore((s) => s.activeConversationId);
+  const [dictation, setDictation] = useState<
+    "idle" | "starting" | "recording" | "transcribing"
+  >("idle");
+  const [dictationError, setDictationError] = useState(false);
+  const [dictationLevels, setDictationLevels] = useState<number[]>(
+    Array(WAVEFORM_BARS).fill(0),
+  );
+  const dictationRef = useRef<DictationRecorder | null>(null);
+  const dictationAbort = useRef<AbortController | null>(null);
+  const dictationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dictationMounted = useRef(true);
+  useEffect(() => {
+    dictationMounted.current = true;
+    setDictation("idle");
+    setDictationError(false);
+    return () => {
+      dictationMounted.current = false;
+      dictationRef.current?.dispose();
+      dictationRef.current = null;
+      dictationAbort.current?.abort();
+      if (dictationTimer.current) clearTimeout(dictationTimer.current);
+    };
+  }, [dictationConversation]);
+  const stopDictation = async () => {
+    if (dictationTimer.current) clearTimeout(dictationTimer.current);
+    setDictation("transcribing");
+    const controller = new AbortController();
+    const recorder = dictationRef.current;
+    dictationAbort.current = controller;
+    try {
+      const pcm = await recorder!.stop();
+      const response = await fetch("/api/voice/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: pcm,
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("Transcription failed");
+      const result = await response.json();
+      if (dictationMounted.current && !controller.signal.aborted) {
+        setInput((draft) => appendDictation(draft, String(result.text ?? "")));
+        textareaRef.current?.focus();
+      }
+    } catch {
+      if (dictationMounted.current && !controller.signal.aborted)
+        setDictationError(true);
+    } finally {
+      recorder?.dispose();
+      if (dictationMounted.current && dictationRef.current === recorder)
+        setDictation("idle");
+    }
+  };
+  const toggleDictation = async () => {
+    if (dictation === "recording") return stopDictation();
+    if (dictation !== "idle") return;
+    setDictationError(false);
+    setDictation("starting");
+    setDictationLevels(Array(WAVEFORM_BARS).fill(0));
+    const recorder = new DictationRecorder((level) => {
+      if (dictationMounted.current && dictationRef.current === recorder) {
+        setDictationLevels((levels) => [...levels.slice(1), level]);
+      }
+    });
+    dictationRef.current = recorder;
+    try {
+      await recorder.start();
+      if (!dictationMounted.current || dictationRef.current !== recorder)
+        return;
+      setDictation("recording");
+      dictationTimer.current = setTimeout(() => void stopDictation(), 300000);
+    } catch {
+      recorder.dispose();
+      if (dictationMounted.current && dictationRef.current === recorder) {
+        setDictationError(true);
+        setDictation("idle");
+      }
+    }
+  };
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [attachments, setAttachments] = useState<AttachedFile[]>([]);
@@ -353,6 +436,7 @@ export function InputArea({
   };
 
   const handleSend = () => {
+    if (dictation !== "idle") return;
     const trimmed = input.trim();
     if ((!trimmed && attachments.length === 0) || isStreaming) return;
 
@@ -456,8 +540,31 @@ export function InputArea({
   const hasImages = attachments.some((a) => a.type === "image");
 
   return (
-    <div className="px-4 pb-4 pt-2 sm:px-6">
+    <div className="px-4 pb-4 pt-12 sm:px-6">
       <div className="max-w-210 mx-auto relative">
+        {voiceState === "inactive" && (
+          <Button
+            onClick={onStartVoice}
+            disabled={voiceSetupDisabled || dictation !== "idle"}
+            aria-label={voiceDisabledReason ?? t("voice.call.start")}
+            title={voiceDisabledReason ?? t("voice.call.start")}
+            className="absolute -top-11 right-0 h-9 w-9 rounded-full bg-primary text-primary-foreground shadow-lg cursor-pointer hover:bg-primary/90"
+            size="icon-sm"
+          >
+            <PhoneCall className="h-4 w-4" />
+          </Button>
+        )}
+        {(dictation !== "idle" || dictationError) && (
+          <p
+            role="status"
+            aria-live="polite"
+            className="mb-2 text-xs text-muted-foreground"
+          >
+            {dictationError
+              ? t("input.dictation.error")
+              : t(`input.dictation.${dictation}`)}
+          </p>
+        )}
         {/* Slash Command Menu */}
         {showSlashMenu && filteredCommands.length > 0 && (
           <SlashCommandMenu
@@ -483,22 +590,29 @@ export function InputArea({
           )}
 
           {/* Textarea — comfortable padding, autosizing */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              hasImages
-                ? "Describe what you see in the image..."
-                : t("input.placeholder")
-            }
-            className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none px-4 pt-3.5 pb-1.5 min-h-13 max-h-45 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ fontSize: "var(--app-font-size)" }}
-            rows={1}
-            disabled={isStreaming}
-            aria-label={t("input.placeholder")}
-          />
+          {dictation === "recording" || dictation === "transcribing" ? (
+            <DictationWaveform
+              levels={dictationLevels}
+              transcribing={dictation === "transcribing"}
+            />
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                hasImages
+                  ? "Describe what you see in the image..."
+                  : t("input.placeholder")
+              }
+              className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none px-4 pt-3.5 pb-1.5 min-h-13 max-h-45 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
+              style={{ fontSize: "var(--app-font-size)" }}
+              rows={1}
+              disabled={isStreaming}
+              aria-label={t("input.placeholder")}
+            />
+          )}
 
           {/* Control row — inside the composer surface, no mini-borders */}
           <div className="flex items-center gap-1 px-2 pb-2.5 pt-1">
@@ -635,16 +749,39 @@ export function InputArea({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    onClick={onStartVoice}
-                    disabled={voiceSetupDisabled}
-                    aria-label={voiceDisabledReason ?? t("voice.call.start")}
-                    className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
+                    onClick={() => void toggleDictation()}
+                    disabled={
+                      isStreaming ||
+                      dictation === "starting" ||
+                      dictation === "transcribing" ||
+                      readiness?.enabled === false
+                    }
+                    aria-label={
+                      dictation === "recording"
+                        ? t("input.dictation.stop")
+                        : t("input.dictation.start")
+                    }
+                    className={cn(
+                      "shrink-0",
+                      dictation === "recording"
+                        ? "text-destructive animate-pulse"
+                        : "text-muted-foreground/80",
+                    )}
                   >
-                    <PhoneCall className="h-4 w-4" />
+                    {dictation === "starting" ||
+                    dictation === "transcribing" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : dictation === "recording" ? (
+                      <Square className="h-4 w-4" />
+                    ) : (
+                      <Mic className="h-4 w-4" />
+                    )}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  {voiceDisabledReason ?? t("voice.call.start")}
+                  {dictation === "recording"
+                    ? t("input.dictation.stop")
+                    : t("input.dictation.start")}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -653,7 +790,9 @@ export function InputArea({
             <Button
               onClick={isStreaming ? onStopResponse : handleSend}
               disabled={
-                !isStreaming && !input.trim() && attachments.length === 0
+                !isStreaming &&
+                (dictation !== "idle" ||
+                  (!input.trim() && attachments.length === 0))
               }
               aria-label={
                 isStreaming ? t("input.stopResponse") : t("input.send")

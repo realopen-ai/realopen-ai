@@ -1,4 +1,10 @@
 {
+  "input.dictation.start": "إملاء رسالة",
+  "input.dictation.stop": "إيقاف التسجيل",
+  "input.dictation.starting": "جارٍ فتح الميكروفون…",
+  "input.dictation.recording": "جارٍ التسجيل… اضغط على زر الميكروفون للإنهاء.",
+  "input.dictation.transcribing": "جارٍ تحويل الصوت إلى نص…",
+  "input.dictation.error": "تعذر تحويل الصوت إلى نص. تحقق من أذونات الميكروفون وخدمة الصوت ثم حاول مجددًا.",
   "sidebar.chats": "المحادثات",
   "sidebar.newChat": "محادثة جديدة",
   "sidebar.noConversations": "لا توجد محادثات بعد",
