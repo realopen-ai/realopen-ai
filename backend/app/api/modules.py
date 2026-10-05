@@ -412,10 +412,11 @@ async def install_module(request: InstallModuleRequest):
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
             except Exception as e:
+                logger.exception("Model installation failed: %s", e)
                 payload = {
                     "event": "pull_error",
                     "model": model.id,
-                    "error": str(e)[:200],
+                    "error": "Model installation failed. Check server logs.",
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
 

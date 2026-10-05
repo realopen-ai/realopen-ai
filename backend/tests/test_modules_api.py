@@ -630,7 +630,8 @@ async def test_install_unexpected_error_yields_pull_error(client, env):
     )
     events = sse_events(r.text)
     pull_error = [ev for ev in events if ev["event"] == "pull_error"][0]
-    assert "ollama exploded" in pull_error["error"]
+    assert pull_error["error"] == "Model installation failed. Check server logs."
+    assert "ollama exploded" not in r.text
     assert events[-1]["event"] == "install_complete"
 
 
