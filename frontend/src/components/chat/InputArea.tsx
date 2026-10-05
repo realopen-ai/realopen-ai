@@ -29,6 +29,7 @@ import { t } from "@/store/settingsStore";
 import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 import { DictationRecorder, appendDictation } from "@/voice/dictation";
+import { DictationWaveform, WAVEFORM_BARS } from "./DictationWaveform";
 
 // ─── Slash Command Definitions ────────────────────────────────────
 
@@ -242,6 +243,9 @@ export function InputArea({
     "idle" | "starting" | "recording" | "transcribing"
   >("idle");
   const [dictationError, setDictationError] = useState(false);
+  const [dictationLevels, setDictationLevels] = useState<number[]>(
+    Array(WAVEFORM_BARS).fill(0),
+  );
   const dictationRef = useRef<DictationRecorder | null>(null);
   const dictationAbort = useRef<AbortController | null>(null);
   const dictationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -292,7 +296,12 @@ export function InputArea({
     if (dictation !== "idle") return;
     setDictationError(false);
     setDictation("starting");
-    const recorder = new DictationRecorder();
+    setDictationLevels(Array(WAVEFORM_BARS).fill(0));
+    const recorder = new DictationRecorder((level) => {
+      if (dictationMounted.current && dictationRef.current === recorder) {
+        setDictationLevels((levels) => [...levels.slice(1), level]);
+      }
+    });
     dictationRef.current = recorder;
     try {
       await recorder.start();
@@ -581,22 +590,29 @@ export function InputArea({
           )}
 
           {/* Textarea — comfortable padding, autosizing */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              hasImages
-                ? "Describe what you see in the image..."
-                : t("input.placeholder")
-            }
-            className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none px-4 pt-3.5 pb-1.5 min-h-13 max-h-45 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ fontSize: "var(--app-font-size)" }}
-            rows={1}
-            disabled={isStreaming}
-            aria-label={t("input.placeholder")}
-          />
+          {dictation === "recording" || dictation === "transcribing" ? (
+            <DictationWaveform
+              levels={dictationLevels}
+              transcribing={dictation === "transcribing"}
+            />
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                hasImages
+                  ? "Describe what you see in the image..."
+                  : t("input.placeholder")
+              }
+              className="w-full resize-none bg-transparent text-foreground placeholder:text-muted-foreground/70 focus:outline-none px-4 pt-3.5 pb-1.5 min-h-13 max-h-45 leading-relaxed disabled:cursor-not-allowed disabled:opacity-60"
+              style={{ fontSize: "var(--app-font-size)" }}
+              rows={1}
+              disabled={isStreaming}
+              aria-label={t("input.placeholder")}
+            />
+          )}
 
           {/* Control row — inside the composer surface, no mini-borders */}
           <div className="flex items-center gap-1 px-2 pb-2.5 pt-1">

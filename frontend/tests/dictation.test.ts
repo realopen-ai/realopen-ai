@@ -4,7 +4,17 @@ import {
   appendDictation,
   encodePcm,
   DictationRecorder,
+  microphoneLevel,
 } from "../src/voice/dictation.ts";
+
+test("waveform reflects measured speech energy, not synthetic animation", () => {
+  assert.equal(microphoneLevel(new Float32Array(2048)), 0);
+  assert.equal(microphoneLevel(new Float32Array()), 0);
+  const quiet = microphoneLevel(new Float32Array([0.01, -0.01]));
+  const speech = microphoneLevel(new Float32Array([0.1, -0.1]));
+  assert.ok(speech > quiet);
+  assert.equal(microphoneLevel(new Float32Array([1, -1])), 1);
+});
 
 test("dictation preserves drafts and ignores empty transcripts", () => {
   assert.equal(appendDictation("Hello", " world "), "Hello world");
