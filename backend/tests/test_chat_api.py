@@ -775,7 +775,8 @@ async def test_stream_agent_error_yields_error_event(client, env):
     )
     assert r.status_code == 200
     body = r.text
-    assert "agent exploded" in body
+    assert "Response generation failed" in body
+    assert "agent exploded" not in body
     events = sse_events(body)
 
     # snapshot persisted with completion_status="error" via a fresh insert
@@ -809,7 +810,7 @@ async def test_stream_memory_extraction_failure_reports_error(client, env):
         "event": "memory_extraction_done",
         "count": 0,
         "ran": False,
-        "error": "watermark read failed",
+        "error": "Memory extraction failed. Check server logs.",
     }
     # summarization still attempted afterwards (non-fatal)
     assert env.summarize_calls
@@ -1065,7 +1066,8 @@ async def test_multipart_digest_failure_yields_error_event(client, env):
     events = sse_events(r.text)
     errors = [ev for ev in events if ev.get("event") == "document_digest_error"]
     assert errors and errors[0]["filename"] == "broken.pdf"
-    assert "bad pdf" in errors[0]["error"]
+    assert errors[0]["error"] == "Document processing failed. Check server logs."
+    assert "bad pdf" not in r.text
     # no digest_done and no hint injected
     assert not [ev for ev in events if ev.get("event") == "document_digest_done"]
     assert "rag_search" not in env.agent_calls[0]["messages"][-1]["content"]
@@ -1135,7 +1137,8 @@ async def test_multipart_agent_exception_yields_error_event(client, env):
             "conversation_id": str(CONV_ID),
         },
     )
-    assert "multipart agent exploded" in r.text
+    assert "Response generation failed" in r.text
+    assert "multipart agent exploded" not in r.text
     # no generation_done arrived → snapshot is a fresh insert, not an update
     assistant = [c for c in env.persists if c["role"] == "assistant"]
     assert assistant[-1]["completion_status"] == "error"
@@ -1176,7 +1179,8 @@ async def test_multipart_memory_extraction_failure_reports_error(client, env):
     failed = [
         ev for ev in sse_events(r.text) if ev.get("event") == "memory_extraction_done"
     ]
-    assert failed and failed[0]["error"] == "watermark read failed"
+    assert failed and failed[0]["error"] == "Memory extraction failed. Check server logs."
+    assert "watermark read failed" not in r.text
     assert env.summarize_calls  # summarization still attempted (non-fatal)
     assert r.text.rstrip().endswith("data: [DONE]")
 
@@ -1502,7 +1506,8 @@ async def test_search_past_conversations_error_500(client, env):
     finally:
         monkeypatch.undo()
     assert r.status_code == 500
-    assert "search backend down" in r.json()["detail"]
+    assert r.json()["detail"] == "Conversation search failed. Check server logs."
+    assert "search backend down" not in r.text
 
 
 # ══════════════════════════════════════════════════════════════════════
