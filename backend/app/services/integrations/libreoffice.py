@@ -184,6 +184,7 @@ async def render_pptx_thumbnail(
         _log("LibreOffice not available — cannot render thumbnail")
         return None
 
+    pptx_path = _checked_file(pptx_path)
     if not pptx_path.exists():
         _log("PPTX file not found: %s", pptx_path)
         return None
@@ -279,6 +280,8 @@ async def convert_pptx_to_pdf(pptx_path: Path) -> Optional[Path]:
         _log("LibreOffice not available — cannot convert to PDF")
         return None
 
+    pptx_path = _checked_file(pptx_path)
+    pdf_path = _checked_file(pptx_path.with_suffix(".pdf"))
     if not pptx_path.exists():
         _log("PPTX file not found: %s", pptx_path)
         return None
@@ -294,7 +297,7 @@ async def convert_pptx_to_pdf(pptx_path: Path) -> Optional[Path]:
             _log("soffice PDF conversion failed (rc=%d): %s", rc, stderr[:200])
             return None
 
-        pdf_path = out_dir / f"{pptx_path.stem}.pdf"
+        pdf_path = _checked_file(out_dir / f"{pptx_path.stem}.pdf")
         if not pdf_path.exists():
             _log("PDF output not found: %s", pdf_path)
             return None
@@ -318,6 +321,7 @@ async def generate_and_cache_thumbnail(
     Returns:
         Path to the saved thumbnail, or None if generation failed.
     """
+    thumb_path = _checked_file(thumb_path)
     jpeg_bytes = await render_pptx_thumbnail(pptx_path, max_width)
     if not jpeg_bytes:
         return None
@@ -429,6 +433,21 @@ _SLIDE_JPEG_QUALITY = 85
 _THUMB_JPEG_QUALITY = 80
 
 
+def _checked_file(path: Path) -> Path:
+    """Reject redirected inputs/outputs, without constraining internal temp dirs."""
+    from app.services.safe_paths import confined_path
+
+    return confined_path(path.parent, path.name)
+
+
+def _checked_cache(path: Path) -> Path:
+    path = _checked_file(path)
+    if path.exists():
+        for entry in path.iterdir():
+            _checked_file(entry)
+    return path
+
+
 def slides_cache_dir(pptx_path: Path) -> Path:
     """Directory where per-slide renders for a PPTX are cached.
 
@@ -447,7 +466,7 @@ def read_slides_manifest(cache_dir: Path) -> Optional[dict]:
 
     Returns the parsed manifest dict, or None if missing/corrupt/too old.
     """
-    manifest_path = cache_dir / "manifest.json"
+    manifest_path = _checked_file(_checked_cache(cache_dir) / "manifest.json")
     if not manifest_path.exists():
         return None
     try:
@@ -475,9 +494,10 @@ def is_slide_cache_valid(pptx_path: Path, cache_dir: Optional[Path] = None) -> b
       - the recorded source mtime+size match the PPTX on disk
       - every full-size AND thumbnail image file exists
     """
+    pptx_path = _checked_file(pptx_path)
     if not pptx_path.exists():
         return False
-    cache_dir = cache_dir or slides_cache_dir(pptx_path)
+    cache_dir = _checked_cache(cache_dir or slides_cache_dir(pptx_path))
 
     manifest = read_slides_manifest(cache_dir)
     if manifest is None:
@@ -746,11 +766,12 @@ async def convert_pptx_to_slide_images(
     Returns the manifest dict on success, or None on failure (missing
     PPTX, LibreOffice unavailable, conversion error, zero pages).
     """
+    pptx_path = _checked_file(pptx_path)
     if not pptx_path.exists():
         _log("PPTX file not found: %s", pptx_path)
         return None
 
-    cache_dir = cache_dir or slides_cache_dir(pptx_path)
+    cache_dir = _checked_cache(cache_dir or slides_cache_dir(pptx_path))
 
     # Serve from cache when still fresh (unless forced).
     if not force and is_slide_cache_valid(pptx_path, cache_dir):
@@ -765,7 +786,7 @@ async def convert_pptx_to_slide_images(
 
     # Step 1: PPTX → PDF. Drop a stale cached PDF first so a regenerated
     # PPTX never shows old slides.
-    pdf_path = pptx_path.with_suffix(".pdf")
+    pdf_path = _checked_file(pptx_path.with_suffix(".pdf"))
     try:
         if pdf_path.exists() and pdf_path.stat().st_mtime < pptx_path.stat().st_mtime:
             pdf_path.unlink()
@@ -985,6 +1006,7 @@ async def convert_document_to_page_images(
     source, unsupported format, unavailable converter/rasterizer, or a
     conversion/render error).
     """
+    source_path = _checked_file(source_path)
     if not source_path.exists():
         _log("source file not found: %s", source_path)
         return None
@@ -1000,7 +1022,7 @@ async def convert_document_to_page_images(
     if fmt == "pptx":
         return await convert_pptx_to_slide_images(source_path, cache_dir)
 
-    cache_dir = cache_dir or viewer_cache_dir(source_path)
+    cache_dir = _checked_cache(cache_dir or viewer_cache_dir(source_path))
 
     # Serve from cache when still fresh (unless forced).
     if not force and is_slide_cache_valid(source_path, cache_dir):

@@ -10,11 +10,13 @@ per-page image endpoints for the in-app document viewer
 
 import asyncio
 import logging
-import os
+import re
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
+from app.services.safe_paths import confined_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,19 @@ router = APIRouter()
 # (expensive, serialized) slide generation twice for the same deck.
 _slide_gen_locks: dict[str, asyncio.Lock] = {}
 _SLIDE_LOCKS_MAX = 128
+
+
+def _report_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
+        raise HTTPException(400, "Invalid report identifier")
+    return value
+
+
+def _report_path(root: Path, relative: str | Path) -> Path:
+    try:
+        return confined_path(root, relative)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid report file path") from exc
 
 
 def _get_data_dir() -> Path:
@@ -67,8 +82,7 @@ async def download_report(report_id: str):
     original deliverable.
     """
     # Validate report_id — must be a safe filename (UUID-like)
-    # Strip any path separators to prevent directory traversal
-    safe_id = os.path.basename(report_id)
+    safe_id = _report_id(report_id)
 
     reports_dir = _get_data_dir() / "reports"
 
@@ -76,7 +90,7 @@ async def download_report(report_id: str):
     # PPTX report) — see the docstring above.
     for ext in ("pptx", "docx", "xlsx", "pdf"):
         mime_type = _MIME_TYPES[ext]
-        file_path = reports_dir / f"{safe_id}.{ext}"
+        file_path = _report_path(reports_dir, f"{safe_id}.{ext}")
         if file_path.exists() and file_path.is_file():
             # Build a user-friendly download filename
             download_name = f"report.{ext}"
@@ -115,11 +129,11 @@ async def get_report_thumbnail(report_id: str):
 
     Returns JPEG image bytes with long-lived cache headers.
     """
-    safe_id = os.path.basename(report_id)
+    safe_id = _report_id(report_id)
     reports_dir = _get_data_dir() / "reports"
 
-    thumb_path = reports_dir / f"{safe_id}_thumb.jpg"
-    pptx_path = reports_dir / f"{safe_id}.pptx"
+    thumb_path = _report_path(reports_dir, f"{safe_id}_thumb.jpg")
+    pptx_path = _report_path(reports_dir, f"{safe_id}.pptx")
 
     # Step 1: Serve cached thumbnail if it exists
     if thumb_path.exists() and thumb_path.is_file():
@@ -168,7 +182,7 @@ async def get_report_thumbnail(report_id: str):
             logger.exception("Thumbnail generation error: %s", e)
             raise HTTPException(
                 status_code=404,
-                detail=f"Thumbnail generation error: {e}",
+                detail="Thumbnail generation failed.",
             )
 
     # Step 3: No PPTX file found
@@ -194,7 +208,7 @@ def _get_slide_gen_lock(report_id: str) -> asyncio.Lock:
 @router.get("/reports/{report_id}/slides")
 async def get_report_slides(
     report_id: str,
-    format: str = Query(default="pptx", pattern="^(pptx|pdf|docx|xlsx)$"),
+    format: Literal["pptx", "pdf", "docx", "xlsx"] = Query(default="pptx"),
 ):
     """Page manifest for the in-app document viewer (PPTX / PDF / DOCX / XLSX).
 
@@ -238,10 +252,10 @@ async def get_report_slides(
       - 404 — no PDF rasterizer available (pdf)
       - 404 — conversion/rendering failed
     """
-    safe_id = os.path.basename(report_id)
+    safe_id = _report_id(report_id)
     reports_dir = _get_data_dir() / "reports"
 
-    source_path = reports_dir / f"{safe_id}.{format}"
+    source_path = _report_path(reports_dir, f"{safe_id}.{format}")
     if not (source_path.exists() and source_path.is_file()):
         raise HTTPException(
             status_code=404,
@@ -250,7 +264,12 @@ async def get_report_slides(
 
     from app.services.integrations import libreoffice
 
-    cache_dir = libreoffice.viewer_cache_dir(source_path)
+    cache_dir = _report_path(reports_dir, libreoffice.viewer_cache_dir(source_path).name)
+    # Cached files are also user-visible; do not follow redirected cache entries.
+    if cache_dir.exists():
+        for entry in cache_dir.iterdir():
+            _report_path(cache_dir, entry.name)
+    _report_path(reports_dir, f"{safe_id}.pdf")
 
     async with _get_slide_gen_lock(safe_id):
         if libreoffice.is_slide_cache_valid(source_path, cache_dir):
@@ -315,7 +334,7 @@ async def get_report_slides(
 async def get_report_slide_image(
     report_id: str,
     slide_number: int,
-    variant: str = Query(default="full", pattern="^(full|thumb)$"),
+    variant: Literal["full", "thumb"] = Query(default="full"),
 ):
     """Serve a single rendered slide image (JPEG).
 
@@ -325,10 +344,14 @@ async def get_report_slide_image(
     (pptx/pdf/docx/xlsx) — they all share the {report_id}_slides cache
     layout.
     """
-    safe_id = os.path.basename(report_id)
+    safe_id = _report_id(report_id)
     reports_dir = _get_data_dir() / "reports"
 
-    cache_dir = reports_dir / f"{safe_id}_slides"
+    cache_dir = _report_path(reports_dir, f"{safe_id}_slides")
+    _report_path(cache_dir, "manifest.json")
+    if cache_dir.exists():
+        for entry in cache_dir.iterdir():
+            _report_path(cache_dir, entry.name)
 
     from app.services.integrations import libreoffice
 
@@ -345,8 +368,8 @@ async def get_report_slide_image(
             detail=f"Slide {slide_number} out of range (1..{manifest['count']}).",
         )
 
-    image_path = cache_dir / libreoffice.slide_image_name(
-        slide_number, thumb=(variant == "thumb")
+    image_path = _report_path(
+        cache_dir, libreoffice.slide_image_name(slide_number, thumb=(variant == "thumb"))
     )
     if not (image_path.exists() and image_path.is_file()):
         raise HTTPException(status_code=404, detail="Slide image missing on disk.")
@@ -377,11 +400,11 @@ async def get_report_pdf(report_id: str):
 
     Returns PDF bytes with Content-Disposition: inline (for iframe viewing).
     """
-    safe_id = os.path.basename(report_id)
+    safe_id = _report_id(report_id)
     reports_dir = _get_data_dir() / "reports"
 
-    pdf_path = reports_dir / f"{safe_id}.pdf"
-    pptx_path = reports_dir / f"{safe_id}.pptx"
+    pdf_path = _report_path(reports_dir, f"{safe_id}.pdf")
+    pptx_path = _report_path(reports_dir, f"{safe_id}.pptx")
 
     # Step 1: Serve cached PDF if it exists
     if pdf_path.exists() and pdf_path.is_file():
@@ -428,7 +451,7 @@ async def get_report_pdf(report_id: str):
             logger.exception("PDF conversion error: %s", e)
             raise HTTPException(
                 status_code=404,
-                detail=f"PDF conversion error: {e}",
+                detail="PDF conversion failed.",
             )
 
     # Step 3: No PPTX file found
