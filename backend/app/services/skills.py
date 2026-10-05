@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from app.services.safe_paths import bounded_text, confined_path
+
 SKILL_FILE = "SKILL.md"
 VALID_ROLES = {"general", "coder", "voice"}
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
@@ -23,7 +25,7 @@ SKILLS_DIR = (
 
 
 def skills_root() -> Path:
-    root = SKILLS_DIR
+    root = confined_path(SKILLS_DIR.parent, SKILLS_DIR.name)
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -73,20 +75,22 @@ def _render(meta: dict, body: str) -> str:
 
 
 def _directory(slug: str) -> Path:
-    safe = slugify(slug)
-    if safe != slug:
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or len(slug) > 64:
         raise ValueError("Invalid skill identifier")
-    return skills_root() / safe
+    return confined_path(skills_root(), slug)
 
 
 def _record(directory: Path, include_content: bool = False) -> dict:
-    text = (directory / SKILL_FILE).read_text(encoding="utf-8")
+    directory = _directory(directory.name)
+    text = bounded_text(confined_path(directory, SKILL_FILE), MAX_INSTRUCTIONS)
     meta, body = _frontmatter(text)
     normalized = _normalize(meta, directory.name)
     files = [
         str(path.relative_to(directory))
         for path in sorted(directory.rglob("*"))
-        if path.is_file() and not path.is_symlink()
+        if not path.is_symlink()
+        and path.is_file()
+        and not any(parent.is_symlink() for parent in path.parents if parent != directory)
     ]
     result = {"id": directory.name, **normalized, "files": files}
     if include_content:
@@ -97,7 +101,7 @@ def _record(directory: Path, include_content: bool = False) -> dict:
 def list_skills(role: str | None = None, enabled_only: bool = False) -> list[dict]:
     records = []
     for directory in sorted(skills_root().iterdir()):
-        if not directory.is_dir() or not (directory / SKILL_FILE).is_file():
+        if directory.is_symlink() or not directory.is_dir():
             continue
         try:
             item = _record(directory)
@@ -113,7 +117,7 @@ def list_skills(role: str | None = None, enabled_only: bool = False) -> list[dic
 
 def get_skill(slug: str) -> dict:
     directory = _directory(slug)
-    if not (directory / SKILL_FILE).is_file():
+    if not confined_path(directory, SKILL_FILE).is_file():
         raise FileNotFoundError(slug)
     return _record(directory, include_content=True)
 
@@ -136,7 +140,7 @@ def save_skill(
     slug = skill_id or slugify(name)
     directory = _directory(slug)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / SKILL_FILE).write_text(_render(meta, content), encoding="utf-8")
+    confined_path(directory, SKILL_FILE).write_text(_render(meta, content), encoding="utf-8")
     return get_skill(slug)
 
 
@@ -177,7 +181,7 @@ def import_zip(data: bytes) -> dict:
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise ValueError("Skill archive cannot contain symbolic links")
                 path = PurePosixPath(info.filename)
-                if path.is_absolute() or ".." in path.parts:
+                if path.is_absolute() or ".." in path.parts or "\\" in info.filename:
                     raise ValueError("Skill archive contains an unsafe path")
                 try:
                     relative = path.relative_to(prefix)
@@ -185,7 +189,7 @@ def import_zip(data: bytes) -> dict:
                     continue
                 if not relative.parts:
                     continue
-                target = destination.joinpath(*relative.parts)
+                target = confined_path(destination, Path(*relative.parts))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read(info))
             return get_skill(slug)
@@ -221,16 +225,18 @@ def routing_catalog(role: str) -> str:
 
 def read_resource(slug: str, resource: str) -> str:
     relative = PurePosixPath(resource)
-    if relative.is_absolute() or ".." in relative.parts or resource == SKILL_FILE:
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or "\\" in resource
+        or resource == SKILL_FILE
+    ):
         raise ValueError("Invalid skill resource path")
-    target = _directory(slug).joinpath(*relative.parts)
-    if not target.is_file() or target.is_symlink():
+    target = confined_path(_directory(slug), Path(*relative.parts))
+    if not target.is_file():
         raise FileNotFoundError(resource)
-    data = target.read_bytes()
-    if len(data) > MAX_INSTRUCTIONS:
-        raise ValueError("Skill resource is too large")
     try:
-        return data.decode("utf-8")
+        return bounded_text(target, MAX_INSTRUCTIONS)
     except UnicodeDecodeError as exc:
         raise ValueError("Skill resource is not a text file") from exc
 

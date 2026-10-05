@@ -208,7 +208,8 @@ async def test_install_crash_yields_error_event(client, env):
     events = sse_events(r.text)
     assert events[0] == {"stage": "updating", "output": "starting"}
     assert events[1]["stage"] == "error"
-    assert "apt lock held" in events[1]["error"]
+    assert events[1]["error"] == "Dependency installation failed. Check server logs."
+    assert "apt lock held" not in r.text
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -241,4 +242,5 @@ async def test_uninstall_crash_yields_error_event(client, env):
     events = sse_events(r.text)
     assert events[0] == {"stage": "uninstalling", "output": "Removing libreoffice"}
     assert events[1]["stage"] == "error"
-    assert "dpkg interrupted" in events[1]["error"]
+    assert events[1]["error"] == "Dependency removal failed. Check server logs."
+    assert "dpkg interrupted" not in r.text

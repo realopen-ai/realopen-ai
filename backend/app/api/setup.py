@@ -294,7 +294,11 @@ async def get_setup_status():
             voice_summary = voice_model_installer.voice_status_summary()
         except Exception as e:
             logger.warning("voice status summary failed: %s", e)
-            voice_summary = {"configured": False, "ready": False, "error": str(e)}
+            voice_summary = {
+                "configured": False,
+                "ready": False,
+                "error": "Voice status unavailable. Check server logs.",
+            }
 
     return {
         "setup_complete": is_complete,
@@ -448,7 +452,9 @@ async def apply_setup(request: ApplySetupRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Failed to apply setup: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to apply setup: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to apply setup. Check server logs."
+        ) from e
 
     # Apply module tools
     _apply_module_tools_for_setup(request.enabled_modules)
@@ -514,7 +520,8 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                             "Ollama is not reachable. Please start Ollama first."
                         )
             except Exception as e:
-                ollama_error = f"Cannot connect to Ollama: {e}"
+                logger.warning("Ollama connectivity check failed: %s", e)
+                ollama_error = "Cannot connect to Ollama. Please start Ollama first."
 
         # Emit total count
         yield f"data: {json.dumps({'event': 'pull_start_all', 'total': total_models})}\n\n"
@@ -649,13 +656,14 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
             except Exception as e:
+                logger.exception("Model installation failed: %s", e)
                 payload = {
                     "event": "pull_error",
                     "model": model_id,
                     "module": module_name,
                     "provider": provider,
                     "kind": kind,
-                    "error": str(e)[:200],
+                    "error": "Model installation failed. Check server logs.",
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
 

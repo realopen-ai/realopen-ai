@@ -250,7 +250,8 @@ async def test_status_voice_both_providers_fail(client, data_dir, monkeypatch):
     voice = r.json()["voice"]
     assert voice["configured"] is False
     assert voice["ready"] is False
-    assert "no voice core" in voice["error"]
+    assert voice["error"] == "Voice status unavailable. Check server logs."
+    assert "no voice core" not in r.text
 
 
 # ── GET /setup/hardware ───────────────────────────────────────────────
@@ -453,7 +454,8 @@ async def test_apply_wraps_unexpected_error_in_500(
         "/api/setup/apply", json={"profile": "cpu_small", "enabled_modules": []}
     )
     assert r.status_code == 500
-    assert "disk full" in r.json()["detail"]
+    assert r.json()["detail"] == "Failed to apply setup. Check server logs."
+    assert "disk full" not in r.text
 
 
 def test_apply_profile_and_modules_rejects_invalid_profile_direct():
@@ -725,7 +727,7 @@ async def test_pull_models_stream_http_error_status(client, data_dir, monkeypatc
     [
         (httpx.TimeoutException("slow"), "timed out"),
         (httpx.ConnectError("down"), "Cannot connect to Ollama"),
-        (RuntimeError("weird"), "weird"),
+        (RuntimeError("weird"), "Model installation failed"),
     ],
 )
 async def test_pull_models_stream_exception_paths(

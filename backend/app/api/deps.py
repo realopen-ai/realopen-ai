@@ -68,7 +68,7 @@ async def install_dep(name: str):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             logger.exception("Install failed: %s", e)
-            yield f"data: {json.dumps({'stage': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'stage': 'error', 'error': 'Dependency installation failed. Check server logs.'})}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -107,7 +107,7 @@ async def uninstall_dep(name: str):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             logger.exception("Uninstall failed: %s", e)
-            yield f"data: {json.dumps({'stage': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'stage': 'error', 'error': 'Dependency removal failed. Check server logs.'})}\n\n"
 
     return StreamingResponse(
         generate(),

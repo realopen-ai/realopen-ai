@@ -736,7 +736,7 @@ async def test_validate_reports_add_slide_failure(client, monkeypatch):
     body = r.json()
     assert body["valid"] is False
     assert "Failed to add a test slide (layout 0)" in body["error"]
-    assert "layout corrupt" in body["error"]
+    assert "layout corrupt" not in body["error"]
 
 
 @pytest.mark.asyncio

@@ -458,9 +458,10 @@ async def chat_stream(request: ChatRequest):
             import traceback
 
             _log("   ❌ generate() exception: %s\n%s", e, traceback.format_exc())
-            builder.on_error(str(e))
+            logger.exception("Response generation failed")
+            builder.on_error("Response generation failed. Check server logs.")
             completion_status = "error"
-            yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'event': 'error', 'error': 'Response generation failed. Check server logs.'})}\n\n"
 
         response_duration = round(time.monotonic() - request_start, 3)
         builder.generation_duration = response_duration
@@ -511,14 +512,19 @@ async def chat_stream(request: ChatRequest):
                 pass
             except Exception as e:
                 _log("   ⚠️  memory extraction failed: %s", e)
-                yield "data: " + json.dumps(
-                    {
-                        "event": "memory_extraction_done",
-                        "count": 0,
-                        "ran": False,
-                        "error": str(e),
-                    }
-                ) + "\n\n"
+                logger.exception("Memory extraction failed")
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "event": "memory_extraction_done",
+                            "count": 0,
+                            "ran": False,
+                            "error": "Memory extraction failed. Check server logs.",
+                        }
+                    )
+                    + "\n\n"
+                )
 
             # ── Conversation summarization for cross-session context ──
             # Runs after memory extraction. Summarizes the conversation
@@ -818,13 +824,17 @@ async def chat_stream_multipart(
                 if digestion_err[0] is not None:
                     e = digestion_err[0]
                     logger.exception("[chat] doc digestion failed for %s: %s", fname, e)
-                    yield "data: " + json.dumps(
-                        {
-                            "event": "document_digest_error",
-                            "filename": fname,
-                            "error": str(e),
-                        }
-                    ) + "\n\n"
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "event": "document_digest_error",
+                                "filename": fname,
+                                "error": "Document processing failed. Check server logs.",
+                            }
+                        )
+                        + "\n\n"
+                    )
                     continue
 
                 if digestion_doc[0] is not None:
@@ -936,9 +946,10 @@ async def chat_stream_multipart(
             dbg("   ⏹️ multipart generate() interrupted by user")
         except Exception as e:
             dbg("   ❌ generate() exception: %s", e)
-            builder.on_error(str(e))
+            logger.exception("Multipart response generation failed")
+            builder.on_error("Response generation failed. Check server logs.")
             completion_status = "error"
-            yield f"data: {json.dumps({'event': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'event': 'error', 'error': 'Response generation failed. Check server logs.'})}\n\n"
 
         response_duration = round(time.monotonic() - request_start, 3)
         builder.generation_duration = response_duration
@@ -988,14 +999,19 @@ async def chat_stream_multipart(
                 pass
             except Exception as e:
                 _log("   ⚠️  memory extraction failed (multipart): %s", e)
-                yield "data: " + json.dumps(
-                    {
-                        "event": "memory_extraction_done",
-                        "count": 0,
-                        "ran": False,
-                        "error": str(e),
-                    }
-                ) + "\n\n"
+                logger.exception("Multipart memory extraction failed")
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "event": "memory_extraction_done",
+                            "count": 0,
+                            "ran": False,
+                            "error": "Memory extraction failed. Check server logs.",
+                        }
+                    )
+                    + "\n\n"
+                )
 
             # ── Conversation summarization for cross-session context ──
             try:
@@ -1275,7 +1291,10 @@ async def search_past_conversations(
         }
     except Exception as e:
         _log("past-conversation search failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Past-conversation search failed")
+        raise HTTPException(
+            status_code=500, detail="Conversation search failed. Check server logs."
+        ) from e
 
 
 # ─── Models endpoint ─────────────────────────────────────────────────
