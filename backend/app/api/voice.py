@@ -26,7 +26,7 @@ GET /api/setup/status → ``voice`` summary (app/services/voice_model_installer)
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 import httpx
 
@@ -37,6 +37,35 @@ from app.services import model_prefs, voice_settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post("/voice/transcribe")
+async def transcribe_dictation(request: Request):
+    """One-shot dictation using the same configured ASR as voice calls.
+
+    Input is mono signed 16-bit little-endian PCM at 16 kHz, max 60 seconds.
+    No agent loop or TTS is invoked.
+    """
+    from app.voice.asr import AsrError, create_asr_engine
+
+    if not settings.VOICE_ENABLED:
+        raise HTTPException(503, "Voice is disabled")
+    pcm = bytearray()
+    async for chunk in request.stream():
+        if len(pcm) + len(chunk) > 16000 * 2 * 60:
+            raise HTTPException(413, "Dictation exceeds 60 seconds")
+        pcm.extend(chunk)
+    if not pcm or len(pcm) % 2:
+        raise HTTPException(400, "Expected nonempty 16 kHz signed 16-bit PCM")
+    engine = create_asr_engine(settings.get_voice_config().asr)
+    try:
+        await engine.start_stream()
+        await engine.feed_audio(bytes(pcm))
+        return {"text": await engine.finish_stream()}
+    except AsrError as exc:
+        raise HTTPException(502, exc.message) from exc
+    finally:
+        await engine.cancel()
 
 
 class VoiceSettingsRequest(BaseModel):

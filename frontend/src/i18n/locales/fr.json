@@ -1,4 +1,10 @@
 {
+  "input.dictation.start": "Dicter un message",
+  "input.dictation.stop": "Arrêter l’enregistrement",
+  "input.dictation.starting": "Ouverture du microphone…",
+  "input.dictation.recording": "Enregistrement… cliquez sur le bouton du microphone pour terminer.",
+  "input.dictation.transcribing": "Transcription…",
+  "input.dictation.error": "Impossible de transcrire. Vérifiez les permissions du microphone et le service vocal, puis réessayez.",
   "sidebar.chats": "Conversations",
   "sidebar.newChat": "Nouvelle conversation",
   "sidebar.noConversations": "Aucune conversation",
