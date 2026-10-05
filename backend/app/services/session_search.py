@@ -147,10 +147,16 @@ async def _ilike_fallback(
         return []
 
     try:
-        # Build OR conditions
-        conditions = " OR ".join([f"LOWER(m.content) LIKE '%{kw}%'" for kw in keywords])
-        exclude_clause = ""
+        # Build OR conditions with bind parameters (no direct string interpolation)
+        like_clauses = []
         params = {"lim": limit}
+        for i, kw in enumerate(keywords):
+            param_name = f"kw{i}"
+            like_clauses.append(f"LOWER(m.content) LIKE :{param_name}")
+            params[param_name] = f"%{kw}%"
+        conditions = " OR ".join(like_clauses)
+
+        exclude_clause = ""
         if exclude_conversation_id:
             try:
                 exclude_uuid = str(uuid.UUID(str(exclude_conversation_id)))
