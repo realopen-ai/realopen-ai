@@ -375,10 +375,11 @@ async def validate_template(file: UploadFile = File(...)):
                     ph.text = "Test Title"
                 elif ph.placeholder_format.idx == 1:
                     ph.text = "Test bullet"
-        except Exception as e:
+        except Exception:
+            logger.exception("PPTX layout validation failed")
             return {
                 "valid": False,
-                "error": f"Failed to add a test slide (layout {content_layout_idx}): {e}",
+                "error": f"Failed to add a test slide (layout {content_layout_idx}).",
             }
 
         # All checks passed
@@ -407,8 +408,9 @@ async def validate_template(file: UploadFile = File(...)):
 
     except ImportError:
         return {"valid": False, "error": "python-pptx is not installed"}
-    except Exception as e:
-        return {"valid": False, "error": f"Failed to open PPTX file: {e}"}
+    except Exception:
+        logger.exception("PPTX validation failed")
+        return {"valid": False, "error": "Failed to open PPTX file. Check the file format."}
 
 
 # ─── Generated Files ─────────────────────────────────────────────────
