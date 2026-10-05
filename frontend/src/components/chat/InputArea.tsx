@@ -308,7 +308,7 @@ export function InputArea({
       if (!dictationMounted.current || dictationRef.current !== recorder)
         return;
       setDictation("recording");
-      dictationTimer.current = setTimeout(() => void stopDictation(), 55000);
+      dictationTimer.current = setTimeout(() => void stopDictation(), 300000);
     } catch {
       recorder.dispose();
       if (dictationMounted.current && dictationRef.current === recorder) {

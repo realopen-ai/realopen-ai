@@ -97,7 +97,9 @@ export class DictationRecorder {
       );
       const offline = new OfflineAudioContext(
         1,
-        Math.max(1, Math.ceil(audio.duration * 16000)),
+        // Timers can fire late in background tabs; keep the upload within
+        // the five-minute server boundary even if capture slightly overruns.
+        Math.max(1, Math.min(300 * 16000, Math.ceil(audio.duration * 16000))),
         16000,
       );
       const source = offline.createBufferSource();

@@ -43,7 +43,7 @@ router = APIRouter()
 async def transcribe_dictation(request: Request):
     """One-shot dictation using the same configured ASR as voice calls.
 
-    Input is mono signed 16-bit little-endian PCM at 16 kHz, max 60 seconds.
+    Input is mono signed 16-bit little-endian PCM at 16 kHz, max 5 minutes.
     No agent loop or TTS is invoked.
     """
     from app.voice.asr import AsrError, create_asr_engine
@@ -52,8 +52,8 @@ async def transcribe_dictation(request: Request):
         raise HTTPException(503, "Voice is disabled")
     pcm = bytearray()
     async for chunk in request.stream():
-        if len(pcm) + len(chunk) > 16000 * 2 * 60:
-            raise HTTPException(413, "Dictation exceeds 60 seconds")
+        if len(pcm) + len(chunk) > 16000 * 2 * 300:
+            raise HTTPException(413, "Dictation exceeds 5 minutes")
         pcm.extend(chunk)
     if not pcm or len(pcm) % 2:
         raise HTTPException(400, "Expected nonempty 16 kHz signed 16-bit PCM")

@@ -8,7 +8,8 @@ from app.voice import asr
 
 
 @pytest.mark.asyncio
-async def test_dictation_uses_configured_asr(monkeypatch):
+@pytest.mark.parametrize("pcm", [b"\x00\x01", b"\0" * 9600000])
+async def test_dictation_uses_configured_asr(monkeypatch, pcm):
     received = []
 
     class Engine:
@@ -35,14 +36,14 @@ async def test_dictation_uses_configured_asr(monkeypatch):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.post("/api/voice/transcribe", content=b"\x00\x01")
+        response = await client.post("/api/voice/transcribe", content=pcm)
     assert response.status_code == 200
     assert response.json() == {"text": "A dictated message"}
-    assert received == ["start", b"\x00\x01", "cancel"]
+    assert received == ["start", pcm, "cancel"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload,status", [(b"", 400), (b"x", 400), (b"\0" * (1920000 + 2), 413)])
+@pytest.mark.parametrize("payload,status", [(b"", 400), (b"x", 400), (b"\0" * (9600000 + 2), 413)])
 async def test_dictation_rejects_invalid_audio(monkeypatch, payload, status):
     monkeypatch.setattr(settings, "VOICE_ENABLED", True)
     monkeypatch.setattr(
