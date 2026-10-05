@@ -1458,8 +1458,8 @@ class TestPocketEngineLocalLoad:
 # ══════════════════════════════════════════════════════════════════════
 # Regression: TTS is voice-modality ONLY. Text chat (/api/chat/stream)
 # must never trigger TTS synthesis — the assistant replies as plain
-# streaming text unless the user is in an active voice session (the WS
-# session is the ONLY caller of the TTS engine).
+# streaming text. TTS requires an active voice session or an explicit
+# read-aloud request to the voice REST endpoint.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -1481,13 +1481,12 @@ class TestTtsVoiceOnlyRegression:
         ):
             assert forbidden not in source, (
                 f"text chat module references TTS symbol {forbidden!r} — "
-                "TTS must stay voice-session-only"
+                "TTS must stay in explicitly requested voice playback paths"
             )
 
     def test_tts_engine_callers_are_voice_only(self):
-        """The ONLY backend modules that reference create_tts_engine are
-        the voice session (the sole runtime caller) and the TTS package
-        itself (factory + engine). No text-chat path can reach TTS."""
+        """Only voice calls, opt-in read aloud, and the TTS package may
+        reference the factory. Ordinary text generation must never invoke TTS."""
         app_root = Path(__file__).resolve().parents[1] / "app"
         offenders = []
         for py in app_root.rglob("*.py"):
@@ -1499,6 +1498,7 @@ class TestTtsVoiceOnlyRegression:
                 rel = py.relative_to(app_root).as_posix()
                 if rel not in (
                     "voice/session.py",
+                    "api/voice.py",  # POST /voice/speech: explicit read aloud
                     "voice/tts/__init__.py",
                     "voice/tts/pocket.py",
                 ):
