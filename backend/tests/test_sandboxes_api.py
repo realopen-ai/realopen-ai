@@ -263,7 +263,8 @@ async def test_create_sandbox_host_failure_503(env, monkeypatch):
     monkeypatch.setattr(sandboxes, "provision_sandbox", fake_provision)
     r = await client.post("/api/sandboxes", json={"name": "x"})
     assert r.status_code == 503
-    assert "docker daemon down" in r.json()["detail"]
+    assert r.json()["detail"] == "Host sandbox runtime failed. Check server logs."
+    assert "docker daemon down" not in r.text
 
 
 @pytest.mark.asyncio
@@ -318,7 +319,8 @@ async def test_get_sandbox_host_error_sets_error_state(env, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "error"
-    assert "host timeout" in body["error"]
+    assert body["error"] == "Host sandbox runtime unavailable. Check server logs."
+    assert "host timeout" not in r.text
 
 
 @pytest.mark.asyncio
@@ -372,7 +374,8 @@ async def test_lifecycle_host_failure_503(env, monkeypatch):
     r = await client.post(f"/api/sandboxes/{sb.id}/start")
     assert r.status_code == 503
     assert sb.status == "error"
-    assert "cannot start" in sb.error
+    assert sb.error == "Sandbox operation failed. Check server logs."
+    assert "cannot start" not in r.text
 
 
 @pytest.mark.asyncio

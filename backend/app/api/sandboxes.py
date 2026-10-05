@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import uuid
 from datetime import datetime
 
@@ -29,6 +30,7 @@ from app.services import sandbox_host
 from app.services.sandbox_manager import provision_sandbox
 
 router = APIRouter(prefix="/sandboxes", tags=["sandboxes"])
+logger = logging.getLogger(__name__)
 
 
 class CreateSandbox(BaseModel):
@@ -113,7 +115,8 @@ async def create_sandbox(body: CreateSandbox, db: AsyncSession = Depends(get_db)
             idle_timeout_seconds=body.idle_timeout_seconds,
         )
     except Exception as exc:
-        raise HTTPException(503, f"Host sandbox runtime failed: {exc}") from exc
+        logger.exception("Sandbox provisioning failed")
+        raise HTTPException(503, "Host sandbox runtime failed. Check server logs.") from exc
     return as_dict(item)
 
 
@@ -125,7 +128,8 @@ async def get_sandbox(sandbox_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         item.status = runtime["status"]
         item.error = None
     except Exception as exc:
-        item.status, item.error = "error", str(exc)
+        logger.warning("Sandbox status failed: %s", exc)
+        item.status, item.error = "error", "Host sandbox runtime unavailable. Check server logs."
     return as_dict(item)
 
 
@@ -134,8 +138,9 @@ async def _lifecycle(sandbox_id: uuid.UUID, action: str, db: AsyncSession):
     try:
         result = await sandbox_host.call(action, item)
     except Exception as exc:
-        item.status, item.error = "error", str(exc)
-        raise HTTPException(503, str(exc)) from exc
+        logger.exception("Sandbox lifecycle operation failed")
+        item.status, item.error = "error", "Sandbox operation failed. Check server logs."
+        raise HTTPException(503, item.error) from exc
     item.status = result["status"]
     item.desired_running = action != "stop"
     item.error = None
@@ -164,7 +169,8 @@ async def delete_sandbox(sandbox_id: uuid.UUID, db: AsyncSession = Depends(get_d
     try:
         await sandbox_host.call("delete", item)
     except Exception as exc:
-        raise HTTPException(503, str(exc)) from exc
+        logger.exception("Sandbox deletion failed")
+        raise HTTPException(503, "Sandbox deletion failed. Check server logs.") from exc
     await db.delete(item)
     return {"deleted": True}
 
