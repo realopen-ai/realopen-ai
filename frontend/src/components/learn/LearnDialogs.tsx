@@ -69,7 +69,7 @@ export function CardEditor({
         <p className="text-xs text-muted-foreground">{t("learn.markdown")}</p>
         {initial && onReplace && (
           <div className="flex flex-wrap gap-2">
-            {(["shorter", "harder", "recall", "split"] as const).map(
+            {(["correct", "shorter", "harder", "recall", "split"] as const).map(
               (action) => (
                 <Button
                   key={action}
