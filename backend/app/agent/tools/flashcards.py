@@ -24,6 +24,9 @@ class CreateFlashcardDeckTool(BaseTool):
         "questions and answers. Do not give away answers or repeat questions. "
         "For documents, use rag_search first for relevant sections; never load an entire "
         "large document. Return a brief summary, not the cards, after saving."
+        " Honor requested count, difficulty, language and answer detail; default to "
+        "10 accessible cards in the user's language with concise answers. Preserve "
+        "document/page/chunk IDs from retrieval when available."
     )
 
     def get_parameters(self):
@@ -43,6 +46,11 @@ class CreateFlashcardDeckTool(BaseTool):
                             "type": "string",
                             "description": "Optional page/chapter reference",
                             "maxLength": 500,
+                        },
+                        "source_page": {"type": "integer", "minimum": 1},
+                        "source_chunk_id": {
+                            "type": "string",
+                            "description": "Optional chunk UUID from retrieval",
                         },
                     },
                     "required": ["front", "back"],
