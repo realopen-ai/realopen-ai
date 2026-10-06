@@ -60,6 +60,20 @@ class CreateStudyNoteTool(BaseTool):
             started_at=time.time(),
         )
         try:
+            invalid_source = False
+
+            def optional_source_id(value):
+                nonlocal invalid_source
+                if value is None:
+                    return None
+                try:
+                    return uuid.UUID(str(value).strip())
+                except (ValueError, TypeError, AttributeError):
+                    invalid_source = True
+                    return None
+
+            source_document_id = optional_source_id(source_document_id)
+            source_chunk_id = optional_source_id(source_chunk_id)
             # Page/chunk attribution has no meaning without a document. Small
             # models sometimes invent these optional fields for conversation notes.
             # Keep the trusted conversation origin; never persist fake attribution.
@@ -90,8 +104,8 @@ class CreateStudyNoteTool(BaseTool):
                     **artifact,
                     "message": "Saved in Learn. Do not repeat the full note.",
                     **(
-                        {"warning": "Ignored page/chunk references without a source document."}
-                        if orphaned_source
+                        {"warning": "Ignored invalid or orphaned optional source references."}
+                        if orphaned_source or invalid_source
                         else {}
                     ),
                 }

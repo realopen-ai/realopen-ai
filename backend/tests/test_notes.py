@@ -267,9 +267,17 @@ async def test_agent_note_creation_uses_trusted_context_and_compact_artifact(dat
         saved = db.get(StudyNote, uuid.UUID(artifact["note_id"]))
         assert saved.source_page is None and saved.source_chunk_id is None
 
-    result = await tool.execute(
-        title="Invalid document",
-        content="Summary.",
-        source_document_id="invented",
-    )
-    assert not result.success and result.tool_call.error
+    for document_id in ("", "   ", "invented", "rag_search_context"):
+        result = await tool.execute(
+            title="Conversation summary",
+            content="Summary.",
+            source_document_id=document_id,
+            source_chunk_id="chunk_agi_overview_2026",
+            source_page=1,
+        )
+        assert result.success, result.output
+        artifact = json.loads(result.output)
+        with Session(database) as db:
+            saved = db.get(StudyNote, uuid.UUID(artifact["note_id"]))
+            assert saved.source_document_id is None
+            assert saved.source_chunk_id is None and saved.source_page is None
