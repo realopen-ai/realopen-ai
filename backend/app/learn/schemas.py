@@ -57,7 +57,7 @@ class DeckInput(DeckMetadata):
 class CardRewrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     card: CardInput
-    action: Literal["shorter", "harder", "recall", "split"]
+    action: Literal["shorter", "harder", "recall", "split", "correct"]
 
 
 class CardReplacement(BaseModel):

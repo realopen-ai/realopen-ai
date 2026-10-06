@@ -198,6 +198,63 @@ def test_card_rewrite_uses_schema_and_retries_once(client, monkeypatch):
     assert client.get("/api/learn/flashcards").json() == []
 
 
+def test_correct_card_proposes_factual_changes_without_overwriting(client, monkeypatch):
+    from app.learn import editing
+    import json
+
+    deck = client.post(
+        "/api/learn/flashcards",
+        json={
+            "title": "Spanish",
+            "cards": [{"front": "How do you say 'I am' in Spanish (tú form)?", "back": "Tú estás"}],
+        },
+    ).json()
+    messages_sent = []
+
+    async def resolve(_):
+        return "test-local-model"
+
+    async def chat(model, messages, **kwargs):
+        messages_sent.extend(messages)
+        assert kwargs["format"]["properties"]["cards"]["maxItems"] == 1
+        return {
+            "message": {
+                "content": json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "front": "How do you say 'you are' in Spanish using estar (tú form)?",
+                                "back": "Tú estás",
+                            }
+                        ]
+                    }
+                )
+            }
+        }
+
+    monkeypatch.setattr(editing.model_prefs, "resolve_task_model", resolve)
+    monkeypatch.setattr(editing.providers, "chat_once", chat)
+    response = client.post(
+        "/api/learn/flashcards/rewrite",
+        json={
+            "action": "correct",
+            "card": {
+                "front": deck["cards"][0]["front"],
+                "back": deck["cards"][0]["back"],
+                "source_reference": "Lesson 1",
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "you are" in response.json()["cards"][0]["front"]
+    assert response.json()["cards"][0]["source_reference"] == "Lesson 1"
+    assert "Do not assume the existing answer is correct" in messages_sent[0]["content"]
+    assert "Preserve its language and factual meaning" not in messages_sent[0]["content"]
+    assert len(messages_sent) == 2
+    original = client.get(f"/api/learn/flashcards/{deck['id']}").json()
+    assert original["cards"][0]["front"] == deck["cards"][0]["front"]
+
+
 def test_near_duplicates_are_rejected_without_conflating_numbers():
     from app.learn.schemas import similar_question
 
