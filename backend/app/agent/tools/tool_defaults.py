@@ -41,6 +41,12 @@ _ALWAYS_TOOLS: Set[str] = {
 # The keyword vocabulary doubles as the per-tool default TAGS (the
 # tag-gating replaces the old comma-separated keyword_gate string).
 _KEYWORD_TOOLS: Dict[str, Set[str]] = {
+    "note": {"create_study_note"},
+    "summarize": {"create_study_note"},
+    "résumé": {"create_study_note"},
+    "fiche": {"create_study_note"},
+    "ملاحظات": {"create_study_note"},
+    "ملخص": {"create_study_note"},
     "flashcard": {"create_flashcard_deck"},
     "flash card": {"create_flashcard_deck"},
     "study cards": {"create_flashcard_deck"},

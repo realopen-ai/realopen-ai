@@ -19,6 +19,7 @@ from app.agent.tools.excel_gen import ExcelGenTool
 from app.agent.tools.delegate_coder import CoderAgent
 from app.agent.tools.load_skill import LoadSkillTool
 from app.agent.tools.flashcards import CreateFlashcardDeckTool
+from app.agent.tools.notes import CreateStudyNoteTool
 
 __all__ = [
     "WebSearchTool",
@@ -35,4 +36,5 @@ __all__ = [
     "CoderAgent",
     "LoadSkillTool",
     "CreateFlashcardDeckTool",
+    "CreateStudyNoteTool",
 ]
