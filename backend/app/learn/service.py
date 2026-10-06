@@ -11,12 +11,13 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import (
     Conversation,
     Document,
+    DocumentChunk,
     Flashcard,
     FlashcardDeck,
     FlashcardProgress,
     FlashcardReview,
 )
-from app.learn.schemas import CardInput, DeckInput, ReviewInput, normalized
+from app.learn.schemas import CardInput, DeckInput, ReviewInput, similar_question
 from app.learn.scheduler import schedule_review
 
 
@@ -69,13 +70,20 @@ async def create_deck(db: AsyncSession, body: DeckInput):
 
 
 async def add_card(db, deck, body: CardInput, *, position=None, exclude_id=None):
+    if body.source_chunk_id:
+        chunk = await db.get(DocumentChunk, body.source_chunk_id)
+        if chunk is None or chunk.document_id != deck.source_document_id:
+            raise HTTPException(422, "Source chunk must belong to the deck document")
+        if body.source_page is not None and chunk.page_number != body.source_page:
+            raise HTTPException(422, "Source page does not match the retrieved chunk")
+        if body.source_page is None:
+            body = body.model_copy(update={"source_page": chunk.page_number})
+    elif body.source_page and not deck.source_document_id:
+        raise HTTPException(422, "A source page requires a document source")
     existing = (
         (await db.execute(select(Flashcard).where(Flashcard.deck_id == deck.id))).scalars().all()
     )
-    if any(
-        card.id != exclude_id and normalized(card.front) == normalized(body.front)
-        for card in existing
-    ):
+    if any(card.id != exclude_id and similar_question(card.front, body.front) for card in existing):
         raise HTTPException(422, "Duplicate card question")
     if exclude_id is None and len(existing) >= 100:
         raise HTTPException(422, "A deck can contain at most 100 cards")
@@ -83,7 +91,8 @@ async def add_card(db, deck, body: CardInput, *, position=None, exclude_id=None)
         card = next((card for card in existing if card.id == exclude_id), None)
         if card is None:
             raise HTTPException(404, "Card not found")
-        card.front, card.back, card.source_reference = body.front, body.back, body.source_reference
+        for field, value in body.model_dump().items():
+            setattr(card, field, value)
         card.updated_at = now()
     else:
         card = Flashcard(
@@ -101,7 +110,7 @@ async def add_card(db, deck, body: CardInput, *, position=None, exclude_id=None)
     return card
 
 
-def deck_dict(deck, card_count=0, due_count=0, next_review_at=None):
+def deck_dict(deck, card_count=0, due_count=0, next_review_at=None, last_studied_at=None):
     return {
         "id": str(deck.id),
         "title": deck.title,
@@ -115,16 +124,20 @@ def deck_dict(deck, card_count=0, due_count=0, next_review_at=None):
         "card_count": card_count,
         "due_count": due_count,
         "next_review_at": next_review_at,
+        "last_studied_at": last_studied_at,
     }
 
 
 def card_dict(card, progress):
     return {
         "id": str(card.id),
+        "deck_id": str(card.deck_id),
         "front": card.front,
         "back": card.back,
         "position": card.position,
         "source_reference": card.source_reference,
+        "source_page": card.source_page,
+        "source_chunk_id": str(card.source_chunk_id) if card.source_chunk_id else None,
         "due_at": progress.due_at,
         "reviews": progress.reviews,
         "interval_days": progress.interval_days,
@@ -137,6 +150,7 @@ async def list_decks(db):
         func.count().label("card_count"),
         func.sum(case((FlashcardProgress.due_at <= now(), 1), else_=0)).label("due_count"),
         func.min(FlashcardProgress.due_at).label("next_review_at"),
+        func.max(FlashcardProgress.last_reviewed_at).label("last_studied_at"),
     )
     counts = (
         counts.join(FlashcardProgress, FlashcardProgress.card_id == Flashcard.id)
@@ -145,12 +159,49 @@ async def list_decks(db):
     )
     rows = (
         await db.execute(
-            select(FlashcardDeck, counts.c.card_count, counts.c.due_count, counts.c.next_review_at)
+            select(
+                FlashcardDeck,
+                counts.c.card_count,
+                counts.c.due_count,
+                counts.c.next_review_at,
+                counts.c.last_studied_at,
+            )
             .outerjoin(counts, counts.c.deck_id == FlashcardDeck.id)
             .order_by(FlashcardDeck.updated_at.desc())
         )
     ).all()
-    return [deck_dict(deck, count or 0, due or 0, next_at) for deck, count, due, next_at in rows]
+    return [
+        deck_dict(deck, count or 0, due or 0, next_at, last_at)
+        for deck, count, due, next_at, last_at in rows
+    ]
+
+
+async def due_session(db):
+    """Oldest due first; UUID tie-breaker makes ordering stable across reloads."""
+    rows = (
+        await db.execute(
+            select(Flashcard, FlashcardProgress, FlashcardDeck)
+            .join(FlashcardProgress, FlashcardProgress.card_id == Flashcard.id)
+            .join(FlashcardDeck, FlashcardDeck.id == Flashcard.deck_id)
+            .where(FlashcardProgress.due_at <= now())
+            .order_by(FlashcardProgress.due_at, Flashcard.id)
+        )
+    ).all()
+    return {
+        "cards": [
+            {
+                **card_dict(card, progress),
+                "deck_title": deck.title,
+                "source_document_id": str(deck.source_document_id)
+                if deck.source_document_id
+                else None,
+                "source_conversation_id": str(deck.source_conversation_id)
+                if deck.source_conversation_id
+                else None,
+            }
+            for card, progress, deck in rows
+        ]
+    }
 
 
 async def deck_detail(db, deck_id):

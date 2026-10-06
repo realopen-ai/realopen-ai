@@ -57,6 +57,7 @@ def database():
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE conversations (id UUID PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE documents (id UUID PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE document_chunks (id UUID PRIMARY KEY)"))
     for model in (FlashcardDeck, Flashcard, FlashcardProgress, FlashcardReview):
         model.__table__.create(engine)
     yield engine
@@ -115,6 +116,165 @@ def test_duplicate_fronts_rejected():
         DeckInput(
             title="test",
             cards=[CardInput(front="Why?", back="One"), CardInput(front=" WHY? ", back="Two")],
+        )
+
+
+def test_near_duplicates_are_rejected_without_conflating_numbers():
+    from app.learn.schemas import similar_question
+
+    assert similar_question(
+        "What does a **Python dictionary** store?", "What does a Python dictionary store"
+    )
+    assert similar_question(
+        "What does a Python dictionary store?", "What does a Python dictionary stores?"
+    )
+    assert not similar_question("What does chapter 1 explain?", "What does chapter 2 explain?")
+    with pytest.raises(ValidationError):
+        DeckInput(
+            title="test",
+            cards=[
+                CardInput(front="What does a Python dictionary store?", back="Pairs"),
+                CardInput(front="What does a Python dictionary stores?", back="Mapping"),
+            ],
+        )
+
+
+def test_daily_queue_order_and_last_studied(client, database):
+    first, second = create(client), create(client)
+    earlier = datetime.now(timezone.utc) - timedelta(days=2)
+    with Session(database) as db:
+        db.get(FlashcardProgress, uuid.UUID(second["cards"][0]["id"])).due_at = earlier
+        db.commit()
+    cards = client.get("/api/learn/flashcards/review").json()["cards"]
+    assert [card["deck_id"] for card in cards] == [second["id"], first["id"]]
+    assert cards[0]["deck_title"] == "Python"
+    assert client.get("/api/learn/flashcards").json()[0]["last_studied_at"] is None
+    response = client.post(
+        f"/api/learn/flashcards/{second['id']}/cards/{cards[0]['id']}/reviews",
+        json={
+            "rating": "good",
+            "review_id": str(uuid.uuid4()),
+            "expected_reviews": 0,
+        },
+    )
+    assert response.status_code == 200
+    assert len(client.get("/api/learn/flashcards/review").json()["cards"]) == 1
+    decks = client.get("/api/learn/flashcards").json()
+    assert next(deck for deck in decks if deck["id"] == second["id"])["last_studied_at"]
+
+
+def test_split_is_atomic_and_preserves_original_review_state(client):
+    deck = create(client)
+    path = f"/api/learn/flashcards/{deck['id']}/cards/{deck['cards'][0]['id']}/replace"
+    response = client.post(
+        path,
+        json={
+            "cards": [
+                {"front": "What is a mapping?", "back": "A key-value collection"},
+                {"front": "What is a key?", "back": "A lookup identifier"},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["cards"]) == 2
+    assert response.json()["cards"][0]["id"] == deck["cards"][0]["id"]
+    bad = client.post(
+        path,
+        json={
+            "cards": [
+                {"front": "Would this edit persist?", "back": "No"},
+                {"front": "What is a key?", "back": "Duplicate"},
+            ]
+        },
+    )
+    assert bad.status_code == 422
+    current = client.get(f"/api/learn/flashcards/{deck['id']}").json()
+    assert current["cards"][0]["front"] == "What is a mapping?"
+
+
+def test_proposal_sends_only_card_and_never_persists(client, monkeypatch):
+    from app.learn import editing
+
+    calls = []
+
+    async def resolve(_):
+        return "test-model"
+
+    async def chat(model, messages, **kwargs):
+        calls.append((model, messages, kwargs))
+        return {"message": {"content": '{"cards":[{"front":"Mapping?","back":"Key-value pairs"}]}'}}
+
+    monkeypatch.setattr(editing.model_prefs, "resolve_task_model", resolve)
+    monkeypatch.setattr(editing.providers, "chat_once", chat)
+    response = client.post(
+        "/api/learn/flashcards/rewrite",
+        json={
+            "action": "shorter",
+            "card": {
+                "front": "What does a dictionary store?",
+                "back": "Key-value pairs",
+                "source_reference": "Chapter 4",
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["cards"][0]["source_reference"] == "Chapter 4"
+    assert len(calls[0][1]) == 2
+    assert "Chapter 4" not in calls[0][1][1]["content"]
+    assert client.get("/api/learn/flashcards").json() == []
+
+    async def invalid(*args, **kwargs):
+        return {"message": {"content": "not JSON"}}
+
+    monkeypatch.setattr(editing.providers, "chat_once", invalid)
+    assert (
+        client.post(
+            "/api/learn/flashcards/rewrite",
+            json={"action": "shorter", "card": {"front": "Q?", "back": "A"}},
+        ).status_code
+        == 422
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunk_grounding_checks_document_and_derives_page():
+    from app.db.models import DocumentChunk
+
+    document_id, chunk_id = uuid.uuid4(), uuid.uuid4()
+    deck = SimpleNamespace(id=uuid.uuid4(), source_document_id=document_id)
+
+    class FakeDB:
+        async def get(self, model, key):
+            assert model is DocumentChunk
+            return SimpleNamespace(document_id=document_id, page_number=4)
+
+        async def execute(self, _):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+
+        def add(self, card):
+            if isinstance(card, Flashcard):
+                card.id = uuid.uuid4()
+                self.card = card
+
+        async def flush(self):
+            pass
+
+    db = FakeDB()
+    await service.add_card(
+        db, deck, CardInput(front="A question?", back="An answer", source_chunk_id=chunk_id)
+    )
+    assert db.card.source_page == 4
+    with pytest.raises(HTTPException) as error:
+        await service.add_card(
+            db,
+            deck,
+            CardInput(front="Other?", back="Answer", source_chunk_id=chunk_id, source_page=99),
+        )
+    assert error.value.status_code == 422
+    deck.source_document_id = uuid.uuid4()
+    with pytest.raises(HTTPException):
+        await service.add_card(
+            db, deck, CardInput(front="Other?", back="Answer", source_chunk_id=chunk_id)
         )
 
 

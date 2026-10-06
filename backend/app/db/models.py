@@ -41,6 +41,8 @@ class Flashcard(Base):
     back = Column(Text, nullable=False)
     position = Column(Integer, nullable=False)
     source_reference = Column(String(500), nullable=True)
+    source_page = Column(Integer, nullable=True)
+    source_chunk_id = Column(UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 

@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.db.models import Flashcard
 from app.learn import service
-from app.learn.schemas import CardInput, DeckInput, DeckMetadata, ReviewInput
+from app.learn.schemas import (
+    CardInput,
+    DeckInput,
+    DeckMetadata,
+    ReviewInput,
+    CardRewrite,
+    CardReplacement,
+)
 
 router = APIRouter(prefix="/learn/flashcards", tags=["learn"])
 
@@ -21,6 +28,33 @@ async def list_decks(db: AsyncSession = Depends(get_db)):
 async def create_deck(body: DeckInput, db: AsyncSession = Depends(get_db)):
     deck = await service.create_deck(db, body)
     return await service.deck_detail(db, deck.id)
+
+
+@router.get("/review")
+async def due_review(db: AsyncSession = Depends(get_db)):
+    return await service.due_session(db)
+
+
+@router.post("/rewrite")
+async def rewrite_card(body: CardRewrite):
+    from app.learn.editing import propose
+
+    return await propose(body)
+
+
+@router.post("/{deck_id}/cards/{card_id}/replace")
+async def replace_card(
+    deck_id: uuid.UUID,
+    card_id: uuid.UUID,
+    body: CardReplacement,
+    db: AsyncSession = Depends(get_db),
+):
+    deck = await service.deck_or_404(db, deck_id, lock=True)
+    DeckInput(title=deck.title, cards=body.cards)
+    await service.add_card(db, deck, body.cards[0], exclude_id=card_id)
+    for card in body.cards[1:]:
+        await service.add_card(db, deck, card)
+    return await service.deck_detail(db, deck_id)
 
 
 @router.get("/{deck_id}")
