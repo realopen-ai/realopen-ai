@@ -10,14 +10,16 @@ import { RightPanel, RightPanelToggle } from "@/components/layout/RightPanel";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { BrainPage } from "@/components/brain/BrainPage";
 import { WorkspacePage } from "@/components/workspace/WorkspacePage";
+import { LearnPage } from "@/components/learn/LearnPage";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { FileExplorer } from "@/components/file-explorer/FileExplorer";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
+import { useLearnStore } from "@/store/learnStore";
 import { useLocation } from "react-router-dom";
-import { isBrainRoute, isWorkspaceRoute } from "@/lib/appRoutes";
+import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -43,6 +45,20 @@ export function AppLayout() {
   const { pathname } = useLocation();
   const showBrainPage = isBrainRoute(pathname);
   const showWorkspacePage = isWorkspaceRoute(pathname);
+  const showLearnPage = isLearnRoute(pathname);
+  const [desktop, setDesktop] = useState(
+    () => window.matchMedia("(min-width: 768px)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 768px)");
+    const listener = () => setDesktop(query.matches);
+    query.addEventListener("change", listener);
+    return () => query.removeEventListener("change", listener);
+  }, []);
+  useEffect(() => {
+    if (showLearnPage || !rightPanelOpen || !desktop)
+      useLearnStore.getState().setStudyDeck(null);
+  }, [showLearnPage, rightPanelOpen, desktop]);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
@@ -121,7 +137,18 @@ export function AppLayout() {
                 {/* Keep ChatArea mounted while browsing application routes.
                     It owns live text streams and the voice WebSocket, so
                     replacing it here would terminate in-flight work. */}
-                <ChatArea />
+                <div
+                  className="h-full"
+                  inert={showLearnPage}
+                  aria-hidden={showLearnPage || undefined}
+                >
+                  <ChatArea />
+                </div>
+                {showLearnPage && desktop && (
+                  <div className="absolute inset-0 z-30">
+                    <LearnPage />
+                  </div>
+                )}
                 {showWorkspacePage && (
                   <div className="absolute inset-0 z-30">
                     <WorkspacePage />
@@ -169,38 +196,48 @@ export function AppLayout() {
           {/* `hidden` preserves the mounted chat runtime when the user opens
               a mobile utility tab. Routed pages are layered above it so an
               active voice call remains controllable. */}
-          <div className={mobileTab === "chat" ? "h-full" : "hidden"}>
+          <div
+            className={mobileTab === "chat" ? "h-full" : "hidden"}
+            inert={showLearnPage}
+            aria-hidden={showLearnPage || undefined}
+          >
             <ChatArea />
           </div>
 
-          {!showWorkspacePage && !showBrainPage && mobileTab === "files" && (
-            <div className="flex-1 flex flex-col bg-card">
-              <div className="flex h-11 items-center border-b border-border/60 px-2">
-                <MobileMenuButton />
-                <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
-                  {t("panel.fileExplorer")}
-                </h2>
+          {!showLearnPage &&
+            !showWorkspacePage &&
+            !showBrainPage &&
+            mobileTab === "files" && (
+              <div className="flex-1 flex flex-col bg-card">
+                <div className="flex h-11 items-center border-b border-border/60 px-2">
+                  <MobileMenuButton />
+                  <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
+                    {t("panel.fileExplorer")}
+                  </h2>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <FileExplorer />
+                </div>
               </div>
-              <div className="flex-1 overflow-hidden">
-                <FileExplorer />
+            )}
+          {!showLearnPage &&
+            !showWorkspacePage &&
+            !showBrainPage &&
+            mobileTab === "terminal" && (
+              <div className="flex-1 flex flex-col bg-card">
+                <div className="flex h-11 items-center border-b border-border/60 px-2">
+                  <MobileMenuButton />
+                  <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
+                    {t("panel.terminal")}
+                  </h2>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <Suspense fallback={<TerminalLoader />}>
+                    <TerminalPane />
+                  </Suspense>
+                </div>
               </div>
-            </div>
-          )}
-          {!showWorkspacePage && !showBrainPage && mobileTab === "terminal" && (
-            <div className="flex-1 flex flex-col bg-card">
-              <div className="flex h-11 items-center border-b border-border/60 px-2">
-                <MobileMenuButton />
-                <h2 className="ml-1 text-[13.5px] font-medium text-foreground">
-                  {t("panel.terminal")}
-                </h2>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <Suspense fallback={<TerminalLoader />}>
-                  <TerminalPane />
-                </Suspense>
-              </div>
-            </div>
-          )}
+            )}
 
           {showWorkspacePage && (
             <div className="absolute inset-0 z-30">
@@ -212,7 +249,14 @@ export function AppLayout() {
               <BrainPage />
             </div>
           )}
-          {!showWorkspacePage && !showBrainPage && <MobileTabBar />}
+          {showLearnPage && !desktop && (
+            <div className="absolute inset-0 z-30">
+              <LearnPage />
+            </div>
+          )}
+          {!showLearnPage && !showWorkspacePage && !showBrainPage && (
+            <MobileTabBar />
+          )}
         </div>
       </div>
     </div>

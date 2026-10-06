@@ -44,6 +44,7 @@ import { formatCodeExecOutput } from "@/lib/codeExecOutput";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
+import { DeckArtifact } from "@/components/learn/DeckArtifact";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -374,6 +375,22 @@ function ToolCallBlockView({
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
   if (!tc) return null;
+  const deckArtifacts = tc.genResults?.filter(
+    (r) => r.type === "flashcard_deck" && r.deck_id,
+  );
+  if (deckArtifacts?.length && tc.status === "completed")
+    return (
+      <>
+        {deckArtifacts.map((deck) => (
+          <DeckArtifact
+            key={deck.deck_id}
+            id={deck.deck_id!}
+            title={deck.title ?? translate("learn.flashcards")}
+            count={deck.card_count ?? 0}
+          />
+        ))}
+      </>
+    );
 
   // Detect deliverable-producing tool calls (report_gen / pptx_gen /
   // excel_gen all use ToolType.IMAGE_GEN but carry genResults with type
@@ -407,6 +424,10 @@ function ToolCallBlockView({
   // keeping the conversation quiet. Progressive disclosure: full detail
   // appears only when the row is expanded.
   const configs: Record<string, { label: string; runningLabel: string }> = {
+    flashcards: {
+      label: translate("learn.created"),
+      runningLabel: translate("learn.creating"),
+    },
     websearch: {
       label: translate("tool.websearch.done"),
       runningLabel: translate("tool.websearch.running"),

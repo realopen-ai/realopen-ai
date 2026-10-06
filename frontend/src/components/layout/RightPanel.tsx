@@ -1,4 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { StudySession } from "@/components/learn/StudySession";
+import { useLearnStore } from "@/store/learnStore";
 import {
   PanelRightClose,
   PanelRightOpen,
@@ -104,6 +106,7 @@ function TerminalTab({
 }
 
 export function RightPanel() {
+  const studyDeckId = useLearnStore((s) => s.studyDeckId);
   const t = useT();
   const [previewKey, setPreviewKey] = useState(0);
   const [createSandboxOpen, setCreateSandboxOpen] = useState(false);
@@ -156,6 +159,15 @@ export function RightPanel() {
   const active = sandboxes.find((item) => item.id === sandboxId);
   const activeLifecycle = active ? lifecyclePending[active.id] : undefined;
   const activeTone = active ? sandboxStatusTone(active.status) : null;
+
+  if (studyDeckId)
+    return (
+      <StudySession
+        key={studyDeckId}
+        deckId={studyDeckId}
+        onClose={() => useLearnStore.getState().setStudyDeck(null)}
+      />
+    );
 
   return (
     <div className="flex flex-col h-full bg-card">

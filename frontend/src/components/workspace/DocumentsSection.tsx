@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
+import { getDocument } from "@/api/documentsClient";
 import {
   Upload,
   Search,
@@ -700,6 +702,7 @@ const selectClass =
   "h-9 cursor-pointer appearance-none rounded-lg border border-border/60 bg-transparent pl-2.5 pr-7 text-[13px] text-foreground outline-none transition-colors focus:border-primary/50";
 
 export function DocumentsSection() {
+  const [searchParams, setSearchParams] = useSearchParams();
   useT();
   const [docs, setDocs] = useState<DocumentDTO[]>([]);
   const [loading, setLoading] = useState(true);
@@ -711,6 +714,17 @@ export function DocumentsSection() {
   const [upload, setUpload] = useState<UploadState>(initialUpload);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [detailDoc, setDetailDoc] = useState<DocumentDTO | null>(null);
+  const sourceDocumentId = searchParams.get("document");
+  useEffect(() => {
+    if (!sourceDocumentId) return;
+    let cancelled = false;
+    void getDocument(sourceDocumentId).then((doc) => {
+      if (!cancelled && doc) setDetailDoc(doc);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceDocumentId]);
   const [scopeDialog, setScopeDialog] = useState<DocumentDTO | null>(null);
 
   const refresh = useCallback(async () => {
@@ -990,7 +1004,14 @@ export function DocumentsSection() {
       {detailDoc && (
         <DocumentDetailModal
           doc={detailDoc}
-          onClose={() => setDetailDoc(null)}
+          onClose={() => {
+            setDetailDoc(null);
+            if (sourceDocumentId) {
+              const params = new URLSearchParams(searchParams);
+              params.delete("document");
+              setSearchParams(params, { replace: true });
+            }
+          }}
           onChanged={(updated) => {
             if (updated) {
               setDocs((prev) =>

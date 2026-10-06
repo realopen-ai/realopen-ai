@@ -16,6 +16,10 @@ export function isBrainRoute(pathname: string): boolean {
   return pathname === "/brain" || pathname.startsWith("/brain/");
 }
 
+export function isLearnRoute(pathname: string): boolean {
+  return pathname === "/learn" || pathname.startsWith("/learn/");
+}
+
 export function isWorkspaceRoute(pathname: string): boolean {
   return pathname === "/workspace" || pathname.startsWith("/workspace/");
 }

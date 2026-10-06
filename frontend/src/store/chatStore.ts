@@ -27,6 +27,7 @@ export interface ToolCallResult {
     | "vision"
     | "code_exec"
     | "skill"
+    | "flashcards"
     | "file_read"
     | "file_write"
     | "deepsearch"
@@ -62,6 +63,9 @@ export interface ToolCallResult {
     report_id?: string;
     file_path?: string;
     created_at?: number;
+    deck_id?: string;
+    title?: string;
+    card_count?: number;
   }[];
   // Files
   filePath?: string;
