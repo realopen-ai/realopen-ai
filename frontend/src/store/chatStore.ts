@@ -28,6 +28,7 @@ export interface ToolCallResult {
     | "code_exec"
     | "skill"
     | "flashcards"
+    | "notes"
     | "file_read"
     | "file_write"
     | "deepsearch"
@@ -64,6 +65,7 @@ export interface ToolCallResult {
     file_path?: string;
     created_at?: number;
     deck_id?: string;
+    note_id?: string;
     title?: string;
     card_count?: number;
   }[];

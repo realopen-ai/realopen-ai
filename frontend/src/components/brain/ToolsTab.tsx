@@ -79,6 +79,7 @@ function ToolIcon({
     case "search_past_conversations":
       return <MessageSquare className={className} />;
     case "use_report_gen":
+    case "create_study_note":
       return <FileText className={className} />;
     case "use_pptx_gen":
     case "use_excel_gen":

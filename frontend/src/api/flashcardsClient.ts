@@ -15,6 +15,7 @@ export interface Flashcard {
   interval_days: number;
 }
 export interface Deck {
+  source_note_id?: string | null;
   id: string;
   title: string;
   description: string | null;

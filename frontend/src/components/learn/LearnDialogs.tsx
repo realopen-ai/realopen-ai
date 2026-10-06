@@ -210,9 +210,11 @@ export function CardEditor({
 export function ConfirmDelete({
   onConfirm,
   onClose,
+  warning,
 }: {
   onConfirm: () => Promise<void>;
   onClose: () => void;
+  warning?: string;
 }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
@@ -229,7 +231,7 @@ export function ConfirmDelete({
           <DialogTitle>{t("learn.deleteConfirm")}</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          {t("learn.deleteWarning")}
+          {warning ?? t("learn.deleteWarning")}
         </p>
         {error && <p role="alert">{error}</p>}
         <DialogFooter>
