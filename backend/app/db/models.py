@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -20,6 +20,51 @@ from sqlalchemy.orm import DeclarativeBase, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+class FlashcardDeck(Base):
+    __tablename__ = "flashcard_decks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    source_conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
+    source_document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class Flashcard(Base):
+    __tablename__ = "flashcards"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    deck_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="CASCADE"), nullable=False, index=True)
+    front = Column(Text, nullable=False)
+    back = Column(Text, nullable=False)
+    position = Column(Integer, nullable=False)
+    source_reference = Column(String(500), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class FlashcardProgress(Base):
+    __tablename__ = "flashcard_progress"
+    card_id = Column(UUID(as_uuid=True), ForeignKey("flashcards.id", ondelete="CASCADE"), primary_key=True)
+    due_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    interval_days = Column(Integer, nullable=False, default=0)
+    ease = Column(Float, nullable=False, default=2.5)
+    repetitions = Column(Integer, nullable=False, default=0)
+    lapses = Column(Integer, nullable=False, default=0)
+    reviews = Column(Integer, nullable=False, default=0)
+    last_reviewed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class FlashcardReview(Base):
+    __tablename__ = "flashcard_reviews"
+    id = Column(UUID(as_uuid=True), primary_key=True)  # Client idempotency key
+    card_id = Column(UUID(as_uuid=True), ForeignKey("flashcards.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating = Column(String(8), nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=False)
+    due_at = Column(DateTime(timezone=True), nullable=False)
+    interval_days = Column(Integer, nullable=False)
 
 
 class Conversation(Base):
