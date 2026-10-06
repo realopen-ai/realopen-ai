@@ -473,7 +473,7 @@ export function LearnPage() {
                               · {t("learn.dueCount", { count: deck.due_count })}
                             </span>
                             <Button
-                              variant="ghost"
+                              className="bg-primary text-primary-foreground hover:bg-primary/80 shadow-sm cursor-pointer"
                               size="sm"
                               disabled={!deck.card_count}
                               onClick={() =>
