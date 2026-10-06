@@ -1,4 +1,7 @@
 {
+  "learn.expandCards": "عرض البطاقات",
+  "learn.collapseCards": "إخفاء البطاقات",
+  "learn.hiddenAnswers": "{count} بطاقات · الأسئلة والأجوبة مخفية حتى تفتحها",
   "learn.correct": "تصحيح البطاقة",
   "learn.proposing": "جارٍ إعداد الاقتراح…",
   "learn.reviewNow": "راجع الآن",

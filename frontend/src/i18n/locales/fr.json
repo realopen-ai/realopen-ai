@@ -1,4 +1,7 @@
 {
+  "learn.expandCards": "Afficher les cartes",
+  "learn.collapseCards": "Masquer les cartes",
+  "learn.hiddenAnswers": "{count} cartes · Questions et réponses masquées avant ouverture",
   "learn.correct": "Corriger la carte",
   "learn.proposing": "Préparation de la proposition…",
   "learn.reviewNow": "Réviser maintenant",

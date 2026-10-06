@@ -1,4 +1,7 @@
 {
+  "learn.expandCards": "Expand cards",
+  "learn.collapseCards": "Hide cards",
+  "learn.hiddenAnswers": "{count} cards · Questions and answers hidden until you open them",
   "learn.correct": "Correct card",
   "learn.proposing": "Preparing proposal…",
   "learn.reviewNow": "Review now",

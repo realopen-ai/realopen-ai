@@ -30,6 +30,7 @@ import { CardMarkdown } from "./CardMarkdown";
 import { CardEditor, ConfirmDelete, fieldClass } from "./LearnDialogs";
 import { StudySession } from "./StudySession";
 import { SourceAction } from "./SourceAction";
+import { DeckCardStack } from "./DeckCardStack";
 
 function DeckEditor({
   deck,
@@ -216,10 +217,14 @@ function DeckDetail({ id }: { id: string }) {
           {t("learn.emptyCards")}
         </p>
       )}
-      <div className="space-y-4">
+      <DeckCardStack key={id} count={deck.cards?.length ?? 0}>
         {deck.cards?.map((card, index) => (
           <article
-            className="rounded-xl border border-border/60 p-5 bg-card"
+            className="rounded-xl border border-border/60 p-5 bg-card flashcard-deck-unfold"
+            style={{
+              animationDelay: `${Math.min(index * 35, 280)}ms`,
+              animationFillMode: "both",
+            }}
             key={card.id}
           >
             <div className="flex justify-between items-center mb-3">
@@ -262,7 +267,7 @@ function DeckDetail({ id }: { id: string }) {
             </div>
           </article>
         ))}
-      </div>
+      </DeckCardStack>
       <Button
         className="mt-6 text-destructive"
         variant="ghost"
