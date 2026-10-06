@@ -119,6 +119,85 @@ def test_duplicate_fronts_rejected():
         )
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"cards":[{"front":"Translate you are into Spanish.","back":"Tú estás"}]}',
+        '{"front":"Translate you are into Spanish.","back":"Tú estás"}',
+        '[{"front":"Translate you are into Spanish.","back":"Tú estás"}]',
+        '```json\n{"card":{"front":"Translate you are into Spanish.","back":"Tú estás"}}\n```',
+        '{"title":"Ignored", "cards":[{"id":"ignored","front":"Translate you are into Spanish.","back":"Tú estás","source_page":999}]}',
+    ],
+)
+def test_card_proposal_accepts_common_json_shapes(raw):
+    from app.learn.editing import parse_proposal
+
+    cards = parse_proposal(raw, 1)
+    assert cards[0].back == "Tú estás"
+    assert cards[0].source_page is None
+
+
+@pytest.mark.parametrize(
+    "raw,count",
+    [
+        ('{"cards":[]}', 1),
+        ('{"cards":[{"front":"","back":"Answer"}]}', 1),
+        ('{"cards":[{"front":"Same","back":"SAME"}]}', 1),
+        ('{"cards":[{"front":"Question?","back":"Answer"}]}', 2),
+        (
+            '{"cards":[{"front":"Question?","back":"Answer"},{"front":"Question?","back":"Other"}]}',
+            2,
+        ),
+        ("not JSON", 1),
+    ],
+)
+def test_invalid_proposals_still_rejected(raw, count):
+    from app.learn.editing import parse_proposal
+
+    with pytest.raises(ValueError):
+        parse_proposal(raw, count)
+
+
+def test_card_rewrite_uses_schema_and_retries_once(client, monkeypatch):
+    from app.learn import editing
+
+    calls = []
+
+    async def resolve(_):
+        return "test-local-model"
+
+    async def chat(model, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return {
+            "message": {
+                "content": "not JSON"
+                if len(calls) == 1
+                else '{"front":"Translate you are into Spanish.","back":"Tú estás"}'
+            }
+        }
+
+    monkeypatch.setattr(editing.model_prefs, "resolve_task_model", resolve)
+    monkeypatch.setattr(editing.providers, "chat_once", chat)
+    response = client.post(
+        "/api/learn/flashcards/rewrite",
+        json={
+            "card": {
+                "front": "How do you say 'I am' in Spanish (tú form)?",
+                "back": "Tú estás",
+                "source_reference": None,
+                "source_page": None,
+                "source_chunk_id": None,
+            },
+            "action": "recall",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert len(calls) == 2
+    assert calls[0][1]["format"]["properties"]["cards"]["maxItems"] == 1
+    assert len(calls[1][0]) == 2
+    assert client.get("/api/learn/flashcards").json() == []
+
+
 def test_near_duplicates_are_rejected_without_conflating_numbers():
     from app.learn.schemas import similar_question
 
