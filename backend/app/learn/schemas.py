@@ -12,11 +12,43 @@ def normalized(value: str) -> str:
 
 def similar_question(a: str, b: str) -> bool:
     a, b = normalized(a), normalized(b)
-    # Ignore Markdown decoration/punctuation, but preserve numbers and operators.
-    a, b = re.sub(r"[*_`?!.,]", "", a), re.sub(r"[*_`?!.,]", "", b)
+    # Shared templates do not make different vocabulary, quantities or operators
+    # duplicates. Protect quoted learning targets before comparing sentence shape.
+    quotes = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "«": '"', "»": '"'})
+    a, b = a.translate(quotes), b.translate(quotes)
+    quoted = r"""(?<!\w)['"](.+?)['"](?!\w)"""
+    if re.findall(quoted, a) != re.findall(quoted, b):
+        return False
     if re.findall(r"\d+", a) != re.findall(r"\d+", b):
         return False
-    return a == b or (min(len(a), len(b)) >= 25 and SequenceMatcher(None, a, b).ratio() >= 0.94)
+    # Ignore Markdown decoration/punctuation, but preserve numbers and operators.
+    a, b = re.sub(r"[*_`?!.,]", "", a), re.sub(r"[*_`?!.,]", "", b)
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 25 or SequenceMatcher(None, a, b).ratio() < 0.94:
+        return False
+    # Only tolerate tiny spelling changes or harmless articles. A short, different
+    # concept must not disappear inside a high whole-sentence similarity score.
+    tokens_a, tokens_b = re.findall(r"\w+|[^\w\s]", a), re.findall(r"\w+|[^\w\s]", b)
+    for operation, start_a, end_a, start_b, end_b in SequenceMatcher(
+        None, tokens_a, tokens_b
+    ).get_opcodes():
+        if operation == "equal":
+            continue
+        left, right = tokens_a[start_a:end_a], tokens_b[start_b:end_b]
+        if operation in {"insert", "delete"} and all(
+            token in {"a", "an", "the"} for token in left + right
+        ):
+            continue
+        if (
+            operation == "replace"
+            and len(left) == len(right) == 1
+            and min(len(left[0]), len(right[0])) >= 4
+            and SequenceMatcher(None, left[0], right[0]).ratio() >= 0.84
+        ):
+            continue
+        return False
+    return True
 
 
 class CardInput(BaseModel):

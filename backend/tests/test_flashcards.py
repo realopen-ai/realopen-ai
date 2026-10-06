@@ -255,6 +255,64 @@ def test_correct_card_proposes_factual_changes_without_overwriting(client, monke
     assert original["cards"][0]["front"] == deck["cards"][0]["front"]
 
 
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        ("What is the Spanish word for 'no'?", "What is the Spanish word for 'dog'?"),
+        ("What is the Spanish word for ‘no’?", "What is the Spanish word for ‘yes’?"),
+        ("What is the Spanish word for no?", "What is the Spanish word for dog?"),
+        ("What does chapter 1 explain?", "What does chapter 2 explain?"),
+        ("What is the square root of 1.1?", "What is the square root of 11?"),
+        ("What happens when x == y in Python?", "What happens when x != y in Python?"),
+    ],
+)
+def test_shared_question_templates_are_not_duplicates(first, second):
+    from app.learn.schemas import similar_question
+
+    assert not similar_question(first, second)
+
+
+def test_vocabulary_deck_edits_and_true_duplicates(client):
+    response = client.post(
+        "/api/learn/flashcards",
+        json={
+            "title": "Spanish",
+            "cards": [
+                {"front": "What is the Spanish word for 'no'?", "back": "No"},
+                {"front": "What is the Spanish word for 'dog'?", "back": "Perro"},
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    deck = response.json()
+    card = deck["cards"][0]
+    path = f"/api/learn/flashcards/{deck['id']}/cards/{card['id']}"
+    answer_edit = client.put(path, json={"front": card["front"], "back": "Noo"})
+    assert answer_edit.status_code == 200, answer_edit.text
+    changed = client.put(path, json={"front": "What is the Spanish word for 'yes'?", "back": "Sí"})
+    assert changed.status_code == 200, changed.text
+    duplicate = client.put(path, json={"front": deck["cards"][1]["front"], "back": "Other answer"})
+    assert duplicate.status_code == 422
+
+
+def test_answer_only_edits_do_not_revalidate_legacy_duplicates(client, database):
+    deck = create(client)
+    card = deck["cards"][0]
+    with Session(database) as db:
+        duplicate = Flashcard(
+            deck_id=uuid.UUID(deck["id"]), front=card["front"], back="Legacy answer", position=1
+        )
+        db.add(duplicate)
+        db.flush()
+        db.add(FlashcardProgress(card_id=duplicate.id, due_at=datetime.now(timezone.utc)))
+        db.commit()
+    response = client.put(
+        f"/api/learn/flashcards/{deck['id']}/cards/{card['id']}",
+        json={"front": card["front"], "back": "Corrected answer"},
+    )
+    assert response.status_code == 200, response.text
+
+
 def test_near_duplicates_are_rejected_without_conflating_numbers():
     from app.learn.schemas import similar_question
 

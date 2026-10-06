@@ -17,7 +17,7 @@ from app.db.models import (
     FlashcardProgress,
     FlashcardReview,
 )
-from app.learn.schemas import CardInput, DeckInput, ReviewInput, similar_question
+from app.learn.schemas import CardInput, DeckInput, ReviewInput, normalized, similar_question
 from app.learn.scheduler import schedule_review
 
 
@@ -83,14 +83,18 @@ async def add_card(db, deck, body: CardInput, *, position=None, exclude_id=None)
     existing = (
         (await db.execute(select(Flashcard).where(Flashcard.deck_id == deck.id))).scalars().all()
     )
-    if any(card.id != exclude_id and similar_question(card.front, body.front) for card in existing):
+    edited = next((card for card in existing if card.id == exclude_id), None)
+    if exclude_id is not None and edited is None:
+        raise HTTPException(404, "Card not found")
+    question_changed = edited is None or normalized(edited.front) != normalized(body.front)
+    if question_changed and any(
+        card.id != exclude_id and similar_question(card.front, body.front) for card in existing
+    ):
         raise HTTPException(422, "Duplicate card question")
     if exclude_id is None and len(existing) >= 100:
         raise HTTPException(422, "A deck can contain at most 100 cards")
     if exclude_id is not None:
-        card = next((card for card in existing if card.id == exclude_id), None)
-        if card is None:
-            raise HTTPException(404, "Card not found")
+        card = edited
         for field, value in body.model_dump().items():
             setattr(card, field, value)
         card.updated_at = now()
