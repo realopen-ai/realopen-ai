@@ -138,7 +138,7 @@ export function StudySession({
         event.preventDefault();
         setRevealed(true);
       }
-      const rating = ratingForKey(event.key);
+      const rating = ratingForKey(event.key, event.code);
       if (rating && revealed) {
         event.preventDefault();
         void rate(rating);

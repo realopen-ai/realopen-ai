@@ -27,15 +27,25 @@ test("study queue selects due cards; practice includes future cards without muta
 });
 
 test("rating keyboard shortcuts and Learn route boundaries", () => {
-  assert.deepEqual(["1", "2", "3", "4"].map(ratingForKey), [
-    "again",
-    "hard",
-    "good",
-    "easy",
-  ]);
+  assert.deepEqual(
+    ["1", "2", "3", "4"].map((key) => ratingForKey(key)),
+    ["again", "hard", "good", "easy"],
+  );
   assert.equal(ratingForKey("5"), null);
   assert.equal(isLearnRoute("/learn/flashcards/id/study"), true);
   assert.equal(isLearnRoute("/learning"), false);
+});
+
+test("rating shortcuts accept unshifted AZERTY keys, shifted numbers, and numpad numbers", () => {
+  const ratings = ["again", "hard", "good", "easy"];
+  for (const [index, key] of ["&", "é", '"', "'"].entries()) {
+    const digit = String(index + 1);
+    assert.equal(ratingForKey(key, `Digit${digit}`), ratings[index]);
+    assert.equal(ratingForKey(digit, `Digit${digit}`), ratings[index]);
+    assert.equal(ratingForKey(digit, `Numpad${digit}`), ratings[index]);
+  }
+  assert.equal(ratingForKey("&", "KeyA"), null);
+  assert.equal(ratingForKey("(", "Digit5"), null);
 });
 
 test("Learn locales cover every visible learning label in all supported languages", () => {

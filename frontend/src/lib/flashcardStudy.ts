@@ -20,13 +20,15 @@ export function shuffled<T>(items: T[], random = Math.random): T[] {
   }
   return result;
 }
-export function ratingForKey(key: string): Rating | null {
+export function ratingForKey(key: string, code = ""): Rating | null {
+  // Physical number-row keys also work without Shift on layouts such as AZERTY.
+  const number = /^Digit[1-4]$/.test(code) ? code.slice(-1) : key;
   return (
     (
       { "1": "again", "2": "hard", "3": "good", "4": "easy" } as Record<
         string,
         Rating
       >
-    )[key] ?? null
+    )[number] ?? null
   );
 }
