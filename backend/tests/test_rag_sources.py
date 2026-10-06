@@ -60,6 +60,7 @@ def test_format_sources_single(sample_source):
     out = rag.format_sources_for_llm([sample_source])
     assert "[Source 1:" in out
     assert "report.pdf" in out
+    assert f"document_id {sample_source.document_id}" in out
     assert "page 7" in out
     assert "lines 12-14" in out
     assert "$4.2M" in out

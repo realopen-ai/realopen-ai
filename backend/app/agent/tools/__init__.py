@@ -18,6 +18,7 @@ from app.agent.tools.pptx_gen import PptxGenTool
 from app.agent.tools.excel_gen import ExcelGenTool
 from app.agent.tools.delegate_coder import CoderAgent
 from app.agent.tools.load_skill import LoadSkillTool
+from app.agent.tools.flashcards import CreateFlashcardDeckTool
 
 __all__ = [
     "WebSearchTool",
@@ -33,4 +34,5 @@ __all__ = [
     "ExcelGenTool",
     "CoderAgent",
     "LoadSkillTool",
+    "CreateFlashcardDeckTool",
 ]

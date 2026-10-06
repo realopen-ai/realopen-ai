@@ -41,6 +41,12 @@ _ALWAYS_TOOLS: Set[str] = {
 # The keyword vocabulary doubles as the per-tool default TAGS (the
 # tag-gating replaces the old comma-separated keyword_gate string).
 _KEYWORD_TOOLS: Dict[str, Set[str]] = {
+    "flashcard": {"create_flashcard_deck"},
+    "flash card": {"create_flashcard_deck"},
+    "study cards": {"create_flashcard_deck"},
+    "cartes de révision": {"create_flashcard_deck"},
+    "fiches de révision": {"create_flashcard_deck"},
+    "بطاقات": {"create_flashcard_deck"},
     "search": {"use_websearch", "use_webfetch"},
     "look up": {"use_websearch"},
     "find": {"use_websearch", "rag_search"},

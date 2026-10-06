@@ -1993,6 +1993,7 @@ def format_sources_for_llm(sources: List[RetrievedSource]) -> str:
     lines: List[str] = []
     for i, s in enumerate(sources, start=1):
         location_parts: List[str] = [s.document_filename]
+        location_parts.append(f"document_id {s.document_id}")
         if s.page_number is not None:
             location_parts.append(f"page {s.page_number}")
         if s.line_start is not None and s.line_end is not None:
