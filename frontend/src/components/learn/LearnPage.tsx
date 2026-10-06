@@ -29,6 +29,7 @@ import { useT } from "@/store/settingsStore";
 import { CardMarkdown } from "./CardMarkdown";
 import { CardEditor, ConfirmDelete, fieldClass } from "./LearnDialogs";
 import { StudySession } from "./StudySession";
+import { SourceAction } from "./SourceAction";
 
 function DeckEditor({
   deck,
@@ -251,6 +252,14 @@ function DeckDetail({ id }: { id: string }) {
                 {card.source_reference}
               </p>
             )}
+            <div className="mt-2">
+              <SourceAction
+                documentId={deck.source_document_id}
+                conversationId={deck.source_conversation_id}
+                page={card.source_page}
+                chunk={card.source_chunk_id}
+              />
+            </div>
           </article>
         ))}
       </div>
@@ -272,6 +281,12 @@ function DeckDetail({ id }: { id: string }) {
       {editCard && (
         <CardEditor
           initial={editCard === "new" ? undefined : editCard}
+          onReplace={
+            editCard === "new"
+              ? undefined
+              : async (cards) =>
+                  setDeck(await flashcardsApi.replace(id, editCard.id, cards))
+          }
           onClose={() => setEditCard(null)}
           onSave={async (input) =>
             setDeck(
@@ -332,7 +347,9 @@ export function LearnPage() {
         <MobileMenuButton />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {deckId ? (
+        {pathname === "/learn/review" ? (
+          <StudySession deckId="review" />
+        ) : deckId ? (
           pathname.endsWith("/study") ? (
             <StudySession key={deckId} deckId={deckId} />
           ) : (
@@ -383,6 +400,19 @@ export function LearnPage() {
                       <p className="text-3xl font-semibold mt-2">
                         {decks.reduce((sum, deck) => sum + deck.due_count, 0)}
                       </p>
+                      {decks.some((deck) => deck.due_count > 0) ? (
+                        <Button
+                          className="mt-4"
+                          onClick={() => navigate("/learn/review")}
+                        >
+                          <Play className="size-4" />
+                          {t("learn.reviewNow")}
+                        </Button>
+                      ) : (
+                        <p className="mt-4 text-sm text-primary">
+                          {t("learn.noDue")}
+                        </p>
+                      )}
                     </div>
                     <div className="rounded-xl border border-border/60 p-5 bg-card">
                       <p className="text-sm text-muted-foreground">
@@ -448,6 +478,12 @@ export function LearnPage() {
                               {t("learn.study")}
                             </Button>
                           </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {t("learn.lastStudied")}:{" "}
+                            {deck.last_studied_at
+                              ? new Date(deck.last_studied_at).toLocaleString()
+                              : t("learn.notStudied")}
+                          </p>
                         </article>
                       ))}
                     </div>

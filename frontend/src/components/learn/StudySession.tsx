@@ -12,6 +12,8 @@ import { CardMarkdown } from "./CardMarkdown";
 import { CardEditor } from "./LearnDialogs";
 import { useT } from "@/store/settingsStore";
 import { studyQueue, shuffled, ratingForKey } from "@/lib/flashcardStudy";
+import { CardSpeaker } from "./CardSpeaker";
+import { SourceAction } from "./SourceAction";
 
 export function StudySession({
   deckId,
@@ -35,19 +37,45 @@ export function StudySession({
     null,
   );
   const card = queue[index];
+  const daily = deckId === "review";
+  const cardDeckId = card?.deck_id ?? deckId;
+  const load = useCallback(
+    async (signal?: AbortSignal): Promise<Deck> => {
+      if (!daily) return flashcardsApi.get(deckId, signal);
+      const session = await flashcardsApi.due(signal);
+      return {
+        id: "review",
+        title: "",
+        description: null,
+        source_document_id: null,
+        source_conversation_id: null,
+        card_count: session.cards.length,
+        due_count: session.cards.length,
+        next_review_at: null,
+        updated_at: "",
+        cards: session.cards,
+      };
+    },
+    [daily, deckId],
+  );
   useEffect(() => {
     const controller = new AbortController();
-    flashcardsApi
-      .get(deckId, controller.signal)
+    load(controller.signal)
       .then((loaded) => {
         setDeck(loaded);
-        setQueue(studyQueue(loaded.cards ?? [], false));
+        setIndex(0);
+        setRevealed(false);
+        setResults([]);
+        reviewKey.current = null;
+        setQueue(
+          daily ? (loaded.cards ?? []) : studyQueue(loaded.cards ?? [], false),
+        );
       })
       .catch((error) => {
         if (!controller.signal.aborted) setError(error.message);
       });
     return () => controller.abort();
-  }, [deckId]);
+  }, [load, daily]);
   const close = () => {
     if (onClose) onClose();
     else navigate("/learn");
@@ -65,7 +93,7 @@ export function StudySession({
         reviewKey.current = { card: card.id, rating, id: crypto.randomUUID() };
       try {
         const result = await flashcardsApi.review(
-          deckId,
+          cardDeckId,
           card,
           rating,
           reviewKey.current.id,
@@ -88,7 +116,7 @@ export function StudySession({
         setBusy(false);
       }
     },
-    [card, revealed, editing, deckId, t],
+    [card, revealed, editing, cardDeckId, t],
   );
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -162,26 +190,30 @@ export function StudySession({
           </>
         )}
         <div className="flex flex-wrap justify-center gap-2">
-          <Button
-            disabled={!deck.cards?.length || busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                const refreshed = await flashcardsApi.get(deckId);
-                setDeck(refreshed);
-                setQueue(studyQueue(refreshed.cards ?? [], true));
-                setResults([]);
-                setIndex(0);
-                setRevealed(false);
-              } catch {
-                setError(t("learn.error"));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {t("learn.reviewAgain")}
-          </Button>
+          {!daily && (
+            <>
+              <Button
+                disabled={!deck.cards?.length || busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const refreshed = await load();
+                    setDeck(refreshed);
+                    setQueue(studyQueue(refreshed.cards ?? [], true));
+                    setResults([]);
+                    setIndex(0);
+                    setRevealed(false);
+                  } catch {
+                    setError(t("learn.error"));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {t("learn.reviewAgain")}
+              </Button>
+            </>
+          )}
           <Button variant="outline" onClick={close}>
             {t("learn.return")}
           </Button>
@@ -201,7 +233,14 @@ export function StudySession({
         </span>
       </header>
       <div className="flex items-center justify-between mb-4 gap-2">
-        <h2 className="font-medium truncate">{deck.title}</h2>
+        <div className="min-w-0">
+          <h2 className="font-medium truncate">
+            {daily ? card.deck_title : deck.title}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t(daily ? "learn.dailyReview" : "learn.dueReview")}
+          </p>
+        </div>
         <div className="flex gap-1">
           <Button
             variant="ghost"
@@ -236,15 +275,21 @@ export function StudySession({
         />
       </div>
       <section className="flex-1 min-h-56 rounded-2xl border border-border/60 bg-card p-6 sm:p-8 shadow-sm">
-        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-4">
-          {t("learn.front")}
-        </p>
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            {t("learn.front")}
+          </p>
+          <CardSpeaker key={card.front} text={card.front} />
+        </div>
         <CardMarkdown text={card.front} />
         {revealed && (
-          <div className="mt-6 pt-5 border-t border-border/60">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-3">
-              {t("learn.back")}
-            </p>
+          <div className="mt-6 pt-5 border-t border-border/60 animate-in fade-in slide-in-from-bottom-2 duration-200 motion-reduce:animate-none">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                {t("learn.back")}
+              </p>
+              <CardSpeaker key={card.back} text={card.back} />
+            </div>
             <CardMarkdown text={card.back} />
             {card.source_reference && (
               <p dir="auto" className="mt-4 text-xs text-muted-foreground">
@@ -253,6 +298,18 @@ export function StudySession({
             )}
           </div>
         )}
+        <div className="mt-4">
+          <SourceAction
+            documentId={
+              daily ? card.source_document_id : deck.source_document_id
+            }
+            conversationId={
+              daily ? card.source_conversation_id : deck.source_conversation_id
+            }
+            page={card.source_page}
+            chunk={card.source_chunk_id}
+          />
+        </div>
       </section>
       {errorView}
       <div className="mt-5">
@@ -282,18 +339,35 @@ export function StudySession({
       {editing && (
         <CardEditor
           initial={card}
-          onClose={() => setEditing(false)}
-          onSave={async (input) => {
-            const updated = await flashcardsApi.editCard(
-              deckId,
+          onReplace={async (inputs) => {
+            const updated = await flashcardsApi.replace(
+              cardDeckId,
               card.id,
-              input,
+              inputs,
             );
-            setDeck(updated);
             const edited = updated.cards?.find((item) => item.id === card.id);
             if (edited)
               setQueue((cards) =>
-                cards.map((item) => (item.id === card.id ? edited : item)),
+                cards.map((item) =>
+                  item.id === card.id ? { ...item, ...edited } : item,
+                ),
+              );
+            if (!daily) setDeck(updated);
+          }}
+          onClose={() => setEditing(false)}
+          onSave={async (input) => {
+            const updated = await flashcardsApi.editCard(
+              cardDeckId,
+              card.id,
+              input,
+            );
+            if (!daily) setDeck(updated);
+            const edited = updated.cards?.find((item) => item.id === card.id);
+            if (edited)
+              setQueue((cards) =>
+                cards.map((item) =>
+                  item.id === card.id ? { ...item, ...edited } : item,
+                ),
               );
           }}
         />

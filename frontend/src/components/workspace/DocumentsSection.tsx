@@ -1003,12 +1003,20 @@ export function DocumentsSection() {
       {/* Detail modal */}
       {detailDoc && (
         <DocumentDetailModal
+          key={detailDoc.id}
           doc={detailDoc}
+          initialPage={
+            sourceDocumentId === detailDoc.id
+              ? Number(searchParams.get("page")) || 1
+              : 1
+          }
           onClose={() => {
             setDetailDoc(null);
             if (sourceDocumentId) {
               const params = new URLSearchParams(searchParams);
               params.delete("document");
+              params.delete("page");
+              params.delete("chunk");
               setSearchParams(params, { replace: true });
             }
           }}

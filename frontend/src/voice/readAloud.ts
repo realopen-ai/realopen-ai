@@ -77,6 +77,7 @@ export class ReadAloudPlayer {
     text: string,
     onDone: () => void,
     onState?: (state: ReadingState) => void,
+    options?: { localOnly?: boolean; onUnavailable?: () => void },
   ): Promise<void> {
     this.stop();
     activePlayer?.stop();
@@ -94,6 +95,10 @@ export class ReadAloudPlayer {
     const fallback = () => {
       if (controller.signal.aborted || fallingBack) return;
       fallingBack = true;
+      if (options?.localOnly) {
+        options.onUnavailable?.();
+        return finish();
+      }
       this.audio?.pause();
       this.audio = null;
       if (this.url) URL.revokeObjectURL(this.url);

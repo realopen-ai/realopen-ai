@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -8,7 +9,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/store/settingsStore";
-import type { CardInput } from "@/api/flashcardsClient";
+import { flashcardsApi, type CardInput } from "@/api/flashcardsClient";
+import { CardMarkdown } from "./CardMarkdown";
 
 export const fieldClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50";
@@ -17,10 +19,12 @@ export function CardEditor({
   initial,
   onSave,
   onClose,
+  onReplace,
 }: {
   initial?: CardInput;
   onSave: (card: CardInput) => Promise<void>;
   onClose: () => void;
+  onReplace?: (cards: CardInput[]) => Promise<void>;
 }) {
   const t = useT();
   const [front, setFront] = useState(initial?.front ?? "");
@@ -28,11 +32,20 @@ export function CardEditor({
   const [reference, setReference] = useState(initial?.source_reference ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [proposal, setProposal] = useState<CardInput[] | null>(null);
+  const [proposing, setProposing] = useState<string | null>(null);
+  const input = (): CardInput => ({
+    front,
+    back,
+    source_reference: reference || null,
+    source_page: initial?.source_page,
+    source_chunk_id: initial?.source_chunk_id,
+  });
   const save = async () => {
     setBusy(true);
     setError("");
     try {
-      await onSave({ front, back, source_reference: reference || null });
+      await onSave(input());
       onClose();
     } catch (error) {
       setError(error instanceof Error ? error.message : t("learn.error"));
@@ -47,13 +60,95 @@ export function CardEditor({
         if (!open && !busy) onClose();
       }}
     >
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {t(initial ? "learn.editCard" : "learn.addCard")}
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">{t("learn.markdown")}</p>
+        {initial && onReplace && (
+          <div className="flex flex-wrap gap-2">
+            {(["shorter", "harder", "recall", "split"] as const).map(
+              (action) => (
+                <Button
+                  key={action}
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || !front.trim() || !back.trim()}
+                  onClick={async () => {
+                    setBusy(true);
+                    setProposing(action);
+                    setError("");
+                    setProposal(null);
+                    try {
+                      setProposal(
+                        (await flashcardsApi.rewrite(input(), action)).cards,
+                      );
+                    } catch (error) {
+                      setError(
+                        error instanceof Error
+                          ? error.message
+                          : t("learn.error"),
+                      );
+                    } finally {
+                      setBusy(false);
+                      setProposing(null);
+                    }
+                  }}
+                >
+                  {proposing === action && (
+                    <Loader2 className="size-3 animate-spin" />
+                  )}
+                  {t(`learn.${action}`)}
+                </Button>
+              ),
+            )}
+          </div>
+        )}
+        {proposal && (
+          <section className="rounded-lg border border-primary/30 p-3 space-y-3 max-h-64 overflow-y-auto">
+            <p className="text-xs text-muted-foreground">
+              {t("learn.proposalNotice")}
+            </p>
+            {proposal.map((card, index) => (
+              <div key={index} className="space-y-2">
+                <CardMarkdown text={card.front} />
+                <CardMarkdown text={card.back} />
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await onReplace?.(proposal);
+                    onClose();
+                  } catch (error) {
+                    setError(
+                      error instanceof Error ? error.message : t("learn.error"),
+                    );
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {t("learn.acceptProposal")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => setProposal(null)}
+              >
+                {t("learn.discard")}
+              </Button>
+            </div>
+          </section>
+        )}
         <label className="text-sm space-y-1">
           {t("learn.front")}
           <textarea
@@ -98,7 +193,13 @@ export function CardEditor({
             disabled={busy || !front.trim() || !back.trim()}
             onClick={() => void save()}
           >
-            {t(busy ? "learn.saving" : "learn.save")}
+            {t(
+              proposing
+                ? "learn.proposing"
+                : busy
+                  ? "learn.saving"
+                  : "learn.save",
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

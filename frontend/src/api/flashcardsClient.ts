@@ -1,9 +1,15 @@
 export interface Flashcard {
   id: string;
+  deck_id: string;
+  deck_title?: string;
+  source_document_id?: string | null;
+  source_conversation_id?: string | null;
   front: string;
   back: string;
   position: number;
   source_reference: string | null;
+  source_page?: number | null;
+  source_chunk_id?: string | null;
   due_at: string;
   reviews: number;
   interval_days: number;
@@ -17,6 +23,7 @@ export interface Deck {
   card_count: number;
   due_count: number;
   next_review_at: string | null;
+  last_studied_at?: string | null;
   updated_at: string;
   cards?: Flashcard[];
 }
@@ -25,6 +32,8 @@ export interface CardInput {
   front: string;
   back: string;
   source_reference?: string | null;
+  source_page?: number | null;
+  source_chunk_id?: string | null;
 }
 
 async function request<T>(
@@ -50,6 +59,12 @@ async function request<T>(
   return response.status === 204 ? (undefined as T) : response.json();
 }
 export const flashcardsApi = {
+  due: (signal?: AbortSignal) =>
+    request<{ cards: Flashcard[] }>("/review", "GET", undefined, signal),
+  rewrite: (card: CardInput, action: string) =>
+    request<{ cards: CardInput[] }>("/rewrite", "POST", { card, action }),
+  replace: (deckId: string, cardId: string, cards: CardInput[]) =>
+    request<Deck>(`/${deckId}/cards/${cardId}/replace`, "POST", { cards }),
   list: (signal?: AbortSignal) => request<Deck[]>("", "GET", undefined, signal),
   get: (id: string, signal?: AbortSignal) =>
     request<Deck>(`/${id}`, "GET", undefined, signal),
