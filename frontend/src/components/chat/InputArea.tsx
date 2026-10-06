@@ -540,7 +540,7 @@ export function InputArea({
   const hasImages = attachments.some((a) => a.type === "image");
 
   return (
-    <div className="px-4 pb-4 pt-12 sm:px-6">
+    <div className="p-4 sm:px-6">
       <div className="max-w-210 mx-auto relative">
         {voiceState === "inactive" && (
           <Button
