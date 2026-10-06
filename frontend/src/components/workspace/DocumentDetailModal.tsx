@@ -81,12 +81,14 @@ export function DocumentDetailModal({
   onClose,
   onChanged,
   onDeleted,
+  initialPage = 1,
 }: {
   doc: DocumentDTO;
   onClose: () => void;
   /** Called with the updated doc (or null to trigger a list refresh). */
   onChanged: (doc: DocumentDTO | null) => void;
   onDeleted: (id: string) => void;
+  initialPage?: number;
 }) {
   useT();
   // ── Preview state ─────────────────────────────────────────────────
@@ -95,7 +97,9 @@ export function DocumentDetailModal({
     source_mtime: number | null;
   } | null>(null);
   const [pagesError, setPagesError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(
+    Number.isSafeInteger(initialPage) && initialPage > 0 ? initialPage : 1,
+  );
 
   // ── Knowledge state ───────────────────────────────────────────────
   const [action, setAction] = useState<KnowledgeAction>(null);
@@ -122,7 +126,7 @@ export function DocumentDetailModal({
     const manifest = await getDocumentPages(doc.id);
     if (manifest) {
       setPages({ count: manifest.count, source_mtime: manifest.source_mtime });
-      setCurrentPage((p) => Math.min(p, manifest.count));
+      setCurrentPage((p) => Math.max(1, Math.min(p, manifest.count)));
     } else {
       setPagesError(t("workspace.documents.previewUnavailable"));
       setPages(null);

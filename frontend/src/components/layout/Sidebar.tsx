@@ -12,6 +12,7 @@ import {
   Settings,
   Brain,
   FolderOpen,
+  GraduationCap,
   SquarePen,
   type LucideIcon,
 } from "lucide-react";
@@ -30,7 +31,7 @@ import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
-import { isBrainRoute, isWorkspaceRoute } from "@/lib/appRoutes";
+import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 
 /* ── Shared row primitives (sidebar-local) ─────────────────────── */
 
@@ -145,6 +146,7 @@ export function Sidebar() {
   const setSidebarMobileOpen = useUIStore((s) => s.setSidebarMobileOpen);
   const showBrainPage = isBrainRoute(pathname);
   const showWorkspacePage = isWorkspaceRoute(pathname);
+  const showLearnPage = isLearnRoute(pathname);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -268,6 +270,16 @@ export function Sidebar() {
             active={showWorkspacePage}
             activeVariant="primary"
           />
+          <RailButton
+            icon={GraduationCap}
+            label={t("learn.title")}
+            active={showLearnPage}
+            activeVariant="primary"
+            onClick={() => {
+              navigate("/learn");
+              setSidebarMobileOpen(false);
+            }}
+          />
         </nav>
 
         <RailSeparator />
@@ -366,6 +378,15 @@ export function Sidebar() {
             label={t("workspace.title")}
             onClick={handleWorkspaceClick}
             active={showWorkspacePage}
+          />
+          <NavRow
+            icon={GraduationCap}
+            label={t("learn.title")}
+            active={showLearnPage}
+            onClick={() => {
+              navigate("/learn");
+              setSidebarMobileOpen(false);
+            }}
           />
         </nav>
 

@@ -2,6 +2,27 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ReadAloudPlayer } from "../src/voice/readAloud.ts";
 
+test("flashcard local-only speech fails gracefully without browser speech fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  let unavailable = 0;
+  let finished = 0;
+  globalThis.fetch = async () => new Response("unavailable", { status: 503 });
+  try {
+    const player = new ReadAloudPlayer();
+    // No window/SpeechSynthesis API exists here: attempting fallback would throw.
+    await player.play("Card", () => finished++, undefined, {
+      localOnly: true,
+      onUnavailable: () => unavailable++,
+    });
+    assert.equal(unavailable, 1);
+    assert.equal(finished, 1);
+    player.stop();
+    assert.equal(finished, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("reading controls clamp seeks, pause/resume, change speed and close on end", async () => {
   const originalFetch = globalThis.fetch;
   const originalAudio = globalThis.Audio;
