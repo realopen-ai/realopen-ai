@@ -31,6 +31,7 @@ import { CardEditor, ConfirmDelete, fieldClass } from "./LearnDialogs";
 import { StudySession } from "./StudySession";
 import { SourceAction } from "./SourceAction";
 import { DeckCardStack } from "./DeckCardStack";
+import { LearnNav, NotesList, NotesPage } from "./NotesPage";
 
 function DeckEditor({
   deck,
@@ -181,6 +182,14 @@ function DeckDetail({ id }: { id: string }) {
         }
       />
       <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground mb-6">
+        {deck.source_note_id && (
+          <Link
+            className="text-xs hover:text-primary"
+            to={`/learn/notes/${deck.source_note_id}`}
+          >
+            {t("learn.viewNote")}
+          </Link>
+        )}
         <span>{t("learn.cardCount", { count: deck.card_count })}</span>
         <span>{t("learn.dueCount", { count: deck.due_count })}</span>
         {deck.source_conversation_id && (
@@ -321,6 +330,21 @@ function DeckDetail({ id }: { id: string }) {
 }
 
 export function LearnPage() {
+  const { pathname } = useLocation();
+  const { noteId } = useParams();
+  if (pathname === "/learn/notes" || pathname.startsWith("/learn/notes/"))
+    return (
+      <div className="h-full overflow-y-auto bg-background">
+        <div className="md:hidden px-3 pt-2">
+          <MobileMenuButton />
+        </div>
+        <NotesPage id={noteId} />
+      </div>
+    );
+  return <FlashcardsPage />;
+}
+
+function FlashcardsPage() {
   const { deckId } = useParams();
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -372,22 +396,7 @@ export function LearnPage() {
                 </Button>
               }
             />
-            <nav className="flex gap-4 mb-7 text-sm">
-              <Link
-                className={dashboard ? "text-primary" : "text-muted-foreground"}
-                to="/learn"
-              >
-                {t("learn.overview")}
-              </Link>
-              <Link
-                className={
-                  !dashboard ? "text-primary" : "text-muted-foreground"
-                }
-                to="/learn/flashcards"
-              >
-                {t("learn.flashcards")}
-              </Link>
-            </nav>
+            <LearnNav active={dashboard ? "overview" : "flashcards"} />
             {loading ? (
               <Loader2 className="size-5 animate-spin" />
             ) : error ? (
@@ -396,7 +405,7 @@ export function LearnPage() {
               </p>
             ) : (
               <>
-                {dashboard && decks.length > 0 && (
+                {dashboard && (
                   <div className="grid sm:grid-cols-2 gap-4 mb-8">
                     <div className="rounded-xl border border-border/60 p-5 bg-card">
                       <p className="text-sm text-muted-foreground">
@@ -496,6 +505,7 @@ export function LearnPage() {
                 )}
               </>
             )}
+            {dashboard && <NotesList recent />}
           </PageContainer>
         )}
       </div>

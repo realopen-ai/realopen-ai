@@ -119,6 +119,7 @@ def deck_dict(deck, card_count=0, due_count=0, next_review_at=None, last_studied
         "id": str(deck.id),
         "title": deck.title,
         "description": deck.description,
+        "source_note_id": str(deck.source_note_id) if deck.source_note_id else None,
         "source_conversation_id": str(deck.source_conversation_id)
         if deck.source_conversation_id
         else None,

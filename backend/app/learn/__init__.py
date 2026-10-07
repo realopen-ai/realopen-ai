@@ -1,1 +1,1 @@
-"""Learning features: validated flashcards and deterministic review scheduling."""
+"""Native study notes, validated flashcards and deterministic review scheduling."""

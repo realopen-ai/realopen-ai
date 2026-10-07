@@ -366,6 +366,7 @@ export interface BackendToolCall {
     file_path?: string;
     created_at?: number;
     deck_id?: string;
+    note_id?: string;
     title?: string;
     card_count?: number;
   }[];

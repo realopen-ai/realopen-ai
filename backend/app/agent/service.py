@@ -833,7 +833,7 @@ async def run_agent_stream(
                 coder_attempted = True
 
             # RAG: inject conversation_id
-            if tool_name == "create_flashcard_deck":
+            if tool_name in {"create_flashcard_deck", "create_study_note"}:
                 # Trusted context, never a model-supplied conversation identity.
                 tool_args["conversation_id"] = conversation_id
             if tool_name == "rag_search" and conversation_id:

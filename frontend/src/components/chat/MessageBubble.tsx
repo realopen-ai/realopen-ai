@@ -45,6 +45,7 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
 import { DeckArtifact } from "@/components/learn/DeckArtifact";
+import { NoteArtifact } from "@/components/learn/NoteArtifact";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -375,6 +376,21 @@ function ToolCallBlockView({
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
   if (!tc) return null;
+  const noteArtifacts = tc.genResults?.filter(
+    (r) => r.type === "study_note" && r.note_id,
+  );
+  if (noteArtifacts?.length && tc.status === "completed")
+    return (
+      <>
+        {noteArtifacts.map((note) => (
+          <NoteArtifact
+            key={note.note_id}
+            id={note.note_id!}
+            title={note.title ?? translate("learn.notes")}
+          />
+        ))}
+      </>
+    );
   const deckArtifacts = tc.genResults?.filter(
     (r) => r.type === "flashcard_deck" && r.deck_id,
   );
@@ -424,6 +440,10 @@ function ToolCallBlockView({
   // keeping the conversation quiet. Progressive disclosure: full detail
   // appears only when the row is expanded.
   const configs: Record<string, { label: string; runningLabel: string }> = {
+    notes: {
+      label: translate("learn.noteCreated"),
+      runningLabel: translate("learn.noteCreating"),
+    },
     flashcards: {
       label: translate("learn.created"),
       runningLabel: translate("learn.creating"),
@@ -504,7 +524,12 @@ function ToolCallBlockView({
   };
 
   // Display label: "Generating..." while running, "Generated ..." when done
-  const displayLabel = tc.status === "running" ? runningLabel : label;
+  const displayLabel =
+    tc.status === "error"
+      ? translate("chat.toolFailed")
+      : tc.status === "running"
+        ? runningLabel
+        : label;
 
   // Short target shown inline after the label (file path for file tools,
   // query for searches) — keeps the row scannable.
@@ -525,6 +550,7 @@ function ToolCallBlockView({
   // Auto-expand while running so the user sees progress, AND auto-expand
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
+    tc.status === "error" ||
     tc.status === "running" ||
     ((tc.type === "file_read" || tc.type === "file_write") &&
       tc.status === "completed") ||
@@ -632,6 +658,13 @@ function ToolCallDetail({
     format: ViewerFormat,
   ) => void;
 }) {
+  if (tc.status === "error") {
+    return (
+      <p role="alert" className="whitespace-pre-wrap text-[11.5px] text-danger">
+        {tc.error || tc.output || tc.title}
+      </p>
+    );
+  }
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;

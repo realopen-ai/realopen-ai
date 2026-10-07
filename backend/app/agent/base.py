@@ -23,6 +23,7 @@ class ToolType(str, Enum):
     CODE_EXEC = "code_exec"
     SKILL = "skill"
     FLASHCARDS = "flashcards"
+    NOTES = "notes"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"
     PREVIEW = "preview"
