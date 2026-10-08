@@ -370,7 +370,24 @@ async function parseSSEStream(
 }
 
 /** Reattach to a backend-owned agent turn after a page reload. */
-export async function resumeChatStream(
+const resumeRequests = new Map<string, Promise<boolean>>();
+
+export function resumeChatStream(
+  conversationId: string,
+  onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
+): Promise<boolean> {
+  const existing = resumeRequests.get(conversationId);
+  if (existing) return existing;
+  const request = reconnectChatStream(conversationId, onConnected).finally(
+    () => {
+      resumeRequests.delete(conversationId);
+    },
+  );
+  resumeRequests.set(conversationId, request);
+  return request;
+}
+
+async function reconnectChatStream(
   conversationId: string,
   onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
 ): Promise<boolean> {
