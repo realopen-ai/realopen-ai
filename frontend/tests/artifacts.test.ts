@@ -1,7 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { artifactsApi, artifactSourceUrl } from "../src/api/artifactsClient.ts";
+import {
+  artifactsApi,
+  artifactSourceUrl,
+  artifactSelectionSearch,
+} from "../src/api/artifactsClient.ts";
+
+test("artifact selections persist version and section independently in the URL", () => {
+  const first = artifactSelectionSearch(
+    "?version=2&section=slide-4&other=keep",
+    { version: 1 },
+  );
+  const second = artifactSelectionSearch(first, {
+    section: "sheet with spaces",
+  });
+  const query = new URLSearchParams(second);
+  assert.equal(query.get("version"), "1");
+  assert.equal(query.get("section"), "sheet with spaces");
+  assert.equal(query.get("other"), "keep");
+});
 
 test("artifact client preserves exact versions, targeted edits and grounded links", async () => {
   const fetch = globalThis.fetch;

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import {
   artifactsApi,
+  artifactSelectionSearch,
   type Artifact,
   type ArtifactDetail,
 } from "@/api/artifactsClient";
@@ -97,14 +98,10 @@ function ArtifactEditor({ id }: { id: string }) {
   const t = useT(),
     navigate = useNavigate(),
     location = useLocation();
+  const query = new URLSearchParams(location.search);
+  const requestedVersion = Number(query.get("version"));
+  const version = requestedVersion > 0 ? requestedVersion : undefined;
   const [detail, setDetail] = useState<ArtifactDetail | null>(null),
-    [version, setVersion] = useState<number | undefined>(() => {
-      const n = Number(new URLSearchParams(location.search).get("version"));
-      return n > 0 ? n : undefined;
-    }),
-    [section, setSection] = useState(
-      new URLSearchParams(location.search).get("section") ?? "",
-    ),
     [content, setContent] = useState(""),
     [original, setOriginal] = useState(""),
     [edit, setEdit] = useState(false),
@@ -116,6 +113,17 @@ function ArtifactEditor({ id }: { id: string }) {
       url: string;
     } | null>(null),
     [restore, setRestore] = useState(false);
+  const requestedSection = query.get("section");
+  const section = detail?.outline.sections.some(
+    (s) => s.id === requestedSection,
+  )
+    ? requestedSection!
+    : (detail?.outline.sections[0]?.id ?? "");
+  const select = (selection: { version?: number; section?: string }) =>
+    navigate(
+      { search: artifactSelectionSearch(location.search, selection) },
+      { replace: true },
+    );
   const dirty = content !== original;
   useEffect(() => {
     const controller = new AbortController();
@@ -125,11 +133,6 @@ function ArtifactEditor({ id }: { id: string }) {
       .detail(id, version, controller.signal)
       .then((result) => {
         setDetail(result);
-        setSection((current) =>
-          result.outline.sections.some((s) => s.id === current)
-            ? current
-            : (result.outline.sections[0]?.id ?? ""),
-        );
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(String(e));
@@ -196,7 +199,7 @@ function ArtifactEditor({ id }: { id: string }) {
       setOriginal(content);
       setEdit(false);
       setDetail(result);
-      setVersion(result.selected_version);
+      select({ version: result.selected_version });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -241,7 +244,7 @@ function ArtifactEditor({ id }: { id: string }) {
             onChange={(e) => {
               if (canLeave()) {
                 setEdit(false);
-                setVersion(Number(e.target.value));
+                select({ version: Number(e.target.value) });
               }
             }}
           >
@@ -263,7 +266,7 @@ function ArtifactEditor({ id }: { id: string }) {
           onChange={(e) => {
             if (canLeave()) {
               setEdit(false);
-              setSection(e.target.value);
+              select({ section: e.target.value });
             }
           }}
         >

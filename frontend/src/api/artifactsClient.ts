@@ -6,6 +6,17 @@ export interface ArtifactReference {
   slide?: number;
   sheet?: string;
 }
+
+export function artifactSelectionSearch(
+  search: string,
+  selection: { version?: number; section?: string },
+) {
+  const params = new URLSearchParams(search);
+  if (selection.version !== undefined)
+    params.set("version", String(selection.version));
+  if (selection.section !== undefined) params.set("section", selection.section);
+  return `?${params.toString()}`;
+}
 export interface Artifact {
   id: string;
   title: string;
