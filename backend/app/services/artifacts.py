@@ -389,6 +389,19 @@ def edited_source(version, kind, changes):
             parts[int(section_id.removeprefix("slide-")) - 1] = content
             source = "\n---\n".join(parts)
         else:
+            original_heading = re.match(r"^(#{1,2}) .+", section["content"].lstrip())
+            if original_heading:
+                replacement_heading = re.match(r"^(#{1,2}) .+", content.lstrip())
+                if not replacement_heading:
+                    raise HTTPException(
+                        422,
+                        f"{section_id}: replacement must start with a # or ## Markdown "
+                        "section heading. Include the full replacement content and requested "
+                        "heading/body changes, preserving unrelated content. Heading-level "
+                        "changes and additional sections are allowed when requested.",
+                    )
+                # Section boundaries must start at column zero, as in the source parser.
+                content = content.lstrip()
             replacements[section_id] = content
     if kind == "report":
         source = "\n\n".join(

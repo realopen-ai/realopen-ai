@@ -19,6 +19,66 @@ def test_section_replacement_without_final_newline_preserves_next_heading():
     assert len(sections_for(edited, "report")) == 2
 
 
+@pytest.mark.parametrize("replacement", ["Plan: Beta", "Changed body without a heading."])
+def test_report_edit_rejects_lost_section_boundary(replacement):
+    source = (
+        "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
+    )
+    version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
+    with pytest.raises(artifacts.HTTPException) as error:
+        artifacts.edited_source(
+            version, "report", [{"section_id": "section-3", "content": replacement}]
+        )
+    assert error.value.status_code == 422
+    assert version.source == source
+
+
+def test_report_heading_rename_retains_body_and_neighbors():
+    source = (
+        "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
+    )
+    version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
+    edited = artifacts.edited_source(
+        version,
+        "report",
+        [{"section_id": "section-3", "content": "## Plan: Beta\nKeep this body."}],
+    )
+    assert [part["title"] for part in sections_for(edited, "report")] == [
+        "Report",
+        "Overview",
+        "Plan: Beta",
+        "Results",
+    ]
+    assert "Keep this body." in edited
+
+
+@pytest.mark.parametrize(
+    ("replacement", "titles", "body"),
+    [
+        ("## Topic\nNew body.", ["Report", "Topic", "Next"], "New body."),
+        ("## Renamed\nNew body.", ["Report", "Renamed", "Next"], "New body."),
+        ("# Topic\nNew body.", ["Report", "Topic", "Next"], "New body."),
+        (
+            "## Part one\nFirst body.\n\n## Part two\nSecond body.",
+            ["Report", "Part one", "Part two", "Next"],
+            "Second body.",
+        ),
+    ],
+    ids=["body-only", "heading-and-body", "heading-level", "split-section"],
+)
+def test_report_edits_support_requested_content_and_structure_changes(replacement, titles, body):
+    source = "# Report\n\n## Topic\nOld body.\n\n## Next\nUntouched body."
+    version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
+    edited = artifacts.edited_source(
+        version, "report", [{"section_id": "section-2", "content": replacement}]
+    )
+    sections = sections_for(edited, "report")
+    assert [section["title"] for section in sections] == titles
+    assert body in edited
+    assert "Old body." not in edited
+    assert sections[-1]["content"] == "## Next\nUntouched body."
+
+
 @pytest.mark.asyncio
 async def test_source_provenance_survives_model_dropping_markers():
     result = await summarize_sections(

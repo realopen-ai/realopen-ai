@@ -52,7 +52,7 @@ class ArtifactTool(BaseTool):
                                 "section_id": {"type": "string"},
                                 "content": {
                                     "type": "string",
-                                    "description": "Complete replacement section Markdown, or sheet JSON",
+                                    "description": "Replace the full target section, including its structural Markdown. Apply the requested changes to its heading and/or body, preserving unrelated content. Sheet edits use JSON.",
                                 },
                             },
                             "required": ["section_id", "content"],
@@ -239,7 +239,7 @@ class UpdateArtifactTool(ArtifactTool):
     operation = "update"
     name = "update_artifact"
     display_name = "Update artifact"
-    description = "Edit generated files only when the user requests changes. Read first; send exact version and targeted section replacements. Markdown for reports/slides, JSON for a sheet. Application validates, renders and retains history; 409 means reread. Uploads are read-only."
+    description = "Edit generated files when requested. Read the target section first, then provide its complete replacement content. Apply requested changes to the heading and/or body while preserving unrelated content and valid document structure. Use Markdown for reports/slides and JSON for sheets, with exact version and section IDs. Failed edits leave the previous version intact; on version conflicts, reread. Uploads are read-only."
 
 
 class ExportArtifactTool(ArtifactTool):
