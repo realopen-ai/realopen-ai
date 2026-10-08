@@ -64,7 +64,10 @@ class ArtifactTool(BaseTool):
         elif self.operation == "export":
             parameters.update(
                 {
-                    "format": {"type": "string", "enum": ["pdf", "docx", "pptx", "xlsx"]},
+                    "format": {
+                        "type": "string",
+                        "enum": ["pdf", "docx", "pptx", "xlsx"],
+                    },
                     "version": {"type": "integer", "minimum": 1},
                 }
             )
@@ -98,25 +101,34 @@ class ArtifactTool(BaseTool):
             queue = args.get("_event_queue")
             if queue is not None:
                 await queue.put(
-                    {"id": args.get("_parent_tool_call_id", call.id), "progress": update}
+                    {
+                        "id": args.get("_parent_tool_call_id", call.id),
+                        "progress": update,
+                    }
                 )
 
         try:
             if self.operation == "summarize":
                 await progress({"stage": "preparing", "completed": 0, "total": 1})
-            conversation_id = uuid.UUID(str(conversation_id)) if conversation_id else None
+            conversation_id = (
+                uuid.UUID(str(conversation_id)) if conversation_id else None
+            )
             async with async_session_factory() as db:
                 if self.operation == "list":
                     offset = int(args.get("offset", 0))
                     if offset < 0:
                         raise ValueError("Offset must be nonnegative")
-                    data = await service.catalog(db, conversation_id, scoped=True, offset=offset)
+                    data = await service.catalog(
+                        db, conversation_id, scoped=True, offset=offset
+                    )
                 else:
                     artifact = await service.get_artifact(
                         db, uuid.UUID(str(artifact_id)), conversation_id, scoped=True
                     )
                     number = args.get("version")
-                    if number is not None and (not isinstance(number, int) or number < 1):
+                    if number is not None and (
+                        not isinstance(number, int) or number < 1
+                    ):
                         raise ValueError("Version must be positive")
                     current = await service.get_version(db, artifact, number)
                     if self.operation == "read":
@@ -133,13 +145,18 @@ class ArtifactTool(BaseTool):
                             changes=args.get("changes"),
                         )
                         source = service.edited_source(
-                            current, artifact.kind, [change.model_dump() for change in body.changes]
+                            current,
+                            artifact.kind,
+                            [change.model_dump() for change in body.changes],
                         )
-                        current = await service.publish(db, artifact, body.expected_version, source)
+                        current = await service.publish(
+                            db, artifact, body.expected_version, source
+                        )
                         data = {
                             **service.metadata(artifact),
                             "message": "Updated artifact; previous versions retained.",
                         }
+                        fmt = next(iter(current.outputs))
                     elif self.operation == "export":
                         fmt = args.get("format")
                         await service.export(db, artifact, current, fmt)
@@ -165,18 +182,25 @@ class ArtifactTool(BaseTool):
                             ),
                         }
                 await db.commit()
+                if self.operation in {"update", "export"}:
+                    path = current.outputs[fmt]
+                    filename = f"{artifact.title.rsplit('.', 1)[0]}.{fmt}"
+                    generated = {
+                        "type": artifact.kind,
+                        "artifact_id": str(artifact.id),
+                        "report_id": service.file_path(path).stem,
+                        "title": artifact.title,
+                        "version": current.number,
+                        "format": fmt,
+                        "filename": filename,
+                        "file_path": path,
+                        "download_url": f"/api/artifacts/{artifact.id}/download/{fmt}?version={current.number}",
+                    }
+                    data["download_url"] = generated["download_url"]
             call.status = "completed"
             call.output = json.dumps(data, ensure_ascii=False)
             if self.operation in {"update", "export"}:
-                call.gen_results = [
-                    {
-                        "type": "artifact",
-                        "artifact_id": data["id"],
-                        "title": data["title"],
-                        "version": data["version"],
-                        "download_url": data.get("download_url"),
-                    }
-                ]
+                call.gen_results = [generated]
         except (httpx.TimeoutException, TimeoutError):
             call.status = "error"
             call.error = call.output = (

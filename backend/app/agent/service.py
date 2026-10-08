@@ -1011,7 +1011,7 @@ async def run_agent_stream(
                     registered = []
                     async with async_session_factory() as db:
                         for generated in result.tool_call.gen_results:
-                            if generated.get("report_id"):
+                            if generated.get("report_id") and not generated.get("artifact_id"):
                                 artifact_meta = await register_generated(
                                     db, generated, conversation_id
                                 )

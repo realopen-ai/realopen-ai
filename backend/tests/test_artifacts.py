@@ -501,6 +501,34 @@ async def test_summary_batches_pages_and_reports_progress():
 
 
 @pytest.mark.asyncio
+async def test_update_tool_returns_versioned_downloadable_attachment(store):
+    from app.agent.tools.artifacts import UpdateArtifactTool
+
+    conversation = uuid.uuid4()
+    with store.engine.begin() as db:
+        db.execute(text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation.hex})
+    artifact = await generated(
+        store, "report", "# Report\n\n## Plan: Alpha\nKeep body.", conversation
+    )
+    result = await UpdateArtifactTool().execute(
+        artifact_id=artifact["id"],
+        conversation_id=str(conversation),
+        expected_version=1,
+        changes=[{"section_id": "section-2", "content": "## Plan: Beta\nKeep body."}],
+    )
+    assert result.success
+    attachment = result.tool_call.gen_results[0]
+    assert attachment["type"] == "report"
+    assert attachment["format"] == "docx"
+    assert attachment["artifact_id"] == artifact["id"]
+    assert attachment["version"] == 2
+    assert attachment["filename"].endswith(".docx")
+    assert attachment["file_path"]
+    assert store.client.get(attachment["download_url"]).status_code == 200
+    assert "?version=2" in attachment["download_url"]
+
+
+@pytest.mark.asyncio
 async def test_summary_tool_progress_uses_parent_id_and_persists(store, monkeypatch):
     import asyncio
     from app.agent.tools.artifacts import SummarizeArtifactTool
