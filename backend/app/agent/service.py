@@ -857,6 +857,10 @@ async def run_agent_stream(
                     continue
                 coder_attempted = True
 
+            if tool_name == "use_report_gen":
+                # Keep user constraints even when a small router drops them.
+                tool_args["_user_request"] = last_user
+
             # RAG: inject conversation_id
             if tool_name in {
                 "create_flashcard_deck",

@@ -64,7 +64,12 @@ class TestReportGenSchema:
 
     def test_aliases(self):
         aliases = ReportGenTool.param_aliases
-        assert aliases == {"topic": "topic", "outline": "outline", "format": "format"}
+        assert aliases == {
+            "topic": "topic",
+            "outline": "outline",
+            "format": "format",
+            "requirements": "outline",
+        }
 
     def test_tool_metadata_and_registry(self):
         tool = ReportGenTool()
@@ -233,9 +238,7 @@ class TestReportGenConfigHelpers:
 
     def test_missing_config_falls_back(self):
         for cfg in (None, {}, {"custom": None}):
-            with patch(
-                "app.agent.tools.config_store.get_tool_config", return_value=cfg
-            ):
+            with patch("app.agent.tools.config_store.get_tool_config", return_value=cfg):
                 assert _configured_default_format() == DEFAULT_FORMAT
 
 
