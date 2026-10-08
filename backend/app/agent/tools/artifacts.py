@@ -11,6 +11,7 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_regist
 from app.db.session import async_session_factory
 from app.services import artifacts as service
 from app.api.artifacts import UpdateArtifact
+from app.agent.tools import config_store
 
 
 class ArtifactTool(BaseTool):
@@ -154,7 +155,14 @@ class ArtifactTool(BaseTool):
                         data = {
                             "artifact_id": str(artifact.id),
                             "version": current.number,
-                            **await service.summarize(db, artifact, current, question, progress),
+                            **await service.summarize(
+                                db,
+                                artifact,
+                                current,
+                                question,
+                                progress,
+                                model=await config_store.tool_model_override(self.name),
+                            ),
                         }
                 await db.commit()
             call.status = "completed"

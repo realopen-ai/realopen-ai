@@ -60,9 +60,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_module, "async_session_factory", factory)
     app = FastAPI()
     app.include_router(api.router, prefix="/api")
-    yield SimpleNamespace(
-        engine=engine, root=tmp_path, client=TestClient(app), factory=factory
-    )
+    yield SimpleNamespace(engine=engine, root=tmp_path, client=TestClient(app), factory=factory)
     engine.dispose()
 
 
@@ -108,9 +106,7 @@ async def generated(
 async def test_presentation_targeted_edit_and_historical_export(store):
     from pptx import Presentation
 
-    artifact = await generated(
-        store, "presentation", "# First\nOne.\n\n---\n\n# Second\nTwo."
-    )
+    artifact = await generated(store, "presentation", "# First\nOne.\n\n---\n\n# Second\nTwo.")
     url = f"/api/artifacts/{artifact['id']}"
     response = store.client.put(
         url,
@@ -174,9 +170,9 @@ async def test_existing_outputs_without_source_are_read_only(store):
     section = response.json()["outline"]["sections"][0]["id"]
     assert (
         "Preserved facts."
-        in store.client.get(
-            f"/api/artifacts/{identifier}/read?section_id={section}"
-        ).json()["content"]
+        in store.client.get(f"/api/artifacts/{identifier}/read?section_id={section}").json()[
+            "content"
+        ]
     )
     async with store.factory() as db:
         with pytest.raises(HTTPException) as error:
@@ -216,9 +212,7 @@ async def test_source_capture_and_targeted_edits_render_new_version(store):
     assert output.status_code == 200
     from docx import Document as Docx
 
-    assert "Updated" in "\n".join(
-        p.text for p in Docx(io.BytesIO(output.content)).paragraphs
-    )
+    assert "Updated" in "\n".join(p.text for p in Docx(io.BytesIO(output.content)).paragraphs)
     assert (
         store.client.put(
             f"/api/artifacts/{identifier}",
@@ -240,9 +234,7 @@ async def test_source_capture_and_targeted_edits_render_new_version(store):
 
 
 @pytest.mark.asyncio
-async def test_failed_render_does_not_publish_or_modify_previous_file(
-    store, monkeypatch
-):
+async def test_failed_render_does_not_publish_or_modify_previous_file(store, monkeypatch):
     artifact = await generated(store)
 
     async def fail(*args, **kwargs):
@@ -264,9 +256,7 @@ async def test_failed_render_does_not_publish_or_modify_previous_file(
 
 
 @pytest.mark.asyncio
-async def test_publish_compare_and_swap_cleans_conflicting_candidate(
-    store, monkeypatch
-):
+async def test_publish_compare_and_swap_cleans_conflicting_candidate(store, monkeypatch):
     artifact = await generated(store)
     candidate = store.root / "reports/candidate.docx"
 
@@ -353,7 +343,7 @@ def test_multi_section_edits_and_invalid_slide_changes():
     ]
     assert (
         service.edited_source(version, "report", changes)
-        == "# A\nChanged\n## B\nNew\n## C\nKeep"
+        == "# A\nChanged\n\n## B\nNew\n\n## C\nKeep"
     )
     with pytest.raises(HTTPException):
         service.edited_source(version, "report", [changes[0], changes[0]])
@@ -399,9 +389,7 @@ async def test_sheet_edit_preserves_formulas_and_typed_dates(store):
     assert response.status_code == 200, response.text
     from openpyxl import load_workbook
 
-    output = store.client.get(
-        f"/api/artifacts/{artifact['id']}/download/xlsx?version=2"
-    )
+    output = store.client.get(f"/api/artifacts/{artifact['id']}/download/xlsx?version=2")
     ws = load_workbook(io.BytesIO(output.content))["Overview"]
     assert ws["A2"].value == "New" and ws["C2"].value == "=1+2"
     assert ws["B2"].value.date() == date(2026, 10, 7)
@@ -412,9 +400,7 @@ async def test_upload_reads_work_without_embeddings_and_are_read_only(store):
     identifier = uuid.uuid4()
     directory = store.root / f"documents/{identifier}"
     directory.mkdir(parents=True)
-    (directory / "notes.md").write_text(
-        "# Upload\nExact uploaded text", encoding="utf-8"
-    )
+    (directory / "notes.md").write_text("# Upload\nExact uploaded text", encoding="utf-8")
     with Session(store.engine) as db:
         db.add(
             Document(
@@ -430,9 +416,7 @@ async def test_upload_reads_work_without_embeddings_and_are_read_only(store):
     detail = store.client.get(f"/api/artifacts/{identifier}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["editable"] is False
-    result = store.client.get(
-        f"/api/artifacts/{identifier}/read?section_id=part-1"
-    ).json()
+    result = store.client.get(f"/api/artifacts/{identifier}/read?section_id=part-1").json()
     assert "Exact uploaded text" in result["content"]
     assert (directory / "extraction.json").is_file()
     assert store.client.put(
@@ -442,9 +426,7 @@ async def test_upload_reads_work_without_embeddings_and_are_read_only(store):
             "changes": [{"section_id": "part-1", "content": "changed"}],
         },
     ).status_code in (403, 422)
-    assert (
-        store.client.post(f"/api/artifacts/{identifier}/export/pdf").status_code == 403
-    )
+    assert store.client.post(f"/api/artifacts/{identifier}/export/pdf").status_code == 403
 
 
 @pytest.mark.asyncio
@@ -458,13 +440,9 @@ async def test_scope_enforcement_and_reference_validation(store):
     artifact = await generated(store, conversation_id=conversation)
     async with store.factory() as db:
         with pytest.raises(HTTPException) as error:
-            await service.get_artifact(
-                db, uuid.UUID(artifact["id"]), other, scoped=True
-            )
+            await service.get_artifact(db, uuid.UUID(artifact["id"]), other, scoped=True)
         assert error.value.status_code == 403
-        reference = ArtifactReference(
-            artifact_id=artifact["id"], version=1, section_id="section-1"
-        )
+        reference = ArtifactReference(artifact_id=artifact["id"], version=1, section_id="section-1")
         assert (await validate_reference(db, reference, conversation))["version"] == 1
         with pytest.raises(HTTPException):
             await validate_reference(db, reference, other)
@@ -493,9 +471,7 @@ async def test_summary_is_explicit_hierarchical_and_reports_missing_sections():
         "Summarize",
         ask,
     )
-    assert (
-        result["missing_sections"] == ["part-2"] and result["sections_processed"] == 1
-    )
+    assert result["missing_sections"] == ["part-2"] and result["sections_processed"] == 1
     assert len(calls) > 3 and all(len(prompt) < 13500 for prompt in calls)
 
 
@@ -539,7 +515,8 @@ async def test_summary_tool_progress_uses_parent_id_and_persists(store, monkeypa
     async def get_version(*args, **kwargs):
         return version
 
-    async def summarize(db, artifact, current, question, progress):
+    async def summarize(db, artifact, current, question, progress, model=None):
+        assert model == "qwen3.5:0.8b-mlx"
         await progress({"stage": "batches", "completed": 1, "total": 2})
         await progress({"stage": "complete", "completed": 2, "total": 2})
         return {"summary": "Grounded summary"}
@@ -547,6 +524,12 @@ async def test_summary_tool_progress_uses_parent_id_and_persists(store, monkeypa
     monkeypatch.setattr(service, "get_artifact", get_artifact)
     monkeypatch.setattr(service, "get_version", get_version)
     monkeypatch.setattr(service, "summarize", summarize)
+    from app.agent.tools import config_store
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        config_store, "tool_model_override", AsyncMock(return_value="qwen3.5:0.8b-mlx")
+    )
     queue = asyncio.Queue()
     result = await SummarizeArtifactTool().execute(
         artifact_id=str(artifact.id), _event_queue=queue, _parent_tool_call_id="parent"
@@ -554,9 +537,7 @@ async def test_summary_tool_progress_uses_parent_id_and_persists(store, monkeypa
     assert result.success
     assert queue.qsize() == 3
     assert all(queue.get_nowait()["id"] == "parent" for _ in range(3))
-    assert (
-        _tool_call_to_update_dict(result.tool_call)["progress"]["stage"] == "complete"
-    )
+    assert _tool_call_to_update_dict(result.tool_call)["progress"]["stage"] == "complete"
 
 
 @pytest.mark.asyncio
@@ -575,7 +556,7 @@ async def test_summary_retry_reuses_completed_batches(tmp_path, monkeypatch):
 
     async def stream(model, messages, **options):
         calls.append(messages[-1]["content"])
-        assert options["options"] == {"temperature": 0, "num_predict": 600}
+        assert options["options"] == {"temperature": 0, "num_predict": 1536}
         assert options["think"] is False
         if fail and len(calls) == 2:
             raise httpx.ReadTimeout("test timeout")
@@ -606,9 +587,7 @@ async def test_scanned_pdf_uses_engine_neutral_ocr_only_on_empty_pages(monkeypat
     import fitz
 
     doc = fitz.open()
-    doc.new_page().insert_text(
-        (50, 50), "Native text sufficient for this extraction page."
-    )
+    doc.new_page().insert_text((50, 50), "Native text sufficient for this extraction page.")
     doc.new_page()
     calls = []
 
@@ -623,14 +602,9 @@ async def test_scanned_pdf_uses_engine_neutral_ocr_only_on_empty_pages(monkeypat
             )
 
     monkeypatch.setattr(ocr, "default_engine", Engine())
-    extracted, snapshot = await document_extraction.extract(
-        doc.tobytes(), "scan.pdf", "fra"
-    )
+    extracted, snapshot = await document_extraction.extract(doc.tobytes(), "scan.pdf", "fra")
     assert calls == ["fra"]
-    assert (
-        snapshot["sections"][1]["method"] == "ocr"
-        and snapshot["sections"][1]["page"] == 2
-    )
+    assert snapshot["sections"][1]["method"] == "ocr" and snapshot["sections"][1]["page"] == 2
     assert extracted.pages[1].text == "Scanned page text"
 
 
@@ -660,9 +634,7 @@ def test_real_tesseract_english_text():
         font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 40)
     except OSError:
         font = ImageFont.load_default(size=40)
-    ImageDraw.Draw(image).text(
-        (20, 30), "Artifact OCR test 123", font=font, fill="black"
-    )
+    ImageDraw.Draw(image).text((20, 30), "Artifact OCR test 123", font=font, fill="black")
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     result = ocr.TesseractEngine().recognize(buffer.getvalue(), "eng")
@@ -672,16 +644,8 @@ def test_real_tesseract_english_text():
 
 def test_api_rejects_path_injection_bad_ids_and_unbounded_reads(store):
     assert store.client.get("/api/artifacts/not-a-uuid").status_code == 422
-    assert (
-        store.client.get(f"/api/artifacts/{uuid.uuid4()}/read?offset=-1").status_code
-        == 422
-    )
-    assert (
-        store.client.get(
-            f"/api/artifacts/{uuid.uuid4()}/read?limit=9999999"
-        ).status_code
-        == 422
-    )
+    assert store.client.get(f"/api/artifacts/{uuid.uuid4()}/read?offset=-1").status_code == 422
+    assert store.client.get(f"/api/artifacts/{uuid.uuid4()}/read?limit=9999999").status_code == 422
     with pytest.raises(HTTPException):
         service.file_path("../escape")
 

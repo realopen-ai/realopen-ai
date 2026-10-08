@@ -37,7 +37,7 @@ async def summarize_sections(sections, question, ask, progress=None):
         )
         if not summary:
             raise RuntimeError("Model returned an empty summary")
-        parts.append(summary[:6000])
+        parts.append(summary)
         if progress:
             await progress({"stage": "batches", "completed": index + 1, "total": len(batches)})
     while len(parts) > 1:
@@ -63,12 +63,30 @@ async def summarize_sections(sections, question, ask, progress=None):
             )
             if not summary:
                 raise RuntimeError("Model returned an empty summary")
-            reduced.append(summary[:6000])
+            reduced.append(summary)
         parts = reduced
     if progress:
         await progress({"stage": "complete", "completed": len(batches), "total": len(batches)})
+    references = [
+        {key: section[key] for key in ("id", "title", "page", "slide", "sheet") if key in section}
+        for section in sections
+        if section["content"].strip()
+    ]
+    # Deterministic provenance survives even when a small model drops citations.
+    labels = [
+        f"page {ref['page']}"
+        if "page" in ref
+        else f"slide {ref['slide']}"
+        if "slide" in ref
+        else f"sheet {ref['sheet']}"
+        if "sheet" in ref
+        else ref["id"]
+        for ref in references
+    ]
     return {
-        "summary": parts[0],
+        "summary": parts[0] + "\n\nSource coverage (not per-claim citations): " + ", ".join(labels),
+        "source_references": references,
+        "source_coverage": ", ".join(labels),
         "missing_sections": missing,
         "sections_processed": len(sections) - len(missing),
     }
