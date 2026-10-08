@@ -24,7 +24,7 @@ RUN poetry install --no-interaction --no-ansi --no-root
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl \
+    libpq5 curl tesseract-ocr tesseract-ocr-eng \
     libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
     fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*

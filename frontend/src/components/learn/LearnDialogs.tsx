@@ -40,6 +40,7 @@ export function CardEditor({
     source_reference: reference || null,
     source_page: initial?.source_page,
     source_chunk_id: initial?.source_chunk_id,
+    source_artifact: initial?.source_artifact,
   });
   const save = async () => {
     setBusy(true);

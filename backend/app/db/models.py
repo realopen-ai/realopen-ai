@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -27,6 +28,7 @@ class StudyNote(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False, default="")
+    source_artifact = Column(JSON, nullable=True)
     pinned = Column(Boolean, nullable=False, default=False)
     source_conversation_id = Column(
         UUID(as_uuid=True),
@@ -59,6 +61,7 @@ class StudyNote(Base):
 
 class FlashcardDeck(Base):
     __tablename__ = "flashcard_decks"
+    source_artifact = Column(JSON, nullable=True)
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
@@ -91,6 +94,7 @@ class FlashcardDeck(Base):
 
 class Flashcard(Base):
     __tablename__ = "flashcards"
+    source_artifact = Column(JSON, nullable=True)
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     deck_id = Column(
         UUID(as_uuid=True),
@@ -220,9 +224,7 @@ class Sandbox(Base):
     image = Column(String(255), nullable=False, default="realopenai-sandbox:latest")
     cpu_limit = Column(Float, nullable=False, default=2.0)
     memory_limit_mb = Column(Integer, nullable=False, default=2048)
-    workspace_quota_bytes = Column(
-        BigInteger, nullable=False, default=2 * 1024 * 1024 * 1024
-    )
+    workspace_quota_bytes = Column(BigInteger, nullable=False, default=2 * 1024 * 1024 * 1024)
     usage_bytes = Column(BigInteger, nullable=False, default=0)
     idle_timeout_seconds = Column(Integer, nullable=False, default=1800)
     last_active_at = Column(DateTime, nullable=True)
@@ -317,9 +319,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    conversation_id = Column(
-        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
-    )
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False)
     role = Column(String(20), nullable=False)  # "user", "assistant", "system"
     content = Column(Text, nullable=False)
     model = Column(String(100), nullable=True)
@@ -371,6 +371,46 @@ class Message(Base):
     )
 
 
+class Artifact(Base):
+    """Logical file identity. Originals and committed revisions are immutable."""
+
+    __tablename__ = "artifacts"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(512), nullable=False)
+    kind = Column(String(24), nullable=False)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    document_id = Column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
+    )
+    current_version = Column(Integer, nullable=False, default=1)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class ArtifactVersion(Base):
+    __tablename__ = "artifact_versions"
+    __table_args__ = (UniqueConstraint("artifact_id", "number"),)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    artifact_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    number = Column(Integer, nullable=False)
+    source = Column(Text, nullable=False)
+    settings = Column(JSON, nullable=False, default=dict)
+    sections = Column(JSON, nullable=False, default=list)
+    outputs = Column(JSON, nullable=False, default=dict)
+    restored_from = Column(Integer)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
 class Document(Base):
     """A user-uploaded document digested for RAG.
 
@@ -406,9 +446,7 @@ class Document(Base):
     file_size_bytes = Column(Integer, nullable=False, default=0)
     content_hash = Column(String(64), nullable=True, index=True)  # sha256 hex
 
-    scope = Column(
-        String(16), nullable=False, default="private"
-    )  # "private" | "public"
+    scope = Column(String(16), nullable=False, default="private")  # "private" | "public"
     conversation_id = Column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -475,9 +513,7 @@ class DocumentChunk(Base):
     line_start = Column(Integer, nullable=True)
     line_end = Column(Integer, nullable=True)
 
-    chunk_type = Column(
-        String(32), nullable=False, default="text"
-    )  # "text" | "image_description"
+    chunk_type = Column(String(32), nullable=False, default="text")  # "text" | "image_description"
     # For chunk_type="image_description": relative path to the saved image.
     image_path = Column(String(1024), nullable=True)
 
@@ -504,9 +540,7 @@ class Memory(Base):
     source = Column(String(20), default="auto")  # "auto" | "user" | "ai_agent"
     pinned = Column(Boolean, default=False)
     uses = Column(Integer, default=0)
-    conversation_id = Column(
-        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
-    )
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True)
     # 768-dim to match nomic-embed-text (see migration a8f3c2e1b7d4).
     # Populated by app.services.embeddings.get_embedding() on insert/update.
     embedding = Column(Vector(768), nullable=True)
@@ -579,8 +613,6 @@ class Template(Base):
     description = Column(Text, nullable=True)
     tags = Column(JSONB, nullable=True)  # ["corporate", "minimal", ...]
     thumbnail = Column(Text, nullable=True)  # base64-encoded small preview image
-    path = Column(
-        String(1024), nullable=False
-    )  # relative path: "research_template.pptx"
+    path = Column(String(1024), nullable=False)  # relative path: "research_template.pptx"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

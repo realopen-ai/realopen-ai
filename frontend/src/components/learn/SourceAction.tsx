@@ -1,28 +1,36 @@
 import { Link } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
 import { useT } from "@/store/settingsStore";
+import {
+  artifactSourceUrl,
+  type ArtifactReference,
+} from "@/api/artifactsClient";
 
 export function SourceAction({
   documentId,
   conversationId,
   page,
   chunk,
+  artifact,
 }: {
   documentId?: string | null;
   conversationId?: string | null;
   page?: number | null;
   chunk?: string | null;
+  artifact?: ArtifactReference | null;
 }) {
   const t = useT();
   const query = new URLSearchParams();
   if (documentId) query.set("document", documentId);
   if (page) query.set("page", String(page));
   if (chunk) query.set("chunk", chunk);
-  const href = documentId
-    ? `/workspace/documents?${query}`
-    : conversationId
-      ? `/${conversationId}`
-      : null;
+  const href = artifact
+    ? artifactSourceUrl(artifact)
+    : documentId
+      ? `/workspace/documents?${query}`
+      : conversationId
+        ? `/${conversationId}`
+        : null;
   return href ? (
     <Link
       to={href}

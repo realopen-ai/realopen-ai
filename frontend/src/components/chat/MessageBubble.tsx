@@ -46,6 +46,7 @@ import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
 import { DeckArtifact } from "@/components/learn/DeckArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
+import { Link } from "react-router-dom";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -443,6 +444,10 @@ function ToolCallBlockView({
     notes: {
       label: translate("learn.noteCreated"),
       runningLabel: translate("learn.noteCreating"),
+    },
+    artifact: {
+      label: translate("artifacts.tool"),
+      runningLabel: translate("artifacts.toolRunning"),
     },
     flashcards: {
       label: translate("learn.created"),
@@ -1103,30 +1108,40 @@ function ReportGenDetail({
             // the workbook's print setup controls the pagination).
             const viewable = !!r.report_id && (fmt === "pdf" || canViewPptx);
             return (
-              <ReportDeliverableBadge
-                key={i}
-                filename={r.filename ?? "report"}
-                format={r.format ?? "pdf"}
-                downloadUrl={r.download_url ?? "#"}
-                label={
-                  r.type === "presentation"
-                    ? translate("tool.detail.presentation")
-                    : r.type === "excel"
-                      ? translate("tool.detail.spreadsheet")
-                      : translate("tool.detail.report")
-                }
-                onView={
-                  viewable
-                    ? () =>
-                        onViewPptx(
-                          r.report_id!,
-                          r.filename ?? `report.${fmt}`,
-                          r.download_url ?? "#",
-                          fmt,
-                        )
-                    : undefined
-                }
-              />
+              <div key={i} className="space-y-2">
+                <ReportDeliverableBadge
+                  key={i}
+                  filename={r.filename ?? "report"}
+                  format={r.format ?? "pdf"}
+                  downloadUrl={r.download_url ?? "#"}
+                  label={
+                    r.type === "presentation"
+                      ? translate("tool.detail.presentation")
+                      : r.type === "excel"
+                        ? translate("tool.detail.spreadsheet")
+                        : translate("tool.detail.report")
+                  }
+                  onView={
+                    viewable
+                      ? () =>
+                          onViewPptx(
+                            r.report_id!,
+                            r.filename ?? `report.${fmt}`,
+                            r.download_url ?? "#",
+                            fmt,
+                          )
+                      : undefined
+                  }
+                />
+                {r.artifact_id && (
+                  <Link
+                    className="inline-flex text-xs text-primary hover:underline"
+                    to={`/workspace/artifacts/${r.artifact_id}`}
+                  >
+                    {translate("artifacts.open")}
+                  </Link>
+                )}
+              </div>
             );
           })}
         </div>
@@ -1137,6 +1152,50 @@ function ReportGenDetail({
 }
 
 function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  if (tc.type === "artifact" && tc.status === "running" && tc.progress) {
+    const progress = tc.progress;
+    return (
+      <div
+        className="space-y-2 text-sm text-muted-foreground"
+        aria-live="polite"
+      >
+        <span>
+          {translate(`artifacts.summary.${progress.stage}`)} ·{" "}
+          {progress.completed} / {progress.total}
+        </span>
+        <progress
+          className="w-full h-1 accent-primary"
+          value={progress.completed}
+          max={Math.max(1, progress.total)}
+        />
+      </div>
+    );
+  }
+  if (tc.type === "artifact" && tc.output) {
+    let output = tc.output;
+    try {
+      output = JSON.stringify(JSON.parse(output), null, 2);
+    } catch {}
+    return (
+      <div className="space-y-3">
+        <div className="max-h-80 overflow-auto">
+          <HighlightedCode code={output} language="json" />
+        </div>
+        {tc.genResults
+          ?.filter((r) => r.artifact_id)
+          .map((r) => (
+            <Link
+              key={r.artifact_id}
+              className="inline-flex text-sm text-primary hover:underline"
+              to={`/workspace/artifacts/${r.artifact_id}${r.version ? `?version=${r.version}` : ""}`}
+            >
+              {r.title} · {translate("artifacts.open")}
+            </Link>
+          ))}
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2">
       <StatusDot status={tc.status} />

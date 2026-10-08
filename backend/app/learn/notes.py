@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, or_
 from app.db.models import StudyNote, DocumentChunk
 from app.learn.service import check_sources
+from app.services.artifact_refs import ArtifactReference, validate_reference
 
 
 class NoteContent(BaseModel):
@@ -22,6 +23,7 @@ class NoteContent(BaseModel):
 
 
 class NoteInput(NoteContent):
+    source_artifact: ArtifactReference | None = None
     source_conversation_id: uuid.UUID | None = None
     source_document_id: uuid.UUID | None = None
     source_page: int | None = Field(default=None, ge=1)
@@ -54,6 +56,7 @@ def note_dict(note, summary=False):
         "source_document_id",
         "source_page",
         "source_chunk_id",
+        "source_artifact",
         "created_at",
         "updated_at",
     )
@@ -73,7 +76,11 @@ async def create_note(db, body):
         body = body.model_copy(update={"source_page": chunk.page_number})
     elif body.source_page and not body.source_document_id:
         raise HTTPException(422, "A source page requires a document")
-    note = StudyNote(**body.model_dump())
+    values = body.model_dump()
+    values["source_artifact"] = await validate_reference(
+        db, body.source_artifact, body.source_conversation_id
+    )
+    note = StudyNote(**values)
     db.add(note)
     await db.flush()
     return note

@@ -554,6 +554,11 @@ export function dispatchAgentEvent(
     const tc = p.tool_call;
     const tcId = tc.id ?? `tc-${Date.now()}`;
 
+    // Progress-only events update the existing block, never start a second one.
+    if (tc.progress && tc.id) {
+      callbacks.onToolCallUpdate(tcId, { progress: tc.progress });
+    }
+
     if (tc.status === "running") {
       log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
       // Build the full ToolCallResult and start a new tool_call block.
@@ -565,6 +570,7 @@ export function dispatchAgentEvent(
         status: "running",
         title: tc.title ?? tc.type,
         startedAt: epochMilliseconds(tc.startedAt),
+        progress: tc.progress,
         query: tc.query,
         language: tc.language,
         code: tc.code,

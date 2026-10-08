@@ -190,6 +190,14 @@ function DeckDetail({ id }: { id: string }) {
             {t("learn.viewNote")}
           </Link>
         )}
+        {deck.source_artifact && (
+          <Link
+            className="text-xs text-primary hover:underline"
+            to={artifactSourceUrl(deck.source_artifact)}
+          >
+            {t("artifacts.viewSource")}
+          </Link>
+        )}
         <span>{t("learn.cardCount", { count: deck.card_count })}</span>
         <span>{t("learn.dueCount", { count: deck.due_count })}</span>
         {deck.source_conversation_id && (
@@ -272,6 +280,7 @@ function DeckDetail({ id }: { id: string }) {
                 conversationId={deck.source_conversation_id}
                 page={card.source_page}
                 chunk={card.source_chunk_id}
+                artifact={card.source_artifact ?? deck.source_artifact}
               />
             </div>
           </article>
@@ -518,3 +527,4 @@ function FlashcardsPage() {
     </div>
   );
 }
+import { artifactSourceUrl } from "@/api/artifactsClient";

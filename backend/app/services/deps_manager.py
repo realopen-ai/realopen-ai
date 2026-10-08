@@ -47,6 +47,7 @@ package-specific logic.
 from __future__ import annotations
 
 import asyncio
+from app.services import ocr
 import importlib.metadata
 import importlib.util
 import json
@@ -97,6 +98,7 @@ class Dependency:
     pip_extra_args: list[str] = field(default_factory=list)  # e.g. cpu index URL
     install_size: str = ""
     enables: list[str] = field(default_factory=list)
+    ocr_language: Optional[str] = None
 
 
 def _voice_dep(
@@ -132,6 +134,24 @@ def _voice_dep(
 
 CATALOG: list[Dependency] = [
     Dependency(
+        name="tesseract-ocr-fra",
+        display_name="French OCR language",
+        description="Recognize French text in scanned documents with local Tesseract.",
+        category="System",
+        kind="system-direct",
+        ocr_language="fra",
+        install_size="~1 MB",
+    ),
+    Dependency(
+        name="tesseract-ocr-ara",
+        display_name="Arabic OCR language",
+        description="Recognize Arabic text in scanned documents with local Tesseract.",
+        category="System",
+        kind="system-direct",
+        ocr_language="ara",
+        install_size="~2 MB",
+    ),
+    Dependency(
         name="libreoffice",
         display_name="LibreOffice",
         description="Headless document conversion and rendering.",
@@ -150,8 +170,7 @@ CATALOG: list[Dependency] = [
     _voice_dep(
         "mlx-qwen3-asr",
         "Qwen3-ASR MLX runtime (Apple Silicon)",
-        "Native MLX speech-recognition runtime for Apple-Silicon hosts "
-        "(no PyTorch needed).",
+        "Native MLX speech-recognition runtime for Apple-Silicon hosts (no PyTorch needed).",
         "mlx-qwen3-asr",
         import_name="mlx_qwen3_asr",
         install_size="~60 MB",
@@ -216,6 +235,8 @@ CATALOG: list[Dependency] = [
 
 
 _PKG_MAP: dict[str, dict[str, list[str]]] = {
+    "tesseract-ocr-fra": {"debian": ["tesseract-ocr-fra"]},
+    "tesseract-ocr-ara": {"debian": ["tesseract-ocr-ara"]},
     "libreoffice": {
         "debian": [
             "libreoffice-core",
@@ -249,6 +270,8 @@ def is_installed(dep: Dependency) -> bool:
       like torch in the backend loop), with an importlib.metadata fallback
       for packages whose import name differs from the distribution name.
     """
+    if dep.ocr_language:
+        return dep.ocr_language in ocr.installed_languages()
     if dep.binary_name:
         return shutil.which(dep.binary_name) is not None
     if dep.pip_name:
@@ -505,10 +528,7 @@ async def _install_system_direct(
 
     # Step 2: apt-get install
     yield {"stage": "installing", "output": f"Installing {pkgs_str}..."}
-    install_cmd = (
-        "env DEBIAN_FRONTEND=noninteractive apt-get install -y "
-        f"--no-install-recommends {pkgs_str}"
-    )
+    install_cmd = f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}"
     install_lines: list[str] = []
     rc = 0
     async for event in _run_command_streaming(install_cmd, "installing", install_lines):
@@ -562,8 +582,7 @@ async def _install_pip(
     yield {
         "stage": "installing",
         "output": (
-            f"Installing {dep.pip_name} (persistent wheelhouse — "
-            "survives container rebuilds)"
+            f"Installing {dep.pip_name} (persistent wheelhouse — survives container rebuilds)"
         ),
     }
 

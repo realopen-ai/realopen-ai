@@ -179,20 +179,21 @@ async def test_digest_progress_events_fire_during_digestion(mock_db, conv_id):
         )
 
     # Stub out all the side-effecting pieces of digest_document
-    with patch("app.services.rag.async_session_factory", new=_fake_factory), patch(
-        "app.services.rag.extract_content_async", new=slow_extract
-    ), patch(
-        "app.services.rag.save_uploaded_file",
-        new=AsyncMock(return_value="documents/x/file.txt"),
-    ), patch(
-        "app.services.rag.chunk_pages",
-        return_value=[
-            rag.Chunk(text="c", chunk_index=0, page_number=1, line_start=1, line_end=1)
-        ],
-    ), patch(
-        "app.services.rag.get_embeddings", new=AsyncMock(return_value=[[0.1] * 768])
-    ), patch(
-        "app.services.rag._sha256", return_value="fakehash"
+    with (
+        patch("app.services.rag.async_session_factory", new=_fake_factory),
+        patch("app.services.rag.extract_content_async", new=slow_extract),
+        patch(
+            "app.services.rag.save_uploaded_file",
+            new=AsyncMock(return_value="documents/x/file.txt"),
+        ),
+        patch(
+            "app.services.rag.chunk_pages",
+            return_value=[
+                rag.Chunk(text="c", chunk_index=0, page_number=1, line_start=1, line_end=1)
+            ],
+        ),
+        patch("app.services.rag.get_embeddings", new=AsyncMock(return_value=[[0.1] * 768])),
+        patch("app.services.rag._sha256", return_value="fakehash"),
     ):
         # We can't actually commit Document/DocumentChunk rows without a
         # real DB, but we can verify the progress events fire during
@@ -252,29 +253,33 @@ async def test_digest_does_not_block_concurrent_tasks(mock_db, conv_id):
         )
 
     ticker_task = asyncio.create_task(ticker())
+    import fitz
+
+    with fitz.open() as pdf:
+        pdf.new_page()
+        pdf_bytes = pdf.tobytes()
 
     try:
-        with patch("app.services.rag.async_session_factory", new=_fake_factory), patch(
-            "app.services.rag.extract_content_async", new=slow_extract
-        ), patch(
-            "app.services.rag.save_uploaded_file",
-            new=AsyncMock(return_value="documents/x/file.pdf"),
-        ), patch(
-            "app.services.rag.chunk_pages",
-            return_value=[
-                rag.Chunk(
-                    text="c", chunk_index=0, page_number=1, line_start=1, line_end=1
-                )
-            ],
-        ), patch(
-            "app.services.rag.get_embeddings", new=AsyncMock(return_value=[[0.1] * 768])
-        ), patch(
-            "app.services.rag._sha256", return_value="fakehash"
+        with (
+            patch("app.services.rag.async_session_factory", new=_fake_factory),
+            patch("app.services.rag.extract_content_async", new=slow_extract),
+            patch(
+                "app.services.rag.save_uploaded_file",
+                new=AsyncMock(return_value="documents/x/file.pdf"),
+            ),
+            patch(
+                "app.services.rag.chunk_pages",
+                return_value=[
+                    rag.Chunk(text="c", chunk_index=0, page_number=1, line_start=1, line_end=1)
+                ],
+            ),
+            patch("app.services.rag.get_embeddings", new=AsyncMock(return_value=[[0.1] * 768])),
+            patch("app.services.rag._sha256", return_value="fakehash"),
         ):
             try:
                 await rag.digest_document(
                     mock_db,
-                    file_bytes=b"fake pdf bytes",
+                    file_bytes=pdf_bytes,
                     filename="big.pdf",
                     scope="private",
                     conversation_id=conv_id,

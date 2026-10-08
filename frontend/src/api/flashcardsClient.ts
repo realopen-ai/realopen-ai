@@ -1,4 +1,5 @@
 export interface Flashcard {
+  source_artifact?: import("./artifactsClient").ArtifactReference | null;
   id: string;
   deck_id: string;
   deck_title?: string;
@@ -15,6 +16,7 @@ export interface Flashcard {
   interval_days: number;
 }
 export interface Deck {
+  source_artifact?: import("./artifactsClient").ArtifactReference | null;
   source_note_id?: string | null;
   id: string;
   title: string;
@@ -30,6 +32,7 @@ export interface Deck {
 }
 export type Rating = "again" | "hard" | "good" | "easy";
 export interface CardInput {
+  source_artifact?: import("./artifactsClient").ArtifactReference | null;
   front: string;
   back: string;
   source_reference?: string | null;

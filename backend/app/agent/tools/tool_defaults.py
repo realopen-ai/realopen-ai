@@ -41,6 +41,34 @@ _ALWAYS_TOOLS: Set[str] = {
 # The keyword vocabulary doubles as the per-tool default TAGS (the
 # tag-gating replaces the old comma-separated keyword_gate string).
 _KEYWORD_TOOLS: Dict[str, Set[str]] = {
+    **{
+        word: {
+            "list_artifacts",
+            "read_artifact",
+            "update_artifact",
+            "export_artifact",
+            "summarize_artifact",
+        }
+        for word in (
+            "file",
+            "upload",
+            "document",
+            "report",
+            "slide",
+            "sheet",
+            "pdf",
+            "docx",
+            "pptx",
+            "xlsx",
+            "artifact",
+            "summarize",
+            "convert",
+            "fichier",
+            "résumé",
+            "ملف",
+            "مستند",
+        )
+    },
     "note": {"create_study_note"},
     "summarize": {"create_study_note"},
     "résumé": {"create_study_note"},

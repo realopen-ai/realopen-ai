@@ -300,6 +300,7 @@ export function StudySession({
         )}
         <div className="mt-4">
           <SourceAction
+            artifact={card.source_artifact ?? deck.source_artifact}
             documentId={
               daily ? card.source_document_id : deck.source_document_id
             }

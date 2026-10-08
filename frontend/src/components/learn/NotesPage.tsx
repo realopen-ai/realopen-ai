@@ -26,6 +26,7 @@ import {
 } from "@/api/notesClient";
 import { useT } from "@/store/settingsStore";
 import { CardMarkdown } from "./CardMarkdown";
+import { artifactSourceUrl } from "@/api/artifactsClient";
 import { SourceAction } from "./SourceAction";
 import { ConfirmDelete, fieldClass } from "./LearnDialogs";
 import { DeckArtifact } from "./DeckArtifact";
@@ -385,6 +386,14 @@ function NoteDetail({ id }: { id: string }) {
         </Button>
       </div>
       <div className="flex flex-wrap gap-3 mb-5">
+        {note.source_artifact && (
+          <Link
+            className="text-xs text-primary hover:underline"
+            to={artifactSourceUrl(note.source_artifact)}
+          >
+            {t("artifacts.viewSource")}
+          </Link>
+        )}
         <SourceAction
           documentId={note.source_document_id}
           page={note.source_page}

@@ -11,6 +11,7 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_regist
 from app.db.session import async_session_factory
 from app.learn.schemas import DeckInput
 from app.learn.service import create_deck
+from app.services.artifact_refs import REFERENCE_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class CreateFlashcardDeckTool(BaseTool):
 
     def get_parameters(self):
         return {
+            "source_artifact": REFERENCE_SCHEMA,
             "title": {"type": "string", "maxLength": 200},
             "description": {"type": "string", "maxLength": 2000},
             "cards": {
@@ -40,6 +42,7 @@ class CreateFlashcardDeckTool(BaseTool):
                 "items": {
                     "type": "object",
                     "properties": {
+                        "source_artifact": REFERENCE_SCHEMA,
                         "front": {"type": "string", "maxLength": 2000},
                         "back": {"type": "string", "maxLength": 4000},
                         "source_reference": {
@@ -91,6 +94,7 @@ class CreateFlashcardDeckTool(BaseTool):
                 description=description,
                 source_document_id=source_document_id,
                 source_conversation_id=conversation_id,
+                source_artifact=kwargs.get("source_artifact"),
             )
             if not body.cards:
                 raise ValueError("Provide at least one card")

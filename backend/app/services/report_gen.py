@@ -46,6 +46,7 @@ from typing import Optional
 
 from app.services import model_prefs
 from app.services import providers
+from app.services.artifact_sources import capture_source
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -1256,6 +1257,15 @@ async def generate_report(
         raise RuntimeError(f"Report file was not created: {output_path}")
 
     file_size = output_path.stat().st_size
+
+    await asyncio.to_thread(
+        capture_source,
+        reports_dir,
+        report_id,
+        markdown_content,
+        "report",
+        {"topic": topic, "format": fmt},
+    )
     _log("report saved: %s (%d bytes)", output_path.name, file_size)
 
     # Build a clean filename from the topic

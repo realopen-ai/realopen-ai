@@ -123,6 +123,11 @@ class BlockBuilder:
                             "thumbnail_url": gr.get("thumbnail_url"),
                             "report_id": gr.get("report_id", ""),
                             "created_at": gr.get("created_at", int(time.time())),
+                            **{
+                                key: gr[key]
+                                for key in ("artifact_id", "version")
+                                if gr.get(key) is not None
+                            },
                         }
                     )
 

@@ -24,6 +24,7 @@ class ToolType(str, Enum):
     SKILL = "skill"
     FLASHCARDS = "flashcards"
     NOTES = "notes"
+    ARTIFACT = "artifact"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"
     PREVIEW = "preview"
@@ -55,6 +56,7 @@ class ToolCall:
     file_content: Optional[str] = None  # file ops
     image_description: Optional[str] = None  # vision
     error: Optional[str] = None  # any tool
+    progress: Optional[Dict] = None  # live artifact summary stage and batch counts
 
 
 @dataclass

@@ -29,6 +29,7 @@ export interface ToolCallResult {
     | "skill"
     | "flashcards"
     | "notes"
+    | "artifact"
     | "file_read"
     | "file_write"
     | "deepsearch"
@@ -52,6 +53,7 @@ export interface ToolCallResult {
   imageDescription?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
+  progress?: { stage: string; completed: number; total: number };
   // Media generation — images (type: "image", data: base64) and reports
   // (type: "report", format, filename, download_url, etc.)
   genResults?: {
@@ -66,6 +68,8 @@ export interface ToolCallResult {
     created_at?: number;
     deck_id?: string;
     note_id?: string;
+    artifact_id?: string;
+    version?: number;
     title?: string;
     card_count?: number;
   }[];
@@ -370,6 +374,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
                   ? undefined
                   : epochMilliseconds(b.tool_call.completedAt),
               durationMs: b.tool_call.durationMs,
+              progress: b.tool_call.progress,
               query: b.tool_call.query,
               webResults: b.tool_call.webResults,
               genResults: b.tool_call.genResults,

@@ -16,6 +16,7 @@ import { GeneratedFilesSection } from "@/components/workspace/GeneratedFilesSect
 import { AssetsSection } from "@/components/workspace/AssetsSection";
 import { DocumentsSection } from "@/components/workspace/DocumentsSection";
 import { SandboxesSection } from "@/components/workspace/SandboxesSection";
+import { ArtifactsSection } from "@/components/workspace/ArtifactsSection";
 import { useT } from "@/store/settingsStore";
 import {
   getWorkspaceSection,
@@ -32,6 +33,13 @@ const folders: {
   iconClass: string;
   descKey: string;
 }[] = [
+  {
+    key: "artifacts",
+    labelKey: "artifacts.title",
+    icon: Files,
+    iconClass: "text-blue-600 dark:text-blue-400",
+    descKey: "artifacts.description",
+  },
   {
     key: "sandboxes",
     labelKey: "workspace.sandboxes",
@@ -73,6 +81,10 @@ const sectionMeta: Record<
   SectionView,
   { titleKey: string; descriptionKey: string }
 > = {
+  artifacts: {
+    titleKey: "artifacts.title",
+    descriptionKey: "artifacts.description",
+  },
   sandboxes: {
     titleKey: "workspace.sandboxes",
     descriptionKey: "workspace.sandboxes.description",
@@ -143,6 +155,12 @@ export function WorkspacePage() {
   const handleOpenConversation = (conversationId: string) => {
     navigate(`/${conversationId}`);
   };
+  if (view === "artifacts")
+    return (
+      <SectionShell view="artifacts" onBack={() => navigate("/workspace")}>
+        <ArtifactsSection />
+      </SectionShell>
+    );
 
   if (view === "sandboxes") {
     return (
