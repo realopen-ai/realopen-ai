@@ -845,6 +845,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
               messages: c.messages.map((m) => {
                 if (m.id !== messageId) return m;
                 const blocks = m.blocks ?? [];
+                // Buffered SSE can replay a start already present in the DB snapshot.
+                if (
+                  blocks.some(
+                    (b) =>
+                      b.type === "tool_call" && b.toolCall?.id === toolCall.id,
+                  )
+                ) {
+                  return m;
+                }
                 const blockId = `block-${messageId}-${blocks.length}`;
                 return {
                   ...m,
