@@ -1160,12 +1160,14 @@ def _render_deck(
     for i, sd in enumerate(slides):
         slide = prs.slides.add_slide(blank)
 
-        if i == 0:
+        # Decorative layouts have no body area. Never select one when doing
+        # so would discard authored content (including after artifact edits).
+        if i == 0 and not sd.bullets:
             _draw_title_slide(slide, sd, theme, topic)
-        elif sd.is_section:
+        elif sd.is_section and not sd.bullets:
             section_no += 1
             _draw_section_slide(slide, sd, theme, section_no)
-        elif _is_closing_slide(sd, i, total):
+        elif _is_closing_slide(sd, i, total) and not sd.bullets:
             _draw_title_slide(slide, sd, theme, topic, closing=True)
         else:
             _draw_content_slide(slide, sd, theme)

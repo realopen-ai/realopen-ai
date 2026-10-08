@@ -180,3 +180,17 @@ async def test_cutoff_omits_unfinished_sentence_and_marks_abridged(tmp_path, mon
     assert "Unfinished ending" not in result["summary"]
     assert "abbreviated" in result["summary"]
     assert result["warnings"]
+@pytest.mark.parametrize("template", ["modern", "corporate", "elegant"])
+def test_presentation_layouts_preserve_authored_body(tmp_path, template):
+    from pptx import Presentation
+    from app.services.pptx_gen import _parse_slides, _resolve_theme, _build_pptx
+
+    source = "# Cover\nFirst body.\n\n---\n\n## Section\nSection body.\n\n---\n\n# Conclusion\nClosing body."
+    _, theme = _resolve_theme(template)
+    output = tmp_path / "preserved.pptx"
+    _build_pptx(_parse_slides(source), theme, "QA", output)
+    deck = Presentation(output)
+    assert len(deck.slides) == 3
+    for slide, expected in zip(deck.slides, ["First body.", "Section body.", "Closing body."]):
+        text = "\n".join(shape.text for shape in slide.shapes if shape.has_text_frame)
+        assert expected in text
