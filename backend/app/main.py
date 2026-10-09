@@ -31,6 +31,7 @@ from app.api.workspace import router as workspace_router  # noqa: E402
 from app.api.flashcards import router as flashcards_router  # noqa: E402
 from app.api.notes import router as notes_router  # noqa: E402
 from app.api.artifacts import router as artifacts_router  # noqa: E402
+from app.api.notebooks import router as notebooks_router  # noqa: E402
 from app.api.deps import router as deps_router  # noqa: E402
 from app.api.providers import router as providers_router  # noqa: E402
 from app.api.tools import router as tools_router  # noqa: E402
@@ -426,6 +427,7 @@ app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(flashcards_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
 app.include_router(artifacts_router, prefix="/api")
+app.include_router(notebooks_router, prefix="/api")
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
 app.include_router(providers_router, prefix="/api", tags=["providers"])
 app.include_router(tools_router, prefix="/api", tags=["tools"])

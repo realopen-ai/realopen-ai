@@ -84,6 +84,9 @@ class FakeSession:
             return self._results.pop(0)
         return FakeResult(None)
 
+    async def get(self, model, identifier):
+        return None
+
     def add(self, obj):
         self.added.append(obj)
 
@@ -251,6 +254,20 @@ def test_get_messages_returns_list_in_order():
     assert msgs == [m1, m2]
 
 
+@pytest.mark.parametrize("active", [False, True])
+def test_get_messages_reconciles_only_orphaned_text_streams(monkeypatch, active):
+    text = SimpleNamespace(completion_status="streaming", modality="text", content="saved")
+    voice = SimpleNamespace(completion_status="streaming", modality="voice")
+    db = FakeSession(results=[FakeResult([text, voice])])
+    monkeypatch.setattr(
+        svc, "get_stream", lambda _: SimpleNamespace(done=False) if active else None
+    )
+    run(svc.get_messages(db, CONV_ID))
+    assert text.completion_status == ("streaming" if active else "error")
+    assert text.content == "saved"
+    assert voice.completion_status == "streaming"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # persist_message_standalone / update_message_standalone
 # ══════════════════════════════════════════════════════════════════════
@@ -269,9 +286,7 @@ def test_persist_message_standalone_commits_and_returns_id(monkeypatch):
 
 def test_persist_message_standalone_commit_failure_returns_none(monkeypatch):
     session = FakeSession(commit_error=RuntimeError("db down"))
-    monkeypatch.setattr(
-        "app.db.session.async_session_factory", FakeSessionFactory(session)
-    )
+    monkeypatch.setattr("app.db.session.async_session_factory", FakeSessionFactory(session))
     assert run(svc.persist_message_standalone(CONV_ID, "user", "hello")) is None
 
 
@@ -285,9 +300,7 @@ def test_persist_message_standalone_factory_failure_returns_none(monkeypatch):
 
 def test_update_message_standalone_success(monkeypatch):
     session = FakeSession(results=[FakeResult(None, rowcount=1)])
-    monkeypatch.setattr(
-        "app.db.session.async_session_factory", FakeSessionFactory(session)
-    )
+    monkeypatch.setattr("app.db.session.async_session_factory", FakeSessionFactory(session))
     ok = run(
         svc.update_message_standalone(
             uuid.uuid4(),
@@ -306,18 +319,14 @@ def test_update_message_standalone_success(monkeypatch):
 
 def test_update_message_standalone_missing_row_returns_false(monkeypatch):
     session = FakeSession(results=[FakeResult(None, rowcount=0)])
-    monkeypatch.setattr(
-        "app.db.session.async_session_factory", FakeSessionFactory(session)
-    )
+    monkeypatch.setattr("app.db.session.async_session_factory", FakeSessionFactory(session))
     ok = run(svc.update_message_standalone(uuid.uuid4(), content="x"))
     assert ok is False
 
 
 def test_update_message_standalone_error_returns_false(monkeypatch):
     session = FakeSession(commit_error=RuntimeError("write failed"))
-    monkeypatch.setattr(
-        "app.db.session.async_session_factory", FakeSessionFactory(session)
-    )
+    monkeypatch.setattr("app.db.session.async_session_factory", FakeSessionFactory(session))
     assert run(svc.update_message_standalone(uuid.uuid4(), content="x")) is False
 
 
@@ -444,8 +453,7 @@ def test_message_to_dict_full_payload():
 def test_message_to_dict_minimal_payload():
     d = run(
         svc.message_to_dict(
-            make_msg(blocks=None, deliverables=None, generation_duration=None,
-                     created_at=None)
+            make_msg(blocks=None, deliverables=None, generation_duration=None, created_at=None)
         )
     )
     assert d["blocks"] is None
