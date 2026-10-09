@@ -86,7 +86,9 @@ def mock_db():
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
     db.delete = AsyncMock()
-    db.execute = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=result)
     return db
 
 
@@ -181,7 +183,7 @@ async def test_digest_progress_events_fire_during_digestion(mock_db, conv_id):
     # Stub out all the side-effecting pieces of digest_document
     with (
         patch("app.services.rag.async_session_factory", new=_fake_factory),
-        patch("app.services.rag.extract_content_async", new=slow_extract),
+        patch("app.services.document_extraction.extract_content_async", new=slow_extract),
         patch(
             "app.services.rag.save_uploaded_file",
             new=AsyncMock(return_value="documents/x/file.txt"),
@@ -244,7 +246,7 @@ async def test_digest_does_not_block_concurrent_tasks(mock_db, conv_id):
             counter["n"] += 1
 
     async def slow_extract(buf, filename):
-        # Simulate a 0.5s PDF extraction
+        # Keep this concurrency test independent of optional PDF/OCR libraries.
         await asyncio.sleep(0.5)
         return rag.ExtractionResult(
             pages=[rag.ExtractedPage(page_number=1, text="content")],
@@ -253,19 +255,13 @@ async def test_digest_does_not_block_concurrent_tasks(mock_db, conv_id):
         )
 
     ticker_task = asyncio.create_task(ticker())
-    import fitz
-
-    with fitz.open() as pdf:
-        pdf.new_page()
-        pdf_bytes = pdf.tobytes()
-
     try:
         with (
             patch("app.services.rag.async_session_factory", new=_fake_factory),
-            patch("app.services.rag.extract_content_async", new=slow_extract),
+            patch("app.services.document_extraction.extract_content_async", new=slow_extract),
             patch(
                 "app.services.rag.save_uploaded_file",
-                new=AsyncMock(return_value="documents/x/file.pdf"),
+                new=AsyncMock(return_value="documents/x/file.txt"),
             ),
             patch(
                 "app.services.rag.chunk_pages",
@@ -276,16 +272,13 @@ async def test_digest_does_not_block_concurrent_tasks(mock_db, conv_id):
             patch("app.services.rag.get_embeddings", new=AsyncMock(return_value=[[0.1] * 768])),
             patch("app.services.rag._sha256", return_value="fakehash"),
         ):
-            try:
-                await rag.digest_document(
-                    mock_db,
-                    file_bytes=pdf_bytes,
-                    filename="big.pdf",
-                    scope="private",
-                    conversation_id=conv_id,
-                )
-            except Exception:
-                pass
+            await rag.digest_document(
+                mock_db,
+                file_bytes=b"content",
+                filename="big.txt",
+                scope="private",
+                conversation_id=conv_id,
+            )
     finally:
         ticker_task.cancel()
         try:
