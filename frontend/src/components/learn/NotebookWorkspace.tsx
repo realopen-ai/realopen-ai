@@ -270,7 +270,7 @@ export function NotebookWorkspace({ id }: { id: string }) {
       >
         <div className="flex justify-between items-center mb-5">
           <h2 className="text-sm font-medium">{t("notebooks.sources")}</h2>
-          <span className="text-xs text-muted-foreground">
+          <span dir="ltr" className="text-xs text-muted-foreground">
             {notebookSourceCount(notebook.items)} / {sources.length}
           </span>
         </div>
@@ -364,7 +364,9 @@ export function NotebookWorkspace({ id }: { id: string }) {
               <div className="min-w-0 flex-1">
                 <button
                   onClick={() => setSourcePreview(source)}
-                  className="text-start text-sm break-words hover:text-primary"
+                  dir="auto"
+                  title={source.title}
+                  className="block w-full truncate text-start text-sm hover:text-primary"
                 >
                   {source.title}
                 </button>
