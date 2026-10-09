@@ -46,6 +46,8 @@ import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
 import { DeckArtifact } from "@/components/learn/DeckArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
+import { SourceAction } from "@/components/learn/SourceAction";
+import { artifactReadLocation } from "@/lib/sourceNavigation";
 import { Link } from "react-router-dom";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
@@ -163,6 +165,13 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
                       {s.text}
                     </p>
                     {isImage && <SourceImage chunkId={s.chunk_id} />}
+                    <SourceAction
+                      documentId={s.document_id}
+                      page={s.page_number}
+                      chunk={s.chunk_id}
+                      excerpt={s.text}
+                      title={s.document_filename}
+                    />
                   </div>
                 )}
               </div>
@@ -1173,6 +1182,7 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
     );
   }
   if (tc.type === "artifact" && tc.output) {
+    const location = artifactReadLocation(tc.output);
     let output = tc.output;
     try {
       output = JSON.stringify(JSON.parse(output), null, 2);
@@ -1182,6 +1192,7 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
         <div className="max-h-80 overflow-auto">
           <HighlightedCode code={output} language="json" />
         </div>
+        {location && <SourceAction {...location} />}
         {tc.genResults
           ?.filter((r) => r.artifact_id)
           .map((r) => (
