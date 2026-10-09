@@ -46,8 +46,18 @@ const log = createDebugLogger("ChatArea");
 
 const DEMO_MODE = false; // Set to true to enable demo mode with fake streaming responses (for testing without backend)
 
-export function ChatArea() {
-  const { conversationId: urlConvId } = useParams<{ conversationId: string }>();
+export function ChatArea({
+  notebookConversationId,
+  notebookMode = false,
+}: {
+  notebookConversationId?: string;
+  notebookMode?: boolean;
+}) {
+  const { conversationId: routeConvId } = useParams<{
+    conversationId: string;
+  }>();
+  const urlConvId = notebookMode ? notebookConversationId : routeConvId;
+  const chatRoot = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const isStreaming = useChatStore((s) => s.isStreaming);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
@@ -852,6 +862,21 @@ export function ChatArea() {
     return () => window.removeEventListener("regenerate-message", handler);
   }, [handleSend]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const { conversationId, prompt } = (event as CustomEvent).detail;
+      if (
+        notebookMode &&
+        conversationId === effectiveConvId &&
+        chatRoot.current?.getClientRects().length
+      ) {
+        handleSend(prompt, { modelOverride: undefined, shrug: false });
+      }
+    };
+    window.addEventListener("notebook-prompt", handler);
+    return () => window.removeEventListener("notebook-prompt", handler);
+  }, [notebookMode, effectiveConvId, handleSend]);
+
   // Partial-transcript ghost bubble — visible while the user is speaking
   // (listening/processing states), replaced by the persisted user message
   // on `user_message`.
@@ -859,9 +884,12 @@ export function ChatArea() {
     (voiceState === "listening" || voiceState === "processing") &&
     partialTranscript.length > 0;
   return (
-    <div className="relative flex flex-col h-full overflow-hidden bg-background">
+    <div
+      ref={chatRoot}
+      className="relative flex flex-col h-full overflow-hidden bg-background"
+    >
       {/* Header — quiet, aligned to the content column */}
-      <div className="px-4 pt-3 pb-2 sm:px-6">
+      <div className={notebookMode ? "hidden" : "px-4 pt-3 pb-2 sm:px-6"}>
         <div className="max-w-210 mx-auto flex items-center gap-2">
           <MobileMenuButton />
           <h2 className="text-[13.5px] font-medium text-foreground truncate">
@@ -890,6 +918,17 @@ export function ChatArea() {
         <div ref={scrollRootRef} className="relative flex-1 min-h-0">
           <ScrollArea className="h-full">
             <div className="max-w-210 mx-auto px-4 sm:px-6 pt-8 pb-10 space-y-6">
+              {notebookMode && messages.length === 0 && (
+                <div className="py-16 text-center space-y-3">
+                  <Brain className="size-8 mx-auto text-muted-foreground" />
+                  <h2 className="text-lg font-medium">
+                    {t("notebooks.chatWelcome")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                    {t("notebooks.chatGuidance")}
+                  </p>
+                </div>
+              )}
               {messages.map((msg, i) => {
                 // Briefly flash the last assistant bubble when the user
                 // interrupted the assistant (barge-in feedback).
@@ -970,6 +1009,7 @@ export function ChatArea() {
       )}
 
       <InputArea
+        sourceGrounded={notebookMode}
         onSend={handleSend}
         isStreaming={isStreaming}
         onStartVoice={voiceSession.toggleVoice}

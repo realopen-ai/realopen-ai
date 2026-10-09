@@ -407,6 +407,7 @@ export interface BackendBlock {
 
 export interface ConversationDTO {
   id: string;
+  isNotebook?: boolean;
   title: string;
   model: string | null;
   sandboxId?: string | null;

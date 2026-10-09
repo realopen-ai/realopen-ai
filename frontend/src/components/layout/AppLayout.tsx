@@ -18,7 +18,9 @@ import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
 import { useLearnStore } from "@/store/learnStore";
-import { useLocation } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
+import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
+import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 
 const TerminalPane = lazy(() =>
@@ -43,6 +45,34 @@ export function AppLayout() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
   const { pathname } = useLocation();
+  const { notebookId } = useParams();
+  const showNotebook = !!notebookId && pathname.startsWith("/learn/notebooks/");
+  const notebook = useNotebookStore((s) => s.notebook);
+  const notebookConversationId =
+    notebook && notebook.id === notebookId
+      ? notebook.conversation_id
+      : undefined;
+  const notebookMobileTab = useNotebookStore((s) => s.mobileTab);
+  const [notebookWide, setNotebookWide] = useState(
+    () => window.matchMedia("(min-width: 1280px)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1280px)");
+    const listener = () => setNotebookWide(query.matches);
+    query.addEventListener("change", listener);
+    return () => query.removeEventListener("change", listener);
+  }, []);
+  const previousRightPanel = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (showNotebook) {
+      if (previousRightPanel.current === null)
+        previousRightPanel.current = useUIStore.getState().rightPanelOpen;
+      setRightPanelOpen(false);
+    } else if (previousRightPanel.current !== null) {
+      setRightPanelOpen(previousRightPanel.current);
+      previousRightPanel.current = null;
+    }
+  }, [showNotebook, setRightPanelOpen]);
   const showBrainPage = isBrainRoute(pathname);
   const showWorkspacePage = isWorkspaceRoute(pathname);
   const showLearnPage = isLearnRoute(pathname);
@@ -97,6 +127,13 @@ export function AppLayout() {
     const panel = rightPanelRef.current;
     if (!panel) return;
 
+    // Notebooks have their own Studio column. Saved pane sizes and mount-time
+    // onExpand callbacks must not reopen the ordinary workspace beside it.
+    if (showNotebook) {
+      if (!panel.isCollapsed()) panel.collapse();
+      return;
+    }
+
     if (!initialSyncDone.current) {
       initialSyncDone.current = true;
       // On initial mount, sync without animation
@@ -113,7 +150,7 @@ export function AppLayout() {
     } else if (!rightPanelOpen && !panel.isCollapsed()) {
       panel.collapse();
     }
-  }, [rightPanelOpen]);
+  }, [rightPanelOpen, showNotebook]);
 
   // Transition class applied to panels only when NOT manually resizing
   const panelTransitionClass = !isResizing
@@ -138,13 +175,34 @@ export function AppLayout() {
                     It owns live text streams and the voice WebSocket, so
                     replacing it here would terminate in-flight work. */}
                 <div
-                  className="h-full"
-                  inert={showLearnPage}
-                  aria-hidden={showLearnPage || undefined}
+                  className={
+                    showNotebook
+                      ? `h-full pt-24 xl:pt-14 xl:ms-64 xl:me-72 ${!notebookWide && notebookMobileTab !== "chat" ? "invisible" : ""}`
+                      : "h-full"
+                  }
+                  inert={
+                    (showLearnPage && !showNotebook) ||
+                    (showNotebook &&
+                      !notebookWide &&
+                      notebookMobileTab !== "chat")
+                  }
+                  aria-hidden={
+                    (showLearnPage && !showNotebook) ||
+                    (showNotebook &&
+                      !notebookWide &&
+                      notebookMobileTab !== "chat") ||
+                    undefined
+                  }
                 >
-                  <ChatArea />
+                  <ChatArea
+                    notebookMode={showNotebook}
+                    notebookConversationId={notebookConversationId}
+                  />
                 </div>
-                {showLearnPage && desktop && (
+                {showNotebook && desktop && (
+                  <NotebookWorkspace id={notebookId!} />
+                )}
+                {showLearnPage && !showNotebook && desktop && (
                   <div className="absolute inset-0 z-30">
                     <LearnPage />
                   </div>
@@ -163,7 +221,11 @@ export function AppLayout() {
             </Panel>
 
             <PanelResizeHandle
-              className="w-px bg-border/50 transition-colors hover:bg-primary/50 active:bg-primary/70"
+              className={
+                showNotebook
+                  ? "hidden"
+                  : "w-px bg-border/50 transition-colors hover:bg-primary/50 active:bg-primary/70"
+              }
               onDragging={(dragging) => setIsResizing(dragging)}
             />
 
@@ -176,15 +238,20 @@ export function AppLayout() {
               collapsedSize={0}
               className={panelTransitionClass}
               onCollapse={() => setRightPanelOpen(false)}
-              onExpand={() => setRightPanelOpen(true)}
+              onExpand={() => {
+                if (!showNotebook) setRightPanelOpen(true);
+              }}
             >
-              <div className="h-full overflow-hidden">
+              <div
+                className={showNotebook ? "hidden" : "h-full overflow-hidden"}
+                inert={showNotebook}
+              >
                 <RightPanel />
               </div>
             </Panel>
           </PanelGroup>
 
-          {!rightPanelOpen && (
+          {!rightPanelOpen && !showNotebook && (
             <div className="flex shrink-0 items-start justify-center pt-2 pr-1 pl-0.5">
               <RightPanelToggle />
             </div>
@@ -197,11 +264,27 @@ export function AppLayout() {
               a mobile utility tab. Routed pages are layered above it so an
               active voice call remains controllable. */}
           <div
-            className={mobileTab === "chat" ? "h-full" : "hidden"}
-            inert={showLearnPage}
-            aria-hidden={showLearnPage || undefined}
+            className={
+              showNotebook
+                ? `h-full pt-24 ${notebookMobileTab !== "chat" ? "invisible" : ""}`
+                : mobileTab === "chat"
+                  ? "h-full"
+                  : "hidden"
+            }
+            inert={
+              (showLearnPage && !showNotebook) ||
+              (showNotebook && notebookMobileTab !== "chat")
+            }
+            aria-hidden={
+              (showLearnPage && !showNotebook) ||
+              (showNotebook && notebookMobileTab !== "chat") ||
+              undefined
+            }
           >
-            <ChatArea />
+            <ChatArea
+              notebookMode={showNotebook}
+              notebookConversationId={notebookConversationId}
+            />
           </div>
 
           {!showLearnPage &&
@@ -249,7 +332,8 @@ export function AppLayout() {
               <BrainPage />
             </div>
           )}
-          {showLearnPage && !desktop && (
+          {showNotebook && !desktop && <NotebookWorkspace id={notebookId!} />}
+          {showLearnPage && !showNotebook && !desktop && (
             <div className="absolute inset-0 z-30">
               <LearnPage />
             </div>

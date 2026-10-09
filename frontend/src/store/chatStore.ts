@@ -179,6 +179,7 @@ export interface Deliverable {
 
 export interface Conversation {
   id: string;
+  isNotebook?: boolean;
   title: string;
   messages: Message[];
   model: string;
@@ -331,6 +332,7 @@ const genId = () => `msg-${Date.now()}-${++msgCounter}`;
 function dtoToConversation(dto: ConversationDTO): Conversation {
   return {
     id: dto.id,
+    isNotebook: dto.isNotebook ?? false,
     title: dto.title ?? "New Chat",
     messages: [], // Messages are loaded lazily when a conversation is selected
     model: dto.model ?? "default",

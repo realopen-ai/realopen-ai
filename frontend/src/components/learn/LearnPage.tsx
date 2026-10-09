@@ -32,6 +32,7 @@ import { StudySession } from "./StudySession";
 import { SourceAction } from "./SourceAction";
 import { DeckCardStack } from "./DeckCardStack";
 import { LearnNav, NotesList, NotesPage } from "./NotesPage";
+import { NotebooksPage, NotebooksList } from "./NotebooksPage";
 
 function DeckEditor({
   deck,
@@ -341,6 +342,7 @@ function DeckDetail({ id }: { id: string }) {
 export function LearnPage() {
   const { pathname } = useLocation();
   const { noteId } = useParams();
+  if (pathname === "/learn/notebooks") return <NotebooksPage />;
   if (pathname === "/learn/notes" || pathname.startsWith("/learn/notes/"))
     return (
       <div className="h-full overflow-y-auto bg-background">
@@ -513,6 +515,11 @@ function FlashcardsPage() {
                   </>
                 )}
               </>
+            )}
+            {dashboard && (
+              <div className="mt-8">
+                <NotebooksList recent />
+              </div>
             )}
             {dashboard && <NotesList recent />}
           </PageContainer>

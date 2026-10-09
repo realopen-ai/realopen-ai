@@ -39,24 +39,26 @@ import {
 export function LearnNav({
   active,
 }: {
-  active: "overview" | "flashcards" | "notes";
+  active: "overview" | "flashcards" | "notes" | "notebooks";
 }) {
   const t = useT();
   return (
     <nav className="flex gap-4 mb-7 text-sm">
-      {(["overview", "flashcards", "notes"] as const).map((item) => (
-        <Link
-          key={item}
-          className={
-            active === item
-              ? "text-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }
-          to={item === "overview" ? "/learn" : `/learn/${item}`}
-        >
-          {t(`learn.${item}`)}
-        </Link>
-      ))}
+      {(["overview", "notebooks", "flashcards", "notes"] as const).map(
+        (item) => (
+          <Link
+            key={item}
+            className={
+              active === item
+                ? "text-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }
+            to={item === "overview" ? "/learn" : `/learn/${item}`}
+          >
+            {t(`learn.${item}`)}
+          </Link>
+        ),
+      )}
     </nav>
   );
 }

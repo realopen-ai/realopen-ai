@@ -170,14 +170,14 @@ export function Sidebar() {
   //   archived: by recency, under a collapsible "Archived" section
   const { activeConversations, archivedConversations } = useMemo(() => {
     const active = conversations
-      .filter((c) => !c.archived)
+      .filter((c) => !c.archived && !c.isNotebook)
       .sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         if (a.pinned && b.pinned) return (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0);
         return b.updatedAt - a.updatedAt;
       });
     const archived = conversations
-      .filter((c) => c.archived)
+      .filter((c) => c.archived && !c.isNotebook)
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return { activeConversations: active, archivedConversations: archived };
   }, [conversations]);
