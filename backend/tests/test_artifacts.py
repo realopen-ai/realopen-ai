@@ -701,3 +701,96 @@ async def test_agent_read_schema_and_no_model_call(store):
     assert not denied.success
     assert "conversation_id" not in ReadArtifactTool().get_parameters()
     assert ListArtifactsTool().get_required_params() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,fmt,source",
+    [
+        ("presentation", "pdf", "# Cover\n\n---\n\n# Details\nBody."),
+        (
+            "excel",
+            "pdf",
+            '{"sheets":[{"name":"Data","tables":[{"start_cell":"A1","headers":["Value"],"rows":[[3]]}]}]}',
+        ),
+    ],
+)
+async def test_unavailable_office_export_keeps_history_and_cleans_candidates(
+    store, monkeypatch, kind, fmt, source
+):
+    from unittest.mock import AsyncMock
+
+    artifact = await generated(store, kind, source)
+    monkeypatch.setattr(service, "convert_pptx_to_pdf", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_convert_office_to_pdf_in_cache", AsyncMock(return_value=None))
+    before = set((store.root / "reports").iterdir())
+    url = f"/api/artifacts/{artifact['id']}"
+    response = store.client.post(url + f"/export/{fmt}?version=1")
+    assert response.status_code == 503
+    assert set((store.root / "reports").iterdir()) == before
+    detail = store.client.get(url).json()
+    assert detail["version"] == 1 and len(detail["versions"]) == 1
+    assert fmt not in detail["outputs"]
+
+
+@pytest.mark.asyncio
+async def test_reference_rederives_source_metadata_instead_of_trusting_caller(store):
+    conversation = uuid.uuid4()
+    with store.engine.begin() as conn:
+        conn.execute(text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation.hex})
+    artifact = await generated(
+        store, "presentation", "# Cover\n\n---\n\n# Details\nFact.", conversation
+    )
+    reference = ArtifactReference(
+        artifact_id=artifact["id"],
+        version=1,
+        section_id="slide-2",
+        page=999,
+        slide=99,
+        sheet="Invented",
+    )
+    async with store.factory() as db:
+        result = await validate_reference(db, reference, conversation)
+    assert result == {
+        "artifact_id": artifact["id"],
+        "version": 1,
+        "section_id": "slide-2",
+        "slide": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancelled_summary_retry_retains_only_completed_batches(tmp_path, monkeypatch):
+    import asyncio
+    from app.services import providers
+
+    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    artifact = SimpleNamespace(id=uuid.uuid4())
+    version = SimpleNamespace(
+        number=1,
+        source="QA",
+        settings={},
+        sections=[
+            {"id": "part-1", "content": "a" * 8000, "page": 1},
+            {"id": "part-2", "content": "b" * 8000, "page": 2},
+        ],
+    )
+    calls = []
+    cancel = True
+
+    async def stream(model, messages, **kwargs):
+        calls.append(messages[-1]["content"])
+        if cancel and len(calls) == 2:
+            yield {"content": "Unfinished"}
+            raise asyncio.CancelledError()
+        yield {"content": "Fact [page 1]."}
+
+    monkeypatch.setattr(providers, "stream_chat", stream)
+    with pytest.raises(asyncio.CancelledError):
+        await service.summarize(None, artifact, version, model="qa")
+    first = calls[0]
+    cancel = False
+    result = await service.summarize(None, artifact, version, model="qa")
+    assert calls.count(first) == 1
+    assert "Unfinished" not in result["summary"]
+    assert [ref["page"] for ref in result["source_references"]] == [1, 2]

@@ -180,6 +180,8 @@ async def test_cutoff_omits_unfinished_sentence_and_marks_abridged(tmp_path, mon
     assert "Unfinished ending" not in result["summary"]
     assert "abbreviated" in result["summary"]
     assert result["warnings"]
+
+
 @pytest.mark.parametrize("template", ["modern", "corporate", "elegant"])
 def test_presentation_layouts_preserve_authored_body(tmp_path, template):
     from pptx import Presentation
