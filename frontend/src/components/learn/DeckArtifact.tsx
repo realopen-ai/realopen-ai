@@ -1,5 +1,5 @@
 import { Layers, Play } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/store/settingsStore";
 import { useLearnStore } from "@/store/learnStore";
@@ -16,7 +16,17 @@ export function DeckArtifact({
 }) {
   const t = useT();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const study = () => {
+    const notebookRoute = pathname.match(/^\/learn\/notebooks\/([^/]+)$/);
+    if (notebookRoute) {
+      window.dispatchEvent(
+        new CustomEvent("notebook-study", {
+          detail: { notebookId: notebookRoute[1], deckId: id },
+        }),
+      );
+      return;
+    }
     if (window.matchMedia("(min-width: 768px)").matches) {
       useLearnStore.getState().setStudyDeck(id);
       useUIStore.getState().setRightPanelOpen(true);

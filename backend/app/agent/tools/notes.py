@@ -10,6 +10,7 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_regist
 from app.db.session import async_session_factory
 from app.learn.notes import NoteInput, create_note
 from app.services.artifact_refs import REFERENCE_SCHEMA
+from app.learn.notebooks import attach_generated
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class CreateStudyNoteTool(BaseTool):
                 raise ValueError("Provide study note content")
             async with async_session_factory() as db:
                 note = await create_note(db, body)
+                await attach_generated(db, conversation_id, "note", note.id)
                 await db.commit()
                 artifact = {"type": "study_note", "note_id": str(note.id), "title": note.title}
             call.gen_results = [artifact]

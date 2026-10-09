@@ -221,6 +221,7 @@ export function InputArea({
   isStreaming,
   onStartVoice,
   onStopResponse,
+  sourceGrounded = false,
 }: {
   onSend: (
     message: string,
@@ -236,6 +237,8 @@ export function InputArea({
   onStartVoice: () => void;
   /** Stop the current text or voice response, preserving partial output. */
   onStopResponse: () => void;
+  /** Notebook attachments are managed through its selected-source panel. */
+  sourceGrounded?: boolean;
 }) {
   const [input, setInput] = useState("");
   const dictationConversation = useChatStore((s) => s.activeConversationId);
@@ -438,7 +441,11 @@ export function InputArea({
   const handleSend = () => {
     if (dictation !== "idle") return;
     const trimmed = input.trim();
-    if ((!trimmed && attachments.length === 0) || isStreaming) return;
+    if (
+      (!trimmed && (sourceGrounded || attachments.length === 0)) ||
+      isStreaming
+    )
+      return;
 
     const { command, remainingContent } = parseSlashCommand(trimmed);
     const contentToSend = command
@@ -460,8 +467,9 @@ export function InputArea({
     onSend(finalContent || trimmed, {
       modelOverride: command?.modelOverride,
       shrug: command?.shrug,
-      images: images.length > 0 ? images : undefined,
-      documents: documents.length > 0 ? documents : undefined,
+      images: !sourceGrounded && images.length > 0 ? images : undefined,
+      documents:
+        !sourceGrounded && documents.length > 0 ? documents : undefined,
     });
 
     // Cleanup preview URLs
@@ -537,7 +545,8 @@ export function InputArea({
     return acc;
   }, {});
 
-  const hasImages = attachments.some((a) => a.type === "image");
+  const hasImages =
+    !sourceGrounded && attachments.some((a) => a.type === "image");
 
   return (
     <div className="p-4 sm:px-6">
@@ -577,7 +586,7 @@ export function InputArea({
         {/* ── Composer — one cohesive floating input surface ── */}
         <div className="input-glow rounded-xl border border-border/70 bg-card shadow-[0_8px_30px_var(--color-shadow-soft)] transition-all">
           {/* Attachment Previews */}
-          {attachments.length > 0 && (
+          {!sourceGrounded && attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3.5 pt-3">
               {attachments.map((att, i) => (
                 <AttachmentPreview
@@ -635,21 +644,23 @@ export function InputArea({
             />
 
             {/* Attach button (opens image picker on click, document on right-click) */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
-              disabled={isStreaming}
-              onClick={() => imageInputRef.current?.click()}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                docInputRef.current?.click();
-              }}
-              aria-label="Attach image (right-click for documents)"
-              title="Attach image (right-click for documents)"
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
+            {!sourceGrounded && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
+                disabled={isStreaming}
+                onClick={() => imageInputRef.current?.click()}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  docInputRef.current?.click();
+                }}
+                aria-label="Attach image (right-click for documents)"
+                title="Attach image (right-click for documents)"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+            )}
 
             {/* Model selector — concise name + chevron, details in dropdown */}
             <div className="relative min-w-0 shrink" ref={menuRef}>
@@ -731,16 +742,18 @@ export function InputArea({
             <span className="flex-1" />
 
             {/* Web search indicator — available automatically when needed */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
-              disabled={isStreaming}
-              aria-label="Web search is available automatically when needed"
-              title="Web search is available automatically when needed"
-            >
-              <Globe className="h-4 w-4" />
-            </Button>
+            {!sourceGrounded && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground/80 hover:text-muted-foreground shrink-0"
+                disabled={isStreaming}
+                aria-label="Web search is available automatically when needed"
+                title="Web search is available automatically when needed"
+              >
+                <Globe className="h-4 w-4" />
+              </Button>
+            )}
 
             {/* Voice — starts a voice call from the composer */}
             {voiceState === "inactive" && (
@@ -792,7 +805,8 @@ export function InputArea({
               disabled={
                 !isStreaming &&
                 (dictation !== "idle" ||
-                  (!input.trim() && attachments.length === 0))
+                  (!input.trim() &&
+                    (sourceGrounded || attachments.length === 0)))
               }
               aria-label={
                 isStreaming ? t("input.stopResponse") : t("input.send")
@@ -803,7 +817,7 @@ export function InputArea({
                 "h-9 w-9 rounded-full shrink-0 transition-all",
                 isStreaming
                   ? "bg-secondary border border-border/70 text-foreground hover:bg-surface-hover"
-                  : input.trim() || attachments.length > 0
+                  : input.trim() || (!sourceGrounded && attachments.length > 0)
                     ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
                     : "bg-secondary text-muted-foreground/70 hover:bg-secondary disabled:opacity-100",
               )}

@@ -20,6 +20,7 @@ from app.db.models import (
 from app.learn.schemas import CardInput, DeckInput, ReviewInput, normalized, similar_question
 from app.learn.scheduler import schedule_review
 from app.services.artifact_refs import validate_reference
+from app.learn.notebooks import selected_document_ids
 
 
 def now():
@@ -50,7 +51,14 @@ async def check_sources(db, body: DeckInput):
         document = await db.get(Document, body.source_document_id)
         if document is None:
             raise HTTPException(404, "Source document not found")
-        if document.scope == "private" and document.conversation_id != body.source_conversation_id:
+        selected = await selected_document_ids(db, body.source_conversation_id)
+        if selected is not None and document.id not in selected:
+            raise HTTPException(403, "Document is not a selected notebook source")
+        if (
+            selected is None
+            and document.scope == "private"
+            and document.conversation_id != body.source_conversation_id
+        ):
             raise HTTPException(403, "Document belongs to another conversation")
 
 

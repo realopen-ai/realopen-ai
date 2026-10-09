@@ -62,9 +62,7 @@ async def test_search_no_candidates_returns_empty(mock_db, conv_id):
     mock_result.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "test query",
@@ -84,9 +82,7 @@ async def test_search_with_conversation_id_filters_correctly(mock_db, conv_id):
     mock_result.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         await rag.search_documents(
             mock_db,
             "test query",
@@ -113,9 +109,7 @@ async def test_search_without_conversation_id_only_public(mock_db):
     mock_result.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         await rag.search_documents(mock_db, "test query")
 
     stmt = mock_db.execute.call_args[0][0]
@@ -131,9 +125,7 @@ async def test_search_without_conversation_id_only_public(mock_db):
 # ─── Hybrid score + cutoff ──────────────────────────────────────────
 
 
-def _make_row(
-    distance=0.1, doc_id=None, filename="doc.pdf", chunk_id=None, chunk_type="text"
-):
+def _make_row(distance=0.1, doc_id=None, filename="doc.pdf", chunk_id=None, chunk_type="text"):
     """Build a mock row returned by the vector search query."""
     if doc_id is None:
         doc_id = uuid.uuid4()
@@ -154,6 +146,29 @@ def _make_row(
 
 
 @pytest.mark.asyncio
+async def test_explicit_document_selection_scopes_vector_and_keyword_queries(mock_db, conv_id):
+    selected = uuid.uuid4()
+    vector = MagicMock()
+    vector.all.return_value = [_make_row(doc_id=selected)]
+    keyword = MagicMock()
+    keyword.__iter__.return_value = iter([])
+    ranks = MagicMock()
+    ranks.__iter__.return_value = iter([])
+    mock_db.execute.side_effect = [vector, keyword, ranks]
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
+        result = await rag.search_documents(
+            mock_db, "test query", conversation_id=conv_id, document_ids=[selected]
+        )
+    statements = [call.args[0] for call in mock_db.execute.call_args_list]
+    vector_sql = str(statements[0].compile(compile_kwargs={"literal_binds": True}))
+    assert str(selected).replace("-", "") in vector_sql.replace("-", "")
+    assert "documents.scope" not in vector_sql
+    assert "d.id = ANY(CAST(:document_ids AS uuid[]))" in str(statements[1])
+    assert statements[1].compile().params["document_ids"] == [str(selected)]
+    assert result and result[0].document_id == str(selected)
+
+
+@pytest.mark.asyncio
 async def test_search_returns_ranked_sources(mock_db, conv_id):
     """Vector + BM25 scores combine, sources are ranked by hybrid score."""
     # Two candidates: one close (small distance), one far
@@ -170,9 +185,7 @@ async def test_search_returns_ranked_sources(mock_db, conv_id):
     # First call = vector search, second = BM25
     mock_db.execute.side_effect = [vector_result, bm25_result]
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "query",
@@ -202,9 +215,7 @@ async def test_search_similarity_cutoff_drops_low_matches(mock_db, conv_id):
 
     mock_db.execute.side_effect = [vector_result, bm25_result]
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "query",
@@ -226,8 +237,7 @@ async def test_search_per_doc_cap(mock_db, conv_id):
     # cap can't kick in because each chunk would be its own "doc".
     shared_doc_id = uuid.uuid4()
     rows = [
-        _make_row(distance=0.05, filename="samedoc.pdf", doc_id=shared_doc_id)
-        for _ in range(10)
+        _make_row(distance=0.05, filename="samedoc.pdf", doc_id=shared_doc_id) for _ in range(10)
     ]
 
     vector_result = MagicMock()
@@ -237,9 +247,7 @@ async def test_search_per_doc_cap(mock_db, conv_id):
 
     mock_db.execute.side_effect = [vector_result, bm25_result]
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "query",
@@ -277,9 +285,7 @@ async def test_search_total_top_k_cap(mock_db, conv_id):
 
     mock_db.execute.side_effect = [vector_result, bm25_result]
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "query",
@@ -302,9 +308,7 @@ async def test_search_custom_top_k(mock_db, conv_id):
 
     mock_db.execute.side_effect = [vector_result, bm25_result]
 
-    with patch(
-        "app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)
-    ):
+    with patch("app.services.rag.get_embedding", new=AsyncMock(return_value=[0.1] * 768)):
         result = await rag.search_documents(
             mock_db,
             "query",

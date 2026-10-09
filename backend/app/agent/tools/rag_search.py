@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from app.learn.notebooks import selected_document_ids
 from typing import Optional, List
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
@@ -142,6 +143,7 @@ class RagSearchTool(BaseTool):
             # global RAG_* env settings.
             top_k_per_doc, top_k_total, cutoff = _configured_retrieval()
             async with async_session_factory() as db:
+                document_ids = await selected_document_ids(db, conv_uuid)
                 sources = await rag_service.search_documents(
                     db,
                     query=query,
@@ -149,6 +151,7 @@ class RagSearchTool(BaseTool):
                     top_k_per_doc=top_k_per_doc,
                     top_k_total=top_k_total,
                     similarity_cutoff=cutoff,
+                    document_ids=document_ids,
                 )
         except Exception as e:
             _log("search FAILED: %s", e)

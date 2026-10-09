@@ -12,8 +12,10 @@ from typing import List, Optional
 
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException
 
 from app.db.models import Conversation, Message, Document
+from app.services.chat_streams import get_stream
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +43,9 @@ async def create_conversation(
     return conv
 
 
-async def get_conversation(
-    db: AsyncSession, conversation_id: uuid.UUID
-) -> Optional[Conversation]:
+async def get_conversation(db: AsyncSession, conversation_id: uuid.UUID) -> Optional[Conversation]:
     """Get a conversation by ID."""
-    result = await db.execute(
-        select(Conversation).where(Conversation.id == conversation_id)
-    )
+    result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
     return result.scalar_one_or_none()
 
 
@@ -67,7 +65,7 @@ async def list_conversations(
       * ``False`` — only active conversations (sidebar main list)
       * ``True``  — only archived conversations (sidebar "Archived" section)
     """
-    stmt = select(Conversation)
+    stmt = select(Conversation).where(Conversation.is_notebook.is_(False))
     if archived is not None:
         stmt = stmt.where(Conversation.archived.is_(archived))
     stmt = stmt.order_by(
@@ -134,9 +132,7 @@ async def set_conversation_flags(
 
     if values:
         await db.execute(
-            update(Conversation)
-            .where(Conversation.id == conversation_id)
-            .values(**values)
+            update(Conversation).where(Conversation.id == conversation_id).values(**values)
         )
         await db.flush()
     return True
@@ -144,6 +140,9 @@ async def set_conversation_flags(
 
 async def delete_conversation(db: AsyncSession, conversation_id: uuid.UUID) -> None:
     """Delete a conversation and all its messages."""
+    conversation = await db.get(Conversation, conversation_id)
+    if conversation and conversation.is_notebook is True:
+        raise HTTPException(409, "Delete the notebook instead of its conversation")
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.flush()
@@ -220,7 +219,22 @@ async def get_messages(
         .order_by(Message.created_at.asc())
         .limit(limit)
     )
-    return list(result.scalars().all())
+    messages = list(result.scalars().all())
+    stream = get_stream(str(conversation_id))
+    changed = False
+    if stream is None or stream.done:
+        for message in messages:
+            # Text streams survive browser disconnects, but not backend restarts.
+            # Voice has a separate session owner and is not reconciled here.
+            if (
+                getattr(message, "completion_status", None) == "streaming"
+                and getattr(message, "modality", None) != "voice"
+            ):
+                message.completion_status = "error"
+                changed = True
+    if changed:
+        await db.flush()
+    return messages
 
 
 async def persist_message_standalone(
@@ -246,9 +260,7 @@ async def persist_message_standalone(
 
     try:
         async with async_session_factory() as session:
-            msg = await add_message(
-                session, conv_id, role, content, model=model, **kwargs
-            )
+            msg = await add_message(session, conv_id, role, content, model=model, **kwargs)
             await session.commit()
         logger.debug(
             "%s message committed to DB (conv_id=%s, content_len=%d, msg_id=%s)",
@@ -325,6 +337,7 @@ async def conversation_to_dict(conv: Conversation) -> dict:
     """
     return {
         "id": str(conv.id),
+        "isNotebook": bool(getattr(conv, "is_notebook", False)),
         "title": conv.title,
         "model": conv.model,
         "sandboxId": str(conv.sandbox_id) if conv.sandbox_id else None,
@@ -334,14 +347,10 @@ async def conversation_to_dict(conv: Conversation) -> dict:
         "pinned": bool(conv.pinned),
         "archived": bool(conv.archived),
         "pinnedAt": (
-            int(conv.pinned_at.timestamp() * 1000)
-            if getattr(conv, "pinned_at", None)
-            else None
+            int(conv.pinned_at.timestamp() * 1000) if getattr(conv, "pinned_at", None) else None
         ),
         "archivedAt": (
-            int(conv.archived_at.timestamp() * 1000)
-            if getattr(conv, "archived_at", None)
-            else None
+            int(conv.archived_at.timestamp() * 1000) if getattr(conv, "archived_at", None) else None
         ),
         # Cross-session context visibility — lets the Brain page show
         # which conversations have been summarized and what the summary is.

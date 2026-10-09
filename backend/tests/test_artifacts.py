@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
-from app.db.models import Artifact, ArtifactVersion, Document
+from app.db.models import Artifact, ArtifactVersion, Document, Notebook
 from app.services import artifacts as service, ocr, document_extraction
 from app.services.artifact_sources import (
     sections_for,
@@ -68,7 +68,7 @@ def store(tmp_path, monkeypatch):
                 "CREATE TABLE messages (id UUID PRIMARY KEY, conversation_id UUID, deliverables JSON, created_at DATETIME)"
             )
         )
-    for model in (Document, Artifact, ArtifactVersion):
+    for model in (Document, Artifact, ArtifactVersion, Notebook):
         model.__table__.create(engine)
 
     @asynccontextmanager

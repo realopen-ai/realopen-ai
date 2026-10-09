@@ -18,6 +18,12 @@ from app.agent.base import get_tool_registry
 from app.agent.tools.rag_search import RagSearchTool
 from app.services import rag
 
+
+@pytest.fixture(autouse=True)
+def ordinary_conversation(monkeypatch):
+    # These tool-formatting tests have no notebook or live database.
+    monkeypatch.setattr("app.agent.tools.rag_search.selected_document_ids", AsyncMock(return_value=None))
+
 # ─── Registration ───────────────────────────────────────────────────
 
 

@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    CheckConstraint,
 )
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -21,6 +22,53 @@ from sqlalchemy.orm import DeclarativeBase, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+class Notebook(Base):
+    __tablename__ = "notebooks"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, unique=True
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class NotebookItem(Base):
+    """Links, not copies. Removing a notebook never deletes its content."""
+
+    __tablename__ = "notebook_items"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notebook_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("notebooks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
+    artifact_id = Column(UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="CASCADE"))
+    note_id = Column(UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="CASCADE"))
+    deck_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="CASCADE"))
+    selected = Column(Boolean, nullable=False, default=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    __table_args__ = (
+        CheckConstraint(
+            "(CASE WHEN document_id IS NULL THEN 0 ELSE 1 END + CASE WHEN artifact_id IS NULL THEN 0 ELSE 1 END + CASE WHEN note_id IS NULL THEN 0 ELSE 1 END + CASE WHEN deck_id IS NULL THEN 0 ELSE 1 END) = 1",
+            name="notebook_item_one_target",
+        ),
+        *(
+            UniqueConstraint("notebook_id", field, name=f"uq_notebook_{field}")
+            for field in ("document_id", "artifact_id", "note_id", "deck_id")
+        ),
+    )
 
 
 class StudyNote(Base):
@@ -157,6 +205,7 @@ class FlashcardReview(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    is_notebook = Column(Boolean, nullable=False, default=False, server_default="false")
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(255), nullable=True)

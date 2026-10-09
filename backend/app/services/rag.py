@@ -391,15 +391,11 @@ def _extract_docx(buf: bytes) -> ExtractionResult:
             value = _sanitize_text_for_pg(block.text)
             style = block.style.name if block.style else ""
             match = re.match(r"Heading (\d+)", style)
-            lines.append(
-                ("#" * min(6, int(match.group(1))) + " " if match else "") + value
-            )
+            lines.append(("#" * min(6, int(match.group(1))) + " " if match else "") + value)
         else:
             for index, row in enumerate(block.rows):
                 values = [
-                    _sanitize_text_for_pg(cell.text)
-                    .replace("|", "\\|")
-                    .replace("\n", " ")
+                    _sanitize_text_for_pg(cell.text).replace("|", "\\|").replace("\n", " ")
                     for cell in row.cells
                 ]
                 lines.append("| " + " | ".join(values) + " |")
@@ -426,9 +422,7 @@ def _extract_docx(buf: bytes) -> ExtractionResult:
                         "image/webp": "WEBP",
                     }
                     fmt = ext_map.get(content_type, "PNG")
-                    images.append(
-                        ExtractedImage(page_number=1, image_bytes=blob, format_hint=fmt)
-                    )
+                    images.append(ExtractedImage(page_number=1, image_bytes=blob, format_hint=fmt))
                 except Exception as inner:
                     _log("docx image extract failed: %s", inner)
     except Exception as e:
@@ -687,9 +681,7 @@ async def extract_content_async(buf: bytes, filename: str) -> ExtractionResult:
     ext = get_file_extension(filename)
     target = _LEGACY_CONVERSIONS.get(ext)
     if target is not None:
-        converted_buf, converted_name = await _convert_legacy_bytes(
-            buf, filename, target
-        )
+        converted_buf, converted_name = await _convert_legacy_bytes(buf, filename, target)
         if converted_buf is not None:
             _log("legacy .%s converted to .%s for extraction", ext, target)
             buf, filename = converted_buf, converted_name
@@ -723,9 +715,7 @@ async def _convert_legacy_bytes(
     try:
         src = tmp_dir / ("source" + os.path.splitext(filename)[1])
         src.write_bytes(buf)
-        converted = await libreoffice.convert_legacy_document(
-            src, target_format, tmp_dir
-        )
+        converted = await libreoffice.convert_legacy_document(src, target_format, tmp_dir)
         if converted is None or converted == src:
             return None, ""
         out_bytes = await asyncio.to_thread(converted.read_bytes)
@@ -882,9 +872,7 @@ def chunk_pages(
                 overlap_sentences: List[str] = []
                 overlap_ranges: List[Tuple[int, int]] = []
                 overlap_len = 0
-                for s, r in zip(
-                    reversed(current_sentences), reversed(sentence_line_ranges)
-                ):
+                for s, r in zip(reversed(current_sentences), reversed(sentence_line_ranges)):
                     if overlap_len + len(s) > overlap_chars:
                         break
                     overlap_sentences.insert(0, s)
@@ -897,9 +885,7 @@ def chunk_pages(
                 )
 
             current_sentences.append(sent)
-            sentence_line_ranges.append(
-                (line_cursor, line_cursor + sent_line_count - 1)
-            )
+            sentence_line_ranges.append((line_cursor, line_cursor + sent_line_count - 1))
             current_len += sent_len + (1 if current_len > 0 else 0)
             line_cursor += sent_line_count
 
@@ -1080,9 +1066,7 @@ async def save_image_file_async(
     format_hint: str,
 ) -> str:
     """Async wrapper around save_image_file — runs in thread pool."""
-    return await asyncio.to_thread(
-        save_image_file, image_bytes, doc_id, image_index, format_hint
-    )
+    return await asyncio.to_thread(save_image_file, image_bytes, doc_id, image_index, format_hint)
 
 
 def resolve_document_path(relative_path: str) -> Path:
@@ -1204,9 +1188,7 @@ async def digest_document(
         # chunks, reset counters, flip back to "digesting". The raw file
         # on disk is reused as-is (no re-save); scope / conversation /
         # collections are preserved.
-        await db.execute(
-            delete(DocumentChunk).where(DocumentChunk.document_id == doc_id)
-        )
+        await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc_id))
         await db.execute(
             update(Document)
             .where(Document.id == doc_id)
@@ -1250,14 +1232,10 @@ async def digest_document(
         if reuse_doc_id is not None:
             # Reuse the existing on-disk raw file — its stored rel_path.
             row = (
-                await db.execute(
-                    select(Document.file_path).where(Document.id == doc_id)
-                )
+                await db.execute(select(Document.file_path).where(Document.id == doc_id))
             ).first()
             if row is None or not row[0]:
-                raise RuntimeError(
-                    f"Reindex failed: document {doc_id} has no stored file path"
-                )
+                raise RuntimeError(f"Reindex failed: document {doc_id} has no stored file path")
             rel_path = row[0]
             _log("digest: reindex reusing on-disk file %s", rel_path)
         else:
@@ -1308,9 +1286,7 @@ async def digest_document(
                 save_snapshot, get_document_dir(doc_id) / "extraction.json", snapshot
             )
         except OSError:
-            logger.exception(
-                "Extraction cache unavailable; artifact reads can reconstruct it"
-            )
+            logger.exception("Extraction cache unavailable; artifact reads can reconstruct it")
         _log(
             "digest: extraction done in %.2fs  pages=%d  images=%d",
             time.time() - t1,
@@ -1401,9 +1377,7 @@ async def digest_document(
                 )
                 image_chunks.append(
                     Chunk(
-                        text=(
-                            f"[Image on page {img.page_number} of {filename}]\n{description}"
-                        ),
+                        text=(f"[Image on page {img.page_number} of {filename}]\n{description}"),
                         chunk_index=next_chunk_idx,
                         page_number=img.page_number,
                         line_start=None,
@@ -1621,6 +1595,7 @@ async def search_documents(
     top_k_per_doc: Optional[int] = None,
     top_k_total: Optional[int] = None,
     similarity_cutoff: Optional[float] = None,
+    document_ids: Optional[List[uuid.UUID]] = None,
 ) -> List[RetrievedSource]:
     """Hybrid vector + BM25 search with per-doc adaptive top-k.
 
@@ -1644,14 +1619,12 @@ async def search_documents(
     """
     if not query or not query.strip():
         return []
+    if document_ids is not None and not document_ids:
+        return []
 
     k_per_doc = top_k_per_doc or settings.RAG_TOP_K_PER_DOC
     k_total = top_k_total or settings.RAG_TOP_K_TOTAL
-    cutoff = (
-        similarity_cutoff
-        if similarity_cutoff is not None
-        else settings.RAG_SIMILARITY_CUTOFF
-    )
+    cutoff = similarity_cutoff if similarity_cutoff is not None else settings.RAG_SIMILARITY_CUTOFF
 
     # ── Query expansion ─────────────────────────────────────────────────
     expanded_query = query
@@ -1689,7 +1662,9 @@ async def search_documents(
     )
 
     # Apply scope filter
-    if conversation_id:
+    if document_ids is not None:
+        stmt = stmt.where(Document.id.in_(document_ids))
+    elif conversation_id:
         stmt = stmt.where(
             or_(
                 Document.scope == "public",
@@ -1733,7 +1708,10 @@ async def search_documents(
             # so we can include them as candidates.
             scope_clause = ""
             params = {"q": tsquery, "lim": fetch_k}
-            if conversation_id:
+            if document_ids is not None:
+                scope_clause = "AND d.id = ANY(CAST(:document_ids AS uuid[]))"
+                params["document_ids"] = [str(identifier) for identifier in document_ids]
+            elif conversation_id:
                 scope_clause = (
                     "AND (d.scope = 'public' OR "
                     "(d.scope = 'private' AND d.conversation_id = CAST(:cid AS uuid)))"
@@ -2127,9 +2105,7 @@ async def toggle_document_scope(
         return None
     if new_scope == "private":
         if not new_conversation_id:
-            raise ValueError(
-                "conversation_id is required when switching to private scope"
-            )
+            raise ValueError("conversation_id is required when switching to private scope")
         doc.scope = "private"
         doc.conversation_id = new_conversation_id
     else:
@@ -2167,9 +2143,7 @@ async def reindex_document(
 
     file_path = resolve_document_path(doc.file_path)
     if not file_path.exists():
-        raise ValueError(
-            f"Document file missing on disk: {file_path} — re-upload instead"
-        )
+        raise ValueError(f"Document file missing on disk: {file_path} — re-upload instead")
 
     file_bytes = await asyncio.to_thread(file_path.read_bytes)
     scope = doc.scope if doc.scope in ("private", "public") else "private"
@@ -2184,9 +2158,7 @@ async def reindex_document(
     )
 
 
-async def remove_document_knowledge(
-    db: AsyncSession, doc_id: uuid.UUID
-) -> Optional[Document]:
+async def remove_document_knowledge(db: AsyncSession, doc_id: uuid.UUID) -> Optional[Document]:
     """Remove a document from the AI knowledge base (keep the file).
 
     Deletes every chunk (embeddings + BM25 vectors go with them) and the

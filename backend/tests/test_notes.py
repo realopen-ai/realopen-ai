@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from unittest.mock import MagicMock
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 import pytest
@@ -80,6 +81,11 @@ async def test_note_chunk_grounding(monkeypatch):
     doc, chunk, conv = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
     class DB:
+        async def execute(self, query):
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = None
+            return result
+
         async def get(self, model, key):
             from app.db.models import Conversation, Document
 

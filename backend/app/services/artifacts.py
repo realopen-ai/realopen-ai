@@ -20,6 +20,7 @@ from app.services.artifact_sources import sections_for, workbook_spec
 from app.api.reports import _get_data_dir
 from app.services import providers, model_prefs
 from app.services.artifact_summary import summarize_sections
+from app.learn.notebooks import permits_artifact, source_catalog
 from app.services.document_extraction import extract, save_snapshot
 from app.services.report_gen import _generate_pdf, _generate_docx
 from app.services.pptx_gen import _parse_slides, _resolve_theme, _build_pptx
@@ -52,6 +53,12 @@ def file_path(relative):
 
 
 async def get_artifact(db, artifact_id, conversation_id=None, *, scoped=False):
+    if scoped:
+        allowed = await permits_artifact(db, conversation_id, artifact_id)
+        if allowed is False:
+            raise HTTPException(403, "Artifact is not a selected notebook source")
+        if allowed is True:
+            scoped = False
     artifact = await db.get(Artifact, artifact_id)
     if artifact is None:
         document = await db.get(Document, artifact_id)
@@ -185,6 +192,10 @@ def metadata(artifact):
 
 async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0):
     conversation_id = uuid.UUID(str(conversation_id)) if conversation_id else None
+    if scoped:
+        selected = await source_catalog(db, conversation_id, offset=offset, limit=limit)
+        if selected is not None:
+            return selected
     await import_recent(db, conversation_id, scoped=scoped)
     query = select(Artifact).where(Artifact.document_id.is_(None))
     docs = select(Document)

@@ -1083,6 +1083,23 @@ async def test_maybe_run_disabled_interval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_notebook_material_does_not_become_global_memory(monkeypatch):
+    monkeypatch.setattr(settings, "MEMORY_EXTRACTION_INTERVAL", 1)
+    conv = Conversation(id=uuid.uuid4(), title="Study", is_notebook=True)
+    db = FakeDB(get_map={(Conversation, conv.id): conv})
+    with (
+        patch.object(me, "async_session_factory", _fake_session_factory([db])),
+        patch("app.services.background_queue.enqueue_extraction_job") as enqueue,
+    ):
+        assert await maybe_run_memory_extraction(conv.id, "source material", []) == (
+            0,
+            False,
+            False,
+        )
+    enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_maybe_run_below_interval(monkeypatch):
     monkeypatch.setattr(settings, "MEMORY_EXTRACTION_INTERVAL", 4)
     conv = Conversation(id=uuid.uuid4(), title="t", memory_watermark_message_id=None)
