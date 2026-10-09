@@ -1,6 +1,7 @@
 """Native, opt-in learning artifact creation. No additional inference call."""
 
 import json
+from app.learn.notebooks import attach_generated
 import logging
 import time
 
@@ -100,6 +101,7 @@ class CreateFlashcardDeckTool(BaseTool):
                 raise ValueError("Provide at least one card")
             async with async_session_factory() as db:
                 deck = await create_deck(db, body)
+                await attach_generated(db, conversation_id, "deck", deck.id)
                 await db.commit()
                 artifact = {
                     "type": "flashcard_deck",

@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.learn import notes, service
 from app.learn.notes import NoteContent, NoteInput, NoteAction
 from app.learn.schemas import DeckInput
+from app.learn.notebooks import attach_generated
 from app.services.artifact_refs import ArtifactReference
 
 router = APIRouter(prefix="/learn/notes", tags=["learn"])
@@ -80,4 +81,5 @@ async def create_flashcards(
     deck = await service.create_deck(db, body)
     deck.source_note_id = note.id
     await db.flush()
+    await attach_generated(db, note.source_conversation_id, "deck", deck.id)
     return await service.deck_detail(db, deck.id)

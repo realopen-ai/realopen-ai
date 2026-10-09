@@ -811,6 +811,11 @@ async def maybe_run_memory_extraction(
 
     try:
         async with async_session_factory() as db:
+            conversation = await db.get(Conversation, conv_id)
+            # Source-grounded notebook content is study material, not personal
+            # facts to carry into unrelated chats (also applies to voice turns).
+            if conversation is not None and conversation.is_notebook:
+                return 0, False, False
             new_messages, _watermark = await get_messages_since_watermark(
                 db, str(conv_id)
             )

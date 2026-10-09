@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from app.api.flashcards import router
 from app.db.session import get_db
-from app.db.models import FlashcardDeck, Flashcard, FlashcardProgress, FlashcardReview, StudyNote
+from app.db.models import FlashcardDeck, Flashcard, FlashcardProgress, FlashcardReview, StudyNote, Notebook
 from app.learn.schemas import CardInput, DeckInput
 from app.learn.scheduler import schedule_review
 from app.learn import service
@@ -58,7 +58,7 @@ def database():
         connection.execute(text("CREATE TABLE conversations (id UUID PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE documents (id UUID PRIMARY KEY)"))
         connection.execute(text("CREATE TABLE document_chunks (id UUID PRIMARY KEY)"))
-    for model in (StudyNote, FlashcardDeck, Flashcard, FlashcardProgress, FlashcardReview):
+    for model in (StudyNote, FlashcardDeck, Flashcard, FlashcardProgress, FlashcardReview, Notebook):
         model.__table__.create(engine)
     yield engine
     engine.dispose()
