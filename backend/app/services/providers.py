@@ -641,6 +641,7 @@ async def stream_chat(
                             "content": "",
                             "tool_calls": [],
                             "done": True,
+                            "finish_reason": finish,
                         }
                         return
         # Stream ended without finish_reason (connection closed) — flush.
@@ -680,4 +681,5 @@ async def stream_chat(
                     "content": msg.get("content", "") or "",
                     "tool_calls": msg.get("tool_calls", []) or [],
                     "done": bool(chunk.get("done")),
+                    "finish_reason": chunk.get("done_reason"),
                 }

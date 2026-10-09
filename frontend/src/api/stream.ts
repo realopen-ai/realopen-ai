@@ -370,7 +370,24 @@ async function parseSSEStream(
 }
 
 /** Reattach to a backend-owned agent turn after a page reload. */
-export async function resumeChatStream(
+const resumeRequests = new Map<string, Promise<boolean>>();
+
+export function resumeChatStream(
+  conversationId: string,
+  onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
+): Promise<boolean> {
+  const existing = resumeRequests.get(conversationId);
+  if (existing) return existing;
+  const request = reconnectChatStream(conversationId, onConnected).finally(
+    () => {
+      resumeRequests.delete(conversationId);
+    },
+  );
+  resumeRequests.set(conversationId, request);
+  return request;
+}
+
+async function reconnectChatStream(
   conversationId: string,
   onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
 ): Promise<boolean> {
@@ -554,6 +571,11 @@ export function dispatchAgentEvent(
     const tc = p.tool_call;
     const tcId = tc.id ?? `tc-${Date.now()}`;
 
+    // Progress-only events update the existing block, never start a second one.
+    if (tc.progress && tc.id) {
+      callbacks.onToolCallUpdate(tcId, { progress: tc.progress });
+    }
+
     if (tc.status === "running") {
       log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
       // Build the full ToolCallResult and start a new tool_call block.
@@ -565,6 +587,7 @@ export function dispatchAgentEvent(
         status: "running",
         title: tc.title ?? tc.type,
         startedAt: epochMilliseconds(tc.startedAt),
+        progress: tc.progress,
         query: tc.query,
         language: tc.language,
         code: tc.code,

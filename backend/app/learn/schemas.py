@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.services.artifact_refs import ArtifactReference
 
 
 def normalized(value: str) -> str:
@@ -52,6 +53,7 @@ def similar_question(a: str, b: str) -> bool:
 
 
 class CardInput(BaseModel):
+    source_artifact: "ArtifactReference | None" = None
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     front: str = Field(min_length=1, max_length=2000)
     back: str = Field(min_length=1, max_length=4000)
@@ -73,6 +75,7 @@ class DeckMetadata(BaseModel):
 
 
 class DeckInput(DeckMetadata):
+    source_artifact: "ArtifactReference | None" = None
     cards: list[CardInput] = Field(default_factory=list, max_length=100)
     source_conversation_id: uuid.UUID | None = None
     source_document_id: uuid.UUID | None = None

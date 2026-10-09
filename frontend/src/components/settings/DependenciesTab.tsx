@@ -181,7 +181,11 @@ function DependencyRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-2">
             <p className="text-[13.5px] font-medium text-foreground">
-              {dep.display_name}
+              {dep.name.startsWith("tesseract-ocr-")
+                ? t(
+                    `settings.ocr.${dep.name.endsWith("fra") ? "fra" : "ara"}.title`,
+                  )
+                : dep.display_name}
             </p>
             {dep.install_size && (
               <span className="text-[11px] text-muted-foreground">
@@ -190,7 +194,11 @@ function DependencyRow({
             )}
           </div>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            {dep.description}
+            {dep.name.startsWith("tesseract-ocr-")
+              ? t(
+                  `settings.ocr.${dep.name.endsWith("fra") ? "fra" : "ara"}.description`,
+                )
+              : dep.description}
           </p>
 
           {/* Status */}

@@ -346,6 +346,7 @@ export async function installModuleModels(
 
 /** Shape of a tool call as stored inside a block's `tool_call` field */
 export interface BackendToolCall {
+  progress?: { stage: string; completed: number; total: number };
   id?: string;
   type?: string;
   status?: string;

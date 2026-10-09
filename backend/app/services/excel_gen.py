@@ -233,6 +233,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 from app.config import settings
 from app.services import model_prefs
 from app.services import providers
+from app.services.artifact_sources import capture_source, workbook_json
 from app.services.patterns import PATTERN_BUILDERS, PATTERN_FILLABLE, PATTERN_KEYWORDS
 from app.prompts import get_prompt
 
@@ -312,9 +313,7 @@ _HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 # Safe characters for Excel custom number formats (letters cover dates,
 # "General", "Text", colors in [], AM/PM, etc.)
 _NUMFMT_ALLOWED = set(
-    "#0123456789.,%-$€£¥()[]/:+\"'\\*_&@?<>; "
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "#0123456789.,%-$€£¥()[]/:+\"'\\*_&@?<>; abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
 _INT_STR_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _FLOAT_STR_RE = re.compile(r"^-?(?:[0-9]+\.[0-9]*|\.[0-9]+)$")
@@ -570,8 +569,7 @@ def _validate_sheet(ctx: str, sheet: dict) -> Tuple[List[str], List[str], List[d
         else:
             if len(dvs) > MAX_VALIDATIONS_PER_SHEET:
                 warnings.append(
-                    f"{ctx}: {len(dvs)} validations > "
-                    f"{MAX_VALIDATIONS_PER_SHEET} — truncated"
+                    f"{ctx}: {len(dvs)} validations > {MAX_VALIDATIONS_PER_SHEET} — truncated"
                 )
             for di, dv in enumerate(dvs[:MAX_VALIDATIONS_PER_SHEET]):
                 errors.extend(
@@ -957,8 +955,7 @@ def _validate_data_validation(ctx: str, dv: Any) -> List[str]:
                 errors.append(f"{ctx}.values[{vi}]: must be a scalar")
             elif isinstance(v, str) and ("," in v or '"' in v):
                 errors.append(
-                    f"{ctx}.values[{vi}]: commas/quotes are not allowed "
-                    "inside list values"
+                    f"{ctx}.values[{vi}]: commas/quotes are not allowed inside list values"
                 )
 
     style = dv.get("error_style")
@@ -1648,6 +1645,8 @@ def _coerce_cell_value(value: Any) -> Any:
     - ISO date strings "YYYY-MM-DD" → datetime.date (+ format later)
     - everything else sanitized for illegal characters
     """
+    if isinstance(value, (_date, _datetime)):
+        return value
     if isinstance(value, str):
         s = value.strip()
         if s and _INT_STR_RE.match(s) and len(s) < 16:
@@ -4275,6 +4274,15 @@ async def generate_spreadsheet(
         raise RuntimeError(f"Excel file was not created: {output_path}")
 
     file_size = output_path.stat().st_size
+
+    await asyncio.to_thread(
+        capture_source,
+        reports_dir,
+        report_id,
+        workbook_json(spec),
+        "excel",
+        {"topic": brief, "format": "xlsx"},
+    )
     _log(
         "workbook saved: %s (%d bytes, %d sheets)",
         output_path.name,

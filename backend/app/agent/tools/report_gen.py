@@ -60,6 +60,7 @@ class ReportGenTool(BaseTool):
     param_aliases = {
         "topic": "topic",
         "outline": "outline",
+        "requirements": "outline",
         "format": "format",
     }
 
@@ -73,9 +74,7 @@ class ReportGenTool(BaseTool):
             },
             "outline": {
                 "type": "string",
-                "description": (
-                    "Optional section outline to guide the report structure"
-                ),
+                "description": ("Optional section outline to guide the report structure"),
             },
             "format": {
                 "type": "string",
@@ -95,6 +94,7 @@ class ReportGenTool(BaseTool):
         *,
         topic: str,
         outline: Optional[str] = None,
+        requirements: Optional[str] = None,
         format: Optional[str] = None,
         **kwargs,
     ) -> ToolResult:
@@ -140,7 +140,10 @@ class ReportGenTool(BaseTool):
             model_override = await config_store.tool_model_override(self.name)
             result = await generate_report(
                 topic=topic.strip(),
-                outline=outline,
+                outline="\n\n".join(
+                    part for part in (outline or requirements, kwargs.get("_user_request")) if part
+                )
+                or None,
                 format=fmt,
                 model=model_override,
             )

@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.learn import notes, service
 from app.learn.notes import NoteContent, NoteInput, NoteAction
 from app.learn.schemas import DeckInput
+from app.services.artifact_refs import ArtifactReference
 
 router = APIRouter(prefix="/learn/notes", tags=["learn"])
 
@@ -60,6 +61,9 @@ async def create_flashcards(
         update={
             "source_conversation_id": note.source_conversation_id,
             "source_document_id": note.source_document_id,
+            "source_artifact": ArtifactReference.model_validate(note.source_artifact)
+            if note.source_artifact
+            else None,
         }
     )
     # Provenance comes from the note, not model-generated metadata.

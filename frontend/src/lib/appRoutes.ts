@@ -1,10 +1,16 @@
 export type BrainTab = "memories" | "history" | "skills" | "tools";
 export type WorkspaceSection =
-  "documents" | "templates" | "generated" | "assets" | "sandboxes";
+  | "documents"
+  | "templates"
+  | "generated"
+  | "assets"
+  | "sandboxes"
+  | "artifacts";
 
 const brainTabs = new Set<BrainTab>(["memories", "history", "skills", "tools"]);
 
 const workspaceSections = new Set<WorkspaceSection>([
+  "artifacts",
   "documents",
   "templates",
   "generated",

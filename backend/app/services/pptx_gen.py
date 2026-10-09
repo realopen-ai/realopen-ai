@@ -66,6 +66,7 @@ from pptx.util import Emu, Inches, Pt
 
 from app.services import model_prefs
 from app.services import providers
+from app.services.artifact_sources import capture_source
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -160,7 +161,7 @@ async def _get_templates_with_descriptions() -> list[tuple[str, str]]:
 # Characters that are XML-valid but render unpredictably in text boxes
 # (zero-width joiners, bidi marks, line/paragraph separators, BOM, …).
 _WEIRD_WS_RE = re.compile(
-    "[\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a-\u202f" "\u205f-\u206f\ufeff]"
+    "[\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u202a-\u202f\u205f-\u206f\ufeff]"
 )
 
 # Everything not allowed in presentation text. Stricter than the raw XML
@@ -1159,12 +1160,14 @@ def _render_deck(
     for i, sd in enumerate(slides):
         slide = prs.slides.add_slide(blank)
 
-        if i == 0:
+        # Decorative layouts have no body area. Never select one when doing
+        # so would discard authored content (including after artifact edits).
+        if i == 0 and not sd.bullets:
             _draw_title_slide(slide, sd, theme, topic)
-        elif sd.is_section:
+        elif sd.is_section and not sd.bullets:
             section_no += 1
             _draw_section_slide(slide, sd, theme, section_no)
-        elif _is_closing_slide(sd, i, total):
+        elif _is_closing_slide(sd, i, total) and not sd.bullets:
             _draw_title_slide(slide, sd, theme, topic, closing=True)
         else:
             _draw_content_slide(slide, sd, theme)
@@ -1401,6 +1404,23 @@ async def generate_presentation(
         raise RuntimeError(f"PPTX file was not created: {output_path}")
 
     file_size = output_path.stat().st_size
+
+    # Preserve precisely the rendered slides, including any cap applied above.
+    rendered_source = "\n---\n".join(
+        [
+            part
+            for part in re.split(r"^\s*---\s*$", markdown_content, flags=re.MULTILINE)
+            if part.strip()
+        ][:cap]
+    )
+    await asyncio.to_thread(
+        capture_source,
+        reports_dir,
+        report_id,
+        rendered_source,
+        "presentation",
+        {"topic": topic, "template": slug, "format": "pptx"},
+    )
     _log(
         "presentation saved: %s (%d bytes, %d slides)",
         output_path.name,

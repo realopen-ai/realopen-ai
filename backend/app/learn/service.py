@@ -19,6 +19,7 @@ from app.db.models import (
 )
 from app.learn.schemas import CardInput, DeckInput, ReviewInput, normalized, similar_question
 from app.learn.scheduler import schedule_review
+from app.services.artifact_refs import validate_reference
 
 
 def now():
@@ -60,6 +61,9 @@ async def create_deck(db: AsyncSession, body: DeckInput):
         description=body.description,
         source_conversation_id=body.source_conversation_id,
         source_document_id=body.source_document_id,
+        source_artifact=await validate_reference(
+            db, body.source_artifact, body.source_conversation_id
+        ),
     )
     db.add(deck)
     await db.flush()
@@ -93,15 +97,21 @@ async def add_card(db, deck, body: CardInput, *, position=None, exclude_id=None)
         raise HTTPException(422, "Duplicate card question")
     if exclude_id is None and len(existing) >= 100:
         raise HTTPException(422, "A deck can contain at most 100 cards")
+    values = body.model_dump()
+    values["source_artifact"] = (
+        await validate_reference(db, body.source_artifact, deck.source_conversation_id)
+        if body.source_artifact
+        else None
+    )
     if exclude_id is not None:
         card = edited
-        for field, value in body.model_dump().items():
+        for field, value in values.items():
             setattr(card, field, value)
         card.updated_at = now()
     else:
         card = Flashcard(
             deck_id=deck.id,
-            **body.model_dump(),
+            **values,
             position=position
             if position is not None
             else max((c.position for c in existing), default=-1) + 1,
@@ -120,6 +130,7 @@ def deck_dict(deck, card_count=0, due_count=0, next_review_at=None, last_studied
         "title": deck.title,
         "description": deck.description,
         "source_note_id": str(deck.source_note_id) if deck.source_note_id else None,
+        "source_artifact": deck.source_artifact,
         "source_conversation_id": str(deck.source_conversation_id)
         if deck.source_conversation_id
         else None,
@@ -141,6 +152,7 @@ def card_dict(card, progress):
         "back": card.back,
         "position": card.position,
         "source_reference": card.source_reference,
+        "source_artifact": card.source_artifact,
         "source_page": card.source_page,
         "source_chunk_id": str(card.source_chunk_id) if card.source_chunk_id else None,
         "due_at": progress.due_at,
@@ -197,6 +209,7 @@ async def due_session(db):
             {
                 **card_dict(card, progress),
                 "deck_title": deck.title,
+                "source_artifact": card.source_artifact or deck.source_artifact,
                 "source_document_id": str(deck.source_document_id)
                 if deck.source_document_id
                 else None,

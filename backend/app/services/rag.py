@@ -40,6 +40,7 @@ so the frontend can show a thumbnail of the original image.
 from __future__ import annotations
 
 import asyncio
+from docx.text.paragraph import Paragraph
 import base64
 import hashlib
 import io
@@ -384,8 +385,26 @@ def _extract_docx(buf: bytes) -> ExtractionResult:
     # native page concept). Sanitize each paragraph because python-docx
     # can emit NUL bytes for malformed XML.
     lines: List[str] = []
-    for para in doc.paragraphs:
-        lines.append(_sanitize_text_for_pg(para.text))
+
+    for block in doc.iter_inner_content():
+        if isinstance(block, Paragraph):
+            value = _sanitize_text_for_pg(block.text)
+            style = block.style.name if block.style else ""
+            match = re.match(r"Heading (\d+)", style)
+            lines.append(
+                ("#" * min(6, int(match.group(1))) + " " if match else "") + value
+            )
+        else:
+            for index, row in enumerate(block.rows):
+                values = [
+                    _sanitize_text_for_pg(cell.text)
+                    .replace("|", "\\|")
+                    .replace("\n", " ")
+                    for cell in row.cells
+                ]
+                lines.append("| " + " | ".join(values) + " |")
+                if index == 0:
+                    lines.append("| " + " | ".join("---" for _ in values) + " |")
     full_text = "\n".join(lines)
 
     # Images — pull every image part referenced by the document.
@@ -1279,7 +1298,19 @@ async def digest_document(
             )
         )
         t1 = time.time()
-        extraction = await extract_content_async(file_bytes, filename)
+        # document_extraction imports this module's extraction adapters.
+        # Keep this import lazy to avoid a circular module initialization.
+        from app.services.document_extraction import extract, save_snapshot
+
+        extraction, snapshot = await extract(file_bytes, filename)
+        try:
+            await asyncio.to_thread(
+                save_snapshot, get_document_dir(doc_id) / "extraction.json", snapshot
+            )
+        except OSError:
+            logger.exception(
+                "Extraction cache unavailable; artifact reads can reconstruct it"
+            )
         _log(
             "digest: extraction done in %.2fs  pages=%d  images=%d",
             time.time() - t1,
@@ -1302,8 +1333,7 @@ async def digest_document(
                 stage="extracting_images",
                 percent=20,
                 details=(
-                    f"Extracted {len(extraction.pages)} page(s), "
-                    f"{len(extraction.images)} image(s)"
+                    f"Extracted {len(extraction.pages)} page(s), {len(extraction.images)} image(s)"
                 ),
             )
         )
@@ -1342,7 +1372,7 @@ async def digest_document(
                     DigestProgress(
                         stage="describing_images",
                         percent=pct,
-                        details=f"Image {i+1}/{len(extraction.images)}",
+                        details=f"Image {i + 1}/{len(extraction.images)}",
                     )
                 )
                 t1 = time.time()
@@ -1372,8 +1402,7 @@ async def digest_document(
                 image_chunks.append(
                     Chunk(
                         text=(
-                            f"[Image on page {img.page_number} of {filename}]\n"
-                            f"{description}"
+                            f"[Image on page {img.page_number} of {filename}]\n{description}"
                         ),
                         chunk_index=next_chunk_idx,
                         page_number=img.page_number,

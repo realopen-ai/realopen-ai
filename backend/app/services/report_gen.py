@@ -46,6 +46,7 @@ from typing import Optional
 
 from app.services import model_prefs
 from app.services import providers
+from app.services.artifact_sources import capture_source
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -108,11 +109,14 @@ async def _generate_markdown(
 
     user_content = f"Topic: {topic}"
     if outline:
-        user_content += f"\n\nSuggested outline (you may adapt it):\n{outline}"
-    user_content += "\n\nGenerate the full report in Markdown now."
+        user_content += f"\n\nRequired structure and constraints (follow exactly):\n{outline}"
+    user_content += "\n\nGenerate Markdown now. Honor the requested scope and length; do not add unrequested sections or claims."
 
     messages = [
-        {"role": "system", "content": get_prompt("report_system")},
+        {
+            "role": "system",
+            "content": get_prompt("report_outline_system" if outline else "report_system"),
+        },
         {"role": "user", "content": user_content},
     ]
 
@@ -584,11 +588,7 @@ def _wrap_summary(body_html: str) -> str:
 
 def _build_cover_html(title: str, subtitle: str, topic: str) -> str:
     esc = _html.escape
-    topic_line = (
-        f'<div class="cover-meta-row cover-meta-topic">{esc(topic)}</div>'
-        if topic
-        else ""
-    )
+    topic_line = f'<div class="cover-meta-row cover-meta-topic">{esc(topic)}</div>' if topic else ""
     subtitle_html = f'<p class="cover-subtitle">{esc(subtitle)}</p>' if subtitle else ""
     return f"""
 <div class="cover">
@@ -629,12 +629,7 @@ def _build_toc_html(entries: list[tuple[str, str, str]]) -> str:
 
 def _css_escape(value: str) -> str:
     """Escape a string for safe embedding inside a CSS double-quoted string."""
-    return (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", " ")
-        .replace("\r", " ")
-    )
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
 
 
 def _generate_pdf(
@@ -997,9 +992,7 @@ def _add_formatted_text(paragraph, text: str) -> None:
     """Add text with inline **bold**, *italic* and `code` markdown."""
     from docx.shared import Pt
 
-    pattern = re.compile(
-        r"(\*\*.+?\*\*|`[^`]+`|(?<!\*)\*(?!\*).+?(?<!\*)\*(?!\*))", re.DOTALL
-    )
+    pattern = re.compile(r"(\*\*.+?\*\*|`[^`]+`|(?<!\*)\*(?!\*).+?(?<!\*)\*(?!\*))", re.DOTALL)
     for part in pattern.split(text):
         if not part:
             continue
@@ -1256,6 +1249,15 @@ async def generate_report(
         raise RuntimeError(f"Report file was not created: {output_path}")
 
     file_size = output_path.stat().st_size
+
+    await asyncio.to_thread(
+        capture_source,
+        reports_dir,
+        report_id,
+        markdown_content,
+        "report",
+        {"topic": topic, "format": fmt},
+    )
     _log("report saved: %s (%d bytes)", output_path.name, file_size)
 
     # Build a clean filename from the topic

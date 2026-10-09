@@ -25,7 +25,7 @@ test("user stop targets the durable backend stream", () => {
 });
 
 test("reload reconnects to buffered SSE and rebuilds the live message", () => {
-  assert.match(streamApi, /export async function resumeChatStream/);
+  assert.match(streamApi, /export (?:async )?function resumeChatStream/);
   assert.match(
     streamApi,
     /chat\/stream\/\$\{encodeURIComponent\(conversationId\)\}\/events/,

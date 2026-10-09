@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
 from app.learn.notes import NoteInput, create_note
+from app.services.artifact_refs import REFERENCE_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class CreateStudyNoteTool(BaseTool):
 
     def get_parameters(self):
         return {
+            "source_artifact": REFERENCE_SCHEMA,
             "title": {"type": "string", "maxLength": 200},
             "content": {"type": "string", "maxLength": 40000},
             "source_document_id": {
@@ -50,6 +52,7 @@ class CreateStudyNoteTool(BaseTool):
         source_document_id=None,
         source_page=None,
         source_chunk_id=None,
+        source_artifact=None,
         **kwargs,
     ):
         call = ToolCall(
@@ -90,6 +93,7 @@ class CreateStudyNoteTool(BaseTool):
                 source_document_id=source_document_id,
                 source_page=source_page,
                 source_chunk_id=source_chunk_id,
+                source_artifact=source_artifact,
             )
             if not body.content:
                 raise ValueError("Provide study note content")

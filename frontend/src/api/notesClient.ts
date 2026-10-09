@@ -1,6 +1,7 @@
 import type { CardInput, Deck } from "./flashcardsClient";
 
 export interface StudyNote {
+  source_artifact?: import("./artifactsClient").ArtifactReference | null;
   id: string;
   title: string;
   content: string;
