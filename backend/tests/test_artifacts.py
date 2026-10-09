@@ -28,6 +28,28 @@ from app.api import artifacts as api
 from test_flashcards import AsyncAdapter
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,fmt",
+    [
+        ("report", "../../outside"),
+        ("report", "pdf/../../outside"),
+        ("presentation", "../pptx"),
+        ("excel", "xlsx\\outside"),
+        ("report", "xlsx"),
+        ("upload", "pdf"),
+    ],
+)
+async def test_render_rejects_invalid_formats_before_filesystem_access(monkeypatch, kind, fmt):
+    def unexpected_path(*args):
+        pytest.fail("Invalid render request reached the filesystem")
+
+    monkeypatch.setattr(service, "file_path", unexpected_path)
+    with pytest.raises(HTTPException) as error:
+        await service.render(kind, "content", {}, fmt)
+    assert error.value.status_code == 422
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))

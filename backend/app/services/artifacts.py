@@ -416,11 +416,21 @@ def re_split_slides(source):
     return [part for part in re.split(r"(?m)^\s*---\s*$", source) if part.strip()]
 
 
-async def render(kind, source, settings, fmt, token=None):
-    token = token or str(uuid.uuid4())
+async def render(kind, source, settings, fmt):
+    extension = {
+        ("report", "pdf"): "pdf",
+        ("report", "docx"): "docx",
+        ("presentation", "pptx"): "pptx",
+        ("presentation", "pdf"): "pdf",
+        ("excel", "xlsx"): "xlsx",
+        ("excel", "pdf"): "pdf",
+    }.get((kind, fmt))
+    if extension is None:
+        raise HTTPException(422, "Unsupported export format")
+    token = str(uuid.uuid4())
     directory = file_path("reports")
     directory.mkdir(parents=True, exist_ok=True)
-    output = directory / f"{token}.{fmt}"
+    output = directory / f"{token}.{extension}"
     try:
         if kind == "report" and fmt in {"pdf", "docx"}:
             await asyncio.to_thread(
