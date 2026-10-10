@@ -55,20 +55,62 @@ class NotebookItem(Base):
     artifact_id = Column(UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="CASCADE"))
     note_id = Column(UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="CASCADE"))
     deck_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="CASCADE"))
+    quiz_id = Column(UUID(as_uuid=True), ForeignKey("quizzes.id", ondelete="CASCADE"))
     selected = Column(Boolean, nullable=False, default=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
     __table_args__ = (
         CheckConstraint(
-            "(CASE WHEN document_id IS NULL THEN 0 ELSE 1 END + CASE WHEN artifact_id IS NULL THEN 0 ELSE 1 END + CASE WHEN note_id IS NULL THEN 0 ELSE 1 END + CASE WHEN deck_id IS NULL THEN 0 ELSE 1 END) = 1",
+            "(CASE WHEN document_id IS NULL THEN 0 ELSE 1 END + CASE WHEN artifact_id IS NULL THEN 0 ELSE 1 END + CASE WHEN note_id IS NULL THEN 0 ELSE 1 END + CASE WHEN deck_id IS NULL THEN 0 ELSE 1 END + CASE WHEN quiz_id IS NULL THEN 0 ELSE 1 END) = 1",
             name="notebook_item_one_target",
         ),
         *(
             UniqueConstraint("notebook_id", field, name=f"uq_notebook_{field}")
-            for field in ("document_id", "artifact_id", "note_id", "deck_id")
+            for field in ("document_id", "artifact_id", "note_id", "deck_id", "quiz_id")
         ),
     )
+
+
+class Quiz(Base):
+    __tablename__ = "quizzes"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    revision = Column(Integer, nullable=False, default=1)
+    questions = Column(JSON, nullable=False, default=list)
+    source_conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    source_note_id = Column(UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="SET NULL"))
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+
+class QuizAttempt(Base):
+    __tablename__ = "quiz_attempts"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    quiz_id = Column(
+        UUID(as_uuid=True), ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Snapshot answer keys stay server-side until the entire attempt is submitted.
+    snapshot = Column(JSON, nullable=False)
+    answers = Column(JSON, nullable=False, default=dict)
+    results = Column(JSON, nullable=True)
+    flashcard_deck_id = Column(
+        UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="SET NULL")
+    )
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class StudyNote(Base):
