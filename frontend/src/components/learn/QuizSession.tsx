@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, CheckCircle2, XCircle, CircleHelp, Circle } from "lucide-react";
+import { CheckCircle2, XCircle, CircleHelp, Circle } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { quizzesApi, type QuizAttempt } from "@/api/quizzesClient";
 import { Button } from "@/components/ui/button";
