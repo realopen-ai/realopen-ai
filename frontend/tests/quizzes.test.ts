@@ -79,3 +79,17 @@ test("routed utility pages hide chat without unmounting its runtime", () => {
   );
   assert.equal((layout.match(/<ChatArea/g) ?? []).length, 2);
 });
+
+test("quiz choices distinguish selection and reveal outcomes only after submission", () => {
+  const session = readFileSync(
+    new URL("../src/components/learn/QuizSession.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(session, /checked=\{answers\[q.id\] === i\}/);
+  assert.match(session, /border-primary bg-primary\/10/);
+  assert.match(session, /focus-within:ring-2/);
+  assert.match(session, /attempt.submitted_at && q.correct_option === i/);
+  assert.match(session, /bg-emerald-500\/10/);
+  assert.match(session, /bg-red-500\/10/);
+  assert.match(session, /bg-amber-500\/10/);
+});
