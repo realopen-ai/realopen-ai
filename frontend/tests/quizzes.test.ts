@@ -93,3 +93,18 @@ test("quiz choices distinguish selection and reveal outcomes only after submissi
   assert.match(session, /bg-red-500\/10/);
   assert.match(session, /bg-amber-500\/10/);
 });
+
+test("quiz artifacts match flashcard framing and play action", () => {
+  const quiz = readFileSync(
+    new URL("../src/components/learn/QuizArtifact.tsx", import.meta.url),
+    "utf8",
+  );
+  const deck = readFileSync(
+    new URL("../src/components/learn/DeckArtifact.tsx", import.meta.url),
+    "utf8",
+  );
+  const frame = "my-3 max-w-md rounded-xl border border-border/60 bg-card p-4";
+  assert.ok(quiz.includes(frame) && deck.includes(frame));
+  assert.match(quiz, /<Play[^>]*className="size-3.5"/);
+  assert.match(quiz, /variant="outline" asChild/);
+});
