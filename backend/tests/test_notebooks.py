@@ -21,6 +21,7 @@ from app.db.models import (
     FlashcardDeck,
     Notebook,
     NotebookItem,
+    Quiz,
 )
 from app.learn import notebooks
 from app.learn.notes import NoteInput, create_note
@@ -52,6 +53,7 @@ def database():
         Artifact,
         ArtifactVersion,
         Notebook,
+        Quiz,
         NotebookItem,
     ):
         model.__table__.create(engine)

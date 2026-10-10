@@ -29,6 +29,7 @@ import { CardMarkdown } from "./CardMarkdown";
 import { SourceAction } from "./SourceAction";
 import { ConfirmDelete, fieldClass } from "./LearnDialogs";
 import { DeckArtifact } from "./DeckArtifact";
+import { QuizGenerateDialog } from "./QuizGenerateDialog";
 import {
   applyNoteProposal,
   selectedNoteSection,
@@ -38,26 +39,26 @@ import {
 export function LearnNav({
   active,
 }: {
-  active: "overview" | "flashcards" | "notes" | "notebooks";
+  active: "overview" | "flashcards" | "notes" | "notebooks" | "quizzes";
 }) {
   const t = useT();
   return (
     <nav className="flex gap-4 mb-7 text-sm">
-      {(["overview", "notebooks", "flashcards", "notes"] as const).map(
-        (item) => (
-          <Link
-            key={item}
-            className={
-              active === item
-                ? "text-primary"
-                : "text-muted-foreground hover:text-foreground"
-            }
-            to={item === "overview" ? "/learn" : `/learn/${item}`}
-          >
-            {t(`learn.${item}`)}
-          </Link>
-        ),
-      )}
+      {(
+        ["overview", "notebooks", "flashcards", "notes", "quizzes"] as const
+      ).map((item) => (
+        <Link
+          key={item}
+          className={
+            active === item
+              ? "text-primary"
+              : "text-muted-foreground hover:text-foreground"
+          }
+          to={item === "overview" ? "/learn" : `/learn/${item}`}
+        >
+          {t(`learn.${item}`)}
+        </Link>
+      ))}
     </nav>
   );
 }
@@ -225,6 +226,9 @@ function NoteDetail({ id }: { id: string }) {
   const [proposedSelection, setProposedSelection] =
     useState<typeof selection>(null);
   const [count, setCount] = useState(10);
+  const [quizSelection, setQuizSelection] = useState<{ text?: string } | null>(
+    null,
+  );
   const [deck, setDeck] = useState<{
     id: string;
     title: string;
@@ -475,7 +479,34 @@ function NoteDetail({ id }: { id: string }) {
         >
           {t("learn.noteFlashcards")}
         </Button>
+        <Button
+          size="sm"
+          disabled={busy || !content.trim() || !title.trim()}
+          onClick={() =>
+            void run(async () => {
+              await save();
+              const editor = editorRef.current;
+              const selected = editor
+                ? selectedNoteSection(
+                    editor.value,
+                    editor.selectionStart,
+                    editor.selectionEnd,
+                  )
+                : null;
+              setQuizSelection({ text: selected?.text });
+            })
+          }
+        >
+          {t("quiz.generate")}
+        </Button>
       </div>
+      {quizSelection && (
+        <QuizGenerateDialog
+          noteId={id}
+          selection={quizSelection.text}
+          onClose={() => setQuizSelection(null)}
+        />
+      )}
       {busy && (
         <p
           role="status"

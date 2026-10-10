@@ -23,6 +23,8 @@ import { listDocuments, uploadDocumentStream } from "@/api/documentsClient";
 import { artifactsApi } from "@/api/artifactsClient";
 import { notesApi } from "@/api/notesClient";
 import { flashcardsApi } from "@/api/flashcardsClient";
+import { quizzesApi } from "@/api/quizzesClient";
+import { QuizSession } from "./QuizSession";
 import { useNotebookStore } from "@/store/notebookStore";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
@@ -43,9 +45,10 @@ import { NotebookCitationPreview } from "./NotebookCitationPreview";
 import type { SourceLocation } from "@/lib/sourceNavigation";
 import { SourceAction } from "./SourceAction";
 
-const kinds: NotebookKind[] = ["document", "artifact", "note", "deck"];
+const kinds: NotebookKind[] = ["document", "artifact", "note", "deck", "quiz"];
 
 function itemUrl(item: NotebookItem) {
+  if (item.kind === "quiz") return `/learn/quizzes/${item.target_id}`;
   return item.kind === "note"
     ? `/learn/notes/${item.target_id}`
     : item.kind === "deck"
@@ -83,6 +86,17 @@ export function NotebookWorkspace({ id }: { id: string }) {
     source?: SourceLocation;
   } | null>(null);
   const [study, setStudy] = useState<string | null>(null);
+  const [quiz, setQuiz] = useState<string | null>(null);
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ notebookId: string; quizId: string }>
+      ).detail;
+      if (detail?.notebookId === id && detail.quizId) setQuiz(detail.quizId);
+    };
+    window.addEventListener("notebook-quiz", listener);
+    return () => window.removeEventListener("notebook-quiz", listener);
+  }, [id]);
   useEffect(() => {
     const listener = (event: Event) => {
       const detail = (
@@ -108,6 +122,7 @@ export function NotebookWorkspace({ id }: { id: string }) {
         setCitation(detail.source);
         setPreview(null);
         setStudy(null);
+        setQuiz(null);
       }
     };
     window.addEventListener("notebook-source", listener);
@@ -150,6 +165,11 @@ export function NotebookWorkspace({ id }: { id: string }) {
     let cancelled = false;
     setLoadingCandidates(true);
     const load = async () => {
+      if (kind === "quiz")
+        return (await quizzesApi.list()).map((q) => ({
+          id: q.id,
+          title: q.title,
+        }));
       if (kind === "document")
         return (await listDocuments()).map((d) => ({
           id: d.id,
@@ -223,9 +243,9 @@ export function NotebookWorkspace({ id }: { id: string }) {
     (i) => i.kind === "document" || i.kind === "artifact",
   );
   const materials = notebook.items.filter(
-    (i) => i.kind === "note" || i.kind === "deck",
+    (i) => i.kind === "note" || i.kind === "deck" || i.kind === "quiz",
   );
-  const prompt = (action: "notes" | "flashcards") => {
+  const prompt = (action: "notes" | "flashcards" | "quiz") => {
     useNotebookStore.getState().setMobileTab("chat");
     requestAnimationFrame(() =>
       window.dispatchEvent(
@@ -233,9 +253,11 @@ export function NotebookWorkspace({ id }: { id: string }) {
           detail: {
             conversationId: notebook.conversation_id,
             prompt: t(
-              action === "notes"
-                ? "notebooks.notesPrompt"
-                : "notebooks.cardsPrompt",
+              action === "quiz"
+                ? "quiz.notebookPrompt"
+                : action === "notes"
+                  ? "notebooks.notesPrompt"
+                  : "notebooks.cardsPrompt",
             ),
           },
         }),
@@ -450,6 +472,14 @@ export function NotebookWorkspace({ id }: { id: string }) {
             <Layers className="size-5 text-primary mb-3" />
             <span className="text-sm">{t("notebooks.generateCards")}</span>
           </button>
+          <button
+            disabled={streaming || !notebookSourceCount(notebook.items)}
+            onClick={() => prompt("quiz")}
+            className="rounded-xl border border-border bg-background p-4 text-start hover:border-primary/40 disabled:opacity-40"
+          >
+            <BookOpen className="size-5 text-primary mb-3" />
+            <span className="text-sm">{t("quiz.generate")}</span>
+          </button>
         </div>
         <Button
           variant="outline"
@@ -481,6 +511,10 @@ export function NotebookWorkspace({ id }: { id: string }) {
                 <button
                   className="text-sm text-start truncate flex-1 hover:text-primary"
                   onClick={async () => {
+                    if (material.kind === "quiz") {
+                      setQuiz(material.target_id);
+                      return;
+                    }
                     if (material.kind === "deck") {
                       setStudy(material.target_id);
                       return;
@@ -632,6 +666,16 @@ export function NotebookWorkspace({ id }: { id: string }) {
                 </Link>
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {quiz && (
+        <Dialog open onOpenChange={() => setQuiz(null)}>
+          <DialogContent className="max-w-3xl h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{t("learn.quizzes")}</DialogTitle>
+            </DialogHeader>
+            <QuizSession quizId={quiz} onClose={() => setQuiz(null)} />
           </DialogContent>
         </Dialog>
       )}
