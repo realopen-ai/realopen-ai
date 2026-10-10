@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  playQuizCelebrationSound,
+  prepareQuizCelebrationSound,
+} from "@/assets/sounds/quiz-celebration";
+import { QuizCelebration } from "./QuizCelebration";
 import { CheckCircle2, XCircle, CircleHelp, Circle } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { quizzesApi, type QuizAttempt } from "@/api/quizzesClient";
@@ -35,6 +40,12 @@ export function QuizSession({
     initial?.answers ?? {},
   );
   const [busy, setBusy] = useState(false);
+  const submitButton = useRef<HTMLButtonElement>(null);
+  const [celebrating, setCelebrating] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const endCelebration = useCallback(() => setCelebrating(null), []);
   const [error, setError] = useState("");
   const [cards, setCards] = useState<
     { question_id: string; front: string; back: string }[] | null
@@ -72,11 +83,30 @@ export function QuizSession({
       );
     }
   }, [fullPage, attempt?.id, setParams]);
-  async function run(operation: () => Promise<QuizAttempt>) {
+  async function run(operation: () => Promise<QuizAttempt>, celebrate = false) {
+    if (celebrate) prepareQuizCelebrationSound();
     setBusy(true);
     setError("");
     try {
-      setAttempt(await operation());
+      const next = await operation();
+      setAttempt(next);
+      if (
+        celebrate &&
+        !attempt?.submitted_at &&
+        next.submitted_at &&
+        next.snapshot.questions.length > 0 &&
+        next.score === next.snapshot.questions.length &&
+        next.needs_review === 0
+      ) {
+        // Capture viewport coordinates before the submitted state removes the button.
+        const rect = submitButton.current?.getBoundingClientRect();
+        if (rect)
+          setCelebrating({
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+          });
+        playQuizCelebrationSound();
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -88,6 +118,9 @@ export function QuizSession({
   }
   return (
     <div className="p-5 space-y-5 overflow-y-auto h-full">
+      {celebrating && (
+        <QuizCelebration origin={celebrating} onDone={endCelebration} />
+      )}
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-lg font-medium">
           {attempt?.snapshot.title ?? t("learn.quizzes")}
@@ -264,9 +297,13 @@ export function QuizSession({
           {!attempt.submitted_at ? (
             <div className="flex gap-3">
               <Button
+                ref={submitButton}
                 disabled={busy}
                 onClick={() =>
-                  run(() => quizzesApi.submit(quizId, attempt.id, answers))
+                  run(
+                    () => quizzesApi.submit(quizId, attempt.id, answers),
+                    true,
+                  )
                 }
               >
                 {t(busy ? "quiz.grading" : "quiz.submit")}
