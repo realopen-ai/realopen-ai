@@ -39,6 +39,9 @@ import { CardMarkdown } from "./CardMarkdown";
 import { StudySession } from "./StudySession";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { NotebookSourcePreview } from "./NotebookSourcePreview";
+import { NotebookCitationPreview } from "./NotebookCitationPreview";
+import type { SourceLocation } from "@/lib/sourceNavigation";
+import { SourceAction } from "./SourceAction";
 
 const kinds: NotebookKind[] = ["document", "artifact", "note", "deck"];
 
@@ -77,6 +80,7 @@ export function NotebookWorkspace({ id }: { id: string }) {
   const [preview, setPreview] = useState<{
     item: NotebookItem;
     content: string;
+    source?: SourceLocation;
   } | null>(null);
   const [study, setStudy] = useState<string | null>(null);
   useEffect(() => {
@@ -90,6 +94,25 @@ export function NotebookWorkspace({ id }: { id: string }) {
     return () => window.removeEventListener("notebook-study", listener);
   }, [id]);
   const [sourcePreview, setSourcePreview] = useState<NotebookItem | null>(null);
+  const [citation, setCitation] = useState<SourceLocation | null>(null);
+  useEffect(() => {
+    setCitation(null);
+    const listener = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ notebookId: string; source: SourceLocation }>
+      ).detail;
+      if (
+        detail?.notebookId === id &&
+        (detail.source?.documentId || detail.source?.artifact)
+      ) {
+        setCitation(detail.source);
+        setPreview(null);
+        setStudy(null);
+      }
+    };
+    window.addEventListener("notebook-source", listener);
+    return () => window.removeEventListener("notebook-source", listener);
+  }, [id]);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -464,7 +487,16 @@ export function NotebookWorkspace({ id }: { id: string }) {
                     }
                     try {
                       const note = await notesApi.get(material.target_id);
-                      setPreview({ item: material, content: note.content });
+                      setPreview({
+                        item: material,
+                        content: note.content,
+                        source: {
+                          artifact: note.source_artifact,
+                          documentId: note.source_document_id,
+                          page: note.source_page,
+                          chunk: note.source_chunk_id,
+                        },
+                      });
                     } catch (e) {
                       setError((e as Error).message);
                     }
@@ -567,6 +599,13 @@ export function NotebookWorkspace({ id }: { id: string }) {
           </DialogContent>
         </Dialog>
       )}
+      {citation && (
+        <NotebookCitationPreview
+          key={JSON.stringify(citation)}
+          source={citation}
+          onClose={() => setCitation(null)}
+        />
+      )}
       {sourcePreview && (
         <NotebookSourcePreview
           key={sourcePreview.target_id}
@@ -585,6 +624,7 @@ export function NotebookWorkspace({ id }: { id: string }) {
               <CardMarkdown text={preview.content} />
             </div>
             <DialogFooter>
+              {preview.source && <SourceAction {...preview.source} />}
               <Button asChild variant="outline">
                 <Link to={itemUrl(preview.item)}>
                   <ExternalLink className="size-4" />
