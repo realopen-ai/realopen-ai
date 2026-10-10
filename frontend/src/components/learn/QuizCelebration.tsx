@@ -28,7 +28,7 @@ export function QuizCelebration({
       onDone();
       return;
     }
-    const particles = Array.from({ length: 140 }, (_, i) => {
+    const particles = Array.from({ length: 100 }, (_, i) => {
       const left = i < 70;
       const element = document.createElement("span");
       const size = between(6, 14);
