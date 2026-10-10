@@ -24,7 +24,7 @@ def require_idle(notebook):
 
 class LinkInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["document", "artifact", "note", "deck"]
+    kind: Literal["document", "artifact", "note", "deck", "quiz"]
     target_id: uuid.UUID
 
 
