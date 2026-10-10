@@ -29,6 +29,7 @@ export interface ToolCallResult {
     | "skill"
     | "flashcards"
     | "notes"
+    | "quizzes"
     | "artifact"
     | "file_read"
     | "file_write"
@@ -68,6 +69,8 @@ export interface ToolCallResult {
     created_at?: number;
     deck_id?: string;
     note_id?: string;
+    quiz_id?: string;
+    question_count?: number;
     artifact_id?: string;
     version?: number;
     title?: string;
