@@ -1,4 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { BookOpen, Play } from "lucide-react";
 import { useT } from "@/store/settingsStore";
 import { useLearnStore } from "@/store/learnStore";
 import { useUIStore } from "@/store/uiStore";
@@ -32,23 +33,26 @@ export function QuizArtifact({
     } else navigate(`/learn/quizzes/${id}/take`);
   }
   return (
-    <div className="my-3 border border-border rounded-xl p-4 space-y-3">
-      <h3 dir="auto" className="font-medium">
-        {title}
-      </h3>
-      <p className="text-sm text-muted-foreground">
-        {count} {t("quiz.questions")}
-      </p>
+    <div className="my-3 max-w-md rounded-xl border border-border/60 bg-card p-4">
       <div className="flex gap-3 items-center">
+        <BookOpen aria-hidden="true" className="size-5 text-primary shrink-0" />
+        <div className="min-w-0">
+          <h3 dir="auto" className="font-medium truncate">
+            {title}
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {count} {t("quiz.questions")}
+          </p>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-3">
         <Button size="sm" onClick={take}>
+          <Play aria-hidden="true" className="size-3.5" />
           {t("quiz.take")}
         </Button>
-        <Link
-          className="text-sm text-muted-foreground hover:text-primary"
-          to={`/learn/quizzes/${id}`}
-        >
-          {t("quiz.open")}
-        </Link>
+        <Button size="sm" variant="outline" asChild>
+          <Link to={`/learn/quizzes/${id}`}>{t("quiz.open")}</Link>
+        </Button>
       </div>
     </div>
   );
