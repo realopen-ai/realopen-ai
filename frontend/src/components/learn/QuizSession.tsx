@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Check, CheckCircle2, XCircle, CircleHelp, Circle } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { quizzesApi, type QuizAttempt } from "@/api/quizzesClient";
 import { Button } from "@/components/ui/button";
@@ -128,16 +129,47 @@ export function QuizSession({
                   {q.options.map((option, i) => (
                     <label
                       key={i}
-                      className="flex gap-3 items-start rounded-lg border border-border p-3"
+                      className={`relative flex gap-3 items-start rounded-lg border p-3 transition-colors focus-within:ring-2 focus-within:ring-primary/60 ${
+                        attempt.submitted_at && q.correct_option === i
+                          ? "border-emerald-500/70 bg-emerald-500/10"
+                          : attempt.submitted_at && answers[q.id] === i
+                            ? "border-red-500/70 bg-red-500/10"
+                            : answers[q.id] === i
+                              ? "border-primary bg-primary/10 ring-1 ring-primary/40"
+                              : "border-border hover:border-primary/40"
+                      } ${attempt.submitted_at || busy ? "" : "cursor-pointer"}`}
                     >
                       <input
                         type="radio"
+                        className="sr-only"
                         name={q.id}
                         checked={answers[q.id] === i}
                         disabled={!!attempt.submitted_at || busy}
                         onChange={() => change(q.id, i)}
                       />
-                      <CardMarkdown text={option} />
+                      <span
+                        aria-hidden="true"
+                        className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 ${answers[q.id] === i ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/60"}`}
+                      >
+                        {answers[q.id] === i && <Circle className="size-3.5" />}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <CardMarkdown text={option} />
+                      </div>
+                      {attempt.submitted_at && q.correct_option === i && (
+                        <CheckCircle2
+                          aria-hidden="true"
+                          className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400"
+                        />
+                      )}
+                      {attempt.submitted_at &&
+                        answers[q.id] === i &&
+                        q.correct_option !== i && (
+                          <XCircle
+                            aria-hidden="true"
+                            className="mt-0.5 size-5 shrink-0 text-red-600 dark:text-red-400"
+                          />
+                        )}
                     </label>
                   ))}
                 </div>
@@ -154,7 +186,16 @@ export function QuizSession({
               )}
               {attempt.submitted_at && attempt.results && (
                 <div className="space-y-2 border-t border-border pt-3">
-                  <p>
+                  <p
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-semibold ${attempt.results[q.id].correct === null ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400" : attempt.results[q.id].correct ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400"}`}
+                  >
+                    {attempt.results[q.id].correct === null ? (
+                      <CircleHelp aria-hidden="true" className="size-4" />
+                    ) : attempt.results[q.id].correct ? (
+                      <CheckCircle2 aria-hidden="true" className="size-4" />
+                    ) : (
+                      <XCircle aria-hidden="true" className="size-4" />
+                    )}
                     {t(
                       attempt.results[q.id].correct === null
                         ? "quiz.needsReview"
