@@ -76,6 +76,8 @@ export function AppLayout() {
   const showBrainPage = isBrainRoute(pathname);
   const showWorkspacePage = isWorkspaceRoute(pathname);
   const showLearnPage = isLearnRoute(pathname);
+  const hideChatPage =
+    showBrainPage || showWorkspacePage || (showLearnPage && !showNotebook);
   const [desktop, setDesktop] = useState(
     () => window.matchMedia("(min-width: 768px)").matches,
   );
@@ -178,16 +180,16 @@ export function AppLayout() {
                   className={
                     showNotebook
                       ? `h-full pt-24 xl:pt-14 xl:ms-64 xl:me-72 ${!notebookWide && notebookMobileTab !== "chat" ? "invisible" : ""}`
-                      : "h-full"
+                      : `h-full ${hideChatPage ? "invisible" : ""}`
                   }
                   inert={
-                    (showLearnPage && !showNotebook) ||
+                    hideChatPage ||
                     (showNotebook &&
                       !notebookWide &&
                       notebookMobileTab !== "chat")
                   }
                   aria-hidden={
-                    (showLearnPage && !showNotebook) ||
+                    hideChatPage ||
                     (showNotebook &&
                       !notebookWide &&
                       notebookMobileTab !== "chat") ||
@@ -203,17 +205,17 @@ export function AppLayout() {
                   <NotebookWorkspace id={notebookId!} />
                 )}
                 {showLearnPage && !showNotebook && desktop && (
-                  <div className="absolute inset-0 z-30">
+                  <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
                     <LearnPage />
                   </div>
                 )}
                 {showWorkspacePage && (
-                  <div className="absolute inset-0 z-30">
+                  <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
                     <WorkspacePage />
                   </div>
                 )}
                 {showBrainPage && (
-                  <div className="absolute inset-0 z-30">
+                  <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
                     <BrainPage />
                   </div>
                 )}
@@ -267,16 +269,15 @@ export function AppLayout() {
             className={
               showNotebook
                 ? `h-full pt-24 ${notebookMobileTab !== "chat" ? "invisible" : ""}`
-                : mobileTab === "chat"
+                : mobileTab === "chat" && !hideChatPage
                   ? "h-full"
                   : "hidden"
             }
             inert={
-              (showLearnPage && !showNotebook) ||
-              (showNotebook && notebookMobileTab !== "chat")
+              hideChatPage || (showNotebook && notebookMobileTab !== "chat")
             }
             aria-hidden={
-              (showLearnPage && !showNotebook) ||
+              hideChatPage ||
               (showNotebook && notebookMobileTab !== "chat") ||
               undefined
             }
@@ -323,18 +324,18 @@ export function AppLayout() {
             )}
 
           {showWorkspacePage && (
-            <div className="absolute inset-0 z-30">
+            <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
               <WorkspacePage />
             </div>
           )}
           {showBrainPage && (
-            <div className="absolute inset-0 z-30">
+            <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
               <BrainPage />
             </div>
           )}
           {showNotebook && !desktop && <NotebookWorkspace id={notebookId!} />}
           {showLearnPage && !showNotebook && !desktop && (
-            <div className="absolute inset-0 z-30">
+            <div className="absolute inset-0 z-30 overflow-y-auto bg-background">
               <LearnPage />
             </div>
           )}
