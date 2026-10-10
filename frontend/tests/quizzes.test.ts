@@ -108,3 +108,30 @@ test("quiz artifacts match flashcard framing and play action", () => {
   assert.match(quiz, /<Play[^>]*className="size-3.5"/);
   assert.match(quiz, /variant="outline" asChild/);
 });
+
+test("perfect quiz celebration is submission-only and respects reduced motion", () => {
+  const session = readFileSync(
+    new URL("../src/components/learn/QuizSession.tsx", import.meta.url),
+    "utf8",
+  );
+  const celebration = readFileSync(
+    new URL("../src/components/learn/QuizCelebration.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(session, /celebrate &&\s*!attempt\?\.submitted_at/);
+  assert.match(session, /next.score === next.snapshot.questions.length/);
+  assert.match(session, /next.needs_review === 0/);
+  assert.match(
+    session,
+    /quizzesApi.submit\(quizId, attempt.id, answers\),\s*true/,
+  );
+  assert.match(session, /playQuizCelebrationSound\(\)/);
+  assert.match(session, /if \(celebrate\) prepareQuizCelebrationSound\(\)/);
+  assert.match(celebration, /motion-reduce:hidden/);
+  assert.match(celebration, /clearTimeout\(timer\)/);
+  assert.match(celebration, /pointer-events-none/);
+  assert.match(session, /submitButton.current\?\.getBoundingClientRect\(\)/);
+  assert.match(session, /ref=\{submitButton\}/);
+  assert.match(celebration, /const x = origin.x/);
+  assert.match(celebration, /const y = origin.y/);
+});
