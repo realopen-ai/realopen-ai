@@ -132,6 +132,45 @@ def test_rest_snapshot_revision_and_grading(client):
     )
 
 
+def test_retry_missed_preserves_snapshot_and_original_results(client):
+    quiz, payload = create(client)
+    path = f"/api/learn/quizzes/{quiz['id']}"
+    original = client.post(path + "/attempts").json()
+    target = path + f"/attempts/{original['id']}"
+    assert client.post(target + "/retry-missed").status_code == 409
+    questions = original["snapshot"]["questions"]
+    answers = {questions[0]["id"]: 0, questions[1]["id"]: "Triangle"}
+    submitted = client.post(target + "/submit", json={"answers": answers}).json()
+    payload["expected_revision"] = 1
+    payload["questions"][0]["correct_option"] = 0
+    assert client.put(path, json=payload).status_code == 200
+    retry = client.post(target + "/retry-missed").json()
+    assert retry["id"] != original["id"]
+    assert retry["snapshot"]["retry_of"] == original["id"]
+    assert retry["snapshot"]["revision"] == 1
+    assert len(retry["snapshot"]["questions"]) == 1
+    assert retry["snapshot"]["questions"][0]["id"] == questions[0]["id"]
+    assert "correct_option" not in retry["snapshot"]["questions"][0]
+    assert retry["answers"] == {}
+    assert client.post(target + "/retry-missed").json()["id"] == retry["id"]
+    whole = client.post(path + "/attempts").json()
+    assert whole["id"] != retry["id"]
+    assert len(whole["snapshot"]["questions"]) == 2
+    result = client.post(
+        path + f"/attempts/{retry['id']}/submit", json={"answers": {questions[0]["id"]: 1}}
+    ).json()
+    assert result["score"] == 1
+    assert client.get(target).json() == submitted
+    assert client.post(path + f"/attempts/{retry['id']}/retry-missed").status_code == 409
+    other, _ = create(client)
+    assert (
+        client.post(
+            f"/api/learn/quizzes/{other['id']}/attempts/{original['id']}/retry-missed"
+        ).status_code
+        == 404
+    )
+
+
 def test_attempt_boundaries_and_override(client):
     quiz, _ = create(client)
     other, _ = create(client)
