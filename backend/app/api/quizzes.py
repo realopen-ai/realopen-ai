@@ -126,7 +126,11 @@ async def start(quiz_id: uuid.UUID, db=Depends(get_db)):
     existing = (
         await db.execute(
             select(QuizAttempt)
-            .where(QuizAttempt.quiz_id == quiz.id, QuizAttempt.submitted_at.is_(None))
+            .where(
+                QuizAttempt.quiz_id == quiz.id,
+                QuizAttempt.submitted_at.is_(None),
+                QuizAttempt.snapshot["retry_of"].as_string().is_(None),
+            )
             .order_by(QuizAttempt.created_at.desc())
             .limit(1)
         )
@@ -149,6 +153,41 @@ async def start(quiz_id: uuid.UUID, db=Depends(get_db)):
     db.add(attempt)
     await db.flush()
     return quizzes.attempt_dict(attempt)
+
+
+@router.post("/{quiz_id}/attempts/{attempt_id}/retry-missed", status_code=201)
+async def retry_missed(quiz_id: uuid.UUID, attempt_id: uuid.UUID, db=Depends(get_db)):
+    await quizzes.get_quiz(db, quiz_id, lock=True)
+    original = await quizzes.get_attempt(db, quiz_id, attempt_id)
+    if original.submitted_at is None:
+        raise HTTPException(409, "Submit the quiz before retrying missed questions")
+    questions = [
+        q for q in original.snapshot["questions"] if original.results[q["id"]]["correct"] is False
+    ]
+    if not questions:
+        raise HTTPException(409, "No missed questions to retry")
+    existing = (
+        await db.execute(
+            select(QuizAttempt)
+            .where(
+                QuizAttempt.quiz_id == quiz_id,
+                QuizAttempt.submitted_at.is_(None),
+                QuizAttempt.snapshot["retry_of"].as_string() == str(attempt_id),
+            )
+            .order_by(QuizAttempt.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return quizzes.attempt_dict(existing)
+    retry = QuizAttempt(
+        quiz_id=quiz_id,
+        snapshot={**original.snapshot, "questions": questions, "retry_of": str(attempt_id)},
+        answers={},
+    )
+    db.add(retry)
+    await db.flush()
+    return quizzes.attempt_dict(retry)
 
 
 @router.get("/{quiz_id}/attempts")
