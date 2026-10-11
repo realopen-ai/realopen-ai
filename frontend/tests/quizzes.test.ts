@@ -135,3 +135,15 @@ test("perfect quiz celebration is submission-only and respects reduced motion", 
   assert.match(celebration, /const x = origin.x/);
   assert.match(celebration, /const y = origin.y/);
 });
+
+test("quiz results offer both full and missed-question retries", () => {
+  const session = readFileSync(
+    new URL("../src/components/learn/QuizSession.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(session, /quizzesApi.start\(quizId\)/);
+  assert.match(session, /quizzesApi.retryMissed\(quizId, attempt.id\)/);
+  assert.match(session, /result.correct === false/);
+  assert.match(session, /t\("quiz.retryMissed"\)/);
+  assert.match(session, /setAnswers\(next.answers\)/);
+});
