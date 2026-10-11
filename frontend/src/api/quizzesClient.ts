@@ -87,6 +87,8 @@ export const quizzesApi = {
     request<Quiz>(id ? `/${id}` : "", id ? "PUT" : "POST", body),
   delete: (id: string) => request<void>(`/${id}`, "DELETE"),
   start: (id: string) => request<QuizAttempt>(`/${id}/attempts`, "POST"),
+  retryMissed: (id: string, attempt: string) =>
+    request<QuizAttempt>(`/${id}/attempts/${attempt}/retry-missed`, "POST"),
   attempt: (id: string, attempt: string) =>
     request<QuizAttempt>(`/${id}/attempts/${attempt}`),
   history: (id: string) => request<QuizAttempt[]>(`/${id}/attempts`),

@@ -35,6 +35,7 @@
   "quiz.acceptAnswer": "Accepter ma réponse",
   "quiz.markIncorrect": "Marquer incorrect",
   "quiz.retry": "Réessayer",
+  "quiz.retryMissed": "Réessayer les questions manquées",
   "quiz.history": "Historique des tentatives",
   "quiz.resume": "Reprendre le quiz",
   "quiz.empty": "Aucun quiz. Créez-en un ou demandez à l’assistant.",

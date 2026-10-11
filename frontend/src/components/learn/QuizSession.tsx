@@ -90,6 +90,7 @@ export function QuizSession({
     try {
       const next = await operation();
       setAttempt(next);
+      setAnswers(next.answers);
       if (
         celebrate &&
         !attempt?.submitted_at &&
@@ -319,17 +320,30 @@ export function QuizSession({
               </Button>
             </div>
           ) : (
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <Button
                 disabled={busy}
                 onClick={async () => {
                   await run(() => quizzesApi.start(quizId));
-                  setAnswers({});
                   setDeck(null);
                 }}
               >
                 {t("quiz.retry")}
               </Button>
+              {Object.values(attempt.results ?? {}).some(
+                (result) => result.correct === false,
+              ) && (
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={async () => {
+                    await run(() => quizzesApi.retryMissed(quizId, attempt.id));
+                    setDeck(null);
+                  }}
+                >
+                  {t("quiz.retryMissed")}
+                </Button>
+              )}
               {attempt.score !== attempt.snapshot.questions.length && (
                 <Button
                   variant="outline"

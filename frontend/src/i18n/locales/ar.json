@@ -35,6 +35,7 @@
   "quiz.acceptAnswer": "قبول إجابتي",
   "quiz.markIncorrect": "تحديد كغير صحيح",
   "quiz.retry": "المحاولة مجددًا",
+  "quiz.retryMissed": "إعادة محاولة الأسئلة الخاطئة",
   "quiz.history": "سجل المحاولات",
   "quiz.resume": "متابعة الاختبار",
   "quiz.empty": "لا توجد اختبارات بعد. أنشئ اختبارًا أو اطلب من المساعد.",
