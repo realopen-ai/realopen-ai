@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { StudySession } from "@/components/learn/StudySession";
+import { QuizSession } from "@/components/learn/QuizSession";
 import { useLearnStore } from "@/store/learnStore";
 import {
   PanelRightClose,
@@ -107,6 +108,7 @@ function TerminalTab({
 
 export function RightPanel() {
   const studyDeckId = useLearnStore((s) => s.studyDeckId);
+  const quizId = useLearnStore((s) => s.quizId);
   const t = useT();
   const [previewKey, setPreviewKey] = useState(0);
   const [createSandboxOpen, setCreateSandboxOpen] = useState(false);
@@ -160,6 +162,14 @@ export function RightPanel() {
   const activeLifecycle = active ? lifecyclePending[active.id] : undefined;
   const activeTone = active ? sandboxStatusTone(active.status) : null;
 
+  if (quizId)
+    return (
+      <QuizSession
+        key={quizId}
+        quizId={quizId}
+        onClose={() => useLearnStore.getState().setQuiz(null)}
+      />
+    );
   if (studyDeckId)
     return (
       <StudySession

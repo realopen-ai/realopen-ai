@@ -12,6 +12,7 @@ from app.db.models import (
     Artifact,
     StudyNote,
     FlashcardDeck,
+    Quiz,
 )
 
 TARGETS = {
@@ -19,6 +20,7 @@ TARGETS = {
     "artifact": ("artifact_id", Artifact),
     "note": ("note_id", StudyNote),
     "deck": ("deck_id", FlashcardDeck),
+    "quiz": ("quiz_id", Quiz),
 }
 
 

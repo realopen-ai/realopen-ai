@@ -52,6 +52,9 @@ export default function App() {
       <Routes>
         <Route path="/" element={<AppLayout />} />
         <Route path="/learn" element={<AppLayout />} />
+        <Route path="/learn/quizzes" element={<AppLayout />} />
+        <Route path="/learn/quizzes/:quizId" element={<AppLayout />} />
+        <Route path="/learn/quizzes/:quizId/take" element={<AppLayout />} />
         <Route path="/learn/notebooks" element={<AppLayout />} />
         <Route path="/learn/notebooks/:notebookId" element={<AppLayout />} />
         <Route path="/learn/notes" element={<AppLayout />} />

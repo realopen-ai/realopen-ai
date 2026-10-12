@@ -20,6 +20,7 @@ from app.agent.tools.delegate_coder import CoderAgent
 from app.agent.tools.load_skill import LoadSkillTool
 from app.agent.tools.flashcards import CreateFlashcardDeckTool
 from app.agent.tools.notes import CreateStudyNoteTool
+from app.agent.tools.quizzes import CreateQuizTool
 
 __all__ = [
     "WebSearchTool",
@@ -37,6 +38,7 @@ __all__ = [
     "LoadSkillTool",
     "CreateFlashcardDeckTool",
     "CreateStudyNoteTool",
+    "CreateQuizTool",
     "ListArtifactsTool",
     "ReadArtifactTool",
     "UpdateArtifactTool",
