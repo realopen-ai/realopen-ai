@@ -1,5 +1,6 @@
 """Quiz validation and answer-safe attempt serialization."""
 
+import re
 import uuid
 from typing import Literal
 
@@ -16,12 +17,17 @@ QUESTION_SCHEMA = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "enum": ["multiple_choice", "short_answer"]},
-        "prompt": {"type": "string", "maxLength": 2000},
+        "prompt": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Markdown question/context only, no answer choices. Fence code with a language tag and newlines.",
+        },
         "options": {
             "type": "array",
             "items": {"type": "string", "maxLength": 500},
             "minItems": 2,
             "maxItems": 6,
+            "description": "All multiple-choice answers belong here, not in prompt. Markdown supported; no A)/B) labels.",
         },
         "correct_option": {
             "type": "integer",
@@ -70,6 +76,16 @@ class Question(BaseModel):
         if not self.prompt:
             raise ValueError("Question cannot be empty")
         if self.type == "multiple_choice":
+            # Ignore fenced code: labels within a code sample are question context.
+            prose = re.sub(r"(?ms)^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", "", self.prompt)
+            labels = re.findall(r"(?<!\w)([A-Fa-f])[).]\s+", prose)
+            if any(
+                ord(second.upper()) == ord(first.upper()) + 1
+                for first, second in zip(labels, labels[1:])
+            ):
+                raise ValueError(
+                    "Keep answer choices only in options; remove the labeled choice list from prompt"
+                )
             if len(self.options) < 2 or any(
                 not value or len(value) > 500 for value in self.options
             ):
