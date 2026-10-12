@@ -31,7 +31,13 @@ database = notebook_tests.database
     "prompt",
     [
         "Which value? A) First B) Second C) Third",
-        "Which value?\nA. First\nB. Second",
+        "Compare method A) with method B) before answering.",
+        "Which value? A) First C) Third",
+        "Which value? A) First B) Second\nExplain your choice.",
+        "Which value? A) First B) Second What happens next?",
+        "Which value? A) First B) Second\n```python\nprint(1)\n```",
+        "A) First B) Second",
+        "Which value? A)  B) Second",
     ],
 )
 def test_reject_choices_embedded_in_question(prompt):
@@ -39,6 +45,18 @@ def test_reject_choices_embedded_in_question(prompt):
         Question(
             type="multiple_choice", prompt=prompt, options=["First", "Second"], correct_option=0
         )
+
+
+@pytest.mark.parametrize(
+    "suffix", [" A) First value B) Other value", "\nA. First value\nB. Other value"]
+)
+def test_cleanup_paraphrased_trailing_choices(suffix):
+    stem = 'What does this print?\n\n```python\nprint("A) one B) two")\n```\n\nWhich result?'
+    question = Question(
+        type="multiple_choice", prompt=stem + suffix, options=["First", "Second"], correct_option=0
+    )
+    assert question.prompt == stem
+    assert question.options == ["First", "Second"]
 
 
 def test_markdown_code_and_code_labels_are_preserved():
@@ -67,7 +85,7 @@ async def test_note_generation_repairs_embedded_choices(monkeypatch):
         "questions": [
             {
                 "type": "multiple_choice",
-                "prompt": "Which value? A) First B) Second",
+                "prompt": "Which value? A) First B) Second C) Third",
                 "options": ["First", "Second"],
                 "correct_option": 0,
                 "explanation": "First is correct",
