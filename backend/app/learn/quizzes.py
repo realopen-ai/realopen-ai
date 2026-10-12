@@ -56,6 +56,41 @@ QUESTION_SCHEMA = {
 }
 
 
+def clean_question_choices(prompt: str, option_count: int) -> str:
+    # Mask code without changing offsets, so slicing preserves the original Markdown.
+    prose = re.sub(
+        r"(?ms)^\s*(`{3,}|~{3,}).*?^\s*\1\s*$",
+        lambda match: " " * len(match.group()),
+        prompt,
+    )
+    labels = list(re.finditer(r"(?<!\w)([A-Fa-f])([).])\s+", prose))
+    if len(labels) < 2:
+        return prompt
+    stem = prompt[: labels[0].start()].rstrip()
+    choices = [
+        prompt[
+            label.end() : labels[index + 1].start() if index + 1 < len(labels) else len(prompt)
+        ].strip()
+        for index, label in enumerate(labels)
+    ]
+    expected = [chr(ord("A") + index) for index in range(option_count)]
+    boundary = prompt[: labels[0].start()]
+    # A question-ending '?' or a separate list line establishes a clear boundary.
+    clear_boundary = stem.endswith(("?", "？", "؟")) or bool(re.search(r"\n[ \t]*$", boundary))
+    if (
+        stem
+        and clear_boundary
+        and [label[1].upper() for label in labels] == expected
+        and len({label[2] for label in labels}) == 1
+        and all(choices)
+        and all(not re.search(r"[?？؟]|\n|```|~~~", choice) for choice in choices)
+    ):
+        return stem
+    raise ValueError(
+        "Keep answer choices only in options; remove the labeled choice list from prompt"
+    )
+
+
 class Question(BaseModel):
     type: Literal["multiple_choice", "short_answer"]
     prompt: str = Field(min_length=1, max_length=2000)
@@ -76,16 +111,7 @@ class Question(BaseModel):
         if not self.prompt:
             raise ValueError("Question cannot be empty")
         if self.type == "multiple_choice":
-            # Ignore fenced code: labels within a code sample are question context.
-            prose = re.sub(r"(?ms)^\s*(`{3,}|~{3,}).*?^\s*\1\s*$", "", self.prompt)
-            labels = re.findall(r"(?<!\w)([A-Fa-f])[).]\s+", prose)
-            if any(
-                ord(second.upper()) == ord(first.upper()) + 1
-                for first, second in zip(labels, labels[1:])
-            ):
-                raise ValueError(
-                    "Keep answer choices only in options; remove the labeled choice list from prompt"
-                )
+            self.prompt = clean_question_choices(self.prompt, len(self.options))
             if len(self.options) < 2 or any(
                 not value or len(value) > 500 for value in self.options
             ):
