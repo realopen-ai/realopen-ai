@@ -27,6 +27,81 @@ from test_flashcards import AsyncAdapter
 database = notebook_tests.database
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Which value? A) First B) Second C) Third",
+        "Which value?\nA. First\nB. Second",
+    ],
+)
+def test_reject_choices_embedded_in_question(prompt):
+    with pytest.raises(ValidationError, match="Keep answer choices only in options"):
+        Question(
+            type="multiple_choice", prompt=prompt, options=["First", "Second"], correct_option=0
+        )
+
+
+def test_markdown_code_and_code_labels_are_preserved():
+    prompt = "What does this print?\n\n```python\nx = [1, 2]\nprint(len(x))\n```"
+    question = Question(
+        type="multiple_choice", prompt=prompt, options=["`1`", "`2`"], correct_option=1
+    )
+    assert question.prompt == prompt
+    assert question.options == ["`1`", "`2`"]
+    code_labels = 'What is printed?\n\n```python\nprint("A) First B) Second")\n```'
+    assert (
+        Question(
+            type="multiple_choice",
+            prompt=code_labels,
+            options=["First", "Second"],
+            correct_option=0,
+        ).prompt
+        == code_labels
+    )
+
+
+@pytest.mark.asyncio
+async def test_note_generation_repairs_embedded_choices(monkeypatch):
+    invalid = {
+        "title": "Values",
+        "questions": [
+            {
+                "type": "multiple_choice",
+                "prompt": "Which value? A) First B) Second",
+                "options": ["First", "Second"],
+                "correct_option": 0,
+                "explanation": "First is correct",
+            }
+        ],
+    }
+    valid = json.loads(json.dumps(invalid))
+    valid["questions"][0]["prompt"] = "Which value?"
+    chat = AsyncMock(
+        side_effect=[
+            {"message": {"content": json.dumps(invalid)}},
+            {"message": {"content": json.dumps(valid)}},
+        ]
+    )
+    monkeypatch.setattr(model_prefs, "resolve_task_model", AsyncMock(return_value="local"))
+    monkeypatch.setattr(providers, "chat_once", chat)
+    note = SimpleNamespace(
+        title="Values",
+        content="The first value is correct",
+        id=None,
+        source_document_id=None,
+        source_conversation_id=None,
+        source_page=None,
+        source_chunk_id=None,
+        source_artifact=None,
+    )
+    result = await from_note(note, GenerateQuiz(count=1, type="multiple_choice"))
+    assert result.questions[0].prompt == "Which value?"
+    assert chat.await_count == 2
+    messages = chat.call_args.args[1]
+    assert "fenced code blocks" in messages[0]["content"]
+    assert "Keep answer choices only in options" in messages[-1]["content"]
+
+
 @pytest.mark.asyncio
 async def test_grading_bounds_context_without_truncating_answers(monkeypatch):
     question = {"id": "large", "type": "short_answer", "prompt": "q" * 5000, "answer": "a" * 5000}
@@ -56,6 +131,18 @@ async def test_tool_validation_feedback_identifies_missing_fields():
     result = await CreateQuizTool().execute(title="Invalid", questions=[{"type": "short_answer"}])
     assert not result.success
     assert "questions.0.prompt" in result.output
+
+
+@pytest.mark.asyncio
+async def test_tool_decodes_json_array_before_validating():
+    result = await CreateQuizTool().execute(
+        title="Invalid", questions=json.dumps([{"type": "short_answer"}])
+    )
+    assert not result.success
+    assert "questions.0.prompt" in result.output
+    result = await CreateQuizTool().execute(title="Invalid", questions="not json")
+    assert not result.success
+    assert result.tool_call.status == "error"
 
 
 @pytest.fixture
@@ -430,7 +517,8 @@ def test_private_document_access_and_page_provenance(client, database):
 
 
 @pytest.mark.asyncio
-async def test_native_tool_persists_without_exposing_answers(database, monkeypatch):
+@pytest.mark.parametrize("encoded", [False, True])
+async def test_native_tool_persists_without_exposing_answers(database, monkeypatch, encoded):
     from contextlib import asynccontextmanager
     from app.agent.tools import quizzes as tool_module
 
@@ -446,16 +534,17 @@ async def test_native_tool_persists_without_exposing_answers(database, monkeypat
             yield AsyncAdapter(session)
 
     monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    questions = [
+        {
+            "type": "short_answer",
+            "prompt": "How many sides does a triangle have?",
+            "answer": "Three",
+        }
+    ]
     result = await CreateQuizTool().execute(
         title="Shapes",
         conversation_id=str(conversation_id),
-        questions=[
-            {
-                "type": "short_answer",
-                "prompt": "How many sides does a triangle have?",
-                "answer": "Three",
-            }
-        ],
+        questions=json.dumps(questions) if encoded else questions,
     )
     assert result.success
     output = json.loads(result.output)
