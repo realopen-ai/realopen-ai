@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
 from app.learn.quizzes import QuizInput, QUESTION_SCHEMA, save_quiz
+from app.prompts import format_prompt, get_prompt
 from app.learn.notebooks import attach_generated
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class CreateQuizTool(BaseTool):
     name = "create_quiz"
     display_name = "Create quiz"
     tool_type = ToolType.QUIZZES
-    description = "Save a quiz in Learn, including standalone topic quizzes. Default: 5 questions, mixed difficulty, user's language. Honor requested count/type/difficulty. One concept per question, plausible distinct multiple-choice options, concise expected short answers and explanations. For source-grounded quizzes retrieve relevant sources first; never invent attribution. After saving, do not reveal questions or answer keys in chat."
+    description = format_prompt("quiz_tool", writing_guidance=get_prompt("quiz_writing")).strip()
 
     def get_parameters(self):
         return {
@@ -41,6 +42,10 @@ class CreateQuizTool(BaseTool):
             started_at=time.time(),
         )
         try:
+            # Some local models double-encode structured tool arguments.
+            # Decode only valid JSON; the same Question validation still applies.
+            if isinstance(questions, str):
+                questions = json.loads(questions)
             body = QuizInput(
                 title=title,
                 description=description,
