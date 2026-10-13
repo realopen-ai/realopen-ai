@@ -9,3 +9,4 @@ Do not use named-language tool fences, XML, or prose instead of JSON arguments. 
 
 Available schemas:
 {tool_schemas}
+The application execution ledger records actions already taken for this same request. Successful actions remain completed after compaction; do not interpret the original request as a second request or invent next steps. Repair rejected arguments using the exposed schema and exact validation feedback, within the stated retry limit.

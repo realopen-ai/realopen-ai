@@ -67,6 +67,7 @@ class ToolResult:
     success: bool
     output: str  # Text to feed back to the LLM
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
+    failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
 
 
 class BaseTool(ABC):
@@ -125,6 +126,10 @@ class BaseTool(ABC):
     def get_required_params(self) -> List[str]:
         """Return list of required parameter names."""
         return ["input"]
+
+    def normalize_arguments(self, kwargs: dict) -> dict:
+        """Tool-specific safe normalization before preflight; no side effects."""
+        return kwargs
 
     def _apply_aliases(self, kwargs: dict) -> dict:
         """Apply parameter aliases to normalize argument names."""

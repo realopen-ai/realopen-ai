@@ -88,6 +88,7 @@ class CreateFlashcardDeckTool(BaseTool):
             title="Creating flashcards",
             started_at=started,
         )
+        failure_kind = None
         try:
             body = DeckInput(
                 title=title,
@@ -118,6 +119,7 @@ class CreateFlashcardDeckTool(BaseTool):
                 }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            failure_kind = "validation"
             call.status = "error"
             if isinstance(exc, ValidationError):
                 detail = "; ".join(
@@ -135,7 +137,7 @@ class CreateFlashcardDeckTool(BaseTool):
             call.error = output
         call.completed_at = time.time()
         call.output = output
-        return ToolResult(call.status == "completed", output, call)
+        return ToolResult(call.status == "completed", output, call, failure_kind)
 
 
 tool_registry.register(CreateFlashcardDeckTool())

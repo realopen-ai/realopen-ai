@@ -652,6 +652,9 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_WINDOWS: Dict[str, int] = {}  # Exact model-id overrides.
     AGENT_OUTPUT_RESERVE_TOKENS: int = 2048
     AGENT_CONTEXT_MARGIN_TOKENS: int = 256
+    AGENT_TOOL_VALIDATION_MAX_FAILURES: int = (
+        3  # Initial attempt + two repairs, per tool/request.
+    )
 
     # ── Excel generation (use_excel_gen tool) ──────────────────────────
     # The specialized Excel AI call emits a strict JSON workbook spec

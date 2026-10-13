@@ -24,13 +24,23 @@ from app.agent.protocol import (
     normalize_native_calls,
 )
 from app.agent.tracing import observe, traced_execution, timestamp
+from app.agent.execution_state import ExecutionState
+from app.agent.validation import argument_errors, normalize_structured_arguments
+from app.agent.argument_repair import (
+    rebuild_view,
+    response_schema,
+    parse_rebuild,
+    native_rebuild,
+    without_rejected_calls,
+)
 from app.agent.tools import config_store
 from app.config import settings
 from app.core.logger import is_debug
 from app.core.prompt_security import untrusted_context_message
 from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
-from app.services import tool_capabilities
+from app.services.context_relevance import relevant_context
+from app.services import tool_capabilities, structured_outputs
 from app.services.context_compactor import (
     compact_conversation,
     context_budget,
@@ -469,7 +479,9 @@ async def run_agent_stream(
     attachments = {"items": []}
     try:
         async with async_session_factory() as db:
-            attachments = await catalog(db, conversation_id, scoped=True, limit=8)
+            attachments = await catalog(
+                db, conversation_id, scoped=True, limit=8, include_public=False
+            )
             await db.commit()
         attachments["items"] = [
             {
@@ -561,7 +573,11 @@ async def run_agent_stream(
                 )
                 if relevant:
                     pinned = [m for m in relevant if m.pinned]
-                    extended = [m for m in relevant if not m.pinned]
+                    extended = [
+                        m
+                        for m in relevant
+                        if not m.pinned and relevant_context(last_user, m.text)
+                    ]
                     if pinned:
                         pinned_text = "\n".join(
                             f"- {m.text} [{m.category}]" for m in pinned
@@ -707,9 +723,11 @@ async def run_agent_stream(
     system_prompt += notebook_instructions
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
+    request_tools = ollama_tools
+
     def _refresh_protocol() -> None:
         nonlocal protocol_text
-        new_protocol = _tool_protocol(use_native_tools, ollama_tools)
+        new_protocol = _tool_protocol(use_native_tools, request_tools)
         messages[0]["content"] = messages[0]["content"].replace(
             protocol_text, new_protocol
         )
@@ -734,6 +752,28 @@ async def run_agent_stream(
     observe("limits", max_rounds)
     coder_attempted = False
     format_failures = 0
+    execution_state = ExecutionState()
+    exhausted_tool = None
+
+    def validation_feedback(call, errors):
+        nonlocal ollama_tools, exhausted_tool
+        error = "; ".join(errors)
+        execution_state.record(call, False, error, validation=True)
+        retryable = (
+            execution_state.validation_failures[call["tool"]]
+            < settings.AGENT_TOOL_VALIDATION_MAX_FAILURES
+        )
+        if not retryable:
+            exhausted_tool = call["tool"]
+            selected_tools.discard(call["tool"])
+            ollama_tools = [
+                s for s in ollama_tools if s["function"]["name"] != call["tool"]
+            ]
+            _refresh_protocol()
+        return format_prompt(
+            "agent_argument_repair", errors=error, retryable=str(retryable).lower()
+        )
+
     for round_number in range(max_rounds):
         if round_number == max_rounds - 1:
             app_metrics.record_agent_rounds(round_number + 1)
@@ -766,27 +806,85 @@ async def run_agent_stream(
             messages[insertion:insertion] = injected
             messages.insert(0, {"role": "system", "content": system_prompt})
 
+        # Repairs concern the rejected call, not a new task. Avoid distracting
+        # schemas and give its complete structure room in the context budget.
+        repair_names = {
+            name
+            for name, failure in execution_state.failures.items()
+            if failure["kind"] == "validation" and name in selected_tools
+        }
+        request_tools = [
+            s
+            for s in ollama_tools
+            if not repair_names or s["function"]["name"] in repair_names
+        ]
+        repair_schema = None
+        if repair_names:
+            repair_name = next(
+                name
+                for name in reversed(execution_state.failures)
+                if name in repair_names
+            )
+            repair_schema = next(
+                schema
+                for schema in request_tools
+                if schema["function"]["name"] == repair_name
+            )
+            request_tools = [repair_schema]
+        _refresh_protocol()
+
         # A concurrent request or delegated coder may have learned this model's
         # capability since the previous round.
         if use_native_tools and not _model_supports_native_tools(resolved_model):
             use_native_tools = False
             _refresh_protocol()
+        # Rebuild from application records, never from a generated summary.
+        messages = [
+            m
+            for m in messages
+            if not (m.get("metadata") or {}).get("agent_execution_state")
+        ]
+        ledger = execution_state.message()
+        if ledger:
+            messages.append(ledger)
+        inference_messages = without_rejected_calls(
+            messages, execution_state.rejected_call_ids
+        )
+        if repair_schema:
+            inference_messages = rebuild_view(
+                messages,
+                repair_schema,
+                execution_state.rejected_call_ids,
+                execution_state.failures[repair_name]["error"],
+            )
+        inference_tools = (
+            request_tools if use_native_tools and not repair_schema else None
+        )
         generation_start = None
         # Retry protocol negotiation within the same agent round, before any output.
         for protocol_attempt in range(2):
+            inference_tools = (
+                request_tools if use_native_tools and not repair_schema else None
+            )
+            if not repair_schema:
+                inference_messages = without_rejected_calls(
+                    messages, execution_state.rejected_call_ids
+                )
             # Compact if approaching context limit (essential for small models)
             try:
                 budget = context_budget(resolved_model, max_output_tokens)
                 compacted, was_compacted = await compact_conversation(
-                    messages,
+                    inference_messages,
                     resolved_model,
-                    tools=ollama_tools if use_native_tools else None,
+                    tools=inference_tools,
                     max_output_tokens=budget.output,
-                    native_tools=use_native_tools,
+                    native_tools=use_native_tools and not repair_schema,
                 )
                 if was_compacted:
-                    previous_length = len(messages)
-                    messages = compacted
+                    previous_length = len(inference_messages)
+                    inference_messages = compacted
+                    if not repair_schema:
+                        messages = compacted
                     app_metrics.record_context_compaction(resolved_model)
                     _dbg(
                         "Compacted conversation: %d -> %d messages",
@@ -799,7 +897,9 @@ async def run_agent_stream(
                     "error", {"error": f"Cannot prepare a safe context budget: {e}"}
                 )
                 return
-            ollama_messages = model_messages(messages, use_native_tools)
+            ollama_messages = model_messages(
+                inference_messages, use_native_tools and not repair_schema
+            )
 
             full_response = ""
             thinking_content = ""
@@ -815,15 +915,15 @@ async def run_agent_stream(
                     round_number + 1,
                     resolved_model,
                     ollama_messages,
-                    ollama_tools if use_native_tools else None,
-                    selected_tools,
+                    inference_tools,
+                    {repair_name} if repair_schema else selected_tools,
                     context_messages,
                     {
-                        "think": think,
+                        "think": False if repair_schema else think,
                         "max_output_tokens": budget.output,
-                        "temperature": None,
+                        "temperature": 0.2 if repair_names else None,
                         "provider": providers.provider_of(resolved_model),
-                        "native_tools": use_native_tools,
+                        "native_tools": bool(use_native_tools and not repair_schema),
                     },
                 )
 
@@ -840,12 +940,20 @@ async def run_agent_stream(
                 if think is not None:
                     latency_options["think"] = think
                 latency_options["options"] = {"num_predict": budget.output}
+                if repair_names:
+                    latency_options["options"].update(
+                        temperature=0.2, presence_penalty=0, repeat_penalty=1
+                    )
+                if repair_schema:
+                    latency_options["think"] = False
+                    if structured_outputs.should_try_schema(resolved_model):
+                        latency_options["format"] = response_schema(repair_schema)
                 if not providers.is_groq_model(resolved_model):
                     latency_options["options"]["num_ctx"] = budget.window
                 async for chunk in providers.stream_chat(
                     resolved_model,
                     ollama_messages,
-                    tools=ollama_tools if use_native_tools else None,
+                    tools=inference_tools,
                     timeout=1200.0,
                     **latency_options,
                 ):
@@ -869,15 +977,11 @@ async def run_agent_stream(
                             )
                             thinking_start = None
                         full_response += token
-                        yield _sse_event(
-                            "message",
-                            {
-                                "message": {
-                                    "role": "assistant",
-                                    "content": token,
-                                }
-                            },
-                        )
+                        if not repair_schema:
+                            yield _sse_event(
+                                "message",
+                                {"message": {"role": "assistant", "content": token}},
+                            )
 
                     # Native tool calls (already complete — the groq adapter
                     # accumulates streamed fragments into whole calls)
@@ -909,7 +1013,7 @@ async def run_agent_stream(
                 observe(
                     "model_attempt",
                     ollama_messages,
-                    ollama_tools if use_native_tools else None,
+                    inference_tools,
                     error=error,
                     response={
                         "message": {
@@ -918,13 +1022,21 @@ async def run_agent_stream(
                             "tool_calls": native_tool_calls,
                         }
                     },
-                    recovery=not use_native_tools,
+                    recovery=bool(repair_schema or not use_native_tools),
                     started_at=attempt_started_at,
                     duration_ms=(time.monotonic() - attempt_started) * 1000,
                 )
+                if (
+                    repair_schema
+                    and not full_response
+                    and "format" in latency_options
+                    and structured_outputs.schema_rejected(e)
+                ):
+                    structured_outputs.remember_rejection(resolved_model)
+                    continue
                 reason = (
                     tool_capabilities.rejection_reason(e)
-                    if use_native_tools and ollama_tools
+                    if use_native_tools and ollama_tools and not repair_schema
                     else None
                 )
                 if reason:
@@ -954,7 +1066,7 @@ async def run_agent_stream(
                 yield _sse_event("error", {"error": f"AI engine error: {e}"})
                 return
 
-            if not use_native_tools:
+            if not use_native_tools or repair_schema:
                 observe(
                     "model_attempt",
                     ollama_messages,
@@ -983,13 +1095,87 @@ async def run_agent_stream(
 
         # ── Resolve tool calls ──
         tool_calls = []
-        if native_tool_calls:
+        if repair_schema:
+            tool_calls = [
+                (
+                    native_rebuild(
+                        _convert_native_tool_calls(native_tool_calls), repair_name
+                    )
+                    if native_tool_calls
+                    else parse_rebuild(full_response, repair_name)
+                )
+            ]
+        elif native_tool_calls:
             tool_calls = _convert_native_tool_calls(native_tool_calls)
             _dbg("Native tool calls: %d", len(tool_calls))
         else:
             try:
                 tool_calls = _parse_tool_calls(full_response)
             except ValueError as exc:
+                # Malformed fallback envelopes are visible attempts even
+                # though no executable call could be parsed.
+                match = re.search(r'"tool"\s*:\s*"([^"\n]+)"', full_response)
+                rejected_name = match.group(1) if match else ""
+                rejected_tool = (
+                    registry.get(rejected_name)
+                    if rejected_name in selected_tools
+                    else None
+                )
+                now = int(time.time() * 1000)
+                yield _sse_event(
+                    "tool_call",
+                    {
+                        "tool_call": {
+                            "id": f"tc-format-{now}-{round_number}",
+                            "type": (
+                                rejected_tool.tool_type.value
+                                if rejected_tool
+                                else ToolType.CODE_EXEC.value
+                            ),
+                            "status": "error",
+                            "title": (
+                                f"Invalid arguments for {rejected_name}"
+                                if rejected_tool
+                                else "Invalid tool-call format"
+                            ),
+                            "error": str(exc),
+                            "startedAt": now,
+                            "completedAt": now,
+                            "durationMs": 0,
+                        }
+                    },
+                )
+                if rejected_tool:
+                    rejected_call = {
+                        "id": f"tc-format-{now}-{round_number}",
+                        "tool": rejected_name,
+                        "args": {},
+                        "parse_error": str(exc),
+                    }
+                    observe("parsed", [rejected_call], [], full_response)
+                    observe("begin_tool", rejected_name, {})
+                    feedback = validation_feedback(rejected_call, [str(exc)])
+                    observe("end_tool", "failed", error=str(exc), validation_error=True)
+                    messages.extend(
+                        [
+                            assistant_call_message(
+                                "", [rejected_call], thinking_content
+                            ),
+                            tool_result_message(rejected_call, feedback),
+                        ]
+                    )
+                    if exhausted_tool:
+                        observe(
+                            "finish", "failed", "tool validation retry limit exhausted"
+                        )
+                        yield _sse_event(
+                            "error",
+                            {
+                                "error": "The model could not rebuild valid tool arguments within the retry limit."
+                            },
+                        )
+                        return
+                    continue
                 observe("parsed", [], [], full_response)
                 format_failures += 1
                 if format_failures >= 2:
@@ -1033,7 +1219,9 @@ async def run_agent_stream(
             return
 
         messages.append(
-            assistant_call_message(full_response, tool_calls, thinking_content)
+            assistant_call_message(
+                "" if repair_schema else full_response, tool_calls, thinking_content
+            )
         )
         # Execute tool calls
         for call in tool_calls:
@@ -1044,7 +1232,13 @@ async def run_agent_stream(
             )
             tool_name = call.get("tool", "")
             if call.get("parse_error"):
-                observe("end_tool", "failed", error=call["parse_error"])
+                feedback = validation_feedback(call, [call["parse_error"]])
+                observe(
+                    "end_tool",
+                    "failed",
+                    error=call["parse_error"],
+                    validation_error=True,
+                )
                 available = registry.get(tool_name)
                 now = int(time.time() * 1000)
                 yield _sse_event(
@@ -1067,13 +1261,7 @@ async def run_agent_stream(
                 messages.append(
                     tool_result_message(
                         call,
-                        json.dumps(
-                            {
-                                "status": "invalid_arguments",
-                                "error": call["parse_error"],
-                                "retryable": True,
-                            }
-                        ),
+                        feedback,
                     )
                 )
                 continue
@@ -1114,6 +1302,18 @@ async def run_agent_stream(
                         f"Tool unavailable: {tool_name}. Available: {sorted(selected_tools)}. Nothing was executed.",
                     )
                 )
+                if (
+                    execution_state.validation_failures.get(tool_name, 0)
+                    >= settings.AGENT_TOOL_VALIDATION_MAX_FAILURES
+                ):
+                    observe("finish", "failed", "tool validation retry limit exhausted")
+                    yield _sse_event(
+                        "error",
+                        {
+                            "error": f"{tool_name} could not accept the model's arguments after bounded repairs. Existing successful results remain available."
+                        },
+                    )
+                    return
                 continue
 
             if tool_name == "delegate_to_coder":
@@ -1130,6 +1330,43 @@ async def run_agent_stream(
                         )
                     )
                     continue
+
+            # Validate the same schema supplied to the model, before injecting
+            # trusted execution-only kwargs. Aliases keep legacy tools usable.
+            tool_args = tool._apply_aliases(dict(tool_args))
+            schema = {
+                "type": "object",
+                "properties": tool.get_parameters(),
+                "required": tool.get_required_params(),
+            }
+            tool_args = normalize_structured_arguments(tool_args, schema)
+            tool_args = tool.normalize_arguments(tool_args)
+            errors = argument_errors(tool_args, schema)
+            if errors:
+                feedback = validation_feedback(call, errors)
+                observe(
+                    "end_tool", "failed", error="; ".join(errors), validation_error=True
+                )
+                now = int(time.time() * 1000)
+                yield _sse_event(
+                    "tool_call",
+                    {
+                        "tool_call": {
+                            "id": call["id"],
+                            "type": tool.tool_type.value,
+                            "status": "error",
+                            "title": f"Invalid arguments for {tool_name}",
+                            "error": "; ".join(errors),
+                            "startedAt": now,
+                            "completedAt": now,
+                            "durationMs": 0,
+                        }
+                    },
+                )
+                messages.append(tool_result_message(call, feedback))
+                continue
+
+            if tool_name == "delegate_to_coder":
                 coder_attempted = True
 
             if tool_name == "use_report_gen":
@@ -1254,6 +1491,7 @@ async def run_agent_stream(
                 if model_override:
                     await _switch_model(model_override)
             except Exception as e:
+                execution_state.record(call, False, type(e).__name__ + ": " + str(e))
                 observe(
                     "end_tool",
                     "failed",
@@ -1330,6 +1568,7 @@ async def run_agent_stream(
                     else (None if result.success else result.output)
                 ),
                 exec_args,
+                validation_error=result.failure_kind == "validation",
             )
             if result.tool_call:
                 result.tool_call.id = tc_id  # Ensure the tool call ID is consistent
@@ -1397,6 +1636,18 @@ async def run_agent_stream(
                     _dbg("   🔎 rag_sources: no sources retrieved, skipping event")
 
             # Feed result back
+            feedback = result.output
+            if not result.success and result.failure_kind == "validation":
+                feedback = validation_feedback(call, [result.output])
+            else:
+                execution_state.record(
+                    call,
+                    result.success,
+                    result.output,
+                    generated=(
+                        result.tool_call.gen_results if result.tool_call else None
+                    ),
+                )
             if tool_name == "delegate_to_coder" and not result.success and ollama_tools:
                 # A failed coding run is expensive and may have partially
                 # changed the workspace. Never let the main model blindly
@@ -1413,7 +1664,7 @@ async def run_agent_stream(
             messages.append(
                 tool_result_message(
                     call,
-                    result.output,
+                    feedback,
                     skill_guidance=result.success and tool.tool_type == ToolType.SKILL,
                 )
             )
@@ -1427,6 +1678,18 @@ async def run_agent_stream(
                 "error",
                 {
                     "error": "The model repeatedly returned invalid tool arguments; these calls were not executed."
+                },
+            )
+            return
+
+        if exhausted_tool:
+            # Fail explicitly rather than inviting another generation that
+            # may repeat the action or silently substitute unsaved content.
+            observe("finish", "failed", "tool validation retry limit exhausted")
+            yield _sse_event(
+                "error",
+                {
+                    "error": f"{exhausted_tool} could not accept the model's arguments after bounded repairs. Existing successful results remain available."
                 },
             )
             return

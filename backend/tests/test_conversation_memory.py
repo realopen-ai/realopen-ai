@@ -344,11 +344,30 @@ def _vec_row(cid, title, summary, epoch, model, sim):
 
 
 @pytest.mark.asyncio
+async def test_weak_unrelated_summary_matches_are_not_injected(some_embedding):
+    db = FakeDB(
+        text_rows=[
+            _vec_row(uuid.uuid4(), "Invoice", "Convert invoice to Excel", 1, "m", 0.72),
+            _vec_row(uuid.uuid4(), "NumPy", "NumPy array shapes", 1, "m", 0.7),
+        ]
+    )
+    out = await get_relevant_summaries(db, "Create a quiz about NumPy")
+    assert [item["title"] for item in out] == ["NumPy"]
+
+
+@pytest.mark.asyncio
+async def test_greeting_does_not_retrieve_conversation_summaries():
+    with patch.object(cm, "get_embedding", new=AsyncMock()) as embedding:
+        assert await get_relevant_summaries(FakeDB(), "Hello!") == []
+    embedding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_relevant_summaries_vector_path(some_embedding):
     c1, c2 = uuid.uuid4(), uuid.uuid4()
     rows = [
         _vec_row(c1, "T1", "s1", 1700000000, "m1", 0.9),
-        _vec_row(c2, "T2", "s2", 1700000001, "m2", 0.5),
+        _vec_row(c2, "T2", "query details", 1700000001, "m2", 0.7),
     ]
     db = FakeDB(text_rows=rows)
     out = await get_relevant_summaries(db, "query", top_k=5)
@@ -442,7 +461,7 @@ async def test_keyword_search_maps_conversations():
 @pytest.mark.asyncio
 async def test_keyword_search_respects_limit():
     convs = [
-        make_conversation(summary=f"s{i}", summary_at=datetime.utcnow())
+        make_conversation(summary=f"paris trip {i}", summary_at=datetime.utcnow())
         for i in range(5)
     ]
     db = FakeDB(select_results=[convs])

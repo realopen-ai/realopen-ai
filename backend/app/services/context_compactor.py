@@ -368,6 +368,27 @@ async def compact_conversation(
     Protected current-request/context data is never silently truncated.
     """
     budget = context_budget(model, max_output_tokens)
+    # Demote legacy system-role summaries to history after the real prefix.
+    legacy = [
+        m
+        for m in messages
+        if m.get("role") == "system"
+        and str(m.get("content", "")).startswith("[Compacted conversation")
+    ]
+    if legacy:
+        messages = [m for m in messages if m not in legacy]
+        insertion = next(
+            (i for i, m in enumerate(messages) if m.get("role") != "system"),
+            len(messages),
+        )
+        history = []
+        for m in legacy:
+            historical = untrusted_context_message(
+                "compacted conversation", m["content"]
+            )
+            historical["metadata"]["compaction"] = True
+            history.append(historical)
+        messages[insertion:insertion] = history
 
     def size(items):
         return estimate_request_tokens(model_messages(items, native_tools), tools)
@@ -410,6 +431,27 @@ async def compact_conversation(
         latest_user = None
     if latest_user is not None:
         candidates = [g for g in candidates if latest_user not in g]
+    # Never summarize the latest tool exchange: it is the model's exact
+    # feedback, not historical context. This includes all parallel results.
+    request_boundary = next(
+        (
+            i
+            for i, m in enumerate(messages)
+            if (m.get("metadata") or {}).get("agent_request")
+        ),
+        latest_user,
+    )
+    latest_exchange = next(
+        (
+            g
+            for g in reversed(candidates)
+            if messages[g[0]].get("tool_calls")
+            and (request_boundary is None or g[0] > request_boundary)
+        ),
+        None,
+    )
+    if latest_exchange is not None:
+        candidates = [g for g in candidates if g != latest_exchange]
     if not candidates:
         if total > budget.input_limit:
             raise ContextBudgetExceeded(
@@ -422,45 +464,55 @@ async def compact_conversation(
         1 if latest_user is not None else 0
     )
     remove_count = max(1, len(candidates) - max(0, preserve))
-    older = [messages[i] for group in candidates[:remove_count] for i in group]
-    summary = await _summarize_bounded(model, _build_compaction_text(older))
-    if not summary:
-        if total > budget.input_limit:
-            raise ContextBudgetExceeded(
-                "Context compaction failed; the original request was preserved but is too large to send safely."
-            )
+    # A soft budget crossing is not a reason to summarize a greeting or
+    # repeatedly rewrite a tiny summary. Require useful historical material.
+    if (
+        total <= budget.input_limit
+        and sum(_estimate_message_tokens(messages[i]) for g in candidates for i in g)
+        < 512
+    ):
         return messages, False
 
-    summary_message = untrusted_context_message(
-        "compacted conversation", "[Compacted conversation]\n" + summary
-    )
-    summary_message["metadata"]["compaction"] = True
     while True:
         removed = {i for group in candidates[:remove_count] for i in group}
-        result = [m for i, m in enumerate(messages) if i not in removed]
-        insertion = next(
-            (i for i, m in enumerate(result) if m.get("role") != "system"), len(result)
-        )
-        result.insert(insertion, summary_message)
+        # Replace contiguous runs IN PLACE. In particular, tool activity
+        # after the current request must never move before that request.
+        result = []
+        index = 0
+        while index < len(messages):
+            if index not in removed:
+                result.append(messages[index])
+                index += 1
+                continue
+            start = index
+            while index in removed:
+                index += 1
+            summary = await _summarize_bounded(
+                model, _build_compaction_text(messages[start:index])
+            )
+            if not summary:
+                if total <= budget.input_limit:
+                    return messages, False
+                raise ContextBudgetExceeded(
+                    "Context compaction failed; no oversized request was sent."
+                )
+            summary_message = untrusted_context_message(
+                "compacted conversation", "[Compacted conversation]\n" + summary
+            )
+            summary_message["metadata"]["compaction"] = True
+            result.append(summary_message)
         result = _sanitize_tool_messages_after_compact(result)
-        if size(result) <= budget.input_limit:
+        new_size = size(result)
+        if new_size <= budget.input_limit and total - new_size >= 64:
             return result, True
+        if new_size <= budget.input_limit and total <= budget.input_limit:
+            return messages, False
         if remove_count >= len(candidates):
             raise ContextBudgetExceeded(
-                "The protected request/context cannot fit even after compaction. Narrow the request or increase AGENT_CONTEXT_WINDOW."
+                "The current request, execution state and latest tool feedback cannot fit even after compaction. Narrow the request or increase AGENT_CONTEXT_WINDOW."
             )
         # Regenerate from all newly removed messages; do not discard them silently.
         remove_count = len(candidates)
-        older = [messages[i] for group in candidates[:remove_count] for i in group]
-        summary = await _summarize_bounded(model, _build_compaction_text(older))
-        if not summary:
-            raise ContextBudgetExceeded(
-                "Context compaction failed; no oversized request was sent."
-            )
-        summary_message = untrusted_context_message(
-            "compacted conversation", "[Compacted conversation]\n" + summary
-        )
-        summary_message["metadata"]["compaction"] = True
 
 
 # ── Conversation-end summary for cross-session memory ────────────

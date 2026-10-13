@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime
 from typing import Any, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message
 from app.services.embeddings import get_embedding
 from app.services.context_compactor import summarize_conversation
 from app.config import settings
+from app.services.context_relevance import relevant_context, topic_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -173,13 +174,15 @@ async def get_relevant_summaries(
     query: str,
     exclude_conversation_id: Optional[uuid.UUID] = None,
     top_k: int = 3,
-    threshold: float = 0.4,
+    threshold: float = 0.65,
 ) -> List[dict]:
     """Find conversation summaries relevant to the current user query.
 
     Uses pgvector cosine similarity on summary embeddings.
     Falls back to keyword matching (ILIKE) if vector search unavailable.
     """
+    if not topic_tokens(query):
+        return []
     try:
         query_embedding = await get_embedding(query)
         if query_embedding is None:
@@ -216,6 +219,10 @@ async def get_relevant_summaries(
             cid = str(row[0])
             if exclude_conversation_id and uuid.UUID(cid) == exclude_conversation_id:
                 continue
+            if not relevant_context(
+                query, str(row[1] or "") + " " + str(row[2]), float(row[5] or 0)
+            ):
+                continue
             summaries.append(
                 {
                     "id": cid,
@@ -245,13 +252,11 @@ async def _keyword_summary_search(
     """Fallback: keyword search on conversation summaries."""
     try:
         # Extract significant keywords from query (words >= 3 chars)
-        keywords = [w for w in query.lower().split() if len(w) >= 3][:5]
+        keywords = sorted(topic_tokens(query))[:8]
         if not keywords:
             return []
 
         # Build ILIKE conditions
-        from sqlalchemy import or_
-
         conditions = [Conversation.summary.ilike(f"%{kw}%") for kw in keywords]
         stmt = (
             select(Conversation)
@@ -271,6 +276,8 @@ async def _keyword_summary_search(
 
         summaries = []
         for c in conversations:
+            if not relevant_context(query, (c.title or "") + " " + c.summary):
+                continue
             if len(summaries) >= limit:
                 break
             summaries.append(
