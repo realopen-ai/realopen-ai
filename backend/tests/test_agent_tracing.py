@@ -9,8 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 
 from app.agent import service, tracing
+from app.agent.coder import agent as coder_agent, provider as coder_provider
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, ToolRegistry
 from app.config import settings
 
@@ -30,7 +32,10 @@ class EchoTool(BaseTool):
             success,
             output,
             ToolCall(
-                id="echo", type=self.tool_type, name=self.name, error=None if success else output
+                id="echo",
+                type=self.tool_type,
+                name=self.name,
+                error=None if success else output,
             ),
         )
 
@@ -48,15 +53,23 @@ def trace_setup(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(service, "_model_supports_native_tools", lambda _: True)
     monkeypatch.setattr(
-        service.model_prefs, "resolve_chat_request_model", AsyncMock(return_value="local:test")
+        service.model_prefs,
+        "resolve_chat_request_model",
+        AsyncMock(return_value="local:test"),
     )
-    monkeypatch.setattr(service.config_store, "tool_model_override", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        service.config_store, "tool_model_override", AsyncMock(return_value=None)
+    )
     monkeypatch.setattr(service.skill_store, "routing_catalog", lambda _: [])
     monkeypatch.setattr(
-        service, "compact_conversation", AsyncMock(side_effect=lambda msgs, model: (msgs, False))
+        service,
+        "compact_conversation",
+        AsyncMock(side_effect=lambda msgs, model: (msgs, False)),
     )
     monkeypatch.setattr(service, "get_relevant_memories", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "build_cross_session_context", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        service, "build_cross_session_context", AsyncMock(return_value="")
+    )
     monkeypatch.setattr(service, "for_conversation", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "catalog", AsyncMock(return_value={"items": []}))
 
@@ -100,8 +113,398 @@ async def run():
 async def saved(path):
     await tracing.flush_traces()
     return [
-        json.loads(line) for file in path.glob("*.jsonl") for line in file.read_text().splitlines()
+        json.loads(line)
+        for file in path.glob("*.jsonl")
+        for line in file.read_text().splitlines()
     ]
+
+
+@pytest.fixture
+def coder_setup(trace_setup, monkeypatch):
+    sandbox = SimpleNamespace(
+        id="sandbox-1", status="running", desired_running=True, error=None
+    )
+    conversation = SimpleNamespace(id="conversation-1")
+    monkeypatch.setattr(
+        coder_agent, "_create_task", AsyncMock(return_value=(conversation, sandbox))
+    )
+    monkeypatch.setattr(coder_agent.sandbox_host, "call", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        coder_agent, "resolve_task_model", AsyncMock(return_value="coder:test")
+    )
+    monkeypatch.setattr(coder_agent.skill_store, "routing_catalog", lambda _: "")
+    monkeypatch.setattr(coder_agent, "_save_progress", AsyncMock())
+    monkeypatch.setattr(coder_agent, "_record_command", AsyncMock())
+    monkeypatch.setattr(coder_agent.CoderAgent, "_finish_task", AsyncMock())
+    monkeypatch.setattr(coder_agent.CoderAgent, "_fail_task", AsyncMock())
+    monkeypatch.setattr(
+        coder_agent, "dispatch_tool", AsyncMock(return_value=("ok", None))
+    )
+
+    @asynccontextmanager
+    async def session():
+        yield SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(cancellation_requested=False))
+        )
+
+    monkeypatch.setattr(coder_agent, "async_session_factory", session)
+    return trace_setup
+
+
+def coder_responses(monkeypatch, messages):
+    responses = iter(messages)
+
+    async def chat(model, history, tools=None, **kwargs):
+        tracing.observe(
+            "provider_request",
+            model,
+            {"model": model, **kwargs},
+            {"provider": "ollama"},
+        )
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return {"message": response}
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+
+
+@pytest.mark.asyncio
+async def test_coder_trace_is_separate_and_restores_parent(coder_setup, monkeypatch):
+    parent = tracing.Trace({"messages": [{"role": "user", "content": "Build app"}]})
+    parent.begin_tool("delegate_to_coder", {"task": "Build app"})
+    parent.tool_identity("delegate-1")
+    token = tracing.current_trace.set(parent)
+    coder_responses(
+        monkeypatch,
+        [
+            {
+                "tool_calls": [
+                    native({"path": "/app.py", "content": "pass"}, "write_file"),
+                    native({"path": "/workspace"}, "list_files"),
+                ]
+            },
+            {"content": "Done"},
+        ],
+    )
+    try:
+        result = await coder_agent.CoderAgent().execute(
+            task="Build app",
+            conversation_id="conversation-1",
+            _parent_tool_call_id="delegate-1",
+        )
+        assert result.success
+        assert tracing.current_trace.get() is parent
+        assert parent.data["rounds"] == []
+        parent.end_tool("completed", output=result.output)
+        parent.finish("completed")
+        tracing.enqueue(parent)
+    finally:
+        tracing.current_trace.reset(token)
+    general = await saved(coder_setup)
+    child = (await saved(coder_setup / "coder"))[0]
+    assert general[0]["agent"] == "general"
+    assert (
+        general[0]["preparation_tools"][0]["tool_call_id"]
+        == child["parent_tool_call_id"]
+    )
+    assert child["agent"] == "coder"
+    assert child["parent_trace_id"] == parent.data["trace_id"]
+    assert child["parent_tool_call_id"] == "delegate-1"
+    assert child["sandbox_id"] == "sandbox-1"
+    assert child["coder_task_id"]
+    assert child["model"]["resolved"] == "coder:test"
+    assert child["outcome"]["total_rounds"] == 2
+    assert child["outcome"]["total_tool_calls"] == 2
+    assert child["outcome"]["final_assistant_response"] == "Done"
+    first = child["rounds"][0]
+    assert first["inference"]["max_output_tokens"] == 2048
+    assert first["inference"]["temperature"] == 0
+    assert first["tool_calls"][0]["arguments"]["path"] == "/app.py"
+    assert first["tool_calls"][0]["effective_arguments"]["path"] == "/workspace/app.py"
+    assert first["model_attempts"][0]["duration_ms"] >= 0
+    assert (coder_setup / "coder" / first["input_messages"][0]["prompt_ref"]).is_file()
+    cli = Path(__file__).resolve().parents[2] / "scripts/inspect-agent-traces.py"
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            str(cli),
+            "--dir",
+            str(coder_setup),
+            "--agent",
+            "coder",
+            "show",
+            child["trace_id"],
+        ],
+        text=True,
+    )
+    assert "Model attempt:" in output
+    assert parent.data["trace_id"] in output
+
+
+@pytest.mark.asyncio
+async def test_coder_recovery_retains_raw_attempt_and_parsing(coder_setup, monkeypatch):
+    error = httpx.HTTPStatusError(
+        "Invalid native call",
+        request=httpx.Request("POST", "http://local"),
+        response=httpx.Response(500, text="bad arguments"),
+    )
+    coder_responses(
+        monkeypatch,
+        [error, {"content": '{"tool":"list_files","args":{}}'}, {"content": "Done"}],
+    )
+    result = await coder_agent.CoderAgent().execute(
+        task="List files", conversation_id="conversation-1"
+    )
+    assert result.success
+    row = (await saved(coder_setup / "coder"))[0]
+    attempts = row["rounds"][0]["model_attempts"]
+    assert len(attempts) == 2
+    assert attempts[0]["error"]["status_code"] == 500
+    assert attempts[0]["error"]["response"] == "bad arguments"
+    assert attempts[1]["recovery"]
+    assert attempts[1]["exposed_tool_schemas"] is None
+    assert attempts[1]["response"]["message"]["content"].startswith('{"tool"')
+    assert row["rounds"][0]["parsed_tool_calls"][0]["function"]["name"] == "list_files"
+
+
+@pytest.mark.asyncio
+async def test_coder_invalid_recovery_is_preserved(coder_setup, monkeypatch):
+    error = httpx.HTTPStatusError(
+        "bad",
+        request=httpx.Request("POST", "http://local"),
+        response=httpx.Response(500),
+    )
+    coder_responses(monkeypatch, [error, {"content": "not json"}])
+    result = await coder_agent.CoderAgent().execute(
+        task="Build", conversation_id="conversation-1"
+    )
+    assert not result.success
+    row = (await saved(coder_setup / "coder"))[0]
+    assert row["outcome"]["status"] == "failed"
+    assert (
+        row["rounds"][0]["model_attempts"][1]["response"]["message"]["content"]
+        == "not json"
+    )
+    assert (
+        row["rounds"][0]["parse_diagnostics"][0]["status"]
+        == "invalid_recovery_response"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["limit", "command_failures", "invalid_args"])
+async def test_coder_termination_and_invalid_args(
+    coder_setup, monkeypatch, termination
+):
+    if termination == "limit":
+        messages = [{"tool_calls": [native({}, "list_files")]}] * 24
+    elif termination == "command_failures":
+        monkeypatch.setattr(
+            coder_agent,
+            "dispatch_tool",
+            AsyncMock(return_value=("failed", {"command": "bad", "exit_code": 1})),
+        )
+        messages = [{"tool_calls": [native({"command": "bad"}, "run_command")]}] * 4
+    else:
+        messages = [
+            {"tool_calls": [native("{broken", "list_files")]},
+            {"content": "Done"},
+        ]
+    coder_responses(monkeypatch, messages)
+    result = await coder_agent.CoderAgent().execute(
+        task="Build", conversation_id="conversation-1"
+    )
+    row = (await saved(coder_setup / "coder"))[0]
+    if termination == "limit":
+        assert not result.success
+        assert row["outcome"]["status"] == "max_rounds_reached"
+        assert row["outcome"]["total_rounds"] == 24
+    elif termination == "command_failures":
+        assert not result.success
+        assert row["outcome"]["failed_tool_calls"] == 4
+        assert row["outcome"]["status"] == "failed"
+    else:
+        assert result.success
+        assert row["rounds"][0]["parse_diagnostics"][0]["raw_arguments"] == "{broken"
+        assert row["rounds"][0]["tool_calls"][0]["arguments"] == "{broken"
+        assert row["rounds"][0]["tool_calls"][0]["effective_arguments"] == {
+            "path": "/workspace"
+        }
+
+
+@pytest.mark.asyncio
+async def test_coder_cancellation_restores_parent(coder_setup, monkeypatch):
+    started = asyncio.Event()
+
+    async def chat(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    parent = tracing.Trace({})
+    token = tracing.current_trace.set(parent)
+    try:
+        task = asyncio.create_task(
+            coder_agent.CoderAgent().execute(
+                task="Build", conversation_id="conversation-1"
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert tracing.current_trace.get() is parent
+    finally:
+        tracing.current_trace.reset(token)
+    row = (await saved(coder_setup / "coder"))[0]
+    assert row["outcome"]["status"] == "cancelled"
+    assert row["rounds"][0]["model_attempts"][0]["error"]["type"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+async def test_coder_disabled_and_logging_failure(coder_setup, monkeypatch):
+    monkeypatch.setattr(settings, "AGENT_TRACE_ENABLED", False)
+    coder_responses(monkeypatch, [{"content": "Done"}])
+    assert (
+        await coder_agent.CoderAgent().execute(
+            task="Build", conversation_id="conversation-1"
+        )
+    ).success
+    assert not (coder_setup / "coder").exists()
+    monkeypatch.setattr(settings, "AGENT_TRACE_ENABLED", True)
+    monkeypatch.setattr(
+        tracing, "_persist", lambda _: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    coder_responses(monkeypatch, [{"content": "Done"}])
+    assert (
+        await coder_agent.CoderAgent().execute(
+            task="Build", conversation_id="conversation-1"
+        )
+    ).success
+    await tracing.flush_traces()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_coder_traces_redact_and_stay_distinct(
+    coder_setup, monkeypatch
+):
+    async def chat(*args, **kwargs):
+        await asyncio.sleep(0)
+        return {"message": {"content": "password=secretvalue"}}
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    await asyncio.gather(
+        *(
+            coder_agent.CoderAgent().execute(
+                task=f"Build {i}", conversation_id=f"conv-{i}"
+            )
+            for i in range(3)
+        )
+    )
+    rows = await saved(coder_setup / "coder")
+    assert len(rows) == 3
+    assert len({r["trace_id"] for r in rows}) == 3
+    assert {r["conversation_id"] for r in rows} == {"conv-0", "conv-1", "conv-2"}
+    assert "secretvalue" not in json.dumps(rows)
+
+
+@pytest.mark.asyncio
+async def test_coder_skipped_rewrites_and_automatic_preview(coder_setup, monkeypatch):
+    coder_responses(
+        monkeypatch,
+        [
+            {
+                "tool_calls": [
+                    native({"path": "/workspace/a.py", "content": "pass"}, "write_file")
+                ]
+                * 3
+            },
+            {"tool_calls": [native({"command": "pytest"}, "run_tests")]},
+            {"content": "Done"},
+        ],
+    )
+
+    async def dispatch(sandbox, name, args, *rest):
+        if name == "run_tests":
+            return "passed", {"command": "pytest", "exit_code": 0}
+        if name == "start_preview":
+            return "started", {"preview_url": "http://local", "port": 6969}
+        return "written", None
+
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    monkeypatch.setattr(
+        coder_agent, "infer_preview", AsyncMock(return_value=("uv run main.py", 6969))
+    )
+    assert (
+        await coder_agent.CoderAgent().execute(
+            task="Build", conversation_id="conversation-1"
+        )
+    ).success
+    row = (await saved(coder_setup / "coder"))[0]
+    assert row["outcome"]["skipped_tool_calls"] == 1
+    preview = row["rounds"][-1]["tool_calls"][0]
+    assert preview["name"] == "start_preview"
+    assert preview["origin"] == "application"
+    assert row["outcome"]["final_assistant_response"] == "Done"
+
+
+@pytest.mark.asyncio
+async def test_coder_initialization_failure_does_not_corrupt_parent(
+    coder_setup, monkeypatch
+):
+    parent = tracing.Trace({})
+    monkeypatch.setattr(
+        tracing, "Trace", lambda _: (_ for _ in ()).throw(RuntimeError("logger broken"))
+    )
+    coder_responses(monkeypatch, [{"content": "Done"}])
+    token = tracing.current_trace.set(parent)
+    try:
+        assert (
+            await coder_agent.CoderAgent().execute(
+                task="Build", conversation_id="conversation-1"
+            )
+        ).success
+        assert tracing.current_trace.get() is parent
+        assert parent.data["outcome"]["status"] == "running"
+        assert parent.data["rounds"] == []
+    finally:
+        tracing.current_trace.reset(token)
+    await tracing.flush_traces()
+
+
+@pytest.mark.asyncio
+async def test_coder_nonstream_provider_settings_are_observed(coder_setup, monkeypatch):
+    client = httpx.AsyncClient
+
+    def handler(request):
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"parameters": "temperature 1"})
+        return httpx.Response(200, json={"message": {"content": "Done"}})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        coder_provider.providers,
+        "httpx",
+        SimpleNamespace(AsyncClient=lambda **kw: client(transport=transport, **kw)),
+    )
+    monkeypatch.setattr(
+        tracing,
+        "httpx",
+        SimpleNamespace(AsyncClient=lambda **kw: client(transport=transport, **kw)),
+    )
+    monkeypatch.setattr(tracing, "_model_defaults", {})
+    assert (
+        await coder_agent.CoderAgent().execute(
+            task="Build", conversation_id="conversation-1"
+        )
+    ).success
+    row = (await saved(coder_setup / "coder"))[0]
+    attempt = row["rounds"][0]["model_attempts"][0]
+    assert attempt["inference"]["think"] is False
+    assert attempt["inference"]["temperature"] == 0
+    assert attempt["inference"]["max_output_tokens"] == 2048
+    assert attempt["model_defaults"]["lookup_status"] == "available"
 
 
 @pytest.mark.asyncio
@@ -136,7 +539,9 @@ async def test_success_context_and_multi_round_calls(trace_setup, monkeypatch):
     assert row["rounds"][0]["exposed_tool_schemas"][0]["function"]["name"] == "echo"
     assert row["rounds"][0]["decision"] == "continued"
     ref = row["rounds"][0]["input_messages"][0]["prompt_ref"]
-    assert json.loads((trace_setup / ref).read_text())["content"] == "Stable system prompt"
+    assert (
+        json.loads((trace_setup / ref).read_text())["content"] == "Stable system prompt"
+    )
     assert len(list((trace_setup / "prompts").glob("*.json"))) == 1
     assert all(r["duration_ms"] >= 0 for r in row["rounds"])
     assert any('"event": "done"' in event for event in events)
@@ -154,12 +559,17 @@ async def test_success_context_and_multi_round_calls(trace_setup, monkeypatch):
 async def test_failed_calls_preserved(trace_setup, monkeypatch, args, error):
     scripted(
         monkeypatch,
-        [[{"tool_calls": [native(args)], "done": True}], [{"content": "Recovered", "done": True}]],
+        [
+            [{"tool_calls": [native(args)], "done": True}],
+            [{"content": "Recovered", "done": True}],
+        ],
     )
     await run()
     (row,) = await saved(trace_setup)
     first = row["rounds"][0]
-    assert first["model_response"]["native_tool_calls"][0]["function"]["arguments"] == args
+    assert (
+        first["model_response"]["native_tool_calls"][0]["function"]["arguments"] == args
+    )
     if isinstance(args, str):
         assert first["parse_diagnostics"][0]["status"] == error
     else:
@@ -170,7 +580,10 @@ async def test_failed_calls_preserved(trace_setup, monkeypatch, args, error):
 
 @pytest.mark.asyncio
 async def test_text_parse_failure_preserved(trace_setup, monkeypatch):
-    scripted(monkeypatch, [[{"content": '```tool\n{"tool": "echo", broken}\n```', "done": True}]])
+    scripted(
+        monkeypatch,
+        [[{"content": '```tool\n{"tool": "echo", broken}\n```', "done": True}]],
+    )
     await run()
     (row,) = await saved(trace_setup)
     assert row["rounds"][0]["parse_diagnostics"][0]["status"] == "invalid_json"
@@ -279,7 +692,13 @@ def test_redaction_and_unusual_values(monkeypatch):
         }
     )
     text = json.dumps(data)
-    for secret in ("never-persist-me", "abc.def", "password=secret", "user:pass", "base64"):
+    for secret in (
+        "never-persist-me",
+        "abc.def",
+        "password=secret",
+        "user:pass",
+        "base64",
+    ):
         assert secret not in text
     assert data["api_key"] == "[REDACTED]"
     assert data["bytes"]["omitted"] == "binary"
@@ -325,7 +744,10 @@ async def test_cli(trace_setup, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_parallel_writer_lock_and_prompt_publication(tmp_path):
-    rows = [{"timestamp": "2026-10-13T00:00:00Z", "trace_id": str(index)} for index in range(32)]
+    rows = [
+        {"timestamp": "2026-10-13T00:00:00Z", "trace_id": str(index)}
+        for index in range(32)
+    ]
     await asyncio.gather(
         *(
             asyncio.to_thread(tracing._write, tmp_path, row, {"shared": "same prompt"})
@@ -333,10 +755,14 @@ async def test_parallel_writer_lock_and_prompt_publication(tmp_path):
         )
     )
     saved_rows = [
-        json.loads(line) for line in (tmp_path / "2026-10-13.jsonl").read_text().splitlines()
+        json.loads(line)
+        for line in (tmp_path / "2026-10-13.jsonl").read_text().splitlines()
     ]
     assert len(saved_rows) == 32
-    assert json.loads((tmp_path / "prompts/shared.json").read_text())["content"] == "same prompt"
+    assert (
+        json.loads((tmp_path / "prompts/shared.json").read_text())["content"]
+        == "same prompt"
+    )
     assert (tmp_path / "2026-10-13.jsonl").stat().st_mode & 0o777 == 0o600
 
 
@@ -398,7 +824,9 @@ async def test_redacts_raw_json_and_split_stream_secrets(trace_setup, monkeypatc
 async def test_effective_settings_and_malformed_provider_data(trace_setup, monkeypatch):
     async def stream(model, messages, **kwargs):
         tracing.observe(
-            "provider_request", model, {"model": model, "temperature": 0.2, "think": False}
+            "provider_request",
+            model,
+            {"model": model, "temperature": 0.2, "think": False},
         )
         tracing.observe("malformed_frame", model, '{"message": broken}')
         yield {"content": "Answer", "done": True}
@@ -417,12 +845,16 @@ async def test_injected_memory_and_model_switch(trace_setup, monkeypatch):
         "get_relevant_memories",
         AsyncMock(
             return_value=[
-                SimpleNamespace(pinned=True, text="Likes diagrams", category="preference")
+                SimpleNamespace(
+                    pinned=True, text="Likes diagrams", category="preference"
+                )
             ]
         ),
     )
     monkeypatch.setattr(
-        service.config_store, "tool_model_override", AsyncMock(return_value="local:override")
+        service.config_store,
+        "tool_model_override",
+        AsyncMock(return_value="local:override"),
     )
     scripted(
         monkeypatch,
@@ -435,7 +867,10 @@ async def test_injected_memory_and_model_switch(trace_setup, monkeypatch):
     (row,) = await saved(trace_setup)
     assert "Likes diagrams" in json.dumps(row["rounds"][0]["context_messages"])
     assert row["rounds"][1]["model"] == "local:override"
-    assert row["rounds"][0]["tool_calls"][0]["effective_arguments"]["model"] == "local:override"
+    assert (
+        row["rounds"][0]["tool_calls"][0]["effective_arguments"]["model"]
+        == "local:override"
+    )
 
 
 @pytest.mark.asyncio
@@ -551,7 +986,11 @@ async def test_effective_inference_settings_and_cache(trace_setup, monkeypatch):
         assert trace.data["inference"]["sources"]["temperature"] == "model_metadata"
         await tracing.observe_provider_request(
             "local",
-            {"model": "local", "think": False, "options": {"temperature": 0, "num_predict": 20}},
+            {
+                "model": "local",
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 20},
+            },
             local=True,
         )
         assert trace.data["inference"]["temperature"] == 0
