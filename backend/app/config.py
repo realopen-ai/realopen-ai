@@ -640,13 +640,18 @@ class Settings(BaseSettings):
     TITLE_GENERATION_TIMEOUT_SECONDS: int = 60
 
     # ── Context compaction ──────────────────────────────────────────────
-    # When context usage exceeds this fraction of the model's window,
+    # When context usage exceeds this fraction of the reserved input budget,
     # compact older messages into a summary. Default 0.80 = 80% full.
     CONTEXT_COMPACT_THRESHOLD: float = 0.80
-    # Number of recent turns to always preserve during compaction.
+    # Preferred recent exchange count; may shrink to fit the input budget.
     CONTEXT_COMPACT_PRESERVE_TURNS: int = 6
     # Maximum tokens for the compaction summary response.
     CONTEXT_COMPACT_SUMMARY_TOKENS: int = 512
+    # Effective agent window: also sent as num_ctx to the local runtime.
+    AGENT_CONTEXT_WINDOW: int = 8192
+    AGENT_CONTEXT_WINDOWS: Dict[str, int] = {}  # Exact model-id overrides.
+    AGENT_OUTPUT_RESERVE_TOKENS: int = 2048
+    AGENT_CONTEXT_MARGIN_TOKENS: int = 256
 
     # ── Excel generation (use_excel_gen tool) ──────────────────────────
     # The specialized Excel AI call emits a strict JSON workbook spec

@@ -144,7 +144,9 @@ def test_estimate_message_tokens_tool_role_overhead():
         ("completely-unknown", 8192),
     ],
 )
-def test_estimate_context_window(model, expected):
+def test_estimate_context_window(model, expected, monkeypatch):
+    assert _estimate_context_window(model) == settings.AGENT_CONTEXT_WINDOW
+    monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOWS", {model: expected})
     assert _estimate_context_window(model) == expected
 
 
@@ -267,7 +269,7 @@ def test_format_message_includes_tool_calls():
     assert '[tool: search({"q": "cats"})]' in out
 
 
-def test_format_message_truncates_long_tool_args():
+def test_format_message_preserves_long_tool_args():
     long_args = '{"q": "' + "z" * 500 + '"}'
     msg = {
         "role": "assistant",
@@ -275,8 +277,7 @@ def test_format_message_truncates_long_tool_args():
         "tool_calls": [{"function": {"name": "t", "arguments": long_args}}],
     }
     out = _format_message_for_compaction(msg)
-    assert "…" in out
-    assert len(out) < 300  # args cut at 200 chars
+    assert long_args in out
 
 
 def test_format_message_serializes_dict_tool_args():
@@ -305,10 +306,10 @@ def test_format_message_stringifies_unserializable_tool_args():
     assert "[tool: t(weird-arg)]" in out
 
 
-def test_format_message_caps_content_at_2000():
+def test_format_message_preserves_complete_content():
     msg = {"role": "user", "content": "a" * 5000}
     out = _format_message_for_compaction(msg)
-    assert len(out) == len("USER: ") + 2000
+    assert len(out) == len("USER: ") + 5000
 
 
 def test_build_compaction_text_joins_messages():
@@ -457,17 +458,18 @@ async def test_compact_success_replaces_old_half_with_summary():
     assert compacted is True
     assert len(out) == 8  # system + summary + 6 recent
     assert out[0] == system
-    assert out[1]["role"] == "system"
-    assert out[1]["content"].startswith(
-        "[Compacted conversation #1 — 6 earlier messages summarized]"
-    )
+    assert out[1]["role"] == "user"
+    assert out[1]["metadata"]["compaction"] is True
+    assert "<<<UNTRUSTED_SOURCE_DATA>>>" in out[1]["content"]
     assert "Summary of the past." in out[1]["content"]
     # The most recent turns are preserved verbatim
     assert out[2:] == convo[6:]
     # The summarizer saw the older half
     text_arg = summ.call_args[0][1]
     assert text_arg.startswith("USER:")
-    assert summ.call_args[0][2] == settings.CONTEXT_COMPACT_SUMMARY_TOKENS
+    assert (
+        summ.call_args.kwargs["max_tokens"] == settings.CONTEXT_COMPACT_SUMMARY_TOKENS
+    )
 
 
 @pytest.mark.asyncio
@@ -504,7 +506,9 @@ async def test_compact_drops_orphan_tool_message_in_recent_part():
 
 
 @pytest.mark.asyncio
-async def test_compact_failure_returns_original_intact():
+async def test_compact_failure_returns_original_intact(monkeypatch):
+    monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOW", 12000)
+    monkeypatch.setattr(settings, "CONTEXT_COMPACT_THRESHOLD", 0.5)
     msgs = [{"role": "system", "content": "sys"}] + [
         _big("user"),
         _big("assistant"),
@@ -526,7 +530,8 @@ async def test_compact_replaces_previous_compaction_header():
     assert compacted is True
     headers = [m for m in out if "[Compacted conversation" in m["content"]]
     assert len(headers) == 1  # no stacking
-    assert headers[0]["content"].startswith("[Compacted conversation #2")
+    assert headers[0]["metadata"]["compaction"] is True
+    assert headers[0]["role"] == "user"
     # The fresh system prompt survived
     assert system2 in out
     assert system1 not in out
@@ -539,9 +544,10 @@ async def test_compact_replaces_previous_compaction_header():
 
 @pytest.mark.asyncio
 async def test_summarize_conversation_too_few_messages():
-    assert await summarize_conversation(
-        [{"role": "user", "content": "a"}] * 3, "m"
-    ) is None
+    assert (
+        await summarize_conversation([{"role": "user", "content": "a"}] * 3, "m")
+        is None
+    )
 
 
 @pytest.mark.asyncio
