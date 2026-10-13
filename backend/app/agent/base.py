@@ -24,6 +24,7 @@ class ToolType(str, Enum):
     SKILL = "skill"
     FLASHCARDS = "flashcards"
     NOTES = "notes"
+    QUIZZES = "quizzes"
     ARTIFACT = "artifact"
     FILE_READ = "file_read"
     FILE_WRITE = "file_write"

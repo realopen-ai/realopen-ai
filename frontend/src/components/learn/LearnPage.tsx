@@ -32,6 +32,7 @@ import { StudySession } from "./StudySession";
 import { SourceAction } from "./SourceAction";
 import { DeckCardStack } from "./DeckCardStack";
 import { LearnNav, NotesList, NotesPage } from "./NotesPage";
+import { QuizzesPage, QuizzesList } from "./QuizzesPage";
 import { NotebooksPage, NotebooksList } from "./NotebooksPage";
 
 function DeckEditor({
@@ -342,6 +343,7 @@ function DeckDetail({ id }: { id: string }) {
 export function LearnPage() {
   const { pathname } = useLocation();
   const { noteId } = useParams();
+  if (pathname.startsWith("/learn/quizzes")) return <QuizzesPage />;
   if (pathname === "/learn/notebooks") return <NotebooksPage />;
   if (pathname === "/learn/notes" || pathname.startsWith("/learn/notes/"))
     return (
@@ -522,6 +524,7 @@ function FlashcardsPage() {
               </div>
             )}
             {dashboard && <NotesList recent />}
+            {dashboard && <QuizzesList recent />}
           </PageContainer>
         )}
       </div>

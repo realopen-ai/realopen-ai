@@ -69,6 +69,10 @@ _KEYWORD_TOOLS: Dict[str, Set[str]] = {
             "مستند",
         )
     },
+    "quiz": {"create_quiz"},
+    "quizz": {"create_quiz"},
+    "questionnaire": {"create_quiz"},
+    "اختبار": {"create_quiz"},
     "note": {"create_study_note"},
     "summarize": {"create_study_note"},
     "résumé": {"create_study_note"},

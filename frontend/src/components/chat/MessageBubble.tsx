@@ -45,6 +45,7 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
 import { DeckArtifact } from "@/components/learn/DeckArtifact";
+import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
 import { artifactReadLocation } from "@/lib/sourceNavigation";
@@ -386,6 +387,20 @@ function ToolCallBlockView({
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
   if (!tc) return null;
+  const quizzes = tc.genResults?.filter((r) => r.type === "quiz" && r.quiz_id);
+  if (quizzes?.length && tc.status === "completed")
+    return (
+      <>
+        {quizzes.map((q) => (
+          <QuizArtifact
+            key={q.quiz_id}
+            id={q.quiz_id!}
+            title={q.title ?? translate("learn.quizzes")}
+            count={q.question_count ?? 0}
+          />
+        ))}
+      </>
+    );
   const noteArtifacts = tc.genResults?.filter(
     (r) => r.type === "study_note" && r.note_id,
   );
@@ -450,6 +465,10 @@ function ToolCallBlockView({
   // keeping the conversation quiet. Progressive disclosure: full detail
   // appears only when the row is expanded.
   const configs: Record<string, { label: string; runningLabel: string }> = {
+    quizzes: {
+      label: translate("quiz.created"),
+      runningLabel: translate("quiz.creating"),
+    },
     notes: {
       label: translate("learn.noteCreated"),
       runningLabel: translate("learn.noteCreating"),

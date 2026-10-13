@@ -1,4 +1,4 @@
-export type NotebookKind = "document" | "artifact" | "note" | "deck";
+export type NotebookKind = "document" | "artifact" | "note" | "deck" | "quiz";
 export interface NotebookItem {
   id: string;
   kind: NotebookKind;

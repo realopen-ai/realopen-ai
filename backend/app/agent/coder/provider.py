@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import httpx
 
 from app.agent.coder.tooling import CODER_TOOLS
+from app.agent.tracing import observe, timestamp
 from app.services import providers
 
 
@@ -38,9 +40,41 @@ def recovery_message(content: str) -> dict:
     raise ValueError("Coder recovery response contained neither tool nor final")
 
 
+async def _chat_attempt(model, messages, tools, *, recovery=False, **kwargs):
+    started_at, started = timestamp(), time.monotonic()
+    try:
+        result = await providers.chat_once(model, messages, tools=tools, **kwargs)
+    except BaseException as exc:
+        error = {"type": type(exc).__name__, "message": str(exc)}
+        if isinstance(exc, httpx.HTTPStatusError):
+            error.update(
+                status_code=exc.response.status_code, response=exc.response.text
+            )
+        observe(
+            "model_attempt",
+            messages,
+            tools,
+            error=error,
+            recovery=recovery,
+            started_at=started_at,
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+        raise
+    observe(
+        "model_attempt",
+        messages,
+        tools,
+        response=result,
+        recovery=recovery,
+        started_at=started_at,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return result
+
+
 async def chat_with_tool_recovery(model: str, messages: list[dict]) -> dict:
     try:
-        return await providers.chat_once(
+        result = await _chat_attempt(
             model,
             messages,
             tools=CODER_TOOLS,
@@ -48,6 +82,7 @@ async def chat_with_tool_recovery(model: str, messages: list[dict]) -> dict:
             think=False,
             options={"num_predict": 2048, "temperature": 0},
         )
+        return result
     except httpx.HTTPStatusError as first_error:
         if first_error.response.status_code < 500:
             raise
@@ -65,18 +100,23 @@ async def chat_with_tool_recovery(model: str, messages: list[dict]) -> dict:
             },
         ]
         try:
-            fallback = await providers.chat_once(
+            fallback = await _chat_attempt(
                 model,
                 retry_messages,
                 tools=None,
+                recovery=True,
                 timeout=1200,
                 format="json",
                 think=False,
                 options={"num_predict": 2048, "temperature": 0},
             )
-            fallback["message"] = recovery_message(
-                fallback.get("message", {}).get("content", "")
-            )
+            try:
+                fallback["message"] = recovery_message(
+                    fallback.get("message", {}).get("content", "")
+                )
+            except Exception as parse_error:
+                observe("recovery_error", str(parse_error))
+                raise
             return fallback
         except Exception as recovery_error:
             raise RuntimeError(

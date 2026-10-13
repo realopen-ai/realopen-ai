@@ -19,6 +19,7 @@ from prometheus_client import make_asgi_app  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.core import metrics as app_metrics  # noqa: E402
+from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
@@ -30,6 +31,7 @@ from app.api.reports import router as reports_router  # noqa: E402
 from app.api.workspace import router as workspace_router  # noqa: E402
 from app.api.flashcards import router as flashcards_router  # noqa: E402
 from app.api.notes import router as notes_router  # noqa: E402
+from app.api.quizzes import router as quizzes_router  # noqa: E402
 from app.api.artifacts import router as artifacts_router  # noqa: E402
 from app.api.notebooks import router as notebooks_router  # noqa: E402
 from app.api.deps import router as deps_router  # noqa: E402
@@ -220,6 +222,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown events."""
     if is_debug():
         logger.debug("🔧 DEBUG mode is ON — verbose logging enabled")
+    if settings.AGENT_TRACE_ENABLED:
+        logger.warning(
+            "Detailed agent tracing enabled: conversation content, memories and tool "
+            "outputs are stored locally. Review traces before sharing."
+        )
 
     # Detect setup mode
     setup_mode = _detect_setup_mode()
@@ -370,12 +377,14 @@ async def lifespan(app: FastAPI):
                 logger.debug("Sandbox idle monitor: %s", exc)
 
     sandbox_monitor = asyncio.create_task(idle_sandbox_monitor())
-    yield
-
-    # Shutdown
-    sandbox_monitor.cancel()
-    with suppress(asyncio.CancelledError):
-        await sandbox_monitor
+    try:
+        yield
+    finally:
+        # Shutdown: flush the optional local trace writer after active requests stop.
+        sandbox_monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await sandbox_monitor
+        await flush_traces()
 
 
 app = FastAPI(
@@ -426,6 +435,7 @@ app.include_router(reports_router, prefix="/api", tags=["reports"])
 app.include_router(workspace_router, prefix="/api", tags=["workspace"])
 app.include_router(flashcards_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
+app.include_router(quizzes_router, prefix="/api")
 app.include_router(artifacts_router, prefix="/api")
 app.include_router(notebooks_router, prefix="/api")
 app.include_router(deps_router, prefix="/api", tags=["dependencies"])
