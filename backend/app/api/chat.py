@@ -653,6 +653,16 @@ async def chat_stream_multipart(
         _log("   ⚠️  JSONDecodeError parsing messages, using raw string")
         parsed_messages = [{"role": "user", "content": messages}]
 
+    # Keep the original human request distinct from later attachment context hints.
+    trace_user_message = next(
+        (
+            m.get("content", "")
+            for m in reversed(parsed_messages)
+            if m.get("role") == "user"
+        ),
+        "",
+    )
+
     raw_model = model_override or model or "default"
     _log("   raw_model=%s", raw_model)
     resolved_model = await model_prefs.resolve_chat_request_model(raw_model)
@@ -875,6 +885,7 @@ async def chat_stream_multipart(
                 model=_resolved_model,
                 images=image_b64_list if image_b64_list else None,
                 conversation_id=str(_conv_id) if _conv_id else None,
+                trace_user_message=trace_user_message,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
