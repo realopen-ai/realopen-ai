@@ -19,6 +19,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Force a placeholder DATABASE_URL so create_async_engine doesn't blow up
 # at import time. The tests that need a real DB session mock
 # async_session_factory, so this URL is never actually connected to.
@@ -34,3 +36,17 @@ os.environ.setdefault("HARDWARE_PROFILE", "cpu_small")
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def isolated_tool_capabilities(tmp_path):
+    """Tests must neither consume nor change learned real-model capabilities."""
+    from app.services import tool_capabilities
+
+    # Do not depend on pytest's shared monkeypatch fixture here: changing its
+    # setup order can invert teardown of nested API-client monkeypatches.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            tool_capabilities, "_directory", lambda: tmp_path / "tool_capabilities"
+        )
+        yield
