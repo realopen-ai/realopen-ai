@@ -437,6 +437,9 @@ export function ChatArea({
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
           streamedToolTypes.set(toolCall.id, toolCall.type);
 
+          // A rejected attempt is visible, but never ran in the workspace.
+          if (toolCall.status !== "running") return;
+
           if (
             toolCall.sandboxId &&
             useSandboxStore.getState().sandboxId !== toolCall.sandboxId
@@ -565,10 +568,7 @@ export function ChatArea({
           finishInterruptedThinking();
           useChatStore
             .getState()
-            .updateMessage(capturedConvId, assistantMsgId, {
-              content: `Sorry, I encountered an error: ${error}\n\nPlease make sure Ollama is running.`,
-              completionStatus: "error",
-            });
+            .appendErrorBlock(capturedConvId, assistantMsgId, error);
           useChatStore
             .getState()
             .setStreaming(capturedConvId, assistantMsgId, false);
