@@ -67,7 +67,9 @@ async def get_artifact(db, artifact_id, conversation_id=None, *, scoped=False):
             artifact = await db.get(Artifact, artifact_id)
             if artifact is None:
                 raise HTTPException(404, "Artifact not found")
-            if scoped and (conversation_id is None or artifact.conversation_id != conversation_id):
+            if scoped and (
+                conversation_id is None or artifact.conversation_id != conversation_id
+            ):
                 raise HTTPException(403, "Artifact belongs to another conversation")
             return artifact
         if (
@@ -95,7 +97,10 @@ async def get_artifact(db, artifact_id, conversation_id=None, *, scoped=False):
             document = await db.get(Document, artifact.document_id)
             if document is None or (
                 document.scope != "public"
-                and (conversation_id is None or document.conversation_id != conversation_id)
+                and (
+                    conversation_id is None
+                    or document.conversation_id != conversation_id
+                )
             ):
                 raise HTTPException(403, "Document belongs to another conversation")
         elif conversation_id is None or artifact.conversation_id != conversation_id:
@@ -110,7 +115,8 @@ async def get_version(db, artifact, number=None):
     version = (
         await db.execute(
             select(ArtifactVersion).where(
-                ArtifactVersion.artifact_id == artifact.id, ArtifactVersion.number == number
+                ArtifactVersion.artifact_id == artifact.id,
+                ArtifactVersion.number == number,
             )
         )
     ).scalar_one_or_none()
@@ -127,8 +133,12 @@ async def get_version(db, artifact, number=None):
             )
         if snapshot is None:
             if path.stat().st_size > 50 * 1024 * 1024:
-                raise HTTPException(413, "Artifact extraction supports files up to 50 MB")
-            _, snapshot = await extract(await asyncio.to_thread(path.read_bytes), document.filename)
+                raise HTTPException(
+                    413, "Artifact extraction supports files up to 50 MB"
+                )
+            _, snapshot = await extract(
+                await asyncio.to_thread(path.read_bytes), document.filename
+            )
             await asyncio.to_thread(save_snapshot, cache, snapshot)
         source = "\n\n".join(section["content"] for section in snapshot["sections"])
         if len(source) > MAX_SOURCE:
@@ -185,12 +195,16 @@ def metadata(artifact):
         "editable": artifact.kind in {"report", "presentation", "excel"},
         "export_formats": formats.get(artifact.kind, []),
         "document_id": str(artifact.document_id) if artifact.document_id else None,
-        "conversation_id": str(artifact.conversation_id) if artifact.conversation_id else None,
+        "conversation_id": (
+            str(artifact.conversation_id) if artifact.conversation_id else None
+        ),
         "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
     }
 
 
-async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0):
+async def catalog(
+    db, conversation_id=None, *, scoped=False, limit=30, offset=0, include_public=True
+):
     conversation_id = uuid.UUID(str(conversation_id)) if conversation_id else None
     if scoped:
         selected = await source_catalog(db, conversation_id, offset=offset, limit=limit)
@@ -205,14 +219,20 @@ async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0)
         )
         docs = docs.where(
             or_(
-                Document.scope == "public",
-                Document.conversation_id == conversation_id if conversation_id else false(),
+                Document.scope == "public" if include_public else false(),
+                (
+                    Document.conversation_id == conversation_id
+                    if conversation_id
+                    else false()
+                ),
             )
         )
     generated = (
         (
             await db.execute(
-                query.order_by(Artifact.created_at.desc(), Artifact.id).limit(limit).offset(offset)
+                query.order_by(Artifact.created_at.desc(), Artifact.id)
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()
@@ -221,7 +241,9 @@ async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0)
     documents = (
         (
             await db.execute(
-                docs.order_by(Document.created_at.desc(), Document.id).limit(limit).offset(offset)
+                docs.order_by(Document.created_at.desc(), Document.id)
+                .limit(limit)
+                .offset(offset)
             )
         )
         .scalars()
@@ -237,7 +259,9 @@ async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0)
             "editable": False,
             "export_formats": [],
             "document_id": str(doc.id),
-            "conversation_id": str(doc.conversation_id) if doc.conversation_id else None,
+            "conversation_id": (
+                str(doc.conversation_id) if doc.conversation_id else None
+            ),
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
         }
         for doc in documents
@@ -245,9 +269,11 @@ async def catalog(db, conversation_id=None, *, scoped=False, limit=30, offset=0)
     return {
         "items": [metadata(item) for item in generated] + uploads,
         "offset": offset,
-        "next_offset": offset + limit
-        if len(generated) == limit or len(documents) == limit
-        else None,
+        "next_offset": (
+            offset + limit
+            if len(generated) == limit or len(documents) == limit
+            else None
+        ),
     }
 
 
@@ -263,7 +289,9 @@ async def register_generated(db, result: dict, conversation_id):
         sidecar = file_path(f"reports/{report_id}.source.json")
         if not sidecar.is_file():
             return None  # Historical outputs have no editable canonical source.
-        payload = await asyncio.to_thread(lambda: json.loads(sidecar.read_text(encoding="utf-8")))
+        payload = await asyncio.to_thread(
+            lambda: json.loads(sidecar.read_text(encoding="utf-8"))
+        )
         source = payload["source"]
         if len(source) > MAX_SOURCE:
             raise HTTPException(413, "Generated artifact exceeds source limit")
@@ -312,7 +340,9 @@ async def import_recent(db, conversation_id=None, *, scoped=False):
         except (ValueError, TypeError, AttributeError):
             continue
         fmt = item.get("format")
-        if fmt not in {"pdf", "docx", "pptx", "xlsx"} or await db.get(Artifact, identifier):
+        if fmt not in {"pdf", "docx", "pptx", "xlsx"} or await db.get(
+            Artifact, identifier
+        ):
             continue
         relative = f"reports/{identifier}.{fmt}"
         if not file_path(relative).is_file():
@@ -355,7 +385,9 @@ def read(version, section_id=None, offset=0, limit=MAX_READ):
             "warnings": version.settings.get("warnings", []),
             "images": version.settings.get("images", []),
         }
-    section = next((section for section in version.sections if section["id"] == section_id), None)
+    section = next(
+        (section for section in version.sections if section["id"] == section_id), None
+    )
     if section is None:
         raise HTTPException(404, "Artifact section not found")
     content = section["content"]
@@ -380,7 +412,9 @@ def edited_source(version, kind, changes):
         if section_id in seen:
             raise HTTPException(422, "Duplicate section edit")
         seen.add(section_id)
-        section = next((part for part in version.sections if part["id"] == section_id), None)
+        section = next(
+            (part for part in version.sections if part["id"] == section_id), None
+        )
         if section is None:
             raise HTTPException(422, "Unknown section")
         if not content.strip():
@@ -416,7 +450,8 @@ def edited_source(version, kind, changes):
             replacements[section_id] = content
     if kind == "report":
         source = "\n\n".join(
-            replacements.get(part["id"], part["content"]).rstrip() for part in version.sections
+            replacements.get(part["id"], part["content"]).rstrip()
+            for part in version.sections
         )
     if len(source) > MAX_SOURCE:
         raise HTTPException(413, "Source exceeds size limit")
@@ -474,7 +509,9 @@ async def render(kind, source, settings, fmt):
             await asyncio.to_thread(_build_xlsx, spec, output.with_suffix(".xlsx"))
             if fmt == "pdf":
                 if (
-                    await _convert_office_to_pdf_in_cache(output.with_suffix(".xlsx"), directory)
+                    await _convert_office_to_pdf_in_cache(
+                        output.with_suffix(".xlsx"), directory
+                    )
                     is None
                 ):
                     raise HTTPException(503, "PDF export requires LibreOffice")
@@ -493,7 +530,9 @@ async def publish(db, artifact, expected_version, source, *, restored_from=None)
     if artifact.kind not in {"report", "presentation", "excel"}:
         raise HTTPException(403, "Uploaded artifacts are read-only")
     if expected_version != artifact.current_version:
-        raise HTTPException(409, "Artifact changed; read the latest version before editing")
+        raise HTTPException(
+            409, "Artifact changed; read the latest version before editing"
+        )
     current = await get_version(db, artifact)
     sections = sections_for(source, artifact.kind)
     fmt = current.settings.get("format", next(iter(current.outputs)))
@@ -525,7 +564,9 @@ async def publish(db, artifact, expected_version, source, *, restored_from=None)
 
 async def export(db, artifact, version, fmt):
     if artifact.kind not in {"report", "presentation", "excel"}:
-        raise HTTPException(403, "Uploaded artifacts are read-only; download the original")
+        raise HTTPException(
+            403, "Uploaded artifacts are read-only; download the original"
+        )
     version = (
         await db.execute(
             select(ArtifactVersion)
@@ -548,7 +589,14 @@ async def summarize(
     model = model or await model_prefs.resolve_task_model("chat")
     key = hashlib.sha256(
         json.dumps(
-            ["batched-v4", str(artifact.id), version.number, version.source, model, question],
+            [
+                "batched-v4",
+                str(artifact.id),
+                version.number,
+                version.source,
+                model,
+                question,
+            ],
             ensure_ascii=False,
         ).encode()
     ).hexdigest()
@@ -556,7 +604,9 @@ async def summarize(
     if cache.is_file():
         if progress:
             await progress({"stage": "cached", "completed": 1, "total": 1})
-        return await asyncio.to_thread(lambda: json.loads(cache.read_text(encoding="utf-8")))
+        return await asyncio.to_thread(
+            lambda: json.loads(cache.read_text(encoding="utf-8"))
+        )
 
     abbreviated = False
 
@@ -585,7 +635,10 @@ async def summarize(
                 timeout=90,
             ):
                 chunks.append(chunk.get("content", ""))
-                truncated = truncated or chunk.get("finish_reason") in {"length", "max_tokens"}
+                truncated = truncated or chunk.get("finish_reason") in {
+                    "length",
+                    "max_tokens",
+                }
         summary = "".join(chunks).strip()
         if truncated:
             abbreviated = True
@@ -596,7 +649,8 @@ async def summarize(
                     "Summary reached the model output limit without a complete sentence."
                 )
             summary = (
-                summary[: endings[-1].end()] + "\n[Summary abbreviated at the model output limit.]"
+                summary[: endings[-1].end()]
+                + "\n[Summary abbreviated at the model output limit.]"
             )
         if summary:
             batch_cache.parent.mkdir(parents=True, exist_ok=True)
@@ -605,7 +659,10 @@ async def summarize(
 
     result = await summarize_sections(version.sections, question, ask, progress)
     result["warnings"] = list(version.settings.get("warnings", []))
-    if abbreviated or "Summary abbreviated at the model output limit" in result["summary"]:
+    if (
+        abbreviated
+        or "Summary abbreviated at the model output limit" in result["summary"]
+    ):
         result["warnings"].append(
             "The model reached its output limit; incomplete trailing text was omitted."
         )
