@@ -610,3 +610,77 @@ async def test_stream_chat_groq_without_key(monkeypatch, tmp_state):
             "openai/gpt-oss-120b", [{"role": "user", "content": "hi"}]
         ):
             pass  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_stream_error_body_is_readable_for_protocol_negotiation(monkeypatch):
+    _install_transport(
+        monkeypatch,
+        lambda req: httpx.Response(400, json={"error": "model does not support tools"}),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        async for _ in providers.stream_chat(
+            "custom",
+            [{"role": "user", "content": "Task"}],
+            tools=[{"type": "function"}],
+        ):
+            pass
+    assert "does not support tools" in caught.value.response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,error_frame",
+    [
+        ("custom", '{"error":"failed to parse tool call"}\n'),
+        (
+            "openai/gpt-oss-120b",
+            'data: {"error":{"message":"function calling is not supported"}}\n\n',
+        ),
+    ],
+)
+async def test_stream_error_frames_are_not_silently_ignored(
+    monkeypatch, model, error_frame
+):
+    monkeypatch.setattr(providers, "get_groq_key", lambda: "test-key")
+    _install_transport(monkeypatch, _streaming_response([error_frame]))
+    with pytest.raises(providers.ProviderStreamError):
+        async for _ in providers.stream_chat(
+            model, [{"role": "user", "content": "Task"}]
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_groq_nonstream_preserves_native_calls(monkeypatch):
+    monkeypatch.setattr(providers, "get_groq_key", lambda: "test-key")
+    tool_call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "list_files", "arguments": "{}"},
+    }
+    _install_transport(
+        monkeypatch,
+        lambda req: httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": None, "tool_calls": [tool_call]}}]
+            },
+        ),
+    )
+    result = await providers.chat_once(
+        "openai/gpt-oss-120b", [{"role": "user", "content": "Task"}]
+    )
+    assert result["message"]["tool_calls"] == [tool_call]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["custom", "openai/gpt-oss-120b"])
+async def test_nonstream_error_payload_is_not_an_empty_success(monkeypatch, model):
+    monkeypatch.setattr(providers, "get_groq_key", lambda: "test-key")
+    _install_transport(
+        monkeypatch,
+        lambda req: httpx.Response(200, json={"error": "model does not support tools"}),
+    )
+    with pytest.raises(providers.ProviderStreamError):
+        await providers.chat_once(model, [{"role": "user", "content": "Task"}])

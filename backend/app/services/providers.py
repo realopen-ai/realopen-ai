@@ -432,7 +432,26 @@ def _to_groq_messages(messages: List[dict]) -> List[dict]:
     for m in messages:
         images = m.get("images")
         if not images:
-            converted.append({"role": m["role"], "content": m.get("content", "")})
+            item = {"role": m["role"], "content": m.get("content", "")}
+            if m.get("tool_calls"):
+                item["tool_calls"] = [
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["function"]["name"],
+                            "arguments": (
+                                call["function"]["arguments"]
+                                if isinstance(call["function"]["arguments"], str)
+                                else json.dumps(call["function"]["arguments"])
+                            ),
+                        },
+                    }
+                    for call in m["tool_calls"]
+                ]
+            if m.get("tool_call_id"):
+                item["tool_call_id"] = m["tool_call_id"]
+            converted.append(item)
             continue
         parts: List[dict] = []
         text = m.get("content", "")
@@ -506,12 +525,15 @@ async def chat_once(
             )
             resp.raise_for_status()
             data = resp.json()
+        if data.get("error"):
+            raise ProviderStreamError(str(data["error"]))
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message", {}) or {}
         return {
             "message": {
                 "role": "assistant",
                 "content": msg.get("content", ""),
+                **({"tool_calls": msg["tool_calls"]} if msg.get("tool_calls") else {}),
             },
             "model": data.get("model", model),
             "done": True,
@@ -532,9 +554,15 @@ async def chat_once(
         resp = await client.post(f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload)
         resp.raise_for_status()
         data = resp.json()
+    if data.get("error"):
+        raise ProviderStreamError(str(data["error"]))
     data.setdefault("done", True)
     data.setdefault("provider", "ollama")
     return data
+
+
+class ProviderStreamError(RuntimeError):
+    """An error frame returned by a provider after accepting the stream."""
 
 
 class _GroqToolCallAccumulator:
@@ -602,6 +630,8 @@ async def stream_chat(
                 headers=_groq_headers(),
                 timeout=timeout,
             ) as response:
+                if response.is_error:
+                    await response.aread()
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -615,6 +645,8 @@ async def stream_chat(
                     except json.JSONDecodeError:
                         observe("malformed_frame", model, data_str)
                         continue
+                    if chunk.get("error"):
+                        raise ProviderStreamError(str(chunk["error"]))
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -673,6 +705,8 @@ async def stream_chat(
             json=payload,
             timeout=timeout,
         ) as response:
+            if response.is_error:
+                await response.aread()
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line.strip():
@@ -682,6 +716,8 @@ async def stream_chat(
                 except json.JSONDecodeError:
                     observe("malformed_frame", model, line)
                     continue
+                if chunk.get("error"):
+                    raise ProviderStreamError(str(chunk["error"]))
                 msg = chunk.get("message", {}) or {}
                 yield {
                     "thinking": msg.get("thinking", "") or "",
