@@ -353,6 +353,9 @@ class Trace:
                         "status": "invalid_json",
                         "error": str(exc),
                         "raw_candidate": self.safe(match[1]),
+                        "represented_by_call": bool(
+                            len(calls) == 1 and calls[0].get("parse_error")
+                        ),
                     }
                 )
         self.round["parsed_tool_calls"] = self.safe(calls)
@@ -475,7 +478,14 @@ class Trace:
         if self.tool is not None:
             self.tool["tool_call_id"] = tool_call_id
 
-    def end_tool(self, status, output=None, error=None, execution_args=None):
+    def end_tool(
+        self,
+        status,
+        output=None,
+        error=None,
+        execution_args=None,
+        validation_error=False,
+    ):
         if self.tool is None:
             return
         self.tool.update(
@@ -495,8 +505,11 @@ class Trace:
                 if status == "completed"
                 else (
                     "reported_validation_error"
-                    if isinstance(error, str)
-                    and (error.startswith("Invalid ") or "ValidationError" in error)
+                    if validation_error
+                    or (
+                        isinstance(error, str)
+                        and (error.startswith("Invalid ") or "ValidationError" in error)
+                    )
                     else "not_observed"
                 )
             ),
@@ -527,7 +540,9 @@ class Trace:
             "total_tool_calls": len(calls)
             + sum(
                 sum(
-                    d.get("status") == "invalid_json" and "raw_candidate" in d
+                    d.get("status") == "invalid_json"
+                    and "raw_candidate" in d
+                    and not d.get("represented_by_call")
                     for d in rnd["parse_diagnostics"]
                 )
                 for rnd in self.data["rounds"]
@@ -547,7 +562,9 @@ class Trace:
             )
             + sum(
                 sum(
-                    d.get("status") == "invalid_json" and "raw_candidate" in d
+                    d.get("status") == "invalid_json"
+                    and "raw_candidate" in d
+                    and not d.get("represented_by_call")
                     for d in rnd["parse_diagnostics"]
                 )
                 for rnd in self.data["rounds"]

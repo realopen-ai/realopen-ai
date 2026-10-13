@@ -17,6 +17,34 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, ToolRegistr
 from app.config import settings
 
 
+@pytest.mark.asyncio
+async def test_argument_rebuild_keeps_raw_failed_attempts_and_json_response(
+    trace_setup, monkeypatch
+):
+    raw = {"input": {"invalid": "RAW_REJECTED_PAYLOAD"}}
+    rebuilt = '{"tool":"echo","args":{"input":"fixed"}}'
+    scripted(
+        monkeypatch,
+        [
+            [{"tool_calls": [native(raw)], "done": True}],
+            [{"content": rebuilt, "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run()
+    record = (await saved(trace_setup))[0]
+    assert record["outcome"]["status"] == "completed"
+    assert record["outcome"]["failed_tool_calls"] == 1
+    assert record["outcome"]["successful_tool_calls"] == 1
+    assert record["rounds"][0]["tool_calls"][0]["arguments"] == raw
+    second = record["rounds"][1]
+    assert second["model_response"]["content"] == rebuilt
+    assert second["parsed_tool_calls"][0]["args"] == {"input": "fixed"}
+    assert "RAW_REJECTED_PAYLOAD" not in json.dumps(second["input_messages"])
+    assert second["available_tools"] == ["echo"]
+    assert not any(rebuilt in event for event in events)
+
+
 class EchoTool(BaseTool):
     name = "echo"
     description = "Echo input"
@@ -564,6 +592,16 @@ async def test_failed_calls_preserved(trace_setup, monkeypatch, args, error):
         monkeypatch,
         [
             [{"tool_calls": [native(args)], "done": True}],
+            [
+                {
+                    "content": (
+                        '{"tool":"echo","args":{"input":"Recovered"}}'
+                        if isinstance(args, str)
+                        else "Recovered"
+                    ),
+                    "done": True,
+                }
+            ],
             [{"content": "Recovered", "done": True}],
         ],
     )
@@ -591,9 +629,9 @@ async def test_text_parse_failure_preserved(trace_setup, monkeypatch):
     (row,) = await saved(trace_setup)
     assert row["rounds"][0]["parse_diagnostics"][0]["status"] == "invalid_json"
     assert "broken" in row["rounds"][0]["model_response"]["content"]
-    assert row["outcome"]["total_tool_calls"] == 2
-    assert row["outcome"]["unparsed_tool_attempts"] == 2
-    assert row["outcome"]["failed_tool_calls"] == 2
+    assert row["outcome"]["total_tool_calls"] == 3
+    assert row["outcome"]["unparsed_tool_attempts"] == 3
+    assert row["outcome"]["failed_tool_calls"] == 3
     assert row["outcome"]["status"] == "failed"
 
 
