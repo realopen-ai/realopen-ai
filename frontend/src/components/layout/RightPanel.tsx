@@ -33,7 +33,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chatStore";
 import { CreateSandboxDialog } from "@/components/workspace/SandboxDialogs";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import {
+  Panel,
+  Group,
+  Separator,
+  useDefaultLayout,
+} from "react-resizable-panels";
 import { shouldLoadConversationWorkspace } from "@/lib/workspaceActivation";
 import { normalizePreviewAddress, previewHostUrl } from "@/lib/previewAddress";
 import { useT } from "@/store/settingsStore";
@@ -107,6 +112,14 @@ function TerminalTab({
 }
 
 export function RightPanel() {
+  const columnsLayout = useDefaultLayout({
+    id: "sandbox-code-columns",
+    panelIds: ["sandbox-tree", "sandbox-editor"],
+  });
+  const rowsLayout = useDefaultLayout({
+    id: "sandbox-code-rows",
+    panelIds: ["sandbox-file", "sandbox-terminal"],
+  });
   const studyDeckId = useLearnStore((s) => s.studyDeckId);
   const quizId = useLearnStore((s) => s.quizId);
   const t = useT();
@@ -167,7 +180,10 @@ export function RightPanel() {
       <QuizSession
         key={quizId}
         quizId={quizId}
-        onClose={() => useLearnStore.getState().setQuiz(null)}
+        onClose={() => {
+          toggleRightPanel();
+          useLearnStore.getState().setQuiz(null);
+        }}
       />
     );
   if (studyDeckId)
@@ -175,7 +191,10 @@ export function RightPanel() {
       <StudySession
         key={studyDeckId}
         deckId={studyDeckId}
-        onClose={() => useLearnStore.getState().setStudyDeck(null)}
+        onClose={() => {
+          toggleRightPanel();
+          useLearnStore.getState().setStudyDeck(null);
+        }}
       />
     );
 
@@ -317,46 +336,45 @@ export function RightPanel() {
       {/* Content */}
       <div className="flex-1 overflow-hidden min-h-0">
         {rightPanelTab === "code" ? (
-          <PanelGroup
-            direction="horizontal"
-            autoSaveId="sandbox-code-columns"
-            className="h-full"
-          >
+          <Group orientation="horizontal" {...columnsLayout} className="h-full">
             <Panel
-              defaultSize={36}
-              minSize={22}
-              maxSize={48}
+              id="sandbox-tree"
+              defaultSize="36%"
+              minSize="22%"
+              maxSize="48%"
               className="min-w-0"
             >
               <FileExplorer />
             </Panel>
             {/* Tree | editor resizer: intentionally unstyled — the global
                 index.css rules make it a subtle 1px line until hover/drag. */}
-            <PanelResizeHandle className="shrink-0" />
-            <Panel minSize={40} className="min-w-0">
-              <PanelGroup
-                direction="vertical"
-                autoSaveId="sandbox-code-rows"
-                className="h-full"
-              >
-                <Panel defaultSize={68} minSize={25} className="min-h-0">
+            <Separator className="shrink-0" />
+            <Panel id="sandbox-editor" minSize="40%" className="min-w-0">
+              <Group orientation="vertical" {...rowsLayout} className="h-full">
+                <Panel
+                  id="sandbox-file"
+                  defaultSize="68%"
+                  minSize="25%"
+                  className="min-h-0"
+                >
                   <FileEditorPane />
                 </Panel>
                 {/* Code | terminal resizer: quiet hairline that lights up on
                     hover/drag. Doubles as the separator above the terminal.
                     The invisible overlay widens the drag target a little
                     without adding any visible chrome. */}
-                <PanelResizeHandle className="group relative h-1.5 shrink-0">
+                <Separator className="group relative h-1.5 shrink-0">
                   <span
                     className="absolute -inset-y-1 inset-x-0"
                     aria-hidden="true"
                   />
-                  <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border/60 transition-colors group-hover:bg-primary/60 group-data-[resize-handle-state=hover]:bg-primary/60 group-data-[resize-handle-state=drag]:bg-primary/80" />
-                </PanelResizeHandle>
+                  <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border/60 transition-colors group-hover:bg-primary/60 group-data-[separator=hover]:bg-primary/60 group-data-[separator=active]:bg-primary/80" />
+                </Separator>
                 <Panel
-                  defaultSize={32}
-                  minSize={16}
-                  maxSize={70}
+                  id="sandbox-terminal"
+                  defaultSize="32%"
+                  minSize="16%"
+                  maxSize="70%"
                   className="min-h-0"
                 >
                   <div className="flex h-full min-h-0 flex-col bg-terminal-bg">
@@ -400,9 +418,9 @@ export function RightPanel() {
                     </div>
                   </div>
                 </Panel>
-              </PanelGroup>
+              </Group>
             </Panel>
-          </PanelGroup>
+          </Group>
         ) : previewUrl ? (
           <div className="flex h-full flex-col bg-background">
             <form

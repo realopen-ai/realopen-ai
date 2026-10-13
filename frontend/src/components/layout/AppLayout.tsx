@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import {
   Panel,
-  PanelGroup,
-  PanelResizeHandle,
-  type ImperativePanelHandle,
+  Group,
+  Separator,
+  useDefaultLayout,
+  type PanelImperativeHandle,
 } from "react-resizable-panels";
 import { Sidebar, MobileMenuButton } from "@/components/layout/Sidebar";
 import { RightPanel, RightPanelToggle } from "@/components/layout/RightPanel";
@@ -22,6 +23,7 @@ import { useLocation, useParams } from "react-router-dom";
 import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
 import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
+import { rightPanelVisibilityAfterResize } from "@/lib/panelLayout";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -94,13 +96,27 @@ export function AppLayout() {
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
+  const rightPanelRef = useRef<PanelImperativeHandle>(null);
+  const mainLayout = useDefaultLayout({
+    id: "main-layout",
+    panelIds: ["main-content", "main-workspace"],
+  });
   const initialSyncDone = useRef(false);
 
   // Track whether the user is actively dragging the resize handle.
   // When NOT dragging, apply CSS transition for smooth expand/collapse.
   // When dragging, no transition so resize feels instant.
   const [isResizing, setIsResizing] = useState(true);
+
+  useEffect(() => {
+    const finishResize = () => setIsResizing(false);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+    return () => {
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+    };
+  }, []);
 
   useEffect(() => {
     setIsResizing(true);
@@ -154,11 +170,6 @@ export function AppLayout() {
     }
   }, [rightPanelOpen, showNotebook]);
 
-  // Transition class applied to panels only when NOT manually resizing
-  const panelTransitionClass = !isResizing
-    ? "transition-all duration-100 ease-in-out"
-    : "";
-
   return (
     <div className="flex h-full w-full overflow-hidden bg-background">
       <Sidebar />
@@ -166,12 +177,12 @@ export function AppLayout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Desktop: resizable panes */}
         <div className="hidden md:flex flex-1 min-h-0">
-          <PanelGroup direction="horizontal" autoSaveId="main-layout">
-            <Panel
-              defaultSize={60}
-              minSize={35}
-              className={panelTransitionClass}
-            >
+          <Group
+            orientation="horizontal"
+            data-animate-panels={!isResizing}
+            {...mainLayout}
+          >
+            <Panel id="main-content" defaultSize="60%" minSize="35%">
               <div className="relative h-full overflow-hidden">
                 {/* Keep ChatArea mounted while browsing application routes.
                     It owns live text streams and the voice WebSocket, so
@@ -222,26 +233,30 @@ export function AppLayout() {
               </div>
             </Panel>
 
-            <PanelResizeHandle
+            <Separator
               className={
                 showNotebook
                   ? "hidden"
                   : "w-px bg-border/50 transition-colors hover:bg-primary/50 active:bg-primary/70"
               }
-              onDragging={(dragging) => setIsResizing(dragging)}
+              onPointerDownCapture={() => setIsResizing(true)}
             />
 
             <Panel
-              ref={rightPanelRef}
-              defaultSize={40}
-              minSize={25}
-              maxSize={55}
+              id="main-workspace"
+              panelRef={rightPanelRef}
+              defaultSize="40%"
+              minSize="25%"
+              maxSize="55%"
               collapsible
               collapsedSize={0}
-              className={panelTransitionClass}
-              onCollapse={() => setRightPanelOpen(false)}
-              onExpand={() => {
-                if (!showNotebook) setRightPanelOpen(true);
+              onResize={(size, _id, previousSize) => {
+                const open = rightPanelVisibilityAfterResize(
+                  size.asPercentage,
+                  previousSize?.asPercentage,
+                  showNotebook,
+                );
+                if (open !== null) setRightPanelOpen(open);
               }}
             >
               <div
@@ -251,7 +266,7 @@ export function AppLayout() {
                 <RightPanel />
               </div>
             </Panel>
-          </PanelGroup>
+          </Group>
 
           {!rightPanelOpen && !showNotebook && (
             <div className="flex shrink-0 items-start justify-center pt-2 pr-1 pl-0.5">
