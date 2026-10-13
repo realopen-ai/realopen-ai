@@ -41,6 +41,8 @@ from app.api.skills import router as skills_router  # noqa: E402
 from app.api.voice import router as voice_router  # noqa: E402
 from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa: E402
 from app.core.logger import is_debug  # noqa: E402
+from app.services import agent_settings  # noqa: E402
+from app.db.session import async_session_factory  # noqa: E402
 from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -292,6 +294,12 @@ async def lifespan(app: FastAPI):
             logger.debug("🔧 Alembic migrations applied successfully")
     except Exception as e:
         logger.warning("Database migration on startup failed: %s", e)
+
+    try:
+        async with async_session_factory() as db:
+            await agent_settings.load(db)
+    except Exception as e:
+        logger.warning("Could not load agent preferences; using server defaults: %s", e)
 
     # Seed default templates into the DB if the templates table is empty
     try:

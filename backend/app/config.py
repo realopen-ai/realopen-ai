@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Literal
 
 import yaml
 from pydantic import PrivateAttr
@@ -643,6 +643,7 @@ class Settings(BaseSettings):
     # When context usage exceeds this fraction of the reserved input budget,
     # compact older messages into a summary. Default 0.80 = 80% full.
     CONTEXT_COMPACT_THRESHOLD: float = 0.80
+    CONTEXT_COMPACT_ENABLED: bool = True
     # Preferred recent exchange count; may shrink to fit the input budget.
     CONTEXT_COMPACT_PRESERVE_TURNS: int = 6
     # Maximum tokens for the compaction summary response.
@@ -652,6 +653,7 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_WINDOWS: Dict[str, int] = {}  # Exact model-id overrides.
     AGENT_OUTPUT_RESERVE_TOKENS: int = 2048
     AGENT_CONTEXT_MARGIN_TOKENS: int = 256
+    AGENT_TOOL_CALLING_MODE: Literal["auto", "text"] = "auto"
     AGENT_TOOL_VALIDATION_MAX_FAILURES: int = (
         3  # Initial attempt + two repairs, per tool/request.
     )
