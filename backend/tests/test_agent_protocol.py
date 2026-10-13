@@ -10,6 +10,10 @@ import httpx
 
 from app.agent import service
 from app.agent.base import BaseTool, ToolRegistry, ToolResult, ToolType
+from app.agent.tools.quizzes import CreateQuizTool
+from app.agent.tools.flashcards import CreateFlashcardDeckTool
+from app.agent.tools.notes import CreateStudyNoteTool
+from app.services.blocks import BlockBuilder
 from app.agent.protocol import (
     assistant_call_message,
     model_messages,
@@ -37,11 +41,13 @@ class Echo(BaseTool):
 
 @pytest.fixture
 def agent(monkeypatch):
+    monkeypatch.setattr(service.structured_outputs, "_unsupported", set())
     monkeypatch.setattr(settings, "AGENT_TRACE_ENABLED", False)
     monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOW", 8192)
     monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOWS", {})
     monkeypatch.setattr(settings, "AGENT_OUTPUT_RESERVE_TOKENS", 2048)
     monkeypatch.setattr(settings, "AGENT_CONTEXT_MARGIN_TOKENS", 256)
+    monkeypatch.setattr(settings, "AGENT_TOOL_VALIDATION_MAX_FAILURES", 3)
     registry = ToolRegistry()
     echo = Echo()
     registry.register(echo)
@@ -292,7 +298,13 @@ async def test_invalid_native_arguments_are_not_executed_and_can_repair(
     )
     events = await run()
     assert agent.executed == [{"input": "fixed"}]
-    assert "invalid_arguments" in captured[1]["messages"][-1]["content"]
+    result = next(
+        m
+        for m in captured[1]["messages"]
+        if "Source: validation diagnostics" in m.get("content", "")
+    )
+    assert "Invalid tool arguments" in result["content"]
+    assert not any(m.get("tool_calls") for m in captured[1]["messages"])
     assert any(
         e["event"] == "tool_call" and e["tool_call"]["status"] == "error"
         for e in events
@@ -315,9 +327,18 @@ async def test_invalid_fallback_is_repaired_without_execution(agent, monkeypatch
             [{"content": "Done", "done": True}],
         ],
     )
-    await run(model="small-model")
+    events = await run(model="small-model")
     assert agent.executed == [{"input": "fixed"}]
-    assert "nothing was executed" in captured[1]["messages"][-1]["content"].lower()
+    assert "Invalid tool JSON" in captured[1]["messages"][-1]["content"]
+    assert captured[1]["format"]["properties"]["tool"]["enum"] == ["echo"]
+    rejected = next(
+        e["tool_call"]
+        for e in events
+        if e["event"] == "tool_call" and e["tool_call"]["status"] == "error"
+    )
+    assert "Invalid tool JSON" in rejected["error"]
+    assert rejected["type"] == "code_exec"
+    assert rejected["durationMs"] == 0
 
 
 @pytest.mark.asyncio
@@ -330,10 +351,10 @@ async def test_execution_errors_keep_native_pairing(agent, monkeypatch):
         ],
     )
     await run()
-    assert captured[1]["messages"][-1]["role"] == "tool"
-    assert captured[1]["messages"][-1]["tool_call_id"] == "provider-id"
-    assert "execution_error" in captured[1]["messages"][-1]["content"]
-    assert "respond without this tool" not in captured[1]["messages"][-1]["content"]
+    result = next(m for m in captured[1]["messages"] if m["role"] == "tool")
+    assert result["tool_call_id"] == "provider-id"
+    assert "execution_error" in result["content"]
+    assert "respond without this tool" not in result["content"]
 
 
 @pytest.mark.asyncio
@@ -662,3 +683,564 @@ async def test_compaction_never_promotes_untrusted_summary_to_system(monkeypatch
     summary = next(m for m in output if (m.get("metadata") or {}).get("compaction"))
     assert summary["role"] == "user"
     assert "UNTRUSTED_SOURCE_DATA" in summary["content"]
+
+
+@pytest.mark.asyncio
+async def test_compaction_preserves_chronology_and_exact_latest_feedback(monkeypatch):
+    summarizer = AsyncMock(return_value="Historical activity.")
+    monkeypatch.setattr(cc, "_llm_summarize", summarizer)
+    request = {
+        "role": "user",
+        "content": "Original request",
+        "metadata": {"agent_request": True},
+    }
+    old = normalize_native_calls([call({"input": "x" * 22000}, id="older")])
+    latest = normalize_native_calls([call({"input": "bad"}, id="latest")])
+    feedback = tool_result_message(
+        latest[0], "arguments.questions.2.options: minItems=2"
+    )
+    exchange = [assistant_call_message("", latest), feedback]
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "Earlier conversation " * 1200},
+        request,
+        assistant_call_message("", old),
+        tool_result_message(old[0], "Old result"),
+        *exchange,
+    ]
+    output, changed = await cc.compact_conversation(messages, "model")
+    assert changed
+    request_index = output.index(request)
+    summaries = [
+        (i, m)
+        for i, m in enumerate(output)
+        if (m.get("metadata") or {}).get("compaction")
+    ]
+    assert any(i < request_index for i, _ in summaries)
+    assert any(i > request_index for i, _ in summaries)
+    assert output[-2:] == exchange
+    assert feedback["content"] == output[-1]["content"]
+    assert not any("minItems=2" in c.args[1] for c in summarizer.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_small_history_above_soft_budget_is_not_summarized(monkeypatch):
+    summarizer = AsyncMock(return_value="A bigger summary of hello")
+    monkeypatch.setattr(cc, "_llm_summarize", summarizer)
+    messages = [
+        {"role": "system", "content": "x" * 16000},
+        {"role": "user", "content": "Hello"},
+        {
+            "role": "user",
+            "content": "Current request",
+            "metadata": {"agent_request": True},
+        },
+    ]
+    output, changed = await cc.compact_conversation(messages, "model")
+    assert not changed
+    assert output is messages
+    summarizer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_previous_request_tool_history_can_be_compacted(monkeypatch):
+    summarizer = AsyncMock(return_value="Previously created a file.")
+    monkeypatch.setattr(cc, "_llm_summarize", summarizer)
+    calls = normalize_native_calls([call({"input": "x" * 30000})])
+    current = {
+        "role": "user",
+        "content": "A new unrelated request",
+        "metadata": {"agent_request": True},
+    }
+    output, changed = await cc.compact_conversation(
+        [
+            {"role": "system", "content": "sys"},
+            assistant_call_message("", calls),
+            tool_result_message(calls[0], "Historical file"),
+            current,
+        ],
+        "model",
+    )
+    assert changed
+    assert output[-1] == current
+    assert all(m["role"] != "tool" for m in output)
+
+
+@pytest.mark.asyncio
+async def test_schema_failures_are_bounded_without_executing_and_can_finish(
+    agent, monkeypatch
+):
+    captured = script(
+        monkeypatch,
+        [[{"tool_calls": [call({})], "done": True}]] * 3
+        + [[{"content": "I could not validate the arguments.", "done": True}]],
+    )
+    events = await run()
+    assert not agent.executed
+    assert len(captured) == 3
+    feedback = next(
+        m
+        for m in captured[-1]["messages"]
+        if "Source: validation diagnostics" in m.get("content", "")
+    )
+    assert "arguments.input: required field is missing" in feedback["content"]
+    assert any(
+        e["event"] == "error" and "bounded repairs" in e["error"] for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_ignore_exhausted_validation_limit(agent, monkeypatch):
+    captured = script(monkeypatch, [[{"tool_calls": [call({})], "done": True}]] * 4)
+    events = await run()
+    assert not agent.executed
+    assert len(captured) == 3
+    assert any(
+        e["event"] == "error" and "bounded repairs" in e["error"] for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_validation_repairs_work_in_text_fallback(agent, monkeypatch):
+    await tool_capabilities.remember_fallback("fallback-model", "unsupported_tools")
+    captured = script(
+        monkeypatch,
+        [
+            [{"content": '```tool\n{"tool":"echo","args":{}}\n```', "done": True}],
+            [
+                {
+                    "content": '```tool\n{"tool":"echo","args":{"input":"repaired"}}\n```',
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    await run(model="fallback-model")
+    assert agent.executed == [{"input": "repaired"}]
+    assert "required field is missing" in str(captured[1]["messages"])
+    assert all(m["role"] != "tool" for m in captured[1]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_completed_actions_survive_working_compaction_and_allow_chaining(
+    agent, monkeypatch
+):
+    count = 0
+
+    async def execute(**kwargs):
+        nonlocal count
+        count += 1
+        agent.executed.append(kwargs)
+        return ToolResult(
+            True, json.dumps({"artifact_id": f"saved-{count}", "title": "Created"})
+        )
+
+    monkeypatch.setattr(agent, "execute", execute)
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"input": "x" * 14500})], "done": True}],
+            [
+                {
+                    "tool_calls": [
+                        call({"input": "another requested action"}, id="second")
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Both finished", "done": True}],
+        ],
+    )
+    await run()
+    assert len(agent.executed) == 2
+    cc._llm_summarize.assert_awaited()
+    last = captured[-1]["messages"]
+    ledger = next(m for m in last if "successful_actions" in (m.get("content") or ""))
+    assert "saved-1" in ledger["content"] and "saved-2" in ledger["content"]
+    assert "x" * 100 not in ledger["content"]
+    request_index = next(
+        i for i, m in enumerate(last) if m.get("content") == "Use echo"
+    )
+    summary_index = next(
+        i
+        for i, m in enumerate(last)
+        if "[Compacted conversation]" in (m.get("content") or "")
+    )
+    assert request_index < summary_index
+    assert len([m for m in last if m["role"] == "tool"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_artifact_injection_excludes_unattached_public_files(agent, monkeypatch):
+    script(monkeypatch, [[{"content": "Done", "done": True}]])
+    await run()
+    assert service.catalog.await_args.kwargs["include_public"] is False
+
+
+@pytest.mark.asyncio
+async def test_business_validation_uses_typed_feedback_not_error_prefix(
+    agent, monkeypatch
+):
+    async def execute(**kwargs):
+        agent.executed.append(kwargs)
+        return ToolResult(
+            False,
+            "Option index must refer to an existing choice",
+            failure_kind="validation",
+        )
+
+    monkeypatch.setattr(agent, "execute", execute)
+    captured = script(
+        monkeypatch,
+        [[{"tool_calls": [call({"input": "valid shape"})], "done": True}]] * 3
+        + [[{"content": "Validation failed", "done": True}]],
+    )
+    await run()
+    assert len(agent.executed) == 3
+    assert "Option index must refer to an existing choice" in str(
+        captured[-1]["messages"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_structured_encoding_is_normalized_but_raw_native_transcript_remains(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(
+        agent,
+        "get_parameters",
+        lambda: {
+            "input": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": ["x"],
+                },
+            }
+        },
+    )
+    raw = '[{"x":1}]'
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"input": raw})], "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    await run()
+    assert agent.executed == [{"input": [{"x": 1}]}]
+    assistant = next(m for m in captured[1]["messages"] if m.get("tool_calls"))
+    assert assistant["tool_calls"][0]["function"]["arguments"]["input"] == raw
+
+
+@pytest.mark.asyncio
+async def test_repair_focus_and_sampling_are_temporary(agent, monkeypatch):
+    registry = service.get_tool_registry()
+    other = Echo()
+    other.name = "other"
+    registry.register(other)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"echo", "other"})
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({})], "done": True}],
+            [{"tool_calls": [call({"input": "repaired"})], "done": True}],
+            [
+                {
+                    "tool_calls": [
+                        call({"input": "next requested action"}, name="other")
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Both finished", "done": True}],
+        ],
+    )
+    await run([{"role": "user", "content": "Use echo and other"}])
+    assert captured[1]["tools"] is None
+    assert captured[1]["format"]["properties"]["tool"]["enum"] == ["echo"]
+    assert captured[1]["options"]["temperature"] == 0.2
+    assert captured[1]["options"]["presence_penalty"] == 0
+    assert {s["function"]["name"] for s in captured[2]["tools"]} == {"echo", "other"}
+    assert "temperature" not in captured[2]["options"]
+    assert len(agent.executed) == len(other.executed) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool,args,error",
+    [
+        (
+            CreateQuizTool(),
+            {
+                "title": "QA quiz",
+                "questions": [
+                    {
+                        "type": "multiple_choice",
+                        "prompt": "Question?",
+                        "options": ["A", "B"],
+                        "explanation": "Explanation",
+                    }
+                ],
+            },
+            "correct_option",
+        ),
+        (
+            CreateFlashcardDeckTool(),
+            {
+                "title": "QA cards",
+                "cards": [{"front": "Identical", "back": "Identical"}],
+            },
+            "Invalid flashcards",
+        ),
+        (
+            CreateStudyNoteTool(),
+            '{"title":"QA note","content":',
+            "Invalid tool arguments",
+        ),
+    ],
+)
+async def test_real_tool_rejections_survive_sse_block_assembly(
+    tool, args, error, agent, monkeypatch
+):
+    service.get_tool_registry().register(tool)
+    monkeypatch.setattr(settings, "AGENT_TOOL_VALIDATION_MAX_FAILURES", 2)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {tool.name})
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "thinking": "Attempt",
+                    "tool_calls": [call(args, name=tool.name)],
+                    "done": True,
+                }
+            ],
+            [
+                {
+                    "thinking": "Review the rejection",
+                    "content": "The attempted call was rejected.",
+                    "done": True,
+                }
+            ],
+        ],
+    )
+    events = await run()
+    builder = BlockBuilder()
+    for event in events:
+        kind = event["event"]
+        if kind == "thinking_start":
+            builder.on_thinking_start()
+        elif kind == "thinking":
+            builder.on_thinking_token(event["thinking"])
+        elif kind == "thinking_done":
+            builder.on_thinking_done(event["thinkingDuration"])
+        elif kind == "tool_call":
+            tc = event["tool_call"]
+            if tc["status"] == "running":
+                builder.on_tool_call_start(tc)
+            else:
+                builder.on_tool_call_update(
+                    tc["id"], {k: v for k, v in tc.items() if k != "id"}
+                )
+    blocks = builder.to_db_blocks()
+    assert [b["type"] for b in blocks] == [
+        "thinking",
+        "tool_call",
+        "thinking",
+        "tool_call",
+    ]
+    failed = blocks[1]["tool_call"]
+    assert failed["type"] == tool.tool_type.value
+    assert failed["status"] == "error"
+    assert error in failed["error"]
+    assert failed["completedAt"] >= failed["startedAt"]
+    assert failed["durationMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(
+        agent,
+        "get_parameters",
+        lambda: {
+            "input": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                },
+            }
+        },
+    )
+    rebuild = json.dumps({"tool": "echo", "args": {"input": [{"value": "fixed"}]}})
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "thinking": "Attempt",
+                    "tool_calls": [call({"input": "BROKEN_JSON_ARRAY"})],
+                    "done": True,
+                }
+            ],
+            [{"content": rebuild[:20]}, {"content": rebuild[20:], "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run()
+    assert agent.executed == [{"input": [{"value": "fixed"}]}]
+    repair = captured[1]
+    assert repair["tools"] is None
+    assert (
+        repair["format"]["properties"]["args"]["properties"]["input"]["type"] == "array"
+    )
+    assert repair["think"] is False
+    assert "BROKEN_JSON_ARRAY" not in json.dumps(repair["messages"])
+    assert "ARGUMENT REBUILD ROUND" in repair["messages"][0]["content"]
+    assert "arguments.input: expected array" in repair["messages"][-1]["content"]
+    assert not any('"args"' in e.get("message", {}).get("content", "") for e in events)
+    assert "format" not in captured[2]
+    assert captured[2]["tools"]
+    assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_structured_repair_rejection_falls_back_without_disabling_native_tools(
+    agent, monkeypatch
+):
+    captured = []
+    response = json.dumps({"tool": "echo", "args": {"input": "fixed"}})
+
+    async def stream(model, messages, **kwargs):
+        captured.append({"messages": messages, **kwargs})
+        if len(captured) == 1:
+            yield {"tool_calls": [call({})], "done": True}
+        elif "format" in kwargs:
+            raise httpx.HTTPStatusError(
+                "unsupported",
+                request=httpx.Request("POST", "http://local/api/chat"),
+                response=httpx.Response(
+                    400, text="JSON schema format is not supported"
+                ),
+            )
+        elif kwargs.get("tools") is None:
+            yield {"content": response, "done": True}
+        else:
+            yield {"content": "Done", "done": True}
+
+    monkeypatch.setattr(service.providers, "stream_chat", stream)
+    native_rejection = AsyncMock()
+    monkeypatch.setattr(
+        service.tool_capabilities, "remember_fallback", native_rejection
+    )
+    events = await run()
+    assert agent.executed == [{"input": "fixed"}]
+    assert len(captured) == 4
+    assert "format" in captured[1]
+    assert "format" not in captured[2]
+    assert captured[3]["tools"]
+    native_rejection.assert_not_awaited()
+    assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_schema_rebuild_works_for_text_fallback_models(agent, monkeypatch):
+    await tool_capabilities.remember_fallback("small-model", "unsupported_tools")
+    captured = script(
+        monkeypatch,
+        [
+            [{"content": '```tool\n{"tool":"echo","args":{}}\n```', "done": True}],
+            [{"content": '{"tool":"echo","args":{"input":"fixed"}}', "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run(model="small-model")
+    assert agent.executed == [{"input": "fixed"}]
+    assert all(item["tools"] is None for item in captured)
+    assert captured[1]["format"]["properties"]["tool"]["enum"] == ["echo"]
+    assert "ARGUMENT REBUILD ROUND" not in captured[2]["messages"][0]["content"]
+    assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_cannot_select_another_tool_or_leak_prose_as_a_completed_answer(
+    agent, monkeypatch
+):
+    other = Echo()
+    other.name = "other"
+    service.get_tool_registry().register(other)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"echo", "other"})
+    monkeypatch.setattr(settings, "AGENT_TOOL_VALIDATION_MAX_FAILURES", 2)
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({})], "done": True}],
+            [
+                {
+                    "content": '{"tool":"other","args":{"input":"wrong action"}}',
+                    "done": True,
+                }
+            ],
+        ],
+    )
+    events = await run()
+    assert not agent.executed and not other.executed
+    assert not any(e["event"] == "done" for e in events)
+    assert any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_note_optional_provenance_is_normalized_before_preflight(
+    agent, monkeypatch
+):
+    from app.agent.tools import notes as note_tool
+    from uuid import uuid4
+
+    service.get_tool_registry().register(CreateStudyNoteTool())
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"create_study_note"})
+    monkeypatch.setattr(
+        note_tool, "async_session_factory", service.async_session_factory
+    )
+    save = AsyncMock(return_value=SimpleNamespace(id=uuid4(), title="HTTP"))
+    monkeypatch.setattr(note_tool, "create_note", save)
+    monkeypatch.setattr(note_tool, "attach_generated", AsyncMock())
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {
+                                "title": "HTTP",
+                                "content": "## Requests\nA note.",
+                                "source_document_id": "",
+                                "source_chunk_id": "invented",
+                                "source_artifact": {
+                                    "artifact_id": "learn_note_001",
+                                    "version": 1,
+                                    "section_id": "web_fundamentals",
+                                },
+                            },
+                            name="create_study_note",
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Saved", "done": True}],
+        ],
+    )
+    events = await run()
+    save.assert_awaited_once()
+    body = save.call_args.args[1]
+    assert body.source_artifact is None and body.source_document_id is None
+    assert body.source_chunk_id is None and body.source_page is None
+    assert "format" not in captured[1], "Valid content should not need a repair round"
+    assert not any(e["event"] == "error" for e in events)
