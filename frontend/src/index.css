@@ -299,26 +299,40 @@ body,
 }
 
 /* Resize handles — nearly invisible until hovered */
-[data-panel-group-direction="horizontal"] > [data-resize-handle] {
+/* v4 Panel className styles the inner content, but flex-grow lives on this root. */
+[data-group][data-animate-panels="true"] > [data-panel] {
+  transition: flex-grow 100ms ease-in-out;
+}
+
+[data-group]:has(> [data-separator="active"]) > [data-panel] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-group][data-animate-panels="true"] > [data-panel] {
+    transition: none;
+  }
+}
+
+[data-group] > [data-separator][aria-orientation="vertical"] {
   width: 1px !important;
   background: transparent;
   transition: background 0.15s;
   position: relative;
 }
-[data-panel-group-direction="horizontal"] > [data-resize-handle]::after {
+[data-group] > [data-separator][aria-orientation="vertical"]::after {
   content: "";
   position: absolute;
   inset: 0 -3px;
 }
-[data-panel-group-direction="horizontal"] > [data-resize-handle]:hover {
+[data-group] > [data-separator][aria-orientation="vertical"]:hover {
   background: color-mix(
     in srgb,
     var(--color-muted-foreground) 35%,
     transparent
   );
 }
-[data-panel-group-direction="horizontal"]
-  > [data-resize-handle][data-resize-handle-active] {
+[data-group] > [data-separator="active"][aria-orientation="vertical"] {
   background: var(--color-primary);
   width: 2px !important;
 }
