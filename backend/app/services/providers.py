@@ -497,6 +497,7 @@ async def chat_once(
     """
     if is_groq_model(model):
         payload = _groq_payload(model, messages, stream=False, tools=tools, **kwargs)
+        await observe_provider_request(model, payload)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{GROQ_BASE_URL}/chat/completions",
@@ -526,6 +527,7 @@ async def chat_once(
     if tools:
         payload["tools"] = tools
     payload.update(kwargs)
+    await observe_provider_request(model, payload, local=True)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f"{settings.OLLAMA_BASE_URL}/api/chat", json=payload)
         resp.raise_for_status()

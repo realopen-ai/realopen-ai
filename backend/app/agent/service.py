@@ -1020,6 +1020,7 @@ async def run_agent_stream(
             tool_started_monotonic = time.monotonic()
             tool_started_at_ms = int(tool_started_at * 1000)
             tc_id = f"tc-{tool.tool_type.value}-{tool_started_at_ms}"
+            observe("tool_identity", tc_id)
 
             # Notify frontend that tool is starting
             if on_tool_call_start:
