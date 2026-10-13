@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -152,6 +154,31 @@ async def test_failed_database_commit_does_not_change_live_preferences():
             db, agent_settings.AgentPreferences(**preferences(tool_calling="text"))
         )
     assert agent_settings.effective().model_dump() == before
+
+
+@pytest.mark.asyncio
+async def test_upsert_binds_naive_utc_for_postgres_insert_and_update(monkeypatch):
+    instant = datetime(2026, 10, 13, 20, 44, 47, tzinfo=timezone.utc)
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            assert tz is timezone.utc
+            return instant
+
+    monkeypatch.setattr(agent_settings, "datetime", Clock)
+    db = SimpleNamespace(execute=AsyncMock(), commit=AsyncMock())
+    await agent_settings.save(db, agent_settings.AgentPreferences(**preferences()))
+    statement = db.execute.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert not AppState.__table__.c.updated_at.type.timezone
+    timestamps = [
+        value for value in compiled.params.values() if isinstance(value, datetime)
+    ]
+    assert len(timestamps) == 2  # Both INSERT and ON CONFLICT UPDATE paths.
+    assert all(value.tzinfo is None for value in timestamps)
+    assert all(value == instant.replace(tzinfo=None) for value in timestamps)
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

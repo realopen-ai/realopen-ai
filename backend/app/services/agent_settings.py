@@ -91,7 +91,8 @@ async def save(db, preferences):
     global _overrides
     values = preferences.model_dump()
     encoded = json.dumps({"schema_version": 1, "settings": values})
-    updated = datetime.now(timezone.utc)
+    # AppState uses TIMESTAMP WITHOUT TIME ZONE: retain UTC, remove tzinfo.
+    updated = datetime.now(timezone.utc).replace(tzinfo=None)
     statement = insert(AppState).values(
         key=STATE_KEY, value=encoded, updated_at=updated
     )
