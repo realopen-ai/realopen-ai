@@ -10,7 +10,7 @@ Rules:
 - If a fact is similar to something likely already known, skip it
 - If nothing durable was revealed, return []
 
-Make a best effort to follow the rules, but when in doubt, EXTRACT RATHER THAN SKIP.
+When uncertain whether a fact is durable or supported by what the user said, SKIP it. Never turn guesses or assistant statements into saved user facts.
 
 Return a JSON array of objects with 'text' and 'category' fields.
 Categories: 'identity', 'preference', 'fact', 'contact', 'project', 'goal'

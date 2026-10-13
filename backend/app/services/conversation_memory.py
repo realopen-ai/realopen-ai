@@ -188,7 +188,8 @@ async def get_relevant_summaries(
             )
 
         # Vector search on summary embeddings
-        vec_stmt = text("""
+        vec_stmt = text(
+            """
             SELECT id, title, summary,
                    EXTRACT(EPOCH FROM summary_at)::bigint AS summary_at_epoch,
                    model,
@@ -200,7 +201,8 @@ async def get_relevant_summaries(
               AND 1 - (summary_embedding <=> CAST(:q AS vector)) >= :thr
             ORDER BY sim DESC
             LIMIT :lim
-        """).bindparams(
+        """
+        ).bindparams(
             q=str(query_embedding),
             thr=threshold,
             lim=top_k * 2 if exclude_conversation_id else top_k,
@@ -311,15 +313,6 @@ async def build_cross_session_context(
         exclude_conversation_id=conv_uuid,
         top_k=max_summaries,
     )
-
-    # If vector search returned nothing, try recent summaries
-    if not summaries:
-        recent = await get_recent_summaries(
-            db,
-            limit=max_summaries,
-            exclude_conversation_id=conv_uuid,
-        )
-        summaries = recent[:max_summaries]
 
     if not summaries:
         return ""

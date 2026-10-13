@@ -118,9 +118,7 @@ def no_embedding():
 
 @pytest.fixture
 def some_embedding():
-    with patch.object(
-        cm, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])
-    ):
+    with patch.object(cm, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         yield
 
 
@@ -210,9 +208,7 @@ async def test_maybe_summarize_missing_conversation():
 
 @pytest.mark.asyncio
 async def test_maybe_summarize_skips_when_summary_recent():
-    conv = make_conversation(
-        summary="old summary", summary_at=datetime.utcnow()
-    )
+    conv = make_conversation(summary="old summary", summary_at=datetime.utcnow())
     db = _GetDB(get_map={(Conversation, conv.id): conv})
     assert await maybe_summarize_conversation(db, conv.id, "model") is False
 
@@ -246,9 +242,7 @@ async def test_maybe_summarize_below_min_messages():
     conv = make_conversation()
     msgs = _messages(conv.id, settings.CONVERSATION_SUMMARY_MIN_MESSAGES - 1)
     db = _GetDB(get_map={(Conversation, conv.id): conv}, select_results=[msgs])
-    with patch.object(
-        cm, "summarize_conversation", new=AsyncMock()
-    ) as summ:
+    with patch.object(cm, "summarize_conversation", new=AsyncMock()) as summ:
         assert await maybe_summarize_conversation(db, conv.id, "model") is False
     summ.assert_not_awaited()
 
@@ -261,9 +255,10 @@ async def test_maybe_summarize_custom_min_messages():
     with patch.object(
         cm, "summarize_conversation", new=AsyncMock(return_value=None)
     ) as summ:
-        assert await maybe_summarize_conversation(
-            db, conv.id, "model", min_messages=2
-        ) is False  # summarizer returned None
+        assert (
+            await maybe_summarize_conversation(db, conv.id, "model", min_messages=2)
+            is False
+        )  # summarizer returned None
     summ.assert_awaited_once()
 
 
@@ -446,7 +441,10 @@ async def test_keyword_search_maps_conversations():
 
 @pytest.mark.asyncio
 async def test_keyword_search_respects_limit():
-    convs = [make_conversation(summary=f"s{i}", summary_at=datetime.utcnow()) for i in range(5)]
+    convs = [
+        make_conversation(summary=f"s{i}", summary_at=datetime.utcnow())
+        for i in range(5)
+    ]
     db = FakeDB(select_results=[convs])
     out = await _keyword_summary_search(db, "paris", limit=2)
     assert len(out) == 2
@@ -511,7 +509,7 @@ async def test_build_context_uses_relevant_summaries():
 
 
 @pytest.mark.asyncio
-async def test_build_context_falls_back_to_recent_summaries():
+async def test_build_context_does_not_inject_unrelated_recent_summaries():
     recent = [
         {"title": "Recent", "summary": "Recent chat about tea.", "summary_at": 3},
         {"title": "Older", "summary": "Older chat about coffee.", "summary_at": 2},
@@ -520,12 +518,13 @@ async def test_build_context_falls_back_to_recent_summaries():
     db = FakeDB()
     with (
         patch.object(cm, "get_relevant_summaries", new=AsyncMock(return_value=[])),
-        patch.object(cm, "get_recent_summaries", new=AsyncMock(return_value=recent)),
+        patch.object(
+            cm, "get_recent_summaries", new=AsyncMock(return_value=recent)
+        ) as recent_lookup,
     ):
         ctx = await build_cross_session_context(db, "hello", max_summaries=2)
-    assert "Recent chat about tea." in ctx
-    assert "Older chat about coffee." in ctx
-    assert "Should be dropped." not in ctx  # trimmed to max_summaries
+    assert ctx == ""
+    recent_lookup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -536,9 +535,7 @@ async def test_build_context_truncates_long_summaries():
         patch.object(
             cm,
             "get_relevant_summaries",
-            new=AsyncMock(
-                return_value=[{"title": "Long", "summary": long_summary}]
-            ),
+            new=AsyncMock(return_value=[{"title": "Long", "summary": long_summary}]),
         ),
         patch.object(cm, "get_recent_summaries", new=AsyncMock()),
     ):
