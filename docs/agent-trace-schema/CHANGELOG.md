@@ -4,6 +4,18 @@ This folder documents the persisted JSONL format, independently of the [usage gu
 
 Read the version matching a record's `schema_version`. Fields may be absent when execution ends before their capture point. Redaction, truncation, and omission annotations apply in every version. Existing records are not migrated or rewritten.
 
+## 1.2 — Separate coder trajectories
+
+[Full reference](v1.2.md)
+
+- Adds `agent`, `parent_trace_id`, and `parent_tool_call_id` to distinguish and link trajectories.
+- Adds coder task/workspace metadata and per-round `model_attempts`, including native-call failures and JSON recovery.
+- Adds tool `origin` to distinguish model-selected execution from application-triggered execution.
+- Adds `tool_call_id` where assigned by the application, making parent delegation links resolvable within traces.
+- Stores coder records and referenced prompts under `coder/`, separately from general-agent files.
+
+Compatibility: older records without `agent` are general-agent traces. Coder discovery requires reading the `coder/` subdirectory; linked parent and child records have independent outcomes. Existing inference and outcome meanings remain unchanged.
+
 ## 1.1 — Resolved inference settings
 
 [Full reference](v1.1.md)
