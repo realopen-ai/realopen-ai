@@ -40,7 +40,7 @@ from app.core.prompt_security import untrusted_context_message
 from app.prompts import format_prompt
 from app.services.memory import get_relevant_memories
 from app.services.context_relevance import relevant_context
-from app.services import tool_capabilities, structured_outputs
+from app.services import tool_capabilities, structured_outputs, agent_settings
 from app.services.context_compactor import (
     compact_conversation,
     context_budget,
@@ -415,6 +415,7 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
 
 # ── Main agent loop ──
 @traced_execution
+@agent_settings.with_snapshot
 async def run_agent_stream(
     messages: List[Dict[str, Any]],
     model: str = "default",
@@ -761,7 +762,7 @@ async def run_agent_stream(
         execution_state.record(call, False, error, validation=True)
         retryable = (
             execution_state.validation_failures[call["tool"]]
-            < settings.AGENT_TOOL_VALIDATION_MAX_FAILURES
+            < agent_settings.effective().repair_attempts + 1
         )
         if not retryable:
             exhausted_tool = call["tool"]
@@ -1304,7 +1305,7 @@ async def run_agent_stream(
                 )
                 if (
                     execution_state.validation_failures.get(tool_name, 0)
-                    >= settings.AGENT_TOOL_VALIDATION_MAX_FAILURES
+                    >= agent_settings.effective().repair_attempts + 1
                 ):
                     observe("finish", "failed", "tool validation retry limit exhausted")
                     yield _sse_event(

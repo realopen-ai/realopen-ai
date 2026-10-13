@@ -21,7 +21,12 @@ from app.agent.protocol import (
     tool_result_message,
 )
 from app.config import settings
-from app.services import context_compactor as cc, providers, tool_capabilities
+from app.services import (
+    context_compactor as cc,
+    providers,
+    tool_capabilities,
+    agent_settings,
+)
 
 
 class Echo(BaseTool):
@@ -103,6 +108,66 @@ async def run(messages=None, model="qwen3:4b", **kwargs):
             messages or [{"role": "user", "content": "Use echo"}], model=model, **kwargs
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_saved_settings_reach_inference_and_remain_stable_across_rounds(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(
+        agent_settings,
+        "_overrides",
+        {"context_window": 16384, "generation_limit": 1024, "tool_calling": "text"},
+    )
+    requests = []
+
+    async def stream(model, messages, **kwargs):
+        requests.append(kwargs)
+        if len(requests) == 1:
+            # Another request saves preferences while this response is running.
+            monkeypatch.setattr(
+                agent_settings,
+                "_overrides",
+                {
+                    "context_window": 8192,
+                    "generation_limit": 512,
+                    "tool_calling": "auto",
+                },
+            )
+            yield {
+                "content": '```tool\n{"tool":"echo","args":{"input":"one"}}\n```',
+                "done": True,
+            }
+        else:
+            yield {"content": "Done", "done": True}
+
+    monkeypatch.setattr(service.providers, "stream_chat", stream)
+    events = await run(model="preferences-test-model")
+    assert events[-1]["event"] == "done"
+    assert len(requests) == 2
+    assert all(not request["tools"] for request in requests)
+    assert all(request["options"]["num_ctx"] == 16384 for request in requests)
+    assert all(request["options"]["num_predict"] == 1024 for request in requests)
+    assert len(agent.executed) == 1
+    await run(model="preferences-test-model")
+    assert requests[-1]["tools"]
+    assert requests[-1]["options"]["num_ctx"] == 8192
+    assert requests[-1]["options"]["num_predict"] == 512
+
+
+@pytest.mark.asyncio
+async def test_saved_zero_repairs_stops_after_first_invalid_call(agent, monkeypatch):
+    monkeypatch.setattr(agent_settings, "_overrides", {"repair_attempts": 0})
+    monkeypatch.setattr(agent, "get_parameters", lambda: {"input": {"type": "string"}})
+    captured = script(
+        monkeypatch,
+        [[{"tool_calls": [call({"input": 123})], "done": True}]],
+    )
+    events = await run(model="preferences-test-model")
+    assert len(captured) == 1
+    assert events[-1]["event"] == "error"
+    assert "after bounded repairs" in events[-1]["error"].lower()
+    assert not agent.executed
 
 
 @pytest.mark.asyncio

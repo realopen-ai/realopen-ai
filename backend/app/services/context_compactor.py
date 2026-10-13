@@ -20,7 +20,7 @@ from app.config import settings
 from app.prompts import get_prompt
 from app.core.prompt_security import untrusted_context_message
 from app.agent.protocol import model_messages
-from app.services import providers
+from app.services import providers, agent_settings
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,9 @@ def _estimate_message_tokens(msg: Dict) -> int:
 
 def _estimate_context_window(model_name: str) -> int:
     """Return the configured effective runtime window, never a name heuristic."""
-    return settings.AGENT_CONTEXT_WINDOWS.get(model_name, settings.AGENT_CONTEXT_WINDOW)
+    return settings.AGENT_CONTEXT_WINDOWS.get(
+        model_name, agent_settings.effective().context_window
+    )
 
 
 class ContextBudgetExceeded(ValueError):
@@ -126,7 +128,7 @@ def context_budget(model: str, max_output_tokens=None) -> ContextBudget:
         (
             max_output_tokens
             if max_output_tokens is not None
-            else settings.AGENT_OUTPUT_RESERVE_TOKENS
+            else agent_settings.effective().generation_limit
         ),
         settings.AGENT_CONTEXT_MARGIN_TOKENS,
     )
@@ -394,7 +396,14 @@ async def compact_conversation(
         return estimate_request_tokens(model_messages(items, native_tools), tools)
 
     total = size(messages)
-    soft_limit = int(budget.input_limit * settings.CONTEXT_COMPACT_THRESHOLD)
+    preferences = agent_settings.effective()
+    if not preferences.history_compaction:
+        if total > budget.input_limit:
+            raise ContextBudgetExceeded(
+                "History compaction is disabled and the request exceeds the context budget. Enable compaction or narrow the request."
+            )
+        return messages, False
+    soft_limit = int(budget.input_limit * preferences.compaction_threshold)
     if total <= soft_limit:
         return messages, False
 
@@ -460,9 +469,7 @@ async def compact_conversation(
         return messages, False
 
     # Prefer the configured recent suffix; shorten it only to satisfy the budget.
-    preserve = settings.CONTEXT_COMPACT_PRESERVE_TURNS - (
-        1 if latest_user is not None else 0
-    )
+    preserve = preferences.recent_turns - (1 if latest_user is not None else 0)
     remove_count = max(1, len(candidates) - max(0, preserve))
     # A soft budget crossing is not a reason to summarize a greeting or
     # repeatedly rewrite a tiny summary. Require useful historical material.

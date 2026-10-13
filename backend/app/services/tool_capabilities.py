@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
-from app.services import providers
+from app.services import providers, agent_settings
 
 logger = logging.getLogger(__name__)
 _fallbacks: set[Path] = set()
@@ -42,6 +42,8 @@ def _path(model: str) -> Path:
 
 
 def should_try_native(model: str) -> bool:
+    if agent_settings.effective().tool_calling == "text":
+        return False
     try:
         path = _path(model)
         if path in _fallbacks:
