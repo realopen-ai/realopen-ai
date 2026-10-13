@@ -64,7 +64,7 @@ def trace_setup(monkeypatch, tmp_path):
     monkeypatch.setattr(
         service,
         "compact_conversation",
-        AsyncMock(side_effect=lambda msgs, model: (msgs, False)),
+        AsyncMock(side_effect=lambda msgs, model, **kwargs: (msgs, False)),
     )
     monkeypatch.setattr(service, "get_relevant_memories", AsyncMock(return_value=[]))
     monkeypatch.setattr(
@@ -121,6 +121,11 @@ async def saved(path):
 
 @pytest.fixture
 def coder_setup(trace_setup, monkeypatch):
+    monkeypatch.setattr(
+        coder_agent,
+        "compact_conversation",
+        AsyncMock(side_effect=lambda msgs, model, **kw: (msgs, False)),
+    )
     sandbox = SimpleNamespace(
         id="sandbox-1", status="running", desired_running=True, error=None
     )
@@ -328,9 +333,8 @@ async def test_coder_termination_and_invalid_args(
         assert result.success
         assert row["rounds"][0]["parse_diagnostics"][0]["raw_arguments"] == "{broken"
         assert row["rounds"][0]["tool_calls"][0]["arguments"] == "{broken"
-        assert row["rounds"][0]["tool_calls"][0]["effective_arguments"] == {
-            "path": "/workspace"
-        }
+        assert row["rounds"][0]["tool_calls"][0]["execution_status"] == "failed"
+        assert "effective_arguments" not in row["rounds"][0]["tool_calls"][0]
 
 
 @pytest.mark.asyncio
@@ -532,9 +536,8 @@ async def test_success_context_and_multi_round_calls(trace_setup, monkeypatch):
     assert row["outcome"]["successful_tool_calls"] == 2
     assert row["outcome"]["final_assistant_response"] == "Final answer"
     assert row["rounds"][0]["model_response"]["thinking"] == "Choose tools"
-    assert any(
-        message.get("content", "").startswith("[Tool result")
-        for message in row["rounds"][1]["input_messages"]
+    assert (
+        len([m for m in row["rounds"][1]["input_messages"] if m["role"] == "tool"]) == 2
     )
     assert row["rounds"][0]["exposed_tool_schemas"][0]["function"]["name"] == "echo"
     assert row["rounds"][0]["decision"] == "continued"
@@ -588,9 +591,10 @@ async def test_text_parse_failure_preserved(trace_setup, monkeypatch):
     (row,) = await saved(trace_setup)
     assert row["rounds"][0]["parse_diagnostics"][0]["status"] == "invalid_json"
     assert "broken" in row["rounds"][0]["model_response"]["content"]
-    assert row["outcome"]["total_tool_calls"] == 1
-    assert row["outcome"]["unparsed_tool_attempts"] == 1
-    assert row["outcome"]["failed_tool_calls"] == 1
+    assert row["outcome"]["total_tool_calls"] == 2
+    assert row["outcome"]["unparsed_tool_attempts"] == 2
+    assert row["outcome"]["failed_tool_calls"] == 2
+    assert row["outcome"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
