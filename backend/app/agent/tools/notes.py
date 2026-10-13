@@ -9,7 +9,13 @@ from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
 from app.learn.notes import NoteInput, create_note
-from app.services.artifact_refs import REFERENCE_SCHEMA
+from app.learn.service import check_sources
+from app.db.models import DocumentChunk
+from app.services.artifact_refs import (
+    ArtifactReference,
+    REFERENCE_SCHEMA,
+    validate_reference,
+)
 from app.learn.notebooks import attach_generated
 
 logger = logging.getLogger(__name__)
@@ -44,6 +50,26 @@ class CreateStudyNoteTool(BaseTool):
     def get_required_params(self):
         return ["title", "content"]
 
+    def normalize_arguments(self, kwargs):
+        values = dict(kwargs)
+        for key in ("source_document_id", "source_chunk_id"):
+            if values.get(key) is not None:
+                try:
+                    values[key] = str(uuid.UUID(str(values[key]).strip()))
+                except (ValueError, TypeError, AttributeError):
+                    values[key] = None
+        if not values.get("source_document_id"):
+            values["source_page"] = None
+            values["source_chunk_id"] = None
+        if values.get("source_artifact") is not None:
+            try:
+                values["source_artifact"] = ArtifactReference.model_validate(
+                    values["source_artifact"]
+                ).model_dump(mode="json", exclude_none=True)
+            except (ValidationError, ValueError, TypeError):
+                values["source_artifact"] = None
+        return values
+
     async def execute(
         self,
         *,
@@ -63,46 +89,67 @@ class CreateStudyNoteTool(BaseTool):
             title="Creating study note",
             started_at=time.time(),
         )
+        failure_kind = None
         try:
-            invalid_source = False
-
-            def optional_source_id(value):
-                nonlocal invalid_source
-                if value is None:
-                    return None
-                try:
-                    return uuid.UUID(str(value).strip())
-                except (ValueError, TypeError, AttributeError):
-                    invalid_source = True
-                    return None
-
-            source_document_id = optional_source_id(source_document_id)
-            source_chunk_id = optional_source_id(source_chunk_id)
-            # Page/chunk attribution has no meaning without a document. Small
-            # models sometimes invent these optional fields for conversation notes.
-            # Keep the trusted conversation origin; never persist fake attribution.
-            orphaned_source = not source_document_id and (
-                source_page is not None or source_chunk_id is not None
+            sources = {
+                "source_document_id": source_document_id,
+                "source_page": source_page,
+                "source_chunk_id": source_chunk_id,
+                "source_artifact": source_artifact,
+            }
+            normalized_sources = self.normalize_arguments(sources)
+            invalid_source = any(
+                value is not None and normalized_sources.get(key) is None
+                for key, value in sources.items()
             )
-            if not source_document_id:
-                source_page = None
-                source_chunk_id = None
             body = NoteInput(
                 title=title,
                 content=content,
                 source_conversation_id=conversation_id,
-                source_document_id=source_document_id,
-                source_page=source_page,
-                source_chunk_id=source_chunk_id,
-                source_artifact=source_artifact,
+                **normalized_sources,
             )
             if not body.content:
                 raise ValueError("Provide study note content")
             async with async_session_factory() as db:
+                # Optional model-supplied attribution is best-effort, unlike
+                # the strict manual API. Never drop the trusted conversation,
+                # title/content, or swallow infrastructure/transaction failures.
+                if body.source_document_id:
+                    try:
+                        await check_sources(db, body)
+                    except HTTPException as exc:
+                        if exc.status_code not in {403, 404, 422}:
+                            raise
+                        body.source_document_id = None
+                        body.source_chunk_id = None
+                        body.source_page = None
+                        invalid_source = True
+                if body.source_chunk_id:
+                    chunk = await db.get(DocumentChunk, body.source_chunk_id)
+                    if chunk is None or chunk.document_id != body.source_document_id:
+                        body.source_chunk_id = None
+                        body.source_page = None
+                        invalid_source = True
+                    else:
+                        body.source_page = chunk.page_number
+                if body.source_artifact:
+                    try:
+                        await validate_reference(
+                            db, body.source_artifact, conversation_id
+                        )
+                    except HTTPException as exc:
+                        if exc.status_code not in {403, 404, 422}:
+                            raise
+                        body.source_artifact = None
+                        invalid_source = True
                 note = await create_note(db, body)
                 await attach_generated(db, conversation_id, "note", note.id)
                 await db.commit()
-                artifact = {"type": "study_note", "note_id": str(note.id), "title": note.title}
+                artifact = {
+                    "type": "study_note",
+                    "note_id": str(note.id),
+                    "title": note.title,
+                }
             call.gen_results = [artifact]
             call.status = "completed"
             output = json.dumps(
@@ -110,17 +157,21 @@ class CreateStudyNoteTool(BaseTool):
                     **artifact,
                     "message": "Saved in Learn. Do not repeat the full note.",
                     **(
-                        {"warning": "Ignored invalid or orphaned optional source references."}
-                        if orphaned_source or invalid_source
+                        {
+                            "warning": "Ignored invalid or orphaned optional source references."
+                        }
+                        if invalid_source
                         else {}
                     ),
                 }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            failure_kind = "validation"
             call.status = "error"
             output = "Invalid study note: " + (
                 "; ".join(
-                    error["msg"] for error in exc.errors(include_input=False, include_url=False)[:3]
+                    error["msg"]
+                    for error in exc.errors(include_input=False, include_url=False)[:3]
                 )
                 if isinstance(exc, ValidationError)
                 else str(exc.detail if isinstance(exc, HTTPException) else exc)
@@ -133,7 +184,7 @@ class CreateStudyNoteTool(BaseTool):
             call.error = output
         call.output = output
         call.completed_at = time.time()
-        return ToolResult(call.status == "completed", output, call)
+        return ToolResult(call.status == "completed", output, call, failure_kind)
 
 
 tool_registry.register(CreateStudyNoteTool())
