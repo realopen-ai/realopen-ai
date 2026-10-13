@@ -35,6 +35,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import httpx
 
 from app.config import settings
+from app.agent.tracing import observe, observe_provider_request
 
 # ─── Groq constants ─────────────────────────────────────────────────
 
@@ -589,6 +590,7 @@ async def stream_chat(
     """
     if is_groq_model(model):
         payload = _groq_payload(model, messages, stream=True, tools=tools, **kwargs)
+        await observe_provider_request(model, payload)
         accumulator = _GroqToolCallAccumulator()
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
@@ -609,6 +611,7 @@ async def stream_chat(
                     try:
                         chunk = json.loads(data_str)
                     except json.JSONDecodeError:
+                        observe("malformed_frame", model, data_str)
                         continue
                     choices = chunk.get("choices") or []
                     if not choices:
@@ -660,6 +663,7 @@ async def stream_chat(
     if tools:
         payload["tools"] = tools
     payload.update(kwargs)
+    await observe_provider_request(model, payload, local=True)
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream(
             "POST",
@@ -674,6 +678,7 @@ async def stream_chat(
                 try:
                     chunk = json.loads(line)
                 except json.JSONDecodeError:
+                    observe("malformed_frame", model, line)
                     continue
                 msg = chunk.get("message", {}) or {}
                 yield {
