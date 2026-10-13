@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
 from app.learn.quizzes import QuizInput, QUESTION_SCHEMA, save_quiz
-from app.prompts import format_prompt, get_prompt
+from app.prompts import format_prompt
 from app.learn.notebooks import attach_generated
 
 logger = logging.getLogger(__name__)
@@ -21,19 +21,28 @@ class CreateQuizTool(BaseTool):
     name = "create_quiz"
     display_name = "Create quiz"
     tool_type = ToolType.QUIZZES
-    description = format_prompt("quiz_tool", writing_guidance=get_prompt("quiz_writing")).strip()
+    description = format_prompt(
+        "quiz_tool", writing_guidance=format_prompt("quiz_writing")
+    ).strip()
 
     def get_parameters(self):
         return {
             "title": {"type": "string", "maxLength": 200},
             "description": {"type": "string", "maxLength": 2000},
-            "questions": {"type": "array", "minItems": 1, "maxItems": 20, "items": QUESTION_SCHEMA},
+            "questions": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": QUESTION_SCHEMA,
+            },
         }
 
     def get_required_params(self):
         return ["title", "questions"]
 
-    async def execute(self, *, title, questions, description="", conversation_id=None, **kwargs):
+    async def execute(
+        self, *, title, questions, description="", conversation_id=None, **kwargs
+    ):
         call = ToolCall(
             id=f"tc-quiz-{uuid.uuid4()}",
             type=self.tool_type,
@@ -41,6 +50,7 @@ class CreateQuizTool(BaseTool):
             title="Creating quiz",
             started_at=time.time(),
         )
+        failure_kind = None
         try:
             # Some local models double-encode structured tool arguments.
             # Decode only valid JSON; the same Question validation still applies.
@@ -68,6 +78,7 @@ class CreateQuizTool(BaseTool):
                 {**artifact, "message": "Saved in Learn. Do not reveal the answer key."}
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            failure_kind = "validation"
             call.status = "error"
             output = "Invalid quiz: " + (
                 "; ".join(
@@ -84,7 +95,7 @@ class CreateQuizTool(BaseTool):
             output = "Could not save quiz. Try again later."
             call.error = output
         call.output, call.completed_at = output, time.time()
-        return ToolResult(call.status == "completed", output, call)
+        return ToolResult(call.status == "completed", output, call, failure_kind)
 
 
 tool_registry.register(CreateQuizTool())
