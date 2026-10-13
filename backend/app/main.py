@@ -19,6 +19,7 @@ from prometheus_client import make_asgi_app  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.core import metrics as app_metrics  # noqa: E402
+from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
@@ -221,6 +222,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown events."""
     if is_debug():
         logger.debug("🔧 DEBUG mode is ON — verbose logging enabled")
+    if settings.AGENT_TRACE_ENABLED:
+        logger.warning(
+            "Detailed agent tracing enabled: conversation content, memories and tool "
+            "outputs are stored locally. Review traces before sharing."
+        )
 
     # Detect setup mode
     setup_mode = _detect_setup_mode()
@@ -371,12 +377,14 @@ async def lifespan(app: FastAPI):
                 logger.debug("Sandbox idle monitor: %s", exc)
 
     sandbox_monitor = asyncio.create_task(idle_sandbox_monitor())
-    yield
-
-    # Shutdown
-    sandbox_monitor.cancel()
-    with suppress(asyncio.CancelledError):
-        await sandbox_monitor
+    try:
+        yield
+    finally:
+        # Shutdown: flush the optional local trace writer after active requests stop.
+        sandbox_monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await sandbox_monitor
+        await flush_traces()
 
 
 app = FastAPI(

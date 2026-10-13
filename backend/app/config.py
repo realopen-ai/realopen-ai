@@ -565,6 +565,20 @@ class Settings(BaseSettings):
     NGROK_ENABLED: bool = False
     NGROK_AUTHTOKEN: str = ""
 
+    # Opt-in local traces contain conversation content and tool outputs.
+    AGENT_TRACE_ENABLED: bool = False
+    AGENT_TRACE_DIR: str = str(
+        (
+            Path("/app/data")
+            if Path("/app/data").is_dir()
+            else Path(__file__).resolve().parents[2] / "data"
+        )
+        / "agent_traces"
+    )
+    AGENT_TRACE_MAX_TOOL_RESULT_CHARS: int = 16000
+    AGENT_TRACE_MAX_TEXT_CHARS: int = 256000
+    AGENT_TRACE_QUEUE_SIZE: int = 64
+
     # ── Memory system ────────────────────────────────────────────────────
     # These all have sensible defaults; override via env vars if needed.
     # Embedding model role (resolved via profiles.yml -> default_embedding).
