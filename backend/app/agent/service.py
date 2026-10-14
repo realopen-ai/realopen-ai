@@ -423,6 +423,7 @@ async def run_agent_stream(
     resolved_model = await model_prefs.resolve_chat_request_model(model)
     messages = [dict(m) for m in messages]
     use_native_tools = _model_supports_native_tools(resolved_model)
+    transient_text_models = set()
     observe("resolved_model", resolved_model)
     registry = get_tool_registry()
     configs_snapshot = deepcopy(config_store.get_all_tool_configs())
@@ -844,7 +845,10 @@ async def run_agent_stream(
         nonlocal resolved_model, use_native_tools
         if new_model and new_model != resolved_model:
             resolved_model = new_model
-            use_native_tools = _model_supports_native_tools(resolved_model)
+            use_native_tools = (
+                resolved_model not in transient_text_models
+                and _model_supports_native_tools(resolved_model)
+            )
             _refresh_protocol()
             _dbg("Model override after tool call → %s", resolved_model)
 
@@ -987,8 +991,12 @@ async def run_agent_stream(
             request_tools if use_native_tools and not repair_schema else None
         )
         generation_start = None
-        # Retry protocol negotiation within the same agent round, before any output.
-        for protocol_attempt in range(2):
+        native_parser_failures = 0
+        retry_context = []
+        streamed_before_retry = ""
+        # At most two native attempts plus one execution-only text attempt.
+        # Tool execution starts only after a complete successful generation.
+        for protocol_attempt in range(3):
             inference_tools = (
                 request_tools if use_native_tools and not repair_schema else None
             )
@@ -996,6 +1004,7 @@ async def run_agent_stream(
                 inference_messages = without_rejected_calls(
                     messages, execution_state.rejected_call_ids
                 )
+                inference_messages = [*inference_messages, *retry_context]
             # Compact if approaching context limit (essential for small models)
             try:
                 budget = context_budget(resolved_model, max_output_tokens)
@@ -1018,7 +1027,11 @@ async def run_agent_stream(
                     previous_length = len(inference_messages)
                     inference_messages = compacted
                     if not repair_schema:
-                        messages = compacted
+                        messages = [
+                            m
+                            for m in compacted
+                            if not (m.get("metadata") or {}).get("agent_protocol_retry")
+                        ]
                     app_metrics.record_context_compaction(resolved_model)
                     _dbg(
                         "Compacted conversation: %d -> %d messages",
@@ -1115,7 +1128,9 @@ async def run_agent_stream(
                             )
                             thinking_start = None
                         full_response += token
-                        if not repair_schema:
+                        # Buffer retry prose until parsing finishes. The first
+                        # attempt's already-visible text is never replayed.
+                        if not repair_schema and protocol_attempt == 0:
                             yield _sse_event(
                                 "message",
                                 {"message": {"role": "assistant", "content": token}},
@@ -1160,7 +1175,9 @@ async def run_agent_stream(
                             "tool_calls": native_tool_calls,
                         }
                     },
-                    recovery=bool(repair_schema or not use_native_tools),
+                    recovery=bool(
+                        protocol_attempt or repair_schema or not use_native_tools
+                    ),
                     started_at=attempt_started_at,
                     duration_ms=(time.monotonic() - attempt_started) * 1000,
                 )
@@ -1177,38 +1194,84 @@ async def run_agent_stream(
                     if use_native_tools and ollama_tools and not repair_schema
                     else None
                 )
-                if reason:
-                    await tool_capabilities.remember_fallback(resolved_model, reason)
-                    # No tools run until generation completes. Reasoning can
-                    # end cleanly, but never replay an already streamed answer.
-                    if not full_response:
-                        if thinking_start is not None:
-                            yield _sse_event(
-                                "thinking_done",
+                parser_failure = (
+                    use_native_tools
+                    and bool(inference_tools)
+                    and not repair_schema
+                    and tool_capabilities.native_parser_error(e)
+                )
+                if reason or parser_failure:
+                    if thinking_start is not None:
+                        yield _sse_event(
+                            "thinking_done",
+                            {
+                                "thinkingDuration": round(
+                                    time.monotonic() - thinking_start, 3
+                                )
+                            },
+                        )
+                        thinking_start = None
+                    if protocol_attempt == 0:
+                        streamed_before_retry = full_response
+                    retry_context = [
+                        *(
+                            [
                                 {
-                                    "thinkingDuration": round(
-                                        time.monotonic() - thinking_start, 3
-                                    )
-                                },
-                            )
+                                    "role": "assistant",
+                                    "content": streamed_before_retry,
+                                    "metadata": {
+                                        "agent_context": True,
+                                        "agent_protocol_retry": True,
+                                    },
+                                }
+                            ]
+                            if streamed_before_retry
+                            else []
+                        ),
+                        {
+                            "role": "user",
+                            "content": format_prompt("agent_native_tool_retry"),
+                            "metadata": {
+                                "agent_context": True,
+                                "trusted": True,
+                                "agent_protocol_retry": True,
+                            },
+                        },
+                    ]
+                if parser_failure:
+                    native_parser_failures += 1
+                    if native_parser_failures >= 2:
+                        transient_text_models.add(resolved_model)
                         use_native_tools = False
                         _refresh_protocol()
                         _dbg(
-                            "Native tools rejected (%s); retrying with text protocol",
-                            reason,
+                            "Repeated native parser failure; using text protocol for this execution only"
                         )
-                        continue
+                    else:
+                        _dbg("Transient native parser failure; retrying natively once")
+                    observe("model_retry")
+                    continue
+                if reason:
+                    await tool_capabilities.remember_fallback(resolved_model, reason)
+                    use_native_tools = False
+                    _refresh_protocol()
+                    _dbg(
+                        "Native tools rejected (%s); retrying with text protocol",
+                        reason,
+                    )
+                    observe("model_retry")
+                    continue
                 observe("finish", "failed", "provider error: " + str(e))
                 logger.exception("LLM provider error: %s", e)
                 _dbg("🤖 ❌ Unexpected provider error: %s", e)
                 yield _sse_event("error", {"error": f"AI engine error: {e}"})
                 return
 
-            if not use_native_tools or repair_schema:
+            if protocol_attempt or not use_native_tools or repair_schema:
                 observe(
                     "model_attempt",
                     ollama_messages,
-                    None,
+                    inference_tools,
                     response={
                         "message": {
                             "content": full_response,
@@ -1342,6 +1405,40 @@ async def run_agent_stream(
             _dbg("Parsed tool calls from text: %d", len(tool_calls))
 
         observe("parsed", tool_calls, native_tool_calls, full_response)
+
+        if protocol_attempt and not repair_schema:
+            paragraph_break = bool(streamed_before_retry)
+            if not tool_calls:
+                replays_prefix = bool(
+                    streamed_before_retry
+                    and full_response.startswith(streamed_before_retry)
+                )
+                continuation = (
+                    full_response[len(streamed_before_retry) :]
+                    if replays_prefix
+                    else full_response
+                )
+                paragraph_break = paragraph_break and not replays_prefix
+            elif not streamed_before_retry:
+                # Native transcript rendering already removes text tool blocks.
+                continuation = model_messages(
+                    [assistant_call_message(full_response, tool_calls)], native=True
+                )[0]["content"]
+            else:
+                # The introduction is already visible; show actual tool activity
+                # rather than another introduction from a recovery attempt.
+                continuation = ""
+            if continuation:
+                yield _sse_event(
+                    "message",
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": ("\n\n" if paragraph_break else "")
+                            + continuation,
+                        }
+                    },
+                )
 
         if not tool_calls:
             observe("finish", "completed", "model returned no executable tool calls")

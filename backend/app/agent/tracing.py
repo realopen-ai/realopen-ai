@@ -323,6 +323,16 @@ class Trace:
         if chunk.get("usage"):
             self.round["runtime_usage"] = self.safe(chunk["usage"])
 
+    def model_retry(self):
+        # Failed raw output remains in model_attempts. The round response must
+        # describe the selected attempt, not concatenate discarded calls.
+        if self.round is not None:
+            self.round["model_response"] = {
+                "content": "",
+                "thinking": "",
+                "native_tool_calls": [],
+            }
+
     def result_view(self, result_ref, output, shortened):
         if self.round and self.round["tool_calls"]:
             self.round["tool_calls"][-1]["model_view"] = {
