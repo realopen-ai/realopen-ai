@@ -11,6 +11,28 @@ def _closes_fence(line: str, fence: str) -> bool:
     )
 
 
+def _misplaced_opening(line):
+    """Find an unmatched inline opener, ignoring complete inline code spans."""
+    runs = list(re.finditer(r"`+|~{3,}", line))
+    index = 0
+    while index < len(runs):
+        run = runs[index]
+        closing = next(
+            (j for j in range(index + 1, len(runs)) if runs[j][0] == run[0]), None
+        )
+        if closing is not None:
+            index = closing + 1
+            continue
+        if (
+            len(run[0]) >= 3
+            and line[: run.start()].strip()
+            and re.fullmatch(r"[\w+.-]*[ \t]*", line[run.end() :])
+        ):
+            return run.start() + 1
+        index += 1
+    return None
+
+
 def mask_code_blocks(text: str) -> str:
     """Hide fenced code for prose checks, keeping offsets and line boundaries."""
     fence = None
@@ -41,7 +63,8 @@ def validate_code_fences(text: str) -> None:
     to repair ambiguous layout instead of guessing newlines or indentation.
     """
     fence = None
-    for line in text.splitlines():
+    opened_on = None
+    for line_number, line in enumerate(text.splitlines(), 1):
         if fence is not None:
             if _closes_fence(line, fence):
                 fence = None
@@ -58,7 +81,15 @@ def validate_code_fences(text: str) -> None:
                 "Encode newlines once in JSON; preserve escapes inside code strings."
             )
         opening = _OPENING_FENCE.match(line)
+        if not opening and (column := _misplaced_opening(line)) is not None:
+            raise ValueError(
+                f"Misplaced opening code fence at line {line_number}, column {column}: "
+                "put a newline before the opening fence. Its language tag belongs on "
+                "that line, code starts on the next line, and the closing fence needs "
+                "its own line. Preserve code indentation and literal string escapes."
+            )
         if opening:
+            opened_on = line_number
             fence, info = opening.groups()
             if fence[0] == "`" and "`" in info:
                 raise ValueError(
@@ -68,7 +99,7 @@ def validate_code_fences(text: str) -> None:
 
     if fence is not None:
         raise ValueError(
-            "Unclosed code block: put the closing fence on its own line, using "
+            f"Unclosed code block opened on line {opened_on}: put the closing fence on its own line, using "
             "the same character and at least the opening fence length. "
             "Use real newlines and preserve code indentation."
         )

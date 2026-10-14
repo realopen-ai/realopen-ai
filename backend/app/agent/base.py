@@ -72,6 +72,7 @@ class ToolResult:
     output: str  # Text to feed back to the LLM
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
     failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
+    validation_issues: Optional[List[Dict]] = None  # exact field paths, never guessed
 
     def __post_init__(self):
         # Unknown failures are operational, never automatically argument repairs.

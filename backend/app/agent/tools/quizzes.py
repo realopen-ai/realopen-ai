@@ -51,6 +51,7 @@ class CreateQuizTool(BaseTool):
             started_at=time.time(),
         )
         failure_kind = None
+        validation_issues = None
         try:
             # Some local models double-encode structured tool arguments.
             # Decode only valid JSON; the same Question validation still applies.
@@ -78,6 +79,11 @@ class CreateQuizTool(BaseTool):
                 {**artifact, "message": "Saved in Learn. Do not reveal the answer key."}
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            if isinstance(exc, ValidationError):
+                validation_issues = [
+                    {"path": list(error["loc"]), "message": error["msg"]}
+                    for error in exc.errors(include_input=False, include_url=False)
+                ]
             failure_kind = (
                 "execution"
                 if isinstance(exc, HTTPException) and exc.status_code not in {400, 422}
@@ -110,7 +116,9 @@ class CreateQuizTool(BaseTool):
             output = "Could not save quiz. Try again later."
             call.error = output
         call.output, call.completed_at = output, time.time()
-        return ToolResult(call.status == "completed", output, call, failure_kind)
+        return ToolResult(
+            call.status == "completed", output, call, failure_kind, validation_issues
+        )
 
 
 tool_registry.register(CreateQuizTool())
