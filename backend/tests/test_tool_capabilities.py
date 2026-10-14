@@ -24,8 +24,16 @@ def error(status, message):
         (400, "model does not support tools", "unsupported_tools"),
         (422, "Function calling is not supported", "unsupported_tools"),
         (501, "Unsupported tools", "unsupported_tools"),
-        (500, "Failed to parse tool call: invalid JSON", "native_parser"),
-        (500, "error parsing function_call", "native_parser"),
+        (500, "Failed to parse tool call: invalid JSON", None),
+        (500, "error parsing function_call", None),
+        (
+            500,
+            "XML syntax error on line 3: element <function> closed by </parameter>",
+            None,
+        ),
+        (400, "unsupported tool calling schema", None),
+        (500, "tools not available", None),
+        (500, "tools not enabled", None),
         (401, "model does not support tools", None),
         (429, "model does not support tools", None),
         (400, "invalid tool arguments: missing query", None),
@@ -75,7 +83,7 @@ async def test_fallback_survives_memory_reset_and_has_explicit_reset():
 
 @pytest.mark.asyncio
 async def test_cache_is_scoped_to_endpoint_and_provider(monkeypatch):
-    await capabilities.remember_fallback("model", "native_parser")
+    await capabilities.remember_fallback("model", "unsupported_tools")
     monkeypatch.setattr(settings, "OLLAMA_BASE_URL", "http://different-engine:11434")
     assert capabilities.should_try_native("model")
     monkeypatch.setattr(providers, "provider_of", lambda _: "groq")
@@ -117,6 +125,128 @@ def test_corrupt_cache_reprobes():
     path.parent.mkdir(parents=True)
     path.write_text("broken json")
     assert capabilities.should_try_native("model")
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("XML syntax error on line 3: element <function> closed by </parameter>", True),
+        ("Malformed XML in <tool_call>", True),
+        ("Failed to parse tool call: invalid JSON", True),
+        ("error parsing function_call", True),
+        ("Malformed JSON in function arguments", True),
+        ("Invalid JSON in tool_call arguments", True),
+        ("XML syntax error in <document>", False),
+        ("Invalid JSON model configuration", False),
+        ("error parsing tool schema", False),
+        ("failed to parse function_call schema", False),
+        ("invalid arguments: missing query", False),
+        ("model does not support tools", False),
+        ("out of memory", False),
+    ],
+)
+@pytest.mark.parametrize("stream_error", [False, True])
+def test_transient_parser_errors_are_separate_from_capability(
+    message, expected, stream_error
+):
+    exception = (
+        providers.ProviderStreamError(message) if stream_error else error(500, message)
+    )
+    assert capabilities.native_parser_error(exception) is expected
+    if expected:
+        assert capabilities.rejection_reason(exception) is None
+
+
+@pytest.mark.parametrize("status", [401, 403, 429])
+def test_parser_words_in_auth_rate_limit_errors_are_not_retryable(status):
+    assert not capabilities.native_parser_error(
+        error(status, "failed to parse tool call")
+    )
+    assert not capabilities.native_parser_error(ValueError("failed to parse tool call"))
+
+
+@pytest.mark.asyncio
+async def test_old_parser_cache_is_ignored_and_new_parser_cache_is_rejected():
+    path = capabilities._path("model")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"schema_version": 1, "protocol": "text", "reason": "native_parser"})
+    )
+    assert capabilities.should_try_native("model")
+    with pytest.raises(ValueError, match="unsupported-tools"):
+        await capabilities.remember_fallback("model", "native_parser")
+    assert capabilities.should_try_native("model")
+    await capabilities.remember_fallback("model", "unsupported_tools")
+    assert not capabilities.should_try_native("model")
+
+
+@pytest.mark.asyncio
+async def test_coder_transient_parser_retry_success_keeps_native_for_next_request(
+    monkeypatch,
+):
+    captured = []
+
+    async def chat(model, messages, **kwargs):
+        captured.append(kwargs)
+        if len(captured) == 1:
+            raise providers.ProviderStreamError(
+                "XML syntax error: <function> closed by </parameter>"
+            )
+        return {
+            "message": {
+                "tool_calls": [{"function": {"name": "list_files", "arguments": {}}}]
+            }
+        }
+
+    monkeypatch.setattr(coder.providers, "chat_once", chat)
+    for _ in range(2):
+        result = await coder.chat_with_tool_recovery(
+            "custom", [{"role": "user", "content": "List"}]
+        )
+        assert result["message"]["tool_calls"]
+    assert len(captured) == 3 and all(request["tools"] for request in captured)
+    assert capabilities.should_try_native("custom")
+    assert not capabilities._path("custom").exists()
+
+
+@pytest.mark.asyncio
+async def test_coder_repeated_parser_failures_fallback_for_execution_only(monkeypatch):
+    captured = []
+
+    async def chat(model, messages, **kwargs):
+        captured.append(kwargs)
+        if len(captured) <= 2:
+            raise providers.ProviderStreamError(
+                "failed to parse tool call: invalid JSON"
+            )
+        if kwargs["tools"]:
+            return {"message": {"content": "Next request is native"}}
+        return {"message": {"content": '{"final":"Recovered"}'}}
+
+    monkeypatch.setattr(coder.providers, "chat_once", chat)
+    state = set()
+    for _ in range(2):
+        result = await coder.chat_with_tool_recovery(
+            "custom",
+            [{"role": "user", "content": "Continue"}],
+            transient_text_models=state,
+        )
+        assert result["message"]["content"] == "Recovered"
+    assert state == {"custom"}
+    await coder.chat_with_tool_recovery(
+        "custom",
+        [{"role": "user", "content": "New request"}],
+        transient_text_models=set(),
+    )
+    assert [bool(request["tools"]) for request in captured] == [
+        True,
+        True,
+        False,
+        False,
+        True,
+    ]
+    assert capabilities.should_try_native("custom")
+    assert not capabilities._path("custom").exists()
 
 
 @pytest.mark.asyncio
