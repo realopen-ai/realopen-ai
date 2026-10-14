@@ -89,6 +89,7 @@ def manager_mock():
     ):
         yield mgr
 
+
 # ══════════════════════════════════════════════════════════════════════
 # 1. Metadata / schema
 # ══════════════════════════════════════════════════════════════════════
@@ -163,21 +164,24 @@ async def test_execute_add_requires_text(tool, manager_mock):
 @pytest.mark.asyncio
 async def test_execute_edit_requires_memory_id(tool, manager_mock):
     result = await tool.execute(action="edit", text="new text")
-    assert result.success is True  # graceful message, not an error
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "Edit requires a memory_id" in result.output
 
 
 @pytest.mark.asyncio
 async def test_execute_delete_requires_memory_id(tool, manager_mock):
     result = await tool.execute(action="delete")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "Delete requires a memory_id" in result.output
 
 
 @pytest.mark.asyncio
 async def test_execute_search_requires_query(tool, manager_mock):
     result = await tool.execute(action="search", query="  ")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "Search requires a query." in result.output
 
 
@@ -268,7 +272,8 @@ async def test_execute_add_failure_returns_error(tool, manager_mock):
 async def test_execute_edit_unknown_id(tool, manager_mock):
     manager_mock.get_all_memories = AsyncMock(return_value=[])
     result = await tool.execute(action="edit", memory_id=str(uuid.uuid4()), text="x")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "No memory found with id starting" in result.output
 
 
@@ -305,7 +310,8 @@ async def test_execute_edit_update_failed(tool, manager_mock):
     manager_mock.get_all_memories = AsyncMock(return_value=[mem])
     manager_mock.update_memory = AsyncMock(return_value=None)
     result = await tool.execute(action="edit", memory_id=str(mem.id), text="new")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "execution"
     assert result.output == "Memory update failed."
 
 
@@ -340,7 +346,8 @@ async def test_execute_delete_failed(tool, manager_mock):
     manager_mock.get_all_memories = AsyncMock(return_value=[mem])
     manager_mock.delete_memory = AsyncMock(return_value=False)
     result = await tool.execute(action="delete", memory_id=str(mem.id))
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "execution"
     assert result.output == "Memory delete failed."
 
 
