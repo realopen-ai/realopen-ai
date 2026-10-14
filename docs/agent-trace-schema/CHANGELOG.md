@@ -4,6 +4,17 @@ This folder documents the persisted JSONL format, independently of the [usage gu
 
 Read the version matching a record's `schema_version`. Fields may be absent when execution ends before their capture point. Redaction, truncation, and omission annotations apply in every version. Existing records are not migrated or rewritten.
 
+## 1.3 — Runtime statistics and compact result views
+
+[Full reference](v1.3.md)
+
+- Adds optional per-round `runtime_usage` and application `prefix` hashes.
+- Adds tool `model_view` metadata to distinguish shortened inference context from raw outputs.
+- Adds `deferred` execution status for schema recovery that did not execute the requested tool.
+- Protocol/schema and repair instructions move from the core system prompt into captured application context.
+
+Compatibility: these fields are observational and may be absent. Missing cache counts do not indicate zero cache reuse. Existing records remain unchanged.
+
 ## 1.2 — Separate coder trajectories
 
 [Full reference](v1.2.md)
