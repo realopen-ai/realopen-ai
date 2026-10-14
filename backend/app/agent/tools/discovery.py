@@ -71,7 +71,14 @@ class ReadToolResultTool(BaseTool):
         return ["result_ref"]
 
     async def execute(
-        self, *, result_ref, offset=0, limit=3000, _result_store=None, **kwargs
+        self,
+        *,
+        result_ref,
+        offset=0,
+        limit=3000,
+        _result_store=None,
+        _result_metadata=None,
+        **kwargs
     ):
         if _result_store is None or result_ref not in _result_store:
             return self.invalid_arguments(
@@ -92,6 +99,7 @@ class ReadToolResultTool(BaseTool):
         if offset > len(text):
             return self.invalid_arguments("Offset exceeds result length.")
         end = min(len(text), offset + limit)
+        source = (_result_metadata or {}).get(result_ref, {})
         return ToolResult(
             True,
             json.dumps(
@@ -101,6 +109,11 @@ class ReadToolResultTool(BaseTool):
                     "offset": offset,
                     "next_offset": end if end < len(text) else None,
                     "total_chars": len(text),
+                    **{
+                        key: source[key]
+                        for key in ("source_tool", "source_title")
+                        if isinstance(source.get(key), str)
+                    },
                 },
                 ensure_ascii=False,
             ),

@@ -286,6 +286,40 @@ async def test_result_paging_roundtrip_is_exact_and_request_local():
 
 
 @pytest.mark.asyncio
+async def test_output_pages_include_only_scoped_source_metadata():
+    tool = ReadToolResultTool()
+    page = await tool.execute(
+        result_ref="ref",
+        offset=0,
+        limit=2,
+        _result_store={"ref": "🙂abc"},
+        _result_metadata={
+            "ref": {
+                "source_tool": "rag_search",
+                "source_title": "Document search",
+                "secret": "must not leak",
+            }
+        },
+    )
+    data = json.loads(page.output)
+    assert data == {
+        "result_ref": "ref",
+        "content": "🙂a",
+        "offset": 0,
+        "next_offset": 2,
+        "total_chars": 4,
+        "source_tool": "rag_search",
+        "source_title": "Document search",
+    }
+    absent = await tool.execute(
+        result_ref="ref",
+        _result_store={"ref": "text"},
+        _result_metadata={"other": {"source_tool": "wrong"}},
+    )
+    assert "source_tool" not in json.loads(absent.output)
+
+
+@pytest.mark.asyncio
 async def test_discovery_exposes_then_executes_only_requested_enabled_tools(
     agent, monkeypatch
 ):
@@ -455,6 +489,60 @@ async def test_large_result_is_full_in_ui_but_shortened_in_model_context(
     assert "read_tool_result" in {
         schema["function"]["name"] for schema in captured[1]["tools"]
     }
+
+
+@pytest.mark.asyncio
+async def test_paged_output_metadata_is_emitted_for_ui_and_persistence(
+    agent, monkeypatch
+):
+    registry = ToolRegistry()
+    registry.register(agent)
+    registry.register(ReadToolResultTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service.settings, "AGENT_TOOL_RESULT_MAX_CHARS", 1000)
+    raw = "🙂" + "text " * 1000
+    monkeypatch.setattr(agent, "execute", AsyncMock(return_value=ToolResult(True, raw)))
+    first = call({"input": "one"})
+    builder = BlockBuilder()
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [first], "done": True}],
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {"result_ref": first["id"], "offset": 0, "limit": 80},
+                            name="read_tool_result",
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run(on_tool_call_update=builder.on_tool_call_update)
+    page = next(
+        event["tool_call"]
+        for event in events
+        if event["event"] == "tool_call"
+        and event["tool_call"]["type"] == "tool_output"
+        and event["tool_call"]["status"] == "completed"
+    )
+    data = json.loads(page["output"])
+    assert data["source_tool"] == agent.name
+    assert data["source_title"] == agent.get_display_name()
+    assert data["content"] == raw[:80]
+    assert data["next_offset"] == 80
+    assert (
+        next(
+            block["tool_call"]["output"]
+            for block in builder.to_db_blocks()
+            if block["tool_call"]["type"] == "tool_output"
+        )
+        == page["output"]
+    )
 
 
 @pytest.mark.asyncio

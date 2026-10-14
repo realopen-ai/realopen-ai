@@ -425,6 +425,7 @@ async def run_agent_stream(
     configs_snapshot = deepcopy(config_store.get_all_tool_configs())
     available_tools = routing.enabled_tools(registry, configs_snapshot)
     result_store = {}
+    result_metadata_store = {}
     pending_tool_contexts = []
     resource_context_loaded = set()
 
@@ -1648,6 +1649,7 @@ async def run_agent_stream(
                 exec_args["_loaded_tools"] = frozenset(selected_tools)
             elif tool_name == "read_tool_result":
                 exec_args["_result_store"] = result_store
+                exec_args["_result_metadata"] = result_metadata_store
             if tool_name == "load_skill":
                 exec_args["_skill_role"] = skill_role
             try:
@@ -1790,6 +1792,10 @@ async def run_agent_stream(
             if result_ref in result_store:
                 result_ref += "-" + uuid.uuid4().hex
             result_store[result_ref] = result.output
+            result_metadata_store[result_ref] = {
+                "source_tool": tool_name,
+                "source_title": tool.get_display_name(),
+            }
             can_page = (
                 "read_tool_result" in available_tools
                 and registry.get("read_tool_result")
