@@ -110,7 +110,8 @@ class TestCodeExecExecute:
         assert result.success is False
         assert "exit code 3" in result.output
         assert result.tool_call.exit_code == 3
-        assert result.tool_call.status == "completed"
+        assert result.tool_call.status == "error"
+        assert result.failure_kind == "execution"
 
     @pytest.mark.asyncio
     async def test_traceback_captured_as_stderr(self):
@@ -134,9 +135,7 @@ class TestCodeExecExecute:
     async def test_persists_history_for_conversation(self):
         persist = AsyncMock()
         conv_id = str(uuid.uuid4())
-        with patch(
-            "app.agent.tools.code_exec.persist_general_code_command", persist
-        ):
+        with patch("app.agent.tools.code_exec.persist_general_code_command", persist):
             result = await CodeExecTool().execute(
                 code="print('persisted')", conversation_id=conv_id
             )
@@ -152,9 +151,7 @@ class TestCodeExecExecute:
         # The tool always calls the persist helper; the helper itself
         # no-ops when conversation_id is None (checked in its own tests).
         persist = AsyncMock()
-        with patch(
-            "app.agent.tools.code_exec.persist_general_code_command", persist
-        ):
+        with patch("app.agent.tools.code_exec.persist_general_code_command", persist):
             await CodeExecTool().execute(code="print('anon')")
         persist.assert_awaited_once()
         assert persist.await_args.args[0] is None
@@ -162,9 +159,7 @@ class TestCodeExecExecute:
     @pytest.mark.asyncio
     async def test_persistence_failure_is_non_fatal(self):
         persist = AsyncMock(side_effect=RuntimeError("db down"))
-        with patch(
-            "app.agent.tools.code_exec.persist_general_code_command", persist
-        ):
+        with patch("app.agent.tools.code_exec.persist_general_code_command", persist):
             result = await CodeExecTool().execute(
                 code="print('still works')", conversation_id=str(uuid.uuid4())
             )
@@ -262,7 +257,9 @@ class TestRunCodeGuards:
         with patch(
             "app.agent.tools.code_exec.tempfile.NamedTemporaryFile", side_effect=spy
         ):
-            stdout, stderr, code = CodeExecTool()._run_code("print('cleanup')", "python")
+            stdout, stderr, code = CodeExecTool()._run_code(
+                "print('cleanup')", "python"
+            )
 
         assert code == 0
         assert "cleanup" in stdout

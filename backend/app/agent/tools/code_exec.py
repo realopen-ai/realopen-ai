@@ -5,6 +5,7 @@ The execution timeout is configurable (Brain ▸ Tools ▸ Code
 Execution); the safety blocklist is deliberately NOT configurable.
 """
 
+import ast
 import logging
 import time
 import subprocess
@@ -62,6 +63,18 @@ class CodeExecTool(BaseTool):
         **kwargs,
     ) -> ToolResult:
         """Execute code and return the output."""
+        if not code or not code.strip():
+            return self.invalid_arguments("Provide non-empty Python code.")
+        if language not in ("python", "python3"):
+            return self.invalid_arguments(
+                f"Unsupported language: {language}. Use python or python3."
+            )
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            return self.invalid_arguments(
+                f"Invalid Python syntax at line {exc.lineno}, column {exc.offset}: {exc.msg}"
+            )
         start = time.time()
         tool_call = ToolCall(
             id=f"tc-code-{int(start * 1000)}",

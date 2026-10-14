@@ -461,6 +461,8 @@ class CoderAgent(BaseTool):
         _parent_tool_call_id: str | None = None,
         **kwargs,
     ) -> ToolResult:
+        if not task or not task.strip():
+            return self.invalid_arguments("Provide a concrete coding task.")
         started = time.time()
         call = ToolCall(
             id=f"tc-coder-{int(started * 1000)}",
