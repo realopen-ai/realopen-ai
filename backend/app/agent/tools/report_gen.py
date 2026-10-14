@@ -19,16 +19,29 @@ Keyword-triggered: "report", "document", "pdf", "docx", "deliverable".
 from __future__ import annotations
 
 import logging
+import json
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
-from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.base import (
+    BaseTool,
+    ToolCall,
+    ToolResult,
+    ToolType,
+    ToolArgumentError,
+    tool_registry,
+)
 from app.agent.tools.config_base import (
     ConfigField,
     ToolConfigDefinition,
     register_config,
 )
 from app.services.report_gen import generate_report
+from app.agent.tools import config_store
+from app.services import artifacts as artifact_service
+from app.db.session import async_session_factory
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +62,7 @@ class ReportGenTool(BaseTool):
     """Generate a formatted report (PDF or DOCX) about a topic."""
 
     name = "use_report_gen"
+    guidance_prompt = "agent_reports"
     output_formats = ("pdf", "docx")
     display_name = "Report Generation"
     description = (
@@ -63,7 +77,7 @@ class ReportGenTool(BaseTool):
     param_aliases = {
         "topic": "topic",
         "outline": "outline",
-        "requirements": "outline",
+        "requirements": "requirements",
         "format": "format",
     }
 
@@ -80,6 +94,27 @@ class ReportGenTool(BaseTool):
                 "description": (
                     "Optional section outline to guide the report structure"
                 ),
+            },
+            "requirements": {
+                "type": "string",
+                "maxLength": 8000,
+                "description": "Optional detail, length and style requirements, separate from section headings. Original user requirements take priority.",
+            },
+            "length_multiplier": {
+                "type": "number",
+                "minimum": 0.1,
+                "maximum": 10,
+                "description": "Optional requested size ratio for EACH chapter of source_artifact (e.g. 2 for twice as long). Omit unless the user specifies a relative length.",
+            },
+            "source_artifact": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "For rewriting/expanding a saved report: exact artifact_id and optional version. The writer reads the entire saved draft, not only chat excerpts.",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "version": {"type": "integer", "minimum": 1},
+                },
+                "required": ["artifact_id"],
             },
             "format": {
                 "type": "string",
@@ -100,6 +135,8 @@ class ReportGenTool(BaseTool):
         topic: str,
         outline: Optional[str] = None,
         requirements: Optional[str] = None,
+        source_artifact: Optional[dict] = None,
+        length_multiplier: Optional[float] = None,
         format: Optional[str] = None,
         **kwargs,
     ) -> ToolResult:
@@ -141,22 +178,50 @@ class ReportGenTool(BaseTool):
         try:
             # Model override (Brain ▸ Tools) when set, else the service
             # falls back to the Report task slot (Settings ▸ AI ▸ Models).
-            from app.agent.tools import config_store
-
             model_override = await config_store.tool_model_override(self.name)
+            draft = (
+                await _load_report_draft(source_artifact, kwargs.get("conversation_id"))
+                if source_artifact is not None
+                else None
+            )
+            extra = {}
+            if length_multiplier is not None:
+                if (
+                    draft is None
+                    or isinstance(length_multiplier, bool)
+                    or not isinstance(length_multiplier, (int, float))
+                    or not 0.1 <= length_multiplier <= 10
+                ):
+                    raise ToolArgumentError(
+                        "length_multiplier needs a source_artifact and must be between 0.1 and 10."
+                    )
+                draft["length_multiplier"] = length_multiplier
+            for key, value in (
+                ("requirements", requirements),
+                ("user_request", kwargs.get("_user_request")),
+                ("evidence", kwargs.get("_evidence")),
+                ("draft", draft),
+            ):
+                if value:
+                    extra[key] = value
+            if kwargs.get("_event_queue") is not None:
+
+                async def progress(update):
+                    tool_call.progress = update
+                    await kwargs["_event_queue"].put(
+                        {
+                            "id": kwargs.get("_parent_tool_call_id", tool_call.id),
+                            "progress": update,
+                        }
+                    )
+
+                extra["progress"] = progress
             result = await generate_report(
                 topic=topic.strip(),
-                outline="\n\n".join(
-                    part
-                    for part in (outline or requirements, kwargs.get("_user_request"))
-                    if part
-                )
-                or None,
+                outline=outline,
                 format=fmt,
                 model=model_override,
-                **(
-                    {"evidence": kwargs["_evidence"]} if kwargs.get("_evidence") else {}
-                ),
+                **extra,
             )
 
             tool_call.status = "completed"
@@ -170,6 +235,11 @@ class ReportGenTool(BaseTool):
                     "download_url": result["download_url"],
                     "report_id": result["report_id"],
                     "created_at": result["created_at"],
+                    **(
+                        {"statistics": result["statistics"]}
+                        if result.get("statistics")
+                        else {}
+                    ),
                 }
             ]
 
@@ -178,6 +248,17 @@ class ReportGenTool(BaseTool):
                 f" The user can download it using the deliverable badge shown in the chat."
                 f" Tell the user the report is ready for download."
             )
+            if result.get("statistics"):
+                output_msg += (
+                    "\nDocument statistics (measured, not a quality evaluation): "
+                    + json.dumps(result["statistics"])
+                )
+            if result.get("source_statistics"):
+                output_msg += "\nSource draft statistics: " + json.dumps(
+                    result["source_statistics"]
+                )
+            if result.get("warnings"):
+                output_msg += "\nWarnings: " + "; ".join(result["warnings"])
 
             _log(
                 "execute DONE topic=%r format=%s time=%.1fs",
@@ -192,6 +273,11 @@ class ReportGenTool(BaseTool):
                 tool_call=tool_call,
             )
 
+        except (ToolArgumentError, HTTPException) as exc:
+            return self.invalid_arguments(
+                str(exc.detail) if isinstance(exc, HTTPException) else str(exc),
+                tool_call,
+            )
         except Exception as e:
             logger.exception("Report generation failed: %s", e)
             tool_call.status = "error"
@@ -204,13 +290,55 @@ class ReportGenTool(BaseTool):
             )
 
 
+def generation_key(arguments):
+    return (
+        arguments.get("topic", "").strip().casefold(),
+        arguments.get("format") or _configured_default_format(),
+    )
+
+
+async def _load_report_draft(reference, conversation_id):
+    """Read a complete, version-pinned draft using normal artifact permissions."""
+    try:
+        identifier = uuid.UUID(str(reference["artifact_id"]))
+        conversation = uuid.UUID(str(conversation_id)) if conversation_id else None
+        number = reference.get("version")
+        if number is not None and (
+            isinstance(number, bool) or not isinstance(number, int) or number < 1
+        ):
+            raise ValueError("Version must be positive")
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ToolArgumentError(
+            "Use an exact source_artifact UUID and a positive version from attachments/read_artifact."
+        ) from exc
+    async with async_session_factory() as db:
+        artifact = await artifact_service.get_artifact(
+            db, identifier, conversation, scoped=True
+        )
+        if artifact.kind != "report":
+            raise ToolArgumentError(
+                "source_artifact must reference a saved report; read other sources with their source tools."
+            )
+        version = await artifact_service.get_version(db, artifact, number)
+        if not isinstance(version.source, str) or not version.source.strip():
+            raise ToolArgumentError(
+                "The saved report has no readable Markdown draft; it cannot be reliably expanded."
+            )
+        draft = {
+            "artifact_id": str(artifact.id),
+            "version": version.number,
+            "title": artifact.title,
+            "source": version.source,
+        }
+        await db.commit()
+        return draft
+
+
 # ── Configuration definition (Brain ▸ Tools ▸ Report Generation) ──
 
 
 def _configured_default_format() -> str:
     """The persisted default output format (custom.default_format)."""
-    from app.agent.tools import config_store
-
     cfg = config_store.get_tool_config("use_report_gen") or {}
     value = (cfg.get("custom") or {}).get("default_format")
     return value if value in ("pdf", "docx") else DEFAULT_FORMAT

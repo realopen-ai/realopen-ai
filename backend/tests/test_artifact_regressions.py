@@ -19,11 +19,11 @@ def test_section_replacement_without_final_newline_preserves_next_heading():
     assert len(sections_for(edited, "report")) == 2
 
 
-@pytest.mark.parametrize("replacement", ["Plan: Beta", "Changed body without a heading."])
+@pytest.mark.parametrize(
+    "replacement", ["Plan: Beta", "Changed body without a heading."]
+)
 def test_report_edit_rejects_lost_section_boundary(replacement):
-    source = (
-        "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
-    )
+    source = "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
     version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
     with pytest.raises(artifacts.HTTPException) as error:
         artifacts.edited_source(
@@ -34,9 +34,7 @@ def test_report_edit_rejects_lost_section_boundary(replacement):
 
 
 def test_report_heading_rename_retains_body_and_neighbors():
-    source = (
-        "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
-    )
+    source = "# Report\n\n## Overview\nIntro\n\n## Plan: Alpha\nKeep this body.\n\n## Results\nPending"
     version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
     edited = artifacts.edited_source(
         version,
@@ -66,7 +64,9 @@ def test_report_heading_rename_retains_body_and_neighbors():
     ],
     ids=["body-only", "heading-and-body", "heading-level", "split-section"],
 )
-def test_report_edits_support_requested_content_and_structure_changes(replacement, titles, body):
+def test_report_edits_support_requested_content_and_structure_changes(
+    replacement, titles, body
+):
     source = "# Report\n\n## Topic\nOld body.\n\n## Next\nUntouched body."
     version = SimpleNamespace(source=source, sections=sections_for(source, "report"))
     edited = artifacts.edited_source(
@@ -119,7 +119,9 @@ async def test_report_keeps_original_user_constraints(monkeypatch):
         }
     )
     monkeypatch.setattr(report_tool, "generate_report", generate)
-    monkeypatch.setattr(config_store, "tool_model_override", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        config_store, "tool_model_override", AsyncMock(return_value=None)
+    )
     result = await report_tool.ReportGenTool().execute(
         topic="QA",
         outline="Overview | Plan | Results",
@@ -127,13 +129,16 @@ async def test_report_keeps_original_user_constraints(monkeypatch):
         _user_request="Under 100 words, no executive summary.",
     )
     assert result.success
-    assert "Under 100 words" in generate.call_args.kwargs["outline"]
+    assert generate.call_args.kwargs["outline"] == "Overview | Plan | Results"
+    assert "Under 100 words" in generate.call_args.kwargs["user_request"]
 
 
 @pytest.mark.asyncio
 async def test_truncated_summary_is_not_cached(tmp_path, monkeypatch):
     monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(artifacts.model_prefs, "resolve_task_model", AsyncMock(return_value="test"))
+    monkeypatch.setattr(
+        artifacts.model_prefs, "resolve_task_model", AsyncMock(return_value="test")
+    )
 
     async def stream(*args, **kwargs):
         yield {"content": "An incomplete", "done": True, "finish_reason": "length"}
@@ -154,7 +159,9 @@ async def test_truncated_summary_is_not_cached(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cutoff_omits_unfinished_sentence_and_marks_abridged(tmp_path, monkeypatch):
+async def test_cutoff_omits_unfinished_sentence_and_marks_abridged(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
 
     async def stream(*args, **kwargs):
@@ -193,6 +200,8 @@ def test_presentation_layouts_preserve_authored_body(tmp_path, template):
     _build_pptx(_parse_slides(source), theme, "QA", output)
     deck = Presentation(output)
     assert len(deck.slides) == 3
-    for slide, expected in zip(deck.slides, ["First body.", "Section body.", "Closing body."]):
+    for slide, expected in zip(
+        deck.slides, ["First body.", "Section body.", "Closing body."]
+    ):
         text = "\n".join(shape.text for shape in slide.shapes if shape.has_text_frame)
         assert expected in text

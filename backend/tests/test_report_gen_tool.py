@@ -58,7 +58,14 @@ class TestReportGenSchema:
     def test_parameters_and_required_params(self):
         tool = ReportGenTool()
         params = tool.get_parameters()
-        assert set(params) == {"topic", "outline", "format"}
+        assert set(params) == {
+            "topic",
+            "outline",
+            "format",
+            "requirements",
+            "source_artifact",
+            "length_multiplier",
+        }
         assert params["format"]["enum"] == ["pdf", "docx"]
         assert tool.get_required_params() == ["topic"]
 
@@ -68,7 +75,7 @@ class TestReportGenSchema:
             "topic": "topic",
             "outline": "outline",
             "format": "format",
-            "requirements": "outline",
+            "requirements": "requirements",
         }
 
     def test_tool_metadata_and_registry(self):
@@ -238,7 +245,9 @@ class TestReportGenConfigHelpers:
 
     def test_missing_config_falls_back(self):
         for cfg in (None, {}, {"custom": None}):
-            with patch("app.agent.tools.config_store.get_tool_config", return_value=cfg):
+            with patch(
+                "app.agent.tools.config_store.get_tool_config", return_value=cfg
+            ):
                 assert _configured_default_format() == DEFAULT_FORMAT
 
 
@@ -249,7 +258,9 @@ class TestReportGenCustomValidator:
 
     @pytest.mark.parametrize("value", ["txt", "word", "PDF", 1])
     def test_rejects_bad_default_format(self, value):
-        with pytest.raises(ValueError, match="'default_format' must be 'pdf' or 'docx'"):
+        with pytest.raises(
+            ValueError, match="'default_format' must be 'pdf' or 'docx'"
+        ):
             _validate_report_custom({"default_format": value})
 
     @pytest.mark.parametrize("value", ["pdf", "docx", None])
