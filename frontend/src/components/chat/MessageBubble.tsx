@@ -29,6 +29,7 @@ import remarkGfm from "remark-gfm";
 import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
 import { elapsedMilliseconds } from "@/lib/timing";
 import { toolAccessDetails } from "@/lib/toolAccessDetails";
+import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -568,6 +569,8 @@ function ToolCallBlockView({
   // Display label: "Generating..." while running, "Generated ..." when done
   const access =
     tc.type === "tool_access" ? toolAccessDetails(tc.output) : null;
+  const outputPage =
+    tc.type === "tool_output" ? toolOutputDetails(tc.output) : null;
   const displayLabel =
     tc.status === "warning"
       ? translate("tool.access.deferred")
@@ -583,11 +586,13 @@ function ToolCallBlockView({
   // query for searches) — keeps the row scannable.
   const shortTarget = access?.requested.length
     ? access.requested.join(", ")
-    : tc.filePath && tc.filePath !== "/workspace"
-      ? tc.filePath
-      : tc.type === "websearch" || tc.type === "deepsearch"
-        ? tc.query
-        : undefined;
+    : outputPage
+      ? outputPage.sourceTitle || outputPage.sourceTool || outputPage.resultRef
+      : tc.filePath && tc.filePath !== "/workspace"
+        ? tc.filePath
+        : tc.type === "websearch" || tc.type === "deepsearch"
+          ? tc.query
+          : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
   const elapsed =
@@ -600,6 +605,7 @@ function ToolCallBlockView({
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
     tc.type !== "tool_access" &&
+    tc.type !== "tool_output" &&
     (tc.status === "error" ||
       tc.status === "running" ||
       ((tc.type === "file_read" || tc.type === "file_write") &&
@@ -725,6 +731,7 @@ function ToolCallDetail({
     );
   }
   if (tc.type === "tool_access") return <ToolAccessDetail tc={tc} />;
+  if (tc.type === "tool_output") return <ToolOutputDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
@@ -757,6 +764,94 @@ function ToolCallDetail({
     return <ImageGenDetail tc={tc} />;
   }
   return <GenericToolDetail tc={tc} />;
+}
+
+function ToolOutputDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const page = toolOutputDetails(tc.output);
+  if (!page)
+    return (
+      <p
+        dir={tc.output ? "ltr" : undefined}
+        className="whitespace-pre-wrap break-words text-[12.5px] text-muted-foreground"
+      >
+        {tc.output ||
+          translate(
+            tc.status === "running"
+              ? "tool.output.loadingInfo"
+              : "tool.output.unavailable",
+          )}
+      </p>
+    );
+  return (
+    <div className="space-y-3 text-[12.5px]">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
+        {(page.sourceTitle || page.sourceTool) && (
+          <>
+            <dt className="text-muted-foreground">
+              {translate("tool.output.source")}
+            </dt>
+            <dd className="min-w-0 break-words">
+              {page.sourceTitle || page.sourceTool}
+            </dd>
+          </>
+        )}
+        <dt className="text-muted-foreground">
+          {translate("tool.output.reference")}
+        </dt>
+        <dd dir="ltr" className="min-w-0 break-all font-mono text-left">
+          {page.resultRef}
+        </dd>
+        <dt className="text-muted-foreground">
+          {translate("tool.output.range")}
+        </dt>
+        <dd dir="ltr" className="tabular-nums text-left">
+          {page.count
+            ? `${page.offset + 1}–${page.end} / ${page.totalChars}`
+            : `0 / ${page.totalChars}`}
+        </dd>
+      </dl>
+      <p className="text-muted-foreground">
+        {page.nextOffset === null
+          ? translate("tool.output.end")
+          : translate("tool.output.more")}
+        {page.nextOffset !== null && (
+          <span className="ms-1">
+            {translate("tool.output.nextOffset")}:{" "}
+            <bdi className="tabular-nums">{page.nextOffset}</bdi>
+          </span>
+        )}
+      </p>
+      <div>
+        <p className="mb-1.5 text-muted-foreground">
+          {translate("tool.output.content")}
+        </p>
+        {page.count ? (
+          <div
+            dir="ltr"
+            className="max-h-64 overflow-auto rounded-md bg-background/50 p-2 text-left"
+          >
+            {page.isJson ? (
+              <pre className="font-mono text-[11.5px] leading-relaxed">
+                <HighlightedCode code={page.formatted} language="json" />
+              </pre>
+            ) : (
+              <pre
+                dir="auto"
+                className="whitespace-pre-wrap break-words text-start font-mono text-[11.5px] leading-relaxed"
+              >
+                {page.formatted}
+              </pre>
+            )}
+          </div>
+        ) : (
+          <p className="text-muted-foreground">
+            {translate("tool.output.empty")}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ToolAccessDetail({ tc }: { tc: ToolCallResult }) {
