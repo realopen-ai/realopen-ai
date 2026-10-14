@@ -702,6 +702,7 @@
   "tool.preview.running": "Démarrage de l’aperçu…",
   "tool.report.done": "Rapport généré",
   "tool.report.running": "Génération du rapport…",
+  "tool.report.chapters": "Rédaction des chapitres · {completed} / {total}",
   "tool.presentation.done": "Présentation générée",
   "tool.presentation.running": "Génération de la présentation…",
   "tool.spreadsheet.done": "Feuille de calcul générée",

@@ -702,6 +702,7 @@
   "tool.preview.running": "جارٍ تشغيل المعاينة…",
   "tool.report.done": "تم إنشاء التقرير",
   "tool.report.running": "جارٍ إنشاء التقرير…",
+  "tool.report.chapters": "كتابة الفصول · {completed} / {total}",
   "tool.presentation.done": "تم إنشاء العرض التقديمي",
   "tool.presentation.running": "جارٍ إنشاء العرض التقديمي…",
   "tool.spreadsheet.done": "تم إنشاء جدول البيانات",

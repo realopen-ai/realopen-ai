@@ -1140,6 +1140,11 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
   return (
     <div className="space-y-2">
+      {tc.status === "warning" && tc.output && (
+        <p className="text-[11.5px] text-muted-foreground whitespace-pre-wrap">
+          {tc.output}
+        </p>
+      )}
       {tc.imageDescription && (
         <p className="text-[11.5px] text-muted-foreground/80 italic">
           &quot;{tc.imageDescription}&quot;
@@ -1292,7 +1297,12 @@ function ReportGenDetail({
         <div className="flex items-center gap-2">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           <span className="text-[11.5px] text-muted-foreground">
-            {generatingLabel}
+            {tc.progress?.stage === "writing_chapters"
+              ? translate("tool.report.chapters", {
+                  completed: tc.progress.completed,
+                  total: tc.progress.total,
+                })
+              : generatingLabel}
           </span>
         </div>
       )}
@@ -1343,6 +1353,17 @@ function ReportGenDetail({
             );
           })}
         </div>
+      )}
+      {tc.status === "running" && tc.progress?.stage === "writing_chapters" && (
+        <progress
+          className="w-full h-1 accent-primary"
+          value={tc.progress.completed}
+          max={Math.max(1, tc.progress.total)}
+          aria-label={translate("tool.report.chapters", {
+            completed: tc.progress.completed,
+            total: tc.progress.total,
+          })}
+        />
       )}
       {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>

@@ -702,6 +702,7 @@
   "tool.preview.running": "Starting app preview…",
   "tool.report.done": "Generated report",
   "tool.report.running": "Generating report…",
+  "tool.report.chapters": "Writing chapters · {completed} / {total}",
   "tool.presentation.done": "Generated presentation",
   "tool.presentation.running": "Generating presentation…",
   "tool.spreadsheet.done": "Generated spreadsheet",
