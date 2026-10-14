@@ -64,10 +64,15 @@ async def _chat_attempt(model, messages, tools, *, recovery=False, **kwargs):
             "coder_text_tools",
             tool_schemas=json.dumps(CODER_TOOLS, separators=(",", ":")),
         )
-        if messages and messages[0].get("role") == "system":
-            messages[0]["content"] += "\n\n" + protocol
-        else:
-            messages.insert(0, {"role": "system", "content": protocol})
+        # Keep core prefix/history byte-identical; protocol context is a
+        # separate application-owned message, frozen for this attempt.
+        messages.append(
+            {
+                "role": "user",
+                "content": protocol,
+                "metadata": {"agent_context": True, "trusted": True},
+            }
+        )
         messages, _ = await compact_conversation(
             messages,
             model,

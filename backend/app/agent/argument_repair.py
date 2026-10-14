@@ -90,10 +90,17 @@ def rebuild_view(messages, tool_schema, rejected_ids, error):
     )
     # Application-owned repair instructions are trusted; retrieved/tool data
     # remain in their existing untrusted wrappers. Keep one stable system role.
-    if view and view[0].get("role") == "system":
-        view[0]["content"] += "\n\n" + guidance
-    else:
-        view.insert(0, {"role": "system", "content": guidance})
+    view.append(
+        {
+            "role": "user",
+            "content": guidance,
+            "metadata": {
+                "agent_context": True,
+                "trusted": True,
+                "agent_argument_repair": True,
+            },
+        }
+    )
     diagnostic = untrusted_context_message(
         "validation diagnostics for " + function["name"],
         error.split("; received ", 1)[0],

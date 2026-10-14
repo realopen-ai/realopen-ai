@@ -29,6 +29,7 @@ from app.services.context_compactor import compact_conversation
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
+from app.core.prompt_security import untrusted_context_message
 from app.services import sandbox_host
 from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
@@ -494,9 +495,13 @@ class CoderAgent(BaseTool):
             coder_prompt = CODER_SYSTEM_PROMPT
             skill_catalog = skill_store.routing_catalog("coder")
             if skill_catalog:
-                coder_prompt += "\n\n" + skill_catalog
+                skill_context = untrusted_context_message(
+                    "available coder skill metadata", skill_catalog
+                )
+                skill_context["metadata"]["agent_context"] = True
             messages = [
                 {"role": "system", "content": coder_prompt},
+                *([skill_context] if skill_catalog else []),
                 {"role": "user", "content": task, "metadata": {"agent_request": True}},
             ]
             state = RunState()
