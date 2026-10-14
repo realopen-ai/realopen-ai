@@ -40,6 +40,8 @@ def normalize_structured_arguments(value, schema):
 
 def argument_errors(value, schema, path="arguments"):
     errors = []
+    if "not" in schema and not argument_errors(value, schema["not"], path):
+        errors.append(f"{path}: matches forbidden schema {json.dumps(schema['not'])}")
     types = {
         "object": lambda v: isinstance(v, dict),
         "array": lambda v: isinstance(v, list),

@@ -58,12 +58,36 @@ class ArtifactTool(BaseTool):
                             "type": "object",
                             "properties": {
                                 "section_id": {"type": "string"},
+                                "operation": {
+                                    "type": "string",
+                                    "enum": ["replace", "delete"],
+                                    "description": "Default replace. Use delete to remove the entire section/slide/sheet; omit content for delete.",
+                                },
                                 "content": {
                                     "type": "string",
                                     "description": "Replace the full target section, including its structural Markdown. Apply the requested changes to its heading and/or body, preserving unrelated content. Sheet edits use JSON.",
                                 },
                             },
-                            "required": ["section_id", "content"],
+                            "required": ["section_id"],
+                            "allOf": [
+                                {
+                                    "if": {
+                                        "properties": {
+                                            "operation": {"enum": ["replace"]}
+                                        }
+                                    },
+                                    "then": {"required": ["content"]},
+                                },
+                                {
+                                    "if": {
+                                        "properties": {
+                                            "operation": {"enum": ["delete"]}
+                                        },
+                                        "required": ["operation"],
+                                    },
+                                    "then": {"not": {"required": ["content"]}},
+                                },
+                            ],
                             "additionalProperties": False,
                         },
                     },
@@ -278,7 +302,7 @@ class UpdateArtifactTool(ArtifactTool):
     operation = "update"
     name = "update_artifact"
     display_name = "Update artifact"
-    description = "Edit generated files when requested. Read the target section first, then provide its complete replacement content. Apply requested changes to the heading and/or body while preserving unrelated content and valid document structure. Use Markdown for reports/slides and JSON for sheets, with exact version and section IDs. Failed edits leave the previous version intact; on version conflicts, reread. Uploads are read-only."
+    description = "Edit generated files when requested. Read targets first and use exact version and section IDs. To change content, provide the complete replacement (Markdown for reports/slides, JSON for sheets). To remove a section/slide/sheet, set operation to delete and omit content; never replace it with a removal notice. Preserve unrelated content and at least one section. Failed edits leave previous versions intact; on conflicts, reread because section IDs may change. Uploads are read-only."
 
 
 class ExportArtifactTool(ArtifactTool):
