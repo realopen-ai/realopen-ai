@@ -64,17 +64,21 @@ def assistant_call_message(content, calls, thinking=""):
     }
 
 
-def tool_result_message(call, output, *, skill_guidance=False):
+def tool_result_message(
+    call, output, *, skill_guidance=False, application_feedback=False
+):
     name = call.get("tool") or call.get("name", "unknown")
+    if application_feedback:
+        content = output
+    elif skill_guidance:
+        content = format_prompt("agent_skill_result", instructions=output)
+    else:
+        content = untrusted_context_message(f"tool result: {name}", output)["content"]
     return {
         "role": "tool",
         "tool_name": name,
         "tool_call_id": call["id"],
-        "content": (
-            format_prompt("agent_skill_result", instructions=output)
-            if skill_guidance
-            else untrusted_context_message(f"tool result: {name}", output)["content"]
-        ),
+        "content": content,
     }
 
 

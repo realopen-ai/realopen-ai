@@ -37,6 +37,7 @@ from app.agent.argument_repair import (
     without_rejected_calls,
 )
 from app.agent.tools import config_store
+from app.agent.tools.report_gen import generation_key as report_generation_key
 from app.agent import routing
 from app.agent.results import compact_result
 from app.agent.base import ToolArgumentError
@@ -428,6 +429,8 @@ async def run_agent_stream(
     result_store = {}
     result_metadata_store = {}
     research_evidence = []
+    generated_reports = {}
+    inspected_reports = set()
     pending_tool_contexts = []
     resource_context_loaded = set()
 
@@ -727,12 +730,21 @@ async def run_agent_stream(
     async def add_resource_context(names):
         for name in sorted(names):
             tool = available_tools.get(name)
-            if (
-                name not in resource_context_loaded
-                and tool
-                and hasattr(tool, "get_dynamic_description")
-            ):
-                resource_context_loaded.add(name)
+            if name in resource_context_loaded or not tool:
+                continue
+            resource_context_loaded.add(name)
+            if tool.guidance_prompt:
+                pending_tool_contexts.append(
+                    {
+                        "role": "user",
+                        "content": format_prompt(tool.guidance_prompt),
+                        "metadata": {
+                            "agent_context": True,
+                            "source": "application tool guidance: " + name,
+                        },
+                    }
+                )
+            if hasattr(tool, "get_dynamic_description"):
                 try:
                     pending_tool_contexts.append(
                         untrusted_context_message(
@@ -1421,7 +1433,7 @@ async def run_agent_stream(
                 schema_started = time.time()
                 schema_clock = time.monotonic()
                 await load_tools([tool_name])
-                execution_state.deferred_call_ids.add(call["id"])
+                execution_state.record_deferred(call)
                 observe(
                     "end_tool", "deferred", error="schema loaded; call was not executed"
                 )
@@ -1472,7 +1484,8 @@ async def run_agent_stream(
                 messages.append(
                     tool_result_message(
                         call,
-                        "This call was not executed because its schema was not active. The schema is now loaded; call it with validated arguments if the original request still needs it.",
+                        format_prompt("agent_tool_deferred", tool_name=tool_name),
+                        application_feedback=True,
                     )
                 )
                 continue
@@ -1569,6 +1582,40 @@ async def run_agent_stream(
                 # These fields belong to the application, not the tool schema.
                 tool_args.pop("_evidence", None)
                 tool_args.pop("_user_request", None)
+                tool_args.pop("_draft", None)
+                tool_args.pop("_previous_report", None)
+                report_key = report_generation_key(tool_args)
+                previous = generated_reports.get(report_key)
+                if previous and previous["artifact_id"] not in inspected_reports:
+                    feedback = format_prompt(
+                        "agent_report_inspection", report_reference=json.dumps(previous)
+                    )
+                    execution_state.record_skipped(
+                        call, "generated output inspection required"
+                    )
+                    observe(
+                        "end_tool",
+                        "skipped",
+                        error="generated output inspection required",
+                    )
+                    now = int(time.time() * 1000)
+                    warning = {
+                        "id": call["id"],
+                        "type": tool.tool_type.value,
+                        "status": "warning",
+                        "title": "Report already generated; inspection required",
+                        "output": feedback,
+                        "startedAt": now,
+                        "completedAt": now,
+                        "durationMs": 0,
+                    }
+                    if on_tool_call_update:
+                        on_tool_call_update(call["id"], warning)
+                    yield _sse_event("tool_call", {"tool_call": warning})
+                    messages.append(
+                        tool_result_message(call, feedback, application_feedback=True)
+                    )
+                    continue
 
             # RAG: inject conversation_id
             if tool_name in {
@@ -1652,6 +1699,7 @@ async def run_agent_stream(
                 # or supplied by the model. The writer bounds its own context.
                 exec_args["_user_request"] = last_user
                 exec_args["_evidence"] = list(research_evidence)
+                exec_args["conversation_id"] = conversation_id
             elif tool_name == "discover_tools":
                 exec_args["_tool_loader"] = load_tools
                 exec_args["_loaded_tools"] = frozenset(selected_tools)
@@ -1668,7 +1716,11 @@ async def run_agent_stream(
                 exec_args.setdefault("model", model_override)
             try:
                 with app_metrics.track_tool_call(tool_name):
-                    if tool_name in {"delegate_to_coder", "summarize_artifact"}:
+                    if tool_name in {
+                        "delegate_to_coder",
+                        "summarize_artifact",
+                        "use_report_gen",
+                    }:
                         event_queue: asyncio.Queue = asyncio.Queue()
                         exec_args["_event_queue"] = event_queue
                         exec_args["_parent_tool_call_id"] = tc_id
@@ -1683,7 +1735,8 @@ async def run_agent_stream(
                                         yield _sse_event("agent_activity", nested_event)
                                         continue
                                     if (
-                                        tool_name == "summarize_artifact"
+                                        tool_name
+                                        in {"summarize_artifact", "use_report_gen"}
                                         and on_tool_call_update
                                     ):
                                         on_tool_call_update(tc_id, nested_event)
@@ -1807,6 +1860,15 @@ async def run_agent_stream(
             research_evidence.extend(
                 evidence_records(result_ref, tool, tool_args, result)
             )
+            if result.success and tool_name == "read_artifact":
+                inspected_reports.add(tool_args.get("artifact_id"))
+            if result.success and tool_name == "use_report_gen":
+                for output in result.tool_call.gen_results or []:
+                    if output.get("artifact_id"):
+                        generated_reports[report_key] = {
+                            "artifact_id": output["artifact_id"],
+                            "version": output.get("version", 1),
+                        }
             can_page = (
                 "read_tool_result" in available_tools
                 and registry.get("read_tool_result")

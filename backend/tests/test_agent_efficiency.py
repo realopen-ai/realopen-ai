@@ -15,6 +15,8 @@ from app.agent.tools import config_store
 from app.agent.tools.config_base import definition_for_tool
 from app.agent.tools.discovery import DiscoverToolsTool, ReadToolResultTool
 from app.agent.tools.report_gen import ReportGenTool
+from app.agent.tools import report_gen as report_tool
+from app.agent.tools.artifacts import ReadArtifactTool
 from app.agent.tools.web_search import WebSearchTool
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
@@ -236,6 +238,170 @@ async def test_round_limit_keeps_successful_results_and_streams_warning(
     assert "kept" in message
     assert events[-2]["event"] == "error"
     assert events[-1]["event"] == "done"
+
+
+@pytest.mark.parametrize(
+    "inspect,different_topic", [(False, False), (True, False), (False, True)]
+)
+@pytest.mark.asyncio
+async def test_report_repeat_requires_inspection_without_blocking_different_reports(
+    agent, monkeypatch, inspect, different_topic
+):
+    report = ReportGenTool()
+    reader = ReadArtifactTool()
+    registry = ToolRegistry()
+    registry.register(report)
+    registry.register(reader)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {report.name, reader.name})
+    monkeypatch.setattr(report_tool, "_configured_default_format", lambda: "docx")
+    generated = AsyncMock(
+        return_value={
+            "type": "report",
+            "format": "docx",
+            "filename": "report.docx",
+            "file_path": "reports/report.docx",
+            "download_url": "/report",
+            "report_id": "result",
+            "created_at": 1,
+        }
+    )
+    monkeypatch.setattr(report_tool, "generate_report", generated)
+    monkeypatch.setattr(
+        service,
+        "register_generated",
+        AsyncMock(return_value={"id": "saved-report", "version": 1}),
+    )
+    monkeypatch.setattr(
+        reader,
+        "execute",
+        AsyncMock(
+            return_value=ToolResult(
+                True, '{"sections": [{"title": "Chapter", "characters": 100}]}'
+            )
+        ),
+    )
+    responses = [
+        [
+            {
+                "tool_calls": [call({"topic": "Topic"}, name=report.name, id="first")],
+                "done": True,
+            }
+        ]
+    ]
+    if inspect:
+        responses.append(
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {"artifact_id": "saved-report"},
+                            name=reader.name,
+                            id="inspect",
+                        )
+                    ],
+                    "done": True,
+                }
+            ]
+        )
+    responses += [
+        [
+            {
+                "tool_calls": [
+                    call(
+                        {
+                            "topic": "Different topic" if different_topic else "Topic",
+                            "format": "docx",
+                            "outline": "New outline",
+                        },
+                        name=report.name,
+                        id="second",
+                    )
+                ],
+                "done": True,
+            }
+        ],
+        [{"content": "Done", "done": True}],
+    ]
+    captured = script(monkeypatch, responses)
+    events = await run()
+    assert generated.await_count == (2 if inspect or different_topic else 1)
+    assert events[-1]["event"] == "done"
+    warnings = [
+        event["tool_call"]
+        for event in events
+        if event["event"] == "tool_call" and event["tool_call"]["status"] == "warning"
+    ]
+    if not inspect and not different_topic:
+        assert warnings and "inspection required" in warnings[0]["title"]
+        # It is an application policy deferral, not a schema repair loop.
+        feedback = next(
+            message
+            for message in captured[-1]["messages"]
+            if message.get("tool_call_id") == "second"
+        )
+        assert "not an argument-formatting failure" in feedback["content"]
+        assert "<<<UNTRUSTED_SOURCE_DATA>>>" not in feedback["content"]
+    else:
+        assert not warnings
+
+
+@pytest.mark.asyncio
+async def test_report_chapter_progress_is_streamed_on_the_existing_tool_call(
+    agent, monkeypatch
+):
+    report = ReportGenTool()
+    registry = ToolRegistry()
+    registry.register(report)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {report.name})
+
+    async def generate(**kwargs):
+        for completed in (0, 1, 2):
+            await kwargs["progress"](
+                {"stage": "writing_chapters", "completed": completed, "total": 2}
+            )
+        return {
+            "type": "report",
+            "format": "docx",
+            "filename": "report.docx",
+            "file_path": "reports/report.docx",
+            "download_url": "/report",
+            "report_id": "result",
+            "created_at": 1,
+        }
+
+    monkeypatch.setattr(report_tool, "generate_report", generate)
+    monkeypatch.setattr(
+        service,
+        "register_generated",
+        AsyncMock(return_value={"id": "saved", "version": 1}),
+    )
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"topic": "Topic"}, name=report.name)],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    builder = BlockBuilder()
+    events = await run(on_tool_call_update=builder.on_tool_call_update)
+    progress = [
+        event["tool_call"]
+        for event in events
+        if event["event"] == "tool_call" and "progress" in event["tool_call"]
+    ]
+    assert [item["progress"]["completed"] for item in progress[:3]] == [0, 1, 2]
+    assert len({item["id"] for item in progress}) == 1
+    persisted = next(
+        block for block in builder.to_db_blocks() if block["type"] == "tool_call"
+    )
+    assert persisted["tool_call"]["progress"]["completed"] == 2
 
 
 @pytest.mark.parametrize(
@@ -538,7 +704,15 @@ async def test_omitted_direct_call_loads_schema_but_never_executes_unseen_argume
     assert events[-1]["event"] == "done"
     assert agent.executed == [{"input": "validated"}]
     assert not captured[0]["tools"] and captured[1]["tools"]
-    assert "was not executed" in str(captured[1]["messages"])
+    assert "action was NOT attempted" in str(captured[1]["messages"])
+    assert "schema loading SUCCEEDED" in str(captured[1]["messages"])
+    feedback = next(m for m in captured[1]["messages"] if m.get("role") == "tool")
+    assert "<<<UNTRUSTED_SOURCE_DATA>>>" not in feedback["content"]
+    ledger = next(
+        m for m in captured[1]["messages"] if "schema_loads" in m.get("content", "")
+    )
+    assert '"status":"schema_ready"' in ledger["content"]
+    assert '"latest_failures":[]' in ledger["content"]
     access = [
         event["tool_call"]
         for event in events

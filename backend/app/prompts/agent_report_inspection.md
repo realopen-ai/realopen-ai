@@ -1,0 +1,2 @@
+Application status: this report target already has a successfully generated output in this request: {report_reference}.
+No second generation was executed. This is not an argument-formatting failure. Inspect the existing output with read_artifact and compare its measured size/content against the original request before deciding a correction is necessary. If correction is needed, use its exact source_artifact reference and requirements, or update_artifact. Otherwise report the existing result.

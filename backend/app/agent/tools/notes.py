@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class CreateStudyNoteTool(BaseTool):
+    guidance_prompt = "agent_study_notes"
     name = "create_study_note"
     display_name = "Create study note"
     tool_type = ToolType.NOTES
