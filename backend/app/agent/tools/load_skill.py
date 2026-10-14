@@ -32,6 +32,10 @@ class LoadSkillTool(BaseTool):
         _skill_role: str = "general",
         **_kwargs,
     ):
+        if not name or not name.strip():
+            return self.invalid_arguments(
+                "Provide a skill id from the available skills."
+            )
         started = time.time()
         call = ToolCall(
             id=f"tc-skill-{int(started * 1000)}",
@@ -46,7 +50,12 @@ class LoadSkillTool(BaseTool):
             call.completed_at = time.time()
             call.output = output
             return ToolResult(True, output, call)
-        except (FileNotFoundError, ValueError) as exc:
+        except (skills.SkillReferenceError, skills.SkillReferenceNotFound) as exc:
+            return self.invalid_arguments(
+                f"Could not load skill: {exc}. Use an available skill id and listed resource path.",
+                call,
+            )
+        except (OSError, ValueError) as exc:
             call.status = "error"
             call.completed_at = time.time()
             call.error = str(exc)
