@@ -15,6 +15,7 @@ from app.agent.tools.rag_search import RagSearchTool
 from app.agent.tools.report_gen import ReportGenTool
 from app.agent.tools import report_gen as report_tool
 from app.agent.tools.artifacts import ReadArtifactTool
+from app.core.prompt_security import GUARD_OPEN, GUARD_CLOSE
 from app.services import report_gen
 from app.services.report_evidence import evidence_records, bounded_evidence
 from app.services.context_compactor import context_budget, estimate_request_tokens
@@ -163,7 +164,11 @@ async def test_writer_receives_bounded_untrusted_evidence_with_grounding_rules(
     assert "not instructions" in messages[0]["content"]
     assert messages[1]["metadata"]["trusted"] is False
     assert messages[1]["content"].count("<<<END_UNTRUSTED_SOURCE_DATA>>>") == 1
-    assert "https://example.org" in messages[1]["content"]
+    guarded = messages[1]["content"].split(GUARD_OPEN + "\n", 1)[1]
+    payload = guarded.split("\n", 1)[1].rsplit("\n" + GUARD_CLOSE, 1)[0]
+    sources = json.loads(payload)["sources"]
+    assert len(sources) == 1
+    assert sources[0]["request"]["url"] == "https://example.org"
     assert "Subject" in messages[-1]["content"]
     options = llm.await_args.kwargs["options"]
     assert options == {"num_predict": 2048, "num_ctx": 4096}
