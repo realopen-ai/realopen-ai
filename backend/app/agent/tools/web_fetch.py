@@ -34,6 +34,7 @@ DEFAULT_MAX_CHARS = 6000
 
 class WebFetchTool(BaseTool):
     name = "use_webfetch"
+    provides_evidence = True
     display_name = "Web Fetch"
     description = (
         "Fetch and extract readable text from a URL. "

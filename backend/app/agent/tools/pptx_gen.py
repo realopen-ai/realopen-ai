@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 class PptxGenTool(BaseTool):
     name = "use_pptx_gen"
+    output_formats = ("pptx",)
     display_name = "Presentation Generation"
     # Base description — the agent service appends the dynamic template list
     description = (

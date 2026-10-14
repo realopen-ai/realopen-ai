@@ -265,6 +265,7 @@ class ListArtifactsTool(ArtifactTool):
 
 
 class ReadArtifactTool(ArtifactTool):
+    provides_evidence = True
     operation = "read"
     name = "read_artifact"
     display_name = "Read artifact"
@@ -286,6 +287,7 @@ class ExportArtifactTool(ArtifactTool):
 
 
 class SummarizeArtifactTool(ArtifactTool):
+    provides_evidence = True
     operation = "summarize"
     name = "summarize_artifact"
     display_name = "Summarize artifact"

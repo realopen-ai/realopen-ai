@@ -103,6 +103,9 @@ class BaseTool(ABC):
     description: str = ""
     display_name: str = ""
     tool_type: ToolType = ToolType.WEB_SEARCH
+    # Routing metadata only; never overrides disabled/custom keyword settings.
+    output_formats: tuple[str, ...] = ()
+    provides_evidence: bool = False
 
     # Parameter aliases — maps common names to the tool's expected kwarg names.
     # e.g. {"query": "query", "search": "query"} means both "query" and

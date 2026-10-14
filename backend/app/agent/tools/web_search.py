@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 class WebSearchTool(BaseTool):
     name = "use_websearch"
+    provides_evidence = True
     display_name = "Web Search"
     description = (
         "Search the web. Use for current info, facts, "

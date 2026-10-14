@@ -5,6 +5,24 @@ from collections import Counter
 
 from app.agent.tools.tool_defaults import default_tags
 
+_CREATION_WORDS = (
+    "create",
+    "generate",
+    "write",
+    "compile",
+    "produce",
+    "prepare",
+    "give",
+    "créer",
+    "générer",
+    "génère",
+    "rédiger",
+    "rédige",
+    "compiler",
+    "أنشئ",
+    "اكتب",
+)
+
 NOTEBOOK_TOOLS = frozenset(
     {
         "rag_search",
@@ -91,7 +109,17 @@ def select_tools(query, registry, configs, *, limit=4):
             re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", query, re.I)
         ) or matches(tool.get_display_name(), query)
         customized = set(tags) != {tag.casefold() for tag in default_tags(name)}
-        if cfg.get("always_load", False) or explicit or (customized and hits):
+        requested_format = (
+            not customized
+            and any(matches(fmt, query) for fmt in tool.output_formats)
+            and any(matches(verb, query) for verb in _CREATION_WORDS)
+        )
+        if (
+            cfg.get("always_load", False)
+            or explicit
+            or requested_format
+            or (customized and hits)
+        ):
             mandatory.add(name)
             continue
         if name == "discover_tools":
