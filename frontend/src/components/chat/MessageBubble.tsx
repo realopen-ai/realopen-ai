@@ -568,12 +568,19 @@ function ToolCallBlockView({
 
   // Display label: "Generating..." while running, "Generated ..." when done
   const access =
-    tc.type === "tool_access" ? toolAccessDetails(tc.output) : null;
+    tc.type === "tool_access" ||
+    (tc.type === "artifact" && tc.status === "warning")
+      ? toolAccessDetails(tc.output)
+      : null;
   const outputPage =
     tc.type === "tool_output" ? toolOutputDetails(tc.output) : null;
   const displayLabel =
     tc.status === "warning"
-      ? translate("tool.access.deferred")
+      ? translate(
+          access?.readRequired
+            ? "tool.access.readRequired"
+            : "tool.access.deferred",
+        )
       : tc.status === "error"
         ? translate("chat.toolFailed")
         : tc.status === "running"
@@ -730,7 +737,13 @@ function ToolCallDetail({
       </p>
     );
   }
-  if (tc.type === "tool_access") return <ToolAccessDetail tc={tc} />;
+  if (
+    tc.type === "tool_access" ||
+    (tc.type === "artifact" &&
+      tc.status === "warning" &&
+      toolAccessDetails(tc.output).readRequired)
+  )
+    return <ToolAccessDetail tc={tc} />;
   if (tc.type === "tool_output") return <ToolOutputDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
@@ -859,6 +872,7 @@ function ToolAccessDetail({ tc }: { tc: ToolCallResult }) {
   const access = toolAccessDetails(tc.output);
   const fields = [
     ["tool.access.requested", access.requested],
+    ["tool.access.requiredStep", access.requiredTools],
     ["tool.access.loaded", access.loaded],
     ["tool.access.alreadyLoaded", access.alreadyLoaded],
   ] as const;
@@ -885,9 +899,11 @@ function ToolAccessDetail({ tc }: { tc: ToolCallResult }) {
         {translate(
           tc.status === "running"
             ? "tool.access.loadingInfo"
-            : access.deferred
-              ? "tool.access.deferredInfo"
-              : "tool.access.loadInfo",
+            : access.readRequired
+              ? "tool.access.readRequiredInfo"
+              : access.deferred
+                ? "tool.access.deferredInfo"
+                : "tool.access.loadInfo",
         )}
       </p>
       {!access.requested.length && tc.output && (

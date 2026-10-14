@@ -20,6 +20,8 @@ test("tool access distinguishes requested, loaded and already available schemas"
     ),
     {
       deferred: false,
+      readRequired: false,
+      requiredTools: [],
       requested: ["a", "b"],
       loaded: ["a"],
       alreadyLoaded: ["b"],
@@ -144,6 +146,9 @@ test("access details default to collapsed and warning presentation is translated
     );
     for (const key of [
       "deferred",
+      "readRequired",
+      "requiredStep",
+      "readRequiredInfo",
       "alreadyDone",
       "requested",
       "loaded",
@@ -155,4 +160,59 @@ test("access details default to collapsed and warning presentation is translated
       assert.ok(translations[`tool.access.${key}`]);
     }
   }
+});
+
+test("read prerequisites use concise details, including old persisted repair prompts", () => {
+  const output = JSON.stringify({
+    operation: "read_required",
+    requested: ["update_artifact"],
+    required_tools: ["read_artifact"],
+    action_executed: false,
+  });
+  const legacy =
+    "This update_artifact call was NOT executed. Its read prerequisite is unmet: No successful read exists.\n\nCall read_artifact for the target artifact first.";
+  for (const value of [output, legacy]) {
+    const details = toolAccessDetails(value);
+    assert.equal(details.readRequired, true);
+    assert.equal(details.deferred, false);
+    assert.deepEqual(details.requiredTools, ["read_artifact"]);
+    assert.deepEqual(details.requested, ["update_artifact"]);
+    assert.deepEqual(details.loaded, []);
+  }
+  const restored = dtoToMessage({
+    id: "reply",
+    role: "assistant",
+    content: "",
+    blocks: [
+      {
+        type: "tool_call",
+        tool_call: {
+          id: "guard",
+          type: "tool_access",
+          status: "warning",
+          output,
+        },
+      },
+    ],
+  } as never);
+  assert.equal(
+    toolAccessDetails(restored.blocks?.[0].toolCall?.output).readRequired,
+    true,
+  );
+  const component = readFileSync(
+    new URL("../src/components/chat/MessageBubble.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    component,
+    /access\?\.readRequired[\s\S]*tool\.access\.readRequired/,
+  );
+  assert.match(
+    component,
+    /access\.readRequired[\s\S]*tool\.access\.readRequiredInfo/,
+  );
+  assert.match(
+    component,
+    /tc\.type === "artifact"[\s\S]*toolAccessDetails\(tc\.output\)\.readRequired/,
+  );
 });
