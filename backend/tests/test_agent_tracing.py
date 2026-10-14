@@ -638,12 +638,17 @@ async def test_text_parse_failure_preserved(trace_setup, monkeypatch):
 @pytest.mark.asyncio
 async def test_max_rounds_and_unknown_tool(trace_setup, monkeypatch):
     scripted(monkeypatch, [[{"tool_calls": [native({}, "missing")], "done": True}]])
-    await run()
+    events = await run()
     (row,) = await saved(trace_setup)
     assert row["outcome"]["status"] == "max_rounds_reached"
-    assert row["outcome"]["total_rounds"] == 10
-    assert row["outcome"]["total_tool_calls"] == 10
-    assert row["outcome"]["final_assistant_response"] == "I've completed my analysis."
+    assert row["max_rounds"] == 15
+    assert row["outcome"]["total_rounds"] == 15
+    assert row["outcome"]["total_tool_calls"] == 15
+    assert "15-round limit" in row["outcome"]["final_assistant_response"]
+    assert "before confirming" in row["outcome"]["final_assistant_response"]
+    assert any(
+        json.loads(event.removeprefix("data: "))["event"] == "error" for event in events
+    )
     assert row["outcome"]["final_response_source"] == "application"
     assert row["rounds"][0]["tool_calls"][0]["execution_status"] == "unavailable"
 

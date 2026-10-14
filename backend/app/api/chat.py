@@ -40,6 +40,7 @@ from app.services.memory_extractor import maybe_run_memory_extraction
 from app.services.title_generator import maybe_generate_and_save_title
 from app.services.chat_streams import get_stream, start_stream, stop_stream
 from app.services.conversation_memory import maybe_summarize_conversation
+from app.services.agent_activity import activity_events
 from app.services.background_queue import (
     mark_stream_active,
     mark_stream_idle,
@@ -50,6 +51,22 @@ logger = logging.getLogger(__name__)
 dbg = get_debug_logger(__name__)
 
 router = APIRouter()
+
+
+async def _stream_conversation_summary(conversation_id, model):
+    async def summarize(on_start):
+        async with async_session_factory() as db:
+            summarized = await maybe_summarize_conversation(
+                db, conversation_id, model, on_start=on_start
+            )
+            if summarized:
+                await db.commit()
+                _log("   📝 conversation summarized for cross-session memory")
+            return summarized
+
+    async for activity in activity_events(summarize, "conversation_summary"):
+        if activity.get("event"):
+            yield "data: " + json.dumps(activity) + "\n\n"
 
 
 def _log(msg: str, *args: Any) -> None:
@@ -530,15 +547,11 @@ async def chat_stream(request: ChatRequest):
             # Runs after memory extraction. Summarizes the conversation
             # when it reaches a milestone (8+ messages) for future context.
             try:
-                async with async_session_factory() as summ_db:
-                    summarized = await maybe_summarize_conversation(
-                        summ_db,
-                        _conv_id,
-                        _resolved_model,
-                    )
-                    if summarized:
-                        await summ_db.commit()
-                        _log("   📝 conversation summarized for cross-session memory")
+                if completion_status == "completed":
+                    async for activity in _stream_conversation_summary(
+                        _conv_id, _resolved_model
+                    ):
+                        yield activity
             except Exception as e:
                 _log("   ⚠️  conversation summarization failed (non-fatal): %s", e)
 
@@ -1026,15 +1039,11 @@ async def chat_stream_multipart(
 
             # ── Conversation summarization for cross-session context ──
             try:
-                async with async_session_factory() as summ_db:
-                    summarized = await maybe_summarize_conversation(
-                        summ_db,
-                        _conv_id,
-                        _resolved_model,
-                    )
-                    if summarized:
-                        await summ_db.commit()
-                        _log("   📝 conversation summarized (multipart)")
+                if completion_status == "completed":
+                    async for activity in _stream_conversation_summary(
+                        _conv_id, _resolved_model
+                    ):
+                        yield activity
             except Exception as e:
                 _log("   ⚠️  summarization failed (non-fatal): %s", e)
 

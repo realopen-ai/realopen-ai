@@ -26,9 +26,11 @@ from app.agent.protocol import (
     normalize_native_calls,
 )
 from app.services.context_compactor import compact_conversation
+from app.services.agent_activity import activity_events
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
+from app.core.prompt_security import untrusted_context_message
 from app.services import sandbox_host
 from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
@@ -494,9 +496,13 @@ class CoderAgent(BaseTool):
             coder_prompt = CODER_SYSTEM_PROMPT
             skill_catalog = skill_store.routing_catalog("coder")
             if skill_catalog:
-                coder_prompt += "\n\n" + skill_catalog
+                skill_context = untrusted_context_message(
+                    "available coder skill metadata", skill_catalog
+                )
+                skill_context["metadata"]["agent_context"] = True
             messages = [
                 {"role": "system", "content": coder_prompt},
+                *([skill_context] if skill_catalog else []),
                 {"role": "user", "content": task, "metadata": {"agent_request": True}},
             ]
             state = RunState()
@@ -507,9 +513,21 @@ class CoderAgent(BaseTool):
                     current = await db.get(SandboxTask, task_id)
                     if current and current.cancellation_requested:
                         raise RuntimeError("Coding task cancelled")
-                messages, _ = await compact_conversation(
-                    messages, model, tools=CODER_TOOLS, max_output_tokens=2048
-                )
+                async for activity in activity_events(
+                    lambda on_start: compact_conversation(
+                        messages,
+                        model,
+                        tools=CODER_TOOLS,
+                        max_output_tokens=2048,
+                        on_start=on_start,
+                    ),
+                    "context_compaction",
+                ):
+                    if activity.get("event"):
+                        if _event_queue is not None:
+                            _event_queue.put_nowait(activity)
+                    else:
+                        messages, _ = activity["result"]
                 observe(
                     "begin_round",
                     _round + 1,
@@ -520,9 +538,17 @@ class CoderAgent(BaseTool):
                     [],
                     {"think": False, "temperature": 0, "max_output_tokens": 2048},
                 )
-                message = (await chat_with_tool_recovery(model, messages)).get(
-                    "message", {}
-                )
+                message = (
+                    await chat_with_tool_recovery(
+                        model,
+                        messages,
+                        **(
+                            {"on_activity": _event_queue.put_nowait}
+                            if _event_queue is not None
+                            else {}
+                        ),
+                    )
+                ).get("message", {})
                 observe(
                     "chunk",
                     {

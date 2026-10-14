@@ -14,6 +14,7 @@ from app.agent.tracing import observe, timestamp
 from app.prompts import format_prompt
 from app.services import providers, tool_capabilities
 from app.services.context_compactor import context_budget, compact_conversation
+from app.services.agent_activity import activity_events
 
 
 def parse_calls(message: dict) -> list[dict]:
@@ -51,7 +52,9 @@ def recovery_message(content: str) -> dict:
     raise ValueError("Coder recovery response contained neither tool nor final")
 
 
-async def _chat_attempt(model, messages, tools, *, recovery=False, **kwargs):
+async def _chat_attempt(
+    model, messages, tools, *, recovery=False, on_activity=None, **kwargs
+):
     options = dict(kwargs.get("options") or {})
     budget = context_budget(model, options.get("num_predict"))
     options["num_predict"] = budget.output
@@ -64,17 +67,31 @@ async def _chat_attempt(model, messages, tools, *, recovery=False, **kwargs):
             "coder_text_tools",
             tool_schemas=json.dumps(CODER_TOOLS, separators=(",", ":")),
         )
-        if messages and messages[0].get("role") == "system":
-            messages[0]["content"] += "\n\n" + protocol
-        else:
-            messages.insert(0, {"role": "system", "content": protocol})
-        messages, _ = await compact_conversation(
-            messages,
-            model,
-            tools=tools,
-            max_output_tokens=budget.output,
-            native_tools=False,
+        # Keep core prefix/history byte-identical; protocol context is a
+        # separate application-owned message, frozen for this attempt.
+        messages.append(
+            {
+                "role": "user",
+                "content": protocol,
+                "metadata": {"agent_context": True, "trusted": True},
+            }
         )
+        async for activity in activity_events(
+            lambda on_start: compact_conversation(
+                messages,
+                model,
+                tools=tools,
+                max_output_tokens=budget.output,
+                native_tools=False,
+                on_start=on_start,
+            ),
+            "context_compaction",
+        ):
+            if activity.get("event"):
+                if on_activity:
+                    on_activity(activity)
+            else:
+                messages, _ = activity["result"]
     messages = model_messages(messages, native=not recovery, fenced_tools=not recovery)
     started_at, started = timestamp(), time.monotonic()
     try:
@@ -107,13 +124,16 @@ async def _chat_attempt(model, messages, tools, *, recovery=False, **kwargs):
     return result
 
 
-async def chat_with_tool_recovery(model: str, messages: list[dict]) -> dict:
+async def chat_with_tool_recovery(
+    model: str, messages: list[dict], *, on_activity=None
+) -> dict:
     async def text_attempt():
         fallback = await _chat_attempt(
             model,
             messages,
             tools=None,
             recovery=True,
+            on_activity=on_activity,
             timeout=1200,
             format="json",
             think=False,

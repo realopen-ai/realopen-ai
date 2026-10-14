@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class ToolType(str, Enum):
+    TOOL_ACCESS = "tool_access"
+    TOOL_OUTPUT = "tool_output"
     WEB_SEARCH = "websearch"
     WEB_FETCH = "webfetch"
     VISION = "vision"
@@ -42,7 +44,7 @@ class ToolCall:
     id: str
     type: ToolType
     name: str
-    status: str = "running"  # running | completed | error
+    status: str = "running"  # running | completed | warning (deferred) | error
     title: str = ""
     started_at: float = 0.0
     completed_at: Optional[float] = None
@@ -70,6 +72,7 @@ class ToolResult:
     output: str  # Text to feed back to the LLM
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
     failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
+    validation_issues: Optional[List[Dict]] = None  # exact field paths, never guessed
 
     def __post_init__(self):
         # Unknown failures are operational, never automatically argument repairs.
@@ -100,6 +103,10 @@ class BaseTool(ABC):
     description: str = ""
     display_name: str = ""
     tool_type: ToolType = ToolType.WEB_SEARCH
+    # Routing metadata only; never overrides disabled/custom keyword settings.
+    output_formats: tuple[str, ...] = ()
+    provides_evidence: bool = False
+    guidance_prompt: str = ""
 
     # Parameter aliases — maps common names to the tool's expected kwarg names.
     # e.g. {"query": "query", "search": "query"} means both "query" and

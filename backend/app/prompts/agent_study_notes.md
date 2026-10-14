@@ -1,0 +1,2 @@
+## Grounded study notes
+Organize supported concepts clearly. A saved/generated report or old memory is not independent verification. Preserve source references and distinguish established background from dated/new findings. Detail does not justify invented numbers, benchmarks, timelines, citations or claims. If relevant evidence is absent, explain the gap rather than filling it with plausible specifics.

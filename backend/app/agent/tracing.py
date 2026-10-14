@@ -26,7 +26,7 @@ except ImportError:
     fcntl = None
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 _model_defaults = {}
 current_trace = ContextVar("agent_trace", default=None)
 _queue = None
@@ -166,7 +166,7 @@ class Trace:
                 "max_output_tokens": "provider_default",
                 "temperature": "provider_default",
             },
-            "max_rounds": 10,
+            "max_rounds": settings.AGENT_MAX_ROUNDS,
             "request": {
                 "messages": self.safe(request.get("messages", [])),
                 "user_message": self.safe(
@@ -265,6 +265,19 @@ class Trace:
             "timestamp": timestamp(),
             "model": model,
             "input_messages": self.messages(messages),
+            "prefix": {
+                "system_sha256": hashlib.sha256(
+                    str(
+                        messages[0].get("content", "")
+                        if messages and messages[0].get("role") == "system"
+                        else ""
+                    ).encode()
+                ).hexdigest(),
+                "tools_sha256": hashlib.sha256(
+                    json.dumps(tools, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest(),
+                "note": "Application hashes, not runtime KV-cache keys. Native tool templates, protocol/schema changes and compaction may invalidate cache reuse.",
+            },
             "context_messages": self.safe(context),
             "exposed_tool_schemas": self.safe(tools),
             "available_tools": (
@@ -307,6 +320,16 @@ class Trace:
         response["native_tool_calls"].extend(self.safe(chunk.get("tool_calls") or []))
         if chunk.get("finish_reason"):
             response["finish_reason"] = chunk["finish_reason"]
+        if chunk.get("usage"):
+            self.round["runtime_usage"] = self.safe(chunk["usage"])
+
+    def result_view(self, result_ref, output, shortened):
+        if self.round and self.round["tool_calls"]:
+            self.round["tool_calls"][-1]["model_view"] = {
+                "result_ref": result_ref,
+                **({"output": self.safe(output, result=True)} if shortened else {}),
+                "shortened": shortened,
+            }
 
     def parsed(self, calls, native, text):
         self.generating = False
@@ -446,6 +469,9 @@ class Trace:
                     "model_defaults": self.safe(self.round.get("model_defaults")),
                 }
             )
+
+            if isinstance(response, dict) and response.get("usage"):
+                self.round["runtime_usage"] = self.safe(response["usage"])
 
     def coder_identity(self, task_id, sandbox_id):
         self.data["coder_task_id"] = str(task_id)

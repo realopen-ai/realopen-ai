@@ -143,7 +143,11 @@ async def test_coder_remembers_and_directly_uses_json_fallback(monkeypatch):
         kwargs["tools"] is None and kwargs["format"] == "json"
         for _, kwargs in captured[1:]
     )
-    assert "Native function calling is unavailable" in captured[2][0][0]["content"]
+    assert any(
+        "Native function calling is unavailable" in message["content"]
+        for message in captured[2][0]
+    )
+    assert captured[2][0][0]["content"] == original[0]["content"]
     assert original[0]["content"] == "Coding task rules"
     assert not service._model_supports_native_tools(
         "custom"

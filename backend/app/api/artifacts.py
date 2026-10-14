@@ -1,9 +1,10 @@
 """Artifact browser/API. Agent callers additionally enforce conversation scope."""
 
 import uuid
+from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from sqlalchemy import select
 from app.db.session import async_session_factory
 from app.db.models import ArtifactVersion
@@ -15,7 +16,19 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 class SectionEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     section_id: str = Field(min_length=1, max_length=128)
-    content: str = Field(min_length=1, max_length=service.MAX_SOURCE)
+    operation: Literal["replace", "delete"] = "replace"
+    content: str | None = Field(
+        default=None, min_length=1, max_length=service.MAX_SOURCE
+    )
+
+    @model_validator(mode="after")
+    def validate_operation(self):
+        if self.operation == "delete":
+            if self.content is not None:
+                raise ValueError("Delete operations must omit content")
+        elif self.content is None or not self.content.strip():
+            raise ValueError("Replace operations require nonempty content")
+        return self
 
 
 class UpdateArtifact(BaseModel):
@@ -37,7 +50,11 @@ async def list_artifacts(
 ):
     async with async_session_factory() as db:
         result = await service.catalog(
-            db, conversation_id, scoped=conversation_id is not None, limit=limit, offset=offset
+            db,
+            conversation_id,
+            scoped=conversation_id is not None,
+            limit=limit,
+            offset=offset,
         )
         await db.commit()
         return result
@@ -71,7 +88,11 @@ async def detail(artifact_id: uuid.UUID, version: int | None = Query(None, ge=1)
                 if fmt != "original"
             },
             "versions": [
-                {"number": v.number, "created_at": v.created_at, "restored_from": v.restored_from}
+                {
+                    "number": v.number,
+                    "created_at": v.created_at,
+                    "restored_from": v.restored_from,
+                }
                 for v in versions
             ],
         }
@@ -122,7 +143,9 @@ async def restore(artifact_id: uuid.UUID, body: RestoreArtifact):
 
 
 @router.post("/{artifact_id}/export/{format}")
-async def export(artifact_id: uuid.UUID, format: str, version: int | None = Query(None, ge=1)):
+async def export(
+    artifact_id: uuid.UUID, format: str, version: int | None = Query(None, ge=1)
+):
     async with async_session_factory() as db:
         artifact = await service.get_artifact(db, artifact_id)
         current = await service.get_version(db, artifact, version)
@@ -134,7 +157,9 @@ async def export(artifact_id: uuid.UUID, format: str, version: int | None = Quer
 
 
 @router.get("/{artifact_id}/download/{format}")
-async def download(artifact_id: uuid.UUID, format: str, version: int | None = Query(None, ge=1)):
+async def download(
+    artifact_id: uuid.UUID, format: str, version: int | None = Query(None, ge=1)
+):
     async with async_session_factory() as db:
         artifact = await service.get_artifact(db, artifact_id)
         current = await service.get_version(db, artifact, version)

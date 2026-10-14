@@ -12,6 +12,8 @@ import json
 import logging
 import re
 import time
+import uuid
+from copy import deepcopy
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
@@ -27,6 +29,7 @@ from app.agent.tracing import observe, traced_execution, timestamp
 from app.agent.execution_state import ExecutionState
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.argument_repair import (
+    field_repair,
     rebuild_view,
     response_schema,
     parse_rebuild,
@@ -34,6 +37,12 @@ from app.agent.argument_repair import (
     without_rejected_calls,
 )
 from app.agent.tools import config_store
+from app.agent.tools.report_gen import generation_key as report_generation_key
+from app.agent.artifact_edit_state import ArtifactEditState
+from app.agent import routing
+from app.agent.results import compact_result
+from app.agent.base import ToolArgumentError
+from app.services.agent_activity import activity_events
 from app.config import settings
 from app.core.logger import is_debug
 from app.core.prompt_security import untrusted_context_message
@@ -47,6 +56,7 @@ from app.services.context_compactor import (
 )
 from app.services import model_prefs
 from app.services import providers
+from app.services.report_evidence import evidence_records
 from app.services import skills as skill_store
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
@@ -88,22 +98,12 @@ def _select_tools(user_message: str) -> Set[str]:
     BOTH enabled and currently registered (module system) can be
     selected.
     """
-    configs = config_store.get_all_tool_configs()
-    msg_lower = (user_message or "").lower()
-    selected: Set[str] = set()
-    for name, cfg in configs.items():
-        if not cfg.get("enabled", True):
-            continue  # disabled → invisible to the LLM
-        if cfg.get("always_load", True):
-            selected.add(name)
-            continue
-        raw_tags = cfg.get("tags") or []
-        if isinstance(raw_tags, str):  # legacy rows / hand-edited JSON
-            raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
-        tags = [str(t).strip().lower() for t in raw_tags if str(t).strip()]
-        if any(tag in msg_lower for tag in tags):
-            selected.add(name)
-    return selected
+    return routing.select_tools(
+        user_message,
+        get_tool_registry(),
+        config_store.get_all_tool_configs(),
+        limit=settings.AGENT_TOOL_ROUTING_MAX_TOOLS,
+    )
 
 
 def _model_supports_native_tools(model_name: str) -> bool:
@@ -124,13 +124,7 @@ async def _build_ollama_tools(tool_names: Set[str]) -> List[Dict]:
         tool = registry.get(name)
         if not tool:
             continue
-        # Check if the tool has a dynamic description (async method)
         desc = tool.description
-        if hasattr(tool, "get_dynamic_description"):
-            try:
-                desc = await tool.get_dynamic_description()
-            except Exception:
-                pass  # fall back to static description
         tools.append(
             {
                 "type": "function",
@@ -172,11 +166,6 @@ async def _build_system_prompt(
     Async because some tools have dynamic descriptions that query the DB.
     """
     prompt = format_prompt("agent_system")
-    if tool_schemas is None and not native_tools:
-        tool_schemas = await _build_ollama_tools(tool_names)
-    prompt += "\n\n" + _tool_protocol(native_tools, tool_schemas or [])
-    if skill_catalog:
-        prompt += "\n\n" + skill_catalog
     if interaction_mode == "voice":
         prompt += "\n\n" + format_prompt("voice_mode")
         if interaction_instructions.strip():
@@ -436,6 +425,16 @@ async def run_agent_stream(
     use_native_tools = _model_supports_native_tools(resolved_model)
     observe("resolved_model", resolved_model)
     registry = get_tool_registry()
+    configs_snapshot = deepcopy(config_store.get_all_tool_configs())
+    available_tools = routing.enabled_tools(registry, configs_snapshot)
+    result_store = {}
+    result_metadata_store = {}
+    research_evidence = []
+    generated_reports = {}
+    inspected_reports = set()
+    artifact_edits = ArtifactEditState()
+    pending_tool_contexts = []
+    resource_context_loaded = set()
 
     # ── Select relevant tools ──
     user_msgs = [m for m in messages if m.get("role") == "user"]
@@ -454,15 +453,22 @@ async def run_agent_stream(
         None,
     )
     if request_index is not None:
-        messages[request_index]["metadata"] = {"agent_request": True}
+        messages[request_index]["metadata"] = {
+            **(messages[request_index].get("metadata") or {}),
+            "agent_request": True,
+        }
         # Multipart handlers append source hints after the human request.
         for message in messages[request_index + 1 :]:
             if message.get("role") == "user":
-                message["metadata"] = {"agent_context": True}
+                message["metadata"] = {
+                    **(message.get("metadata") or {}),
+                    "agent_context": True,
+                }
     selected_tools = _select_tools(last_user)
+    selected_tools.intersection_update(available_tools)
     skill_role = "voice" if interaction_mode == "voice" else "general"
     skill_catalog = skill_store.routing_catalog(skill_role)
-    if skill_catalog:
+    if skill_catalog and "load_skill" in available_tools:
         selected_tools.add("load_skill")
     _dbg("Selected tools: %s", sorted(selected_tools))
 
@@ -502,16 +508,41 @@ async def run_agent_stream(
             for item in attachments["items"]
         ]
         if attachments["items"]:
-            configs = config_store.get_all_tool_configs()
-            for name in {
-                "list_artifacts",
-                "read_artifact",
-                "update_artifact",
-                "export_artifact",
-                "summarize_artifact",
-            }:
-                if name in configs and configs[name].get("enabled", True):
-                    selected_tools.add(name)
+            reference_words = {
+                "uploaded",
+                "attached",
+                "chapter",
+                "page",
+                "this",
+                "that",
+                "it",
+                "selected",
+                "source",
+                "joint",
+                "ce",
+                "cette",
+                "chapitre",
+                "هذا",
+                "الفصل",
+                "المرفق",
+            }
+            source_requested = (
+                bool(set(routing.words(last_user)) & reference_words)
+                or any(
+                    item["id"] in last_user
+                    or routing.matches(item.get("title", ""), last_user)
+                    for item in attachments["items"]
+                )
+                or bool(
+                    any(
+                        (m.get("metadata") or {}).get("agent_context") for m in messages
+                    )
+                )
+            )
+            if source_requested:
+                selected_tools.update(
+                    {"rag_search", "read_artifact"} & available_tools.keys()
+                )
             context_messages.append(
                 untrusted_context_message(
                     "accessible file metadata",
@@ -527,28 +558,11 @@ async def run_agent_stream(
             notebook = await for_conversation(db, conversation_id)
     if notebook is not None:
         skill_catalog = ""
-        selected_tools.intersection_update(
-            {
-                "rag_search",
-                "read_artifact",
-                "list_artifacts",
-                "summarize_artifact",
-                "create_study_note",
-                "create_quiz",
-                "create_flashcard_deck",
-            }
+        available_tools = routing.enabled_tools(
+            registry, configs_snapshot, notebook=True
         )
-        configs = config_store.get_all_tool_configs()
-        for name in (
-            "rag_search",
-            "read_artifact",
-            "list_artifacts",
-            "create_study_note",
-            "create_quiz",
-            "create_flashcard_deck",
-        ):
-            if name in configs and configs[name].get("enabled", True):
-                selected_tools.add(name)
+        selected_tools.intersection_update(available_tools)
+        selected_tools.update({"rag_search", "read_artifact"} & available_tools.keys())
         notebook_instructions = (
             "\n\nYou are in a learning notebook. Use only its currently selected sources for factual answers. "
             "Use rag_search for relevant document excerpts or read_artifact for exact sections. "
@@ -649,7 +663,7 @@ async def run_agent_stream(
     )
 
     # ── Auto-vision for image attachments ──
-    if images and notebook is None:
+    if images and notebook is None and "use_vision" in available_tools:
         vision_tool = registry.get("use_vision")
         if vision_tool:
             for i, img_b64 in enumerate(images):
@@ -710,9 +724,46 @@ async def run_agent_stream(
                         untrusted_context_message("image analysis", result.output)
                     )
 
-    # Build schemas after notebook policy filters the available tool set.
+    if skill_catalog:
+        context_messages.append(
+            untrusted_context_message("available skill metadata", skill_catalog)
+        )
+
+    async def add_resource_context(names):
+        for name in sorted(names):
+            tool = available_tools.get(name)
+            if name in resource_context_loaded or not tool:
+                continue
+            resource_context_loaded.add(name)
+            if tool.guidance_prompt:
+                pending_tool_contexts.append(
+                    {
+                        "role": "user",
+                        "content": format_prompt(tool.guidance_prompt),
+                        "metadata": {
+                            "agent_context": True,
+                            "source": "application tool guidance: " + name,
+                        },
+                    }
+                )
+            if hasattr(tool, "get_dynamic_description"):
+                try:
+                    pending_tool_contexts.append(
+                        untrusted_context_message(
+                            "tool resource metadata: " + name,
+                            await tool.get_dynamic_description(),
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not load resource metadata for %s", name, exc_info=True
+                    )
+
+    await add_resource_context(selected_tools)
+    context_messages.extend(pending_tool_contexts)
+    pending_tool_contexts.clear()
+    # Build sorted static schemas once; mutable resource lists live in context.
     ollama_tools = await _build_ollama_tools(selected_tools)
-    protocol_text = _tool_protocol(use_native_tools, ollama_tools)
     system_prompt = await _build_system_prompt(
         selected_tools,
         interaction_mode,
@@ -727,12 +778,60 @@ async def run_agent_stream(
     request_tools = ollama_tools
 
     def _refresh_protocol() -> None:
-        nonlocal protocol_text
-        new_protocol = _tool_protocol(use_native_tools, request_tools)
-        messages[0]["content"] = messages[0]["content"].replace(
-            protocol_text, new_protocol
+        content = format_prompt(
+            "agent_tool_access",
+            protocol=_tool_protocol(use_native_tools, request_tools),
+            catalog=json.dumps(
+                routing.catalog(available_tools, selected_tools),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
         )
-        protocol_text = new_protocol
+        for message in [*context_messages, *messages]:
+            if (message.get("metadata") or {}).get("agent_tool_protocol"):
+                message["content"] = content
+
+    context_messages.append(
+        {
+            "role": "user",
+            "content": "",
+            "metadata": {
+                "agent_context": True,
+                "agent_tool_protocol": True,
+                "trusted": True,
+            },
+        }
+    )
+    _refresh_protocol()
+
+    async def load_tools(names):
+        nonlocal ollama_tools
+        if (
+            not isinstance(names, list)
+            or not 1 <= len(names) <= 3
+            or any(not isinstance(name, str) for name in names)
+        ):
+            raise ToolArgumentError(
+                "Choose one to three exact names from the available-tools catalog."
+            )
+        if any(
+            name not in available_tools
+            or not registry.get(name)
+            or (config_store.get_tool_config(name) or {}).get("enabled") is False
+            or execution_state.validation_failures.get(name, 0)
+            >= agent_settings.effective().repair_attempts + 1
+            for name in names
+        ):
+            raise ToolArgumentError(
+                "A requested tool is disabled, unavailable, or forbidden in this notebook."
+            )
+        selected_tools.update(names)
+        existing = {schema["function"]["name"]: schema for schema in ollama_tools}
+        for schema in await _build_ollama_tools(set(names) - existing.keys()):
+            existing[schema["function"]["name"]] = schema
+        ollama_tools = [existing[name] for name in sorted(existing)]
+        await add_resource_context(names)
+        return sorted(set(names))
 
     async def _switch_model(new_model: str) -> None:
         """Apply a tool model override (Brain ▸ Tools) mid-request.
@@ -749,17 +848,31 @@ async def run_agent_stream(
             _refresh_protocol()
             _dbg("Model override after tool call → %s", resolved_model)
 
-    max_rounds = 10
+    max_rounds = settings.AGENT_MAX_ROUNDS
     observe("limits", max_rounds)
     coder_attempted = False
     format_failures = 0
     execution_state = ExecutionState()
+    repair_plans = {}
     exhausted_tool = None
 
-    def validation_feedback(call, errors):
+    def validation_feedback(call, errors, *, arguments=None, issues=None):
         nonlocal ollama_tools, exhausted_tool
         error = "; ".join(errors)
         execution_state.record(call, False, error, validation=True)
+        if arguments is not None and issues:
+            repair_tool = registry.get(call["tool"])
+            repair_plans[call["tool"]] = field_repair(
+                arguments,
+                {
+                    "type": "object",
+                    "properties": repair_tool.get_parameters(),
+                    "required": repair_tool.get_required_params(),
+                },
+                issues,
+            )
+        elif call.get("repair_mode") != "fields":
+            repair_plans.pop(call["tool"], None)
         retryable = (
             execution_state.validation_failures[call["tool"]]
             < agent_settings.effective().repair_attempts + 1
@@ -806,6 +919,15 @@ async def run_agent_stream(
             )
             messages[insertion:insertion] = injected
             messages.insert(0, {"role": "system", "content": system_prompt})
+        if pending_tool_contexts:
+            messages.extend(
+                {
+                    **item,
+                    "metadata": {**item.get("metadata", {}), "agent_context": True},
+                }
+                for item in pending_tool_contexts
+            )
+            pending_tool_contexts.clear()
 
         # Repairs concern the rejected call, not a new task. Avoid distracting
         # schemas and give its complete structure room in the context budget.
@@ -820,6 +942,7 @@ async def run_agent_stream(
             if not repair_names or s["function"]["name"] in repair_names
         ]
         repair_schema = None
+        repair_plan = None
         if repair_names:
             repair_name = next(
                 name
@@ -832,6 +955,7 @@ async def run_agent_stream(
                 if schema["function"]["name"] == repair_name
             )
             request_tools = [repair_schema]
+            repair_plan = repair_plans.get(repair_name)
         _refresh_protocol()
 
         # A concurrent request or delegated coder may have learned this model's
@@ -855,8 +979,9 @@ async def run_agent_stream(
             inference_messages = rebuild_view(
                 messages,
                 repair_schema,
-                execution_state.rejected_call_ids,
+                execution_state.rejected_call_ids | execution_state.deferred_call_ids,
                 execution_state.failures[repair_name]["error"],
+                repair=repair_plan,
             )
         inference_tools = (
             request_tools if use_native_tools and not repair_schema else None
@@ -874,13 +999,21 @@ async def run_agent_stream(
             # Compact if approaching context limit (essential for small models)
             try:
                 budget = context_budget(resolved_model, max_output_tokens)
-                compacted, was_compacted = await compact_conversation(
-                    inference_messages,
-                    resolved_model,
-                    tools=inference_tools,
-                    max_output_tokens=budget.output,
-                    native_tools=use_native_tools and not repair_schema,
-                )
+                async for activity in activity_events(
+                    lambda on_start: compact_conversation(
+                        inference_messages,
+                        resolved_model,
+                        tools=inference_tools,
+                        max_output_tokens=budget.output,
+                        native_tools=use_native_tools and not repair_schema,
+                        on_start=on_start,
+                    ),
+                    "context_compaction",
+                ):
+                    if activity.get("event"):
+                        yield _sse_event("agent_activity", activity)
+                    else:
+                        compacted, was_compacted = activity["result"]
                 if was_compacted:
                     previous_length = len(inference_messages)
                     inference_messages = compacted
@@ -899,7 +1032,9 @@ async def run_agent_stream(
                 )
                 return
             ollama_messages = model_messages(
-                inference_messages, use_native_tools and not repair_schema
+                inference_messages,
+                use_native_tools and not repair_schema,
+                fenced_tools=not repair_schema,
             )
 
             full_response = ""
@@ -948,7 +1083,9 @@ async def run_agent_stream(
                 if repair_schema:
                     latency_options["think"] = False
                     if structured_outputs.should_try_schema(resolved_model):
-                        latency_options["format"] = response_schema(repair_schema)
+                        latency_options["format"] = response_schema(
+                            repair_schema, repair_plan
+                        )
                 if not providers.is_groq_model(resolved_model):
                     latency_options["options"]["num_ctx"] = budget.window
                 async for chunk in providers.stream_chat(
@@ -1100,10 +1237,12 @@ async def run_agent_stream(
             tool_calls = [
                 (
                     native_rebuild(
-                        _convert_native_tool_calls(native_tool_calls), repair_name
+                        _convert_native_tool_calls(native_tool_calls),
+                        repair_name,
+                        repair_plan,
                     )
                     if native_tool_calls
-                    else parse_rebuild(full_response, repair_name)
+                    else parse_rebuild(full_response, repair_name, repair_plan)
                 )
             ]
         elif native_tool_calls:
@@ -1282,6 +1421,76 @@ async def run_agent_stream(
             _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
 
             tool = registry.get(tool_name)
+            if (config_store.get_tool_config(tool_name) or {}).get("enabled") is False:
+                tool = None
+            if (
+                tool
+                and tool_name in available_tools
+                and tool_name not in selected_tools
+                and execution_state.validation_failures.get(tool_name, 0)
+                < agent_settings.effective().repair_attempts + 1
+            ):
+                # Omitted-but-enabled calls load their schema only. Never execute
+                # unseen arguments, treat this as a success, or enable a disabled tool.
+                schema_started = time.time()
+                schema_clock = time.monotonic()
+                await load_tools([tool_name])
+                execution_state.record_deferred(call)
+                observe(
+                    "end_tool", "deferred", error="schema loaded; call was not executed"
+                )
+                now = int(time.time() * 1000)
+                access_events = [
+                    {
+                        "id": call["id"],
+                        "type": ToolType.TOOL_ACCESS.value,
+                        "status": "warning",
+                        "title": tool_name,
+                        "output": json.dumps(
+                            {
+                                "operation": "deferred_call",
+                                "requested": [tool_name],
+                                "reason": "schema_not_loaded",
+                                "action_executed": False,
+                            }
+                        ),
+                        "startedAt": int(schema_started * 1000),
+                        "completedAt": int(schema_started * 1000),
+                        "durationMs": 0,
+                    },
+                    {
+                        "id": call["id"] + "-schema",
+                        "type": ToolType.TOOL_ACCESS.value,
+                        "status": "completed",
+                        "title": "Load tool schema",
+                        "output": json.dumps(
+                            {
+                                "operation": "load_schema",
+                                "requested": [tool_name],
+                                "loaded": [tool_name],
+                                "already_loaded": [],
+                                "action_executed": False,
+                            }
+                        ),
+                        "startedAt": int(schema_started * 1000),
+                        "completedAt": now,
+                        "durationMs": round(
+                            (time.monotonic() - schema_clock) * 1000, 1
+                        ),
+                    },
+                ]
+                for access_event in access_events:
+                    if on_tool_call_update:
+                        on_tool_call_update(access_event["id"], access_event)
+                    yield _sse_event("tool_call", {"tool_call": access_event})
+                messages.append(
+                    tool_result_message(
+                        call,
+                        format_prompt("agent_tool_deferred", tool_name=tool_name),
+                        application_feedback=True,
+                    )
+                )
+                continue
             if not tool or tool_name not in selected_tools:
                 observe(
                     "end_tool",
@@ -1317,6 +1526,67 @@ async def run_agent_stream(
                     return
                 continue
 
+            # Normalize declared structured fields before prerequisite checks,
+            # so JSON-encoded changes cannot bypass read receipts.
+            tool_args = tool._apply_aliases(dict(tool_args))
+            schema = {
+                "type": "object",
+                "properties": tool.get_parameters(),
+                "required": tool.get_required_params(),
+            }
+            tool_args = normalize_structured_arguments(tool_args, schema)
+            tool_args = tool.normalize_arguments(tool_args)
+            repair_arguments = deepcopy(tool_args)
+
+            if tool_name == "update_artifact":
+                reason = artifact_edits.missing_read(tool_args)
+                if reason:
+                    if (
+                        "read_artifact" in available_tools
+                        and "read_artifact" not in selected_tools
+                        and execution_state.validation_failures.get("read_artifact", 0)
+                        < agent_settings.effective().repair_attempts + 1
+                        and (config_store.get_tool_config("read_artifact") or {}).get(
+                            "enabled"
+                        )
+                        is not False
+                    ):
+                        await load_tools(["read_artifact"])
+                    feedback = format_prompt(
+                        "agent_artifact_read_required", reason=reason
+                    )
+                    execution_state.record_skipped(
+                        call, "artifact read prerequisite unmet"
+                    )
+                    observe(
+                        "end_tool", "skipped", error="artifact read prerequisite unmet"
+                    )
+                    now = int(time.time() * 1000)
+                    warning = {
+                        "id": call["id"],
+                        "type": ToolType.TOOL_ACCESS.value,
+                        "status": "warning",
+                        "title": "Read artifact before editing",
+                        "output": json.dumps(
+                            {
+                                "operation": "read_required",
+                                "requested": ["update_artifact"],
+                                "required_tools": ["read_artifact"],
+                                "action_executed": False,
+                            }
+                        ),
+                        "startedAt": now,
+                        "completedAt": now,
+                        "durationMs": 0,
+                    }
+                    if on_tool_call_update:
+                        on_tool_call_update(call["id"], warning)
+                    yield _sse_event("tool_call", {"tool_call": warning})
+                    messages.append(
+                        tool_result_message(call, feedback, application_feedback=True)
+                    )
+                    continue
+
             if tool_name == "delegate_to_coder":
                 if coder_attempted:
                     observe(
@@ -1334,14 +1604,6 @@ async def run_agent_stream(
 
             # Validate the same schema supplied to the model, before injecting
             # trusted execution-only kwargs. Aliases keep legacy tools usable.
-            tool_args = tool._apply_aliases(dict(tool_args))
-            schema = {
-                "type": "object",
-                "properties": tool.get_parameters(),
-                "required": tool.get_required_params(),
-            }
-            tool_args = normalize_structured_arguments(tool_args, schema)
-            tool_args = tool.normalize_arguments(tool_args)
             errors = argument_errors(tool_args, schema)
             if errors:
                 feedback = validation_feedback(call, errors)
@@ -1371,8 +1633,43 @@ async def run_agent_stream(
                 coder_attempted = True
 
             if tool_name == "use_report_gen":
-                # Keep user constraints even when a small router drops them.
-                tool_args["_user_request"] = last_user
+                # These fields belong to the application, not the tool schema.
+                tool_args.pop("_evidence", None)
+                tool_args.pop("_user_request", None)
+                tool_args.pop("_draft", None)
+                tool_args.pop("_previous_report", None)
+                report_key = report_generation_key(tool_args)
+                previous = generated_reports.get(report_key)
+                if previous and previous["artifact_id"] not in inspected_reports:
+                    feedback = format_prompt(
+                        "agent_report_inspection", report_reference=json.dumps(previous)
+                    )
+                    execution_state.record_skipped(
+                        call, "generated output inspection required"
+                    )
+                    observe(
+                        "end_tool",
+                        "skipped",
+                        error="generated output inspection required",
+                    )
+                    now = int(time.time() * 1000)
+                    warning = {
+                        "id": call["id"],
+                        "type": tool.tool_type.value,
+                        "status": "warning",
+                        "title": "Report already generated; inspection required",
+                        "output": feedback,
+                        "startedAt": now,
+                        "completedAt": now,
+                        "durationMs": 0,
+                    }
+                    if on_tool_call_update:
+                        on_tool_call_update(call["id"], warning)
+                    yield _sse_event("tool_call", {"tool_call": warning})
+                    messages.append(
+                        tool_result_message(call, feedback, application_feedback=True)
+                    )
+                    continue
 
             # RAG: inject conversation_id
             if tool_name in {
@@ -1451,6 +1748,18 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
+            if tool_name == "use_report_gen":
+                # Execution-only handoff: raw evidence is not repeated in SSE
+                # or supplied by the model. The writer bounds its own context.
+                exec_args["_user_request"] = last_user
+                exec_args["_evidence"] = list(research_evidence)
+                exec_args["conversation_id"] = conversation_id
+            elif tool_name == "discover_tools":
+                exec_args["_tool_loader"] = load_tools
+                exec_args["_loaded_tools"] = frozenset(selected_tools)
+            elif tool_name == "read_tool_result":
+                exec_args["_result_store"] = result_store
+                exec_args["_result_metadata"] = result_metadata_store
             if tool_name == "load_skill":
                 exec_args["_skill_role"] = skill_role
             try:
@@ -1461,7 +1770,11 @@ async def run_agent_stream(
                 exec_args.setdefault("model", model_override)
             try:
                 with app_metrics.track_tool_call(tool_name):
-                    if tool_name in {"delegate_to_coder", "summarize_artifact"}:
+                    if tool_name in {
+                        "delegate_to_coder",
+                        "summarize_artifact",
+                        "use_report_gen",
+                    }:
                         event_queue: asyncio.Queue = asyncio.Queue()
                         exec_args["_event_queue"] = event_queue
                         exec_args["_parent_tool_call_id"] = tc_id
@@ -1472,8 +1785,12 @@ async def run_agent_stream(
                                     nested_event = await asyncio.wait_for(
                                         event_queue.get(), timeout=0.1
                                     )
+                                    if nested_event.get("event") == "agent_activity":
+                                        yield _sse_event("agent_activity", nested_event)
+                                        continue
                                     if (
-                                        tool_name == "summarize_artifact"
+                                        tool_name
+                                        in {"summarize_artifact", "use_report_gen"}
                                         and on_tool_call_update
                                     ):
                                         on_tool_call_update(tc_id, nested_event)
@@ -1526,6 +1843,19 @@ async def run_agent_stream(
                 )
                 continue
 
+            # Raw results remain in UI/DB/traces. Only the subsequent model
+            # transcript receives a loss-aware view, with exact paging access.
+            if result.tool_call is None:
+                result.tool_call = ToolCall(
+                    id=tc_id,
+                    type=tool.tool_type,
+                    name=tool_name,
+                    title=tool.get_display_name(),
+                    status="completed" if result.success else "error",
+                    started_at=tool_started_at,
+                    completed_at=time.time(),
+                )
+
             # Notify frontend that tool completed
             if (
                 result.success
@@ -1571,6 +1901,50 @@ async def run_agent_stream(
                 exec_args,
                 validation_error=result.failure_kind == "validation",
             )
+            if result.tool_call.output is None:
+                result.tool_call.output = result.output
+            result_ref = call["id"]
+            if result_ref in result_store:
+                result_ref += "-" + uuid.uuid4().hex
+            result_store[result_ref] = result.output
+            result_metadata_store[result_ref] = {
+                "source_tool": tool_name,
+                "source_title": tool.get_display_name(),
+            }
+            research_evidence.extend(
+                evidence_records(result_ref, tool, tool_args, result)
+            )
+            if result.success and tool_name == "read_artifact":
+                inspected_reports.add(tool_args.get("artifact_id"))
+                artifact_edits.record_read(result.output)
+            if result.success and tool_name == "update_artifact":
+                artifact_edits.invalidate(tool_args.get("artifact_id"))
+            if result.success and tool_name == "use_report_gen":
+                for output in result.tool_call.gen_results or []:
+                    if output.get("artifact_id"):
+                        generated_reports[report_key] = {
+                            "artifact_id": output["artifact_id"],
+                            "version": output.get("version", 1),
+                        }
+            can_page = (
+                "read_tool_result" in available_tools
+                and registry.get("read_tool_result")
+                and (config_store.get_tool_config("read_tool_result") or {}).get(
+                    "enabled"
+                )
+                is not False
+            )
+            view = compact_result(
+                tool_name,
+                result.output,
+                result.tool_call,
+                success=result.success,
+                result_ref=result_ref if can_page else None,
+                limit=settings.AGENT_TOOL_RESULT_MAX_CHARS,
+            )
+            if view.shortened and "read_tool_result" not in selected_tools:
+                await load_tools(["read_tool_result"])
+            observe("result_view", result_ref, view.content, view.shortened)
             if result.tool_call:
                 result.tool_call.id = tc_id  # Ensure the tool call ID is consistent
                 update_dict = _tool_call_to_update_dict(result.tool_call)
@@ -1637,10 +2011,17 @@ async def run_agent_stream(
                     _dbg("   🔎 rag_sources: no sources retrieved, skipping event")
 
             # Feed result back
-            feedback = result.output
+            feedback = view.content
             if not result.success and result.failure_kind == "validation":
-                feedback = validation_feedback(call, [result.output])
+                feedback = validation_feedback(
+                    call,
+                    [result.output],
+                    arguments=repair_arguments,
+                    issues=result.validation_issues,
+                )
             else:
+                if result.success:
+                    repair_plans.pop(tool_name, None)
                 execution_state.record(
                     call,
                     result.success,
@@ -1696,12 +2077,23 @@ async def run_agent_stream(
             return
 
     # Max rounds exhausted
-    limit_message = "I've completed my analysis."
+    limit_message = (
+        f"I reached the {max_rounds}-round limit before confirming the request was complete. "
+        "Any successful outputs have been kept."
+    )
+    returned_tools = sorted({item["tool"] for item in execution_state.successes})
+    if returned_tools:
+        limit_message += (
+            "\n\nTools that returned results: " + ", ".join(returned_tools) + "."
+        )
     observe(
         "finish", "max_rounds_reached", "agent round limit exhausted", limit_message
     )
     yield _sse_event(
         "message",
         {"message": {"role": "assistant", "content": limit_message}},
+    )
+    yield _sse_event(
+        "error", {"error": "Agent round limit reached; the request may be incomplete."}
     )
     yield _sse_event("done", {})

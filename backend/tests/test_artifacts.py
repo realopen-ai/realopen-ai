@@ -575,7 +575,7 @@ async def test_summary_tool_progress_uses_parent_id_and_persists(store, monkeypa
     from app.agent.tools.artifacts import SummarizeArtifactTool
     from app.agent.service import _tool_call_to_update_dict
 
-    artifact = SimpleNamespace(id=uuid.uuid4())
+    artifact = SimpleNamespace(id=uuid.uuid4(), kind="report")
     version = SimpleNamespace(number=1)
 
     async def get_artifact(*args, **kwargs):

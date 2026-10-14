@@ -40,6 +40,7 @@ def result_metadata(output, generated=None):
                         "status",
                         "question_count",
                         "card_count",
+                        "word_count",
                         "excerpt",
                         "result_type",
                     }
@@ -59,6 +60,30 @@ class ExecutionState:
         self.validation_failures = {}
         self.attempt_counts = {}
         self.rejected_call_ids = set()
+        self.deferred_call_ids = set()
+        self.schema_loads = []
+        self.skipped_actions = []
+
+    def record_skipped(self, call, reason):
+        self.skipped_actions.append(
+            {
+                "call_id": call["id"],
+                "tool": call["tool"],
+                "reason": reason,
+                "action_executed": False,
+            }
+        )
+
+    def record_deferred(self, call):
+        self.deferred_call_ids.add(call["id"])
+        self.schema_loads.append(
+            {
+                "call_id": call["id"],
+                "tool": call["tool"],
+                "status": "schema_ready",
+                "action_executed": False,
+            }
+        )
 
     def record(self, call, success, output, *, validation=False, generated=None):
         name = call["tool"]
@@ -83,13 +108,22 @@ class ExecutionState:
                 )
 
     def message(self):
-        if not self.successes and not self.failures:
+        if (
+            not self.successes
+            and not self.failures
+            and not self.schema_loads
+            and not self.skipped_actions
+        ):
             return None
         data = {
             "successful_actions": self.successes,
             "latest_failures": list(self.failures.values()),
             "attempt_counts": self.attempt_counts,
         }
+        if self.schema_loads:
+            data["schema_loads"] = self.schema_loads
+        if self.skipped_actions:
+            data["skipped_actions"] = self.skipped_actions
         message = untrusted_context_message(
             "application execution ledger for the current request",
             format_prompt(

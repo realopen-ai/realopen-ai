@@ -25,10 +25,10 @@ by default, add its keywords to _KEYWORD_TOOLS.
 from typing import Dict, List, Set
 
 # ── Always-available tools (shown regardless of query) ──
-# manage_memory is always available because "remember this" can follow
-# any message regardless of topic. search_past_conversations is keyword-
-# triggered to avoid bloating the tool list on every turn.
-_ALWAYS_TOOLS: Set[str] = {
+# Preserve the old seed policy solely to recognize untouched legacy rows.
+# Lean defaults expose discovery; concrete capabilities are ranked by
+# metadata and configured tags. User always-load overrides remain mandatory.
+LEGACY_ALWAYS_TOOLS: Set[str] = {
     "use_websearch",
     "use_webfetch",
     "use_code_exec",
@@ -36,6 +36,7 @@ _ALWAYS_TOOLS: Set[str] = {
     "manage_memory",
     "delegate_to_coder",
 }
+_ALWAYS_TOOLS: Set[str] = {"discover_tools"}
 
 # ── Keyword → tool mapping for dynamic selection ──
 # The keyword vocabulary doubles as the per-tool default TAGS (the

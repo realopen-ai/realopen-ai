@@ -55,6 +55,7 @@ class RagSearchTool(BaseTool):
     """Search the user's document knowledge base (public + this conversation's private docs)."""
 
     name = "rag_search"
+    provides_evidence = True
     display_name = "Document Search (RAG)"
     description = (
         "Search the user's knowledge base of uploaded documents (PDFs, DOCX, text files, "

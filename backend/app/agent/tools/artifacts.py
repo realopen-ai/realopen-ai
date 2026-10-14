@@ -58,12 +58,36 @@ class ArtifactTool(BaseTool):
                             "type": "object",
                             "properties": {
                                 "section_id": {"type": "string"},
+                                "operation": {
+                                    "type": "string",
+                                    "enum": ["replace", "delete"],
+                                    "description": "Default replace. Use delete to remove the entire section/slide/sheet; omit content for delete.",
+                                },
                                 "content": {
                                     "type": "string",
                                     "description": "Replace the full target section, including its structural Markdown. Apply the requested changes to its heading and/or body, preserving unrelated content. Sheet edits use JSON.",
                                 },
                             },
-                            "required": ["section_id", "content"],
+                            "required": ["section_id"],
+                            "allOf": [
+                                {
+                                    "if": {
+                                        "properties": {
+                                            "operation": {"enum": ["replace"]}
+                                        }
+                                    },
+                                    "then": {"required": ["content"]},
+                                },
+                                {
+                                    "if": {
+                                        "properties": {
+                                            "operation": {"enum": ["delete"]}
+                                        },
+                                        "required": ["operation"],
+                                    },
+                                    "then": {"not": {"required": ["content"]}},
+                                },
+                            ],
                             "additionalProperties": False,
                         },
                     },
@@ -162,6 +186,7 @@ class ArtifactTool(BaseTool):
                         if offset < 0:
                             raise ToolArgumentError("Offset must be nonnegative")
                         data = service.read(current, args.get("section_id"), offset)
+                        data["artifact_kind"] = artifact.kind
                         data["document_id"] = (
                             str(artifact.document_id) if artifact.document_id else None
                         )
@@ -197,6 +222,7 @@ class ArtifactTool(BaseTool):
                             raise ToolArgumentError("Summary question exceeds limit")
                         data = {
                             "artifact_id": str(artifact.id),
+                            "artifact_kind": artifact.kind,
                             "version": current.number,
                             **await service.summarize(
                                 db,
@@ -265,6 +291,7 @@ class ListArtifactsTool(ArtifactTool):
 
 
 class ReadArtifactTool(ArtifactTool):
+    provides_evidence = True
     operation = "read"
     name = "read_artifact"
     display_name = "Read artifact"
@@ -275,7 +302,7 @@ class UpdateArtifactTool(ArtifactTool):
     operation = "update"
     name = "update_artifact"
     display_name = "Update artifact"
-    description = "Edit generated files when requested. Read the target section first, then provide its complete replacement content. Apply requested changes to the heading and/or body while preserving unrelated content and valid document structure. Use Markdown for reports/slides and JSON for sheets, with exact version and section IDs. Failed edits leave the previous version intact; on version conflicts, reread. Uploads are read-only."
+    description = "Edit generated files when requested. A successful read_artifact of the same artifact/version is required in this request; schema loading is not a read. Copy exact section IDs/version from read results. An outline read suffices for deletion; read section content before replacement (Markdown for reports/slides, JSON for sheets). To remove a section/slide/sheet, set operation to delete and omit content. Preserve unrelated content and at least one section. Failed edits leave previous versions intact; reread after updates or conflicts because IDs may change. Uploads are read-only."
 
 
 class ExportArtifactTool(ArtifactTool):
@@ -286,6 +313,7 @@ class ExportArtifactTool(ArtifactTool):
 
 
 class SummarizeArtifactTool(ArtifactTool):
+    provides_evidence = True
     operation = "summarize"
     name = "summarize_artifact"
     display_name = "Summarize artifact"

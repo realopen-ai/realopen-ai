@@ -402,13 +402,17 @@ def read(version, section_id=None, offset=0, limit=MAX_READ):
 
 
 def edited_source(version, kind, changes):
+    if kind not in {"report", "presentation", "excel"}:
+        raise HTTPException(403, "Uploaded artifacts are read-only")
     if not changes or len(changes) > 20:
         raise HTTPException(422, "Provide 1 to 20 targeted edits")
     source = version.source
     seen = set()
     replacements = {}
     for change in changes:
-        section_id, content = change["section_id"], change["content"]
+        section_id = change["section_id"]
+        operation = change.get("operation", "replace")
+        content = change.get("content")
         if section_id in seen:
             raise HTTPException(422, "Duplicate section edit")
         seen.add(section_id)
@@ -417,27 +421,29 @@ def edited_source(version, kind, changes):
         )
         if section is None:
             raise HTTPException(422, "Unknown section")
-        if not content.strip():
+        if operation == "delete":
+            if content is not None:
+                raise HTTPException(422, "Delete operations must omit content")
+            replacements[section_id] = None
+            continue
+        if operation != "replace":
+            raise HTTPException(422, "Unknown section edit operation")
+        if not isinstance(content, str) or not content.strip():
             raise HTTPException(422, "Section cannot be empty")
         if kind == "excel":
-            spec = json.loads(source)
             try:
                 replacement = json.loads(content)
             except json.JSONDecodeError as exc:
                 raise HTTPException(
                     422, "Sheet edit content must be valid JSON"
                 ) from exc
-            index = int(section_id.removeprefix("sheet-")) - 1
             if not isinstance(replacement, dict):
                 raise HTTPException(422, "Sheet must be a JSON object")
-            spec["sheets"][index] = replacement
-            source = json.dumps(spec, ensure_ascii=False)
+            replacements[section_id] = replacement
         elif kind == "presentation":
-            parts = re_split_slides(source)
             if len(re_split_slides(content)) != 1:
                 raise HTTPException(422, "A slide edit must contain exactly one slide")
-            parts[int(section_id.removeprefix("slide-")) - 1] = content
-            source = "\n---\n".join(parts)
+            replacements[section_id] = content
         else:
             original_heading = re.match(r"^(#{1,2}) .+", section["content"].lstrip())
             if original_heading:
@@ -453,10 +459,28 @@ def edited_source(version, kind, changes):
                 # Section boundaries must start at column zero, as in the source parser.
                 content = content.lstrip()
             replacements[section_id] = content
-    if kind == "report":
-        source = "\n\n".join(
-            replacements.get(part["id"], part["content"]).rstrip()
-            for part in version.sections
+    # Resolve the whole batch against the original version before removing
+    # anything, so deletion never shifts another edit onto the wrong target.
+    remaining = [
+        part
+        for part in version.sections
+        if replacements.get(part["id"], "") is not None
+    ]
+    if not remaining:
+        raise HTTPException(422, "Cannot delete every section; retain at least one")
+    if kind == "excel":
+        spec = json.loads(source)
+        spec["sheets"] = [
+            replacements.get(
+                part["id"], spec["sheets"][int(part["id"].removeprefix("sheet-")) - 1]
+            )
+            for part in remaining
+        ]
+        source = json.dumps(spec, ensure_ascii=False)
+    else:
+        separator = "\n---\n" if kind == "presentation" else "\n\n"
+        source = separator.join(
+            replacements.get(part["id"], part["content"]).rstrip() for part in remaining
         )
     if len(source) > MAX_SOURCE:
         raise HTTPException(413, "Source exceeds size limit")

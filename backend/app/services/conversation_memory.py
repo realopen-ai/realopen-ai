@@ -70,6 +70,8 @@ async def maybe_summarize_conversation(
     conversation_id: uuid.UUID,
     model: str,
     min_messages: Optional[int] = None,
+    *,
+    on_start=None,
 ) -> bool:
     """Summarize a conversation if it has enough messages and no existing summary.
 
@@ -107,6 +109,8 @@ async def maybe_summarize_conversation(
         # Convert to dicts for the summarizer
         message_dicts = [{"role": m.role, "content": m.content} for m in messages]
 
+        if on_start:
+            on_start()
         summary = await summarize_conversation(message_dicts, model)
         if summary:
             return await _store_summary(db, conversation_id, summary)

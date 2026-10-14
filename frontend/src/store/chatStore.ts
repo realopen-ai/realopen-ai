@@ -27,6 +27,8 @@ export interface ToolCallResult {
     | "vision"
     | "code_exec"
     | "skill"
+    | "tool_access"
+    | "tool_output"
     | "flashcards"
     | "notes"
     | "quizzes"
@@ -37,7 +39,7 @@ export interface ToolCallResult {
     | "image_gen"
     | "sandbox"
     | "preview";
-  status: "running" | "completed" | "error";
+  status: "running" | "completed" | "warning" | "error";
   title: string;
   startedAt: number;
   completedAt?: number;
@@ -119,6 +121,8 @@ export interface Message {
    * chronological flow of a multi-round agent turn. */
   blocks?: MessageBlock[];
   isStreaming: boolean;
+  /** Transient SSE/voice activity; never saved as conversation content. */
+  activeActivities?: AgentActivity[];
   createdAt: number;
   completedAt?: number;
   shrugOverlay?: boolean;
@@ -137,6 +141,9 @@ export interface Message {
   // via chat and the backend streams document_digest_* SSE events.
   digestProgress?: DigestProgressItem[];
 }
+
+export type AgentActivity =
+  "context_compaction" | "conversation_summary" | "memory_extraction";
 
 /**
  * One document digestion progress event for a chat-uploaded document.
@@ -241,6 +248,12 @@ interface ChatState {
     conversationId: string,
     messageId: string,
     streaming: boolean,
+  ) => void;
+  setAgentActivity: (
+    conversationId: string,
+    messageId: string,
+    activity: AgentActivity,
+    active: boolean,
   ) => void;
   renameConversation: (id: string, title: string) => Promise<void>;
   togglePinConversation: (id: string) => Promise<void>;
@@ -1007,12 +1020,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ? {
                       ...m,
                       isStreaming: streaming,
-                      ...(streaming ? {} : { completedAt: Date.now() }),
+                      ...(streaming
+                        ? {}
+                        : { completedAt: Date.now(), activeActivities: [] }),
                     }
                   : m,
               ),
             }
           : c,
+      ),
+    }));
+  },
+
+  setAgentActivity: (conversationId, messageId, activity, active) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id !== conversationId
+          ? c
+          : {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id !== messageId
+                  ? m
+                  : {
+                      ...m,
+                      activeActivities: active
+                        ? [
+                            ...new Set([
+                              ...(m.activeActivities ?? []),
+                              activity,
+                            ]),
+                          ]
+                        : (m.activeActivities ?? []).filter(
+                            (item) => item !== activity,
+                          ),
+                    },
+              ),
+            },
       ),
     }));
   },

@@ -290,6 +290,11 @@ export function ChatArea({
         onMemoryExtractionStart: () => {
           useMemoryStore.getState().setExtracting(true);
         },
+        onAgentActivity: (activity, active) => {
+          useChatStore
+            .getState()
+            .setAgentActivity(capturedConvId, assistantMsgId, activity, active);
+        },
         // Auto-title — the backend generated an LLM title from the first
         // user message (default_utility model) and already persisted it;
         // update the sidebar live. Replaces the optimistic preview above.
@@ -562,6 +567,7 @@ export function ChatArea({
             .getState()
             .updateMessage(capturedConvId, assistantMsgId, {
               completionStatus: "interrupted",
+              activeActivities: [],
             });
         },
         onError: (error: string) => {

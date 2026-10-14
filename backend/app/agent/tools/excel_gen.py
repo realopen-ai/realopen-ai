@@ -61,6 +61,7 @@ class ExcelGenTool(BaseTool):
     """Generate an Excel workbook (.xlsx) from a high-level brief."""
 
     name = "use_excel_gen"
+    output_formats = ("xlsx",)
     display_name = "Excel Generation"
     description = (
         "Generate an Excel spreadsheet (.xlsx) from a brief. "

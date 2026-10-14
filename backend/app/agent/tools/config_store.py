@@ -5,9 +5,8 @@ configuration after initialization. This module:
 
 - seeds missing rows on startup from the config definitions
   (config_base) — existing rows are NEVER overwritten when defaults
-  change (no automatic versioning/migration: a changed default only
-  affects tools that were never configured, and missing keys are
-  filled at read time, so partial rows self-heal)
+  change, except the explicit one-time lean-routing reset of unchanged,
+  never-edited legacy always-load seeds. Customized rows are preserved.
 - keeps a write-through in-memory cache so the agent runtime can read
   configurations without a DB round-trip per request
 - validates + persists updates coming from the API
@@ -24,12 +23,14 @@ cache is rebuilt from the database — nothing is lost.
 
 import logging
 import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 
 from app.agent.base import get_tool_registry
 from app.agent.tools.config_base import definition_for_tool
+from app.agent.tools.tool_defaults import LEGACY_ALWAYS_TOOLS
 from app.services import model_prefs
 from app.services import providers
 
@@ -86,7 +87,34 @@ def merged_config(tool_name: str, stored: Optional[Dict[str, Any]]) -> Dict[str,
     if "keyword_gate" in stored and "tags" not in stored:
         merged["tags"] = tags_from_gate(stored.get("keyword_gate"))
     merged.pop("keyword_gate", None)
+    merged.pop("_routing_policy_version", None)
     return merged
+
+
+def migrate_routing_default(row, definition):
+    """One-time opt-in reset of untouched legacy seeds; never infer user intent.
+
+    Seed timestamps are assigned together (within milliseconds). An edited row,
+    partial/unknown config or missing timestamps is conservatively preserved.
+    """
+    stored = row.config or {}
+    if (
+        row.tool_name not in LEGACY_ALWAYS_TOOLS
+        or stored.get("_routing_policy_version") == 2
+    ):
+        return False
+    legacy = {**definition.default_config(), "always_load": True}
+    created, updated = row.created_at, row.updated_at
+    untouched = (
+        stored == legacy
+        and isinstance(created, datetime)
+        and isinstance(updated, datetime)
+        and abs((updated - created).total_seconds()) < 0.01
+    )
+    row.config = {**stored, "_routing_policy_version": 2}
+    if untouched:
+        row.config["always_load"] = False
+    return True
 
 
 # ── Startup seeding ────────────────────────────────────────────────
@@ -120,10 +148,12 @@ async def seed_and_load(force: bool = False) -> Dict[str, int]:
     db_ok = True
     try:
         async with async_session_factory() as db:
-            existing = {
-                row.tool_name: (row.config or {})
+            existing_rows = {
+                row.tool_name: row
                 for row in (await db.execute(select(ToolConfig))).scalars()
             }
+            existing = {name: row.config or {} for name, row in existing_rows.items()}
+            migrated = 0
 
             for tool in tools:
                 definition = definition_for_tool(tool.name)
@@ -138,9 +168,12 @@ async def seed_and_load(force: bool = False) -> Dict[str, int]:
                     seeded += 1
                     logger.info("🧰 Seeded tool config: %s", tool.name)
                 else:
-                    rows[tool.name] = existing[tool.name]
+                    row = existing_rows[tool.name]
+                    if migrate_routing_default(row, definition):
+                        migrated += 1
+                    rows[tool.name] = row.config or {}
 
-            if seeded:
+            if seeded or migrated:
                 await db.commit()
     except Exception as e:  # DB unavailable at startup
         db_ok = False
@@ -339,7 +372,6 @@ async def update_tool_config(tool_name: str, patch: Dict[str, Any]) -> Dict[str,
     """
     from app.db.session import async_session_factory
     from app.db.models import ToolConfig
-    from datetime import datetime
 
     registry = get_tool_registry()
     if not registry.has_tool(tool_name):
@@ -400,6 +432,7 @@ async def update_tool_config(tool_name: str, patch: Dict[str, Any]) -> Dict[str,
         # row persists a complete, new-format config.
         stored = dict(current)
         merged = _deep_merge(stored, updates)
+        merged["_routing_policy_version"] = 2
 
     try:
         async with async_session_factory() as db:

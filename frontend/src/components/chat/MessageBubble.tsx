@@ -28,6 +28,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
 import { elapsedMilliseconds } from "@/lib/timing";
+import { toolAccessDetails } from "@/lib/toolAccessDetails";
+import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -501,6 +503,14 @@ function ToolCallBlockView({
       label: translate("tool.skill.done"),
       runningLabel: translate("tool.skill.running"),
     },
+    tool_access: {
+      label: translate("tool.access.done"),
+      runningLabel: translate("tool.access.running"),
+    },
+    tool_output: {
+      label: translate("tool.output.done"),
+      runningLabel: translate("tool.output.running"),
+    },
     file_read: {
       label: translate("tool.fileRead.done"),
       runningLabel: translate("tool.fileRead.running"),
@@ -557,21 +567,39 @@ function ToolCallBlockView({
   };
 
   // Display label: "Generating..." while running, "Generated ..." when done
+  const access =
+    tc.type === "tool_access" ||
+    (tc.type === "artifact" && tc.status === "warning")
+      ? toolAccessDetails(tc.output)
+      : null;
+  const outputPage =
+    tc.type === "tool_output" ? toolOutputDetails(tc.output) : null;
   const displayLabel =
-    tc.status === "error"
-      ? translate("chat.toolFailed")
-      : tc.status === "running"
-        ? runningLabel
-        : label;
+    tc.status === "warning"
+      ? translate(
+          access?.readRequired
+            ? "tool.access.readRequired"
+            : "tool.access.deferred",
+        )
+      : tc.status === "error"
+        ? translate("chat.toolFailed")
+        : tc.status === "running"
+          ? runningLabel
+          : access && !access.loaded.length && access.alreadyLoaded.length
+            ? translate("tool.access.alreadyDone")
+            : label;
 
   // Short target shown inline after the label (file path for file tools,
   // query for searches) — keeps the row scannable.
-  const shortTarget =
-    tc.filePath && tc.filePath !== "/workspace"
-      ? tc.filePath
-      : tc.type === "websearch" || tc.type === "deepsearch"
-        ? tc.query
-        : undefined;
+  const shortTarget = access?.requested.length
+    ? access.requested.join(", ")
+    : outputPage
+      ? outputPage.sourceTitle || outputPage.sourceTool || outputPage.resultRef
+      : tc.filePath && tc.filePath !== "/workspace"
+        ? tc.filePath
+        : tc.type === "websearch" || tc.type === "deepsearch"
+          ? tc.query
+          : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
   const elapsed =
@@ -583,12 +611,14 @@ function ToolCallBlockView({
   // Auto-expand while running so the user sees progress, AND auto-expand
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
-    tc.status === "error" ||
-    tc.status === "running" ||
-    ((tc.type === "file_read" || tc.type === "file_write") &&
-      tc.status === "completed") ||
-    ((isReportTool || isPresentationTool || isExcelTool) &&
-      tc.status === "completed");
+    tc.type !== "tool_access" &&
+    tc.type !== "tool_output" &&
+    (tc.status === "error" ||
+      tc.status === "running" ||
+      ((tc.type === "file_read" || tc.type === "file_write") &&
+        tc.status === "completed") ||
+      ((isReportTool || isPresentationTool || isExcelTool) &&
+        tc.status === "completed"));
   const isExpanded = expanded || autoExpand;
 
   return (
@@ -604,10 +634,19 @@ function ToolCallBlockView({
           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-muted-foreground" />
         ) : tc.status === "error" ? (
           <XCircle className="w-3.5 h-3.5 shrink-0 text-danger" />
+        ) : tc.status === "warning" ? (
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 text-warning" />
         ) : (
           <Check className="w-3.5 h-3.5 shrink-0 text-success" />
         )}
-        <span className="text-[12.5px] text-muted-foreground group-hover:text-foreground transition-colors truncate">
+        <span
+          className={cn(
+            "text-[12.5px] transition-colors truncate",
+            tc.status === "warning"
+              ? "text-warning"
+              : "text-muted-foreground group-hover:text-foreground",
+          )}
+        >
           {displayLabel}
         </span>
         {shortTarget && (
@@ -698,6 +737,14 @@ function ToolCallDetail({
       </p>
     );
   }
+  if (
+    tc.type === "tool_access" ||
+    (tc.type === "artifact" &&
+      tc.status === "warning" &&
+      toolAccessDetails(tc.output).readRequired)
+  )
+    return <ToolAccessDetail tc={tc} />;
+  if (tc.type === "tool_output") return <ToolOutputDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
@@ -730,6 +777,145 @@ function ToolCallDetail({
     return <ImageGenDetail tc={tc} />;
   }
   return <GenericToolDetail tc={tc} />;
+}
+
+function ToolOutputDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const page = toolOutputDetails(tc.output);
+  if (!page)
+    return (
+      <p
+        dir={tc.output ? "ltr" : undefined}
+        className="whitespace-pre-wrap break-words text-[12.5px] text-muted-foreground"
+      >
+        {tc.output ||
+          translate(
+            tc.status === "running"
+              ? "tool.output.loadingInfo"
+              : "tool.output.unavailable",
+          )}
+      </p>
+    );
+  return (
+    <div className="space-y-3 text-[12.5px]">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
+        {(page.sourceTitle || page.sourceTool) && (
+          <>
+            <dt className="text-muted-foreground">
+              {translate("tool.output.source")}
+            </dt>
+            <dd className="min-w-0 break-words">
+              {page.sourceTitle || page.sourceTool}
+            </dd>
+          </>
+        )}
+        <dt className="text-muted-foreground">
+          {translate("tool.output.reference")}
+        </dt>
+        <dd dir="ltr" className="min-w-0 break-all font-mono text-left">
+          {page.resultRef}
+        </dd>
+        <dt className="text-muted-foreground">
+          {translate("tool.output.range")}
+        </dt>
+        <dd dir="ltr" className="tabular-nums text-left">
+          {page.count
+            ? `${page.offset + 1}–${page.end} / ${page.totalChars}`
+            : `0 / ${page.totalChars}`}
+        </dd>
+      </dl>
+      <p className="text-muted-foreground">
+        {page.nextOffset === null
+          ? translate("tool.output.end")
+          : translate("tool.output.more")}
+        {page.nextOffset !== null && (
+          <span className="ms-1">
+            {translate("tool.output.nextOffset")}:{" "}
+            <bdi className="tabular-nums">{page.nextOffset}</bdi>
+          </span>
+        )}
+      </p>
+      <div>
+        <p className="mb-1.5 text-muted-foreground">
+          {translate("tool.output.content")}
+        </p>
+        {page.count ? (
+          <div
+            dir="ltr"
+            className="max-h-64 overflow-auto rounded-md bg-background/50 p-2 text-left"
+          >
+            {page.isJson ? (
+              <pre className="font-mono text-[11.5px] leading-relaxed">
+                <HighlightedCode code={page.formatted} language="json" />
+              </pre>
+            ) : (
+              <pre
+                dir="auto"
+                className="whitespace-pre-wrap break-words text-start font-mono text-[11.5px] leading-relaxed"
+              >
+                {page.formatted}
+              </pre>
+            )}
+          </div>
+        ) : (
+          <p className="text-muted-foreground">
+            {translate("tool.output.empty")}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToolAccessDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const access = toolAccessDetails(tc.output);
+  const fields = [
+    ["tool.access.requested", access.requested],
+    ["tool.access.requiredStep", access.requiredTools],
+    ["tool.access.loaded", access.loaded],
+    ["tool.access.alreadyLoaded", access.alreadyLoaded],
+  ] as const;
+  return (
+    <div className="space-y-2 text-[12.5px]">
+      {fields
+        .filter(([, names]) => names.length)
+        .map(([label, names]) => (
+          <div key={label}>
+            <p className="text-muted-foreground">{translate(label)}</p>
+            <p
+              dir="ltr"
+              className="font-mono text-foreground break-words text-left"
+            >
+              {names.join(", ")}
+            </p>
+          </div>
+        ))}
+      <p
+        className={
+          tc.status === "warning" ? "text-warning" : "text-muted-foreground"
+        }
+      >
+        {translate(
+          tc.status === "running"
+            ? "tool.access.loadingInfo"
+            : access.readRequired
+              ? "tool.access.readRequiredInfo"
+              : access.deferred
+                ? "tool.access.deferredInfo"
+                : "tool.access.loadInfo",
+        )}
+      </p>
+      {!access.requested.length && tc.output && (
+        <pre
+          dir="ltr"
+          className="whitespace-pre-wrap break-words text-left text-muted-foreground"
+        >
+          {tc.output}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function FileToolDetail({ tc }: { tc: ToolCallResult }) {
@@ -970,6 +1156,11 @@ function ImageGenDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
   return (
     <div className="space-y-2">
+      {tc.status === "warning" && tc.output && (
+        <p className="text-[11.5px] text-muted-foreground whitespace-pre-wrap">
+          {tc.output}
+        </p>
+      )}
       {tc.imageDescription && (
         <p className="text-[11.5px] text-muted-foreground/80 italic">
           &quot;{tc.imageDescription}&quot;
@@ -1122,7 +1313,12 @@ function ReportGenDetail({
         <div className="flex items-center gap-2">
           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
           <span className="text-[11.5px] text-muted-foreground">
-            {generatingLabel}
+            {tc.progress?.stage === "writing_chapters"
+              ? translate("tool.report.chapters", {
+                  completed: tc.progress.completed,
+                  total: tc.progress.total,
+                })
+              : generatingLabel}
           </span>
         </div>
       )}
@@ -1173,6 +1369,17 @@ function ReportGenDetail({
             );
           })}
         </div>
+      )}
+      {tc.status === "running" && tc.progress?.stage === "writing_chapters" && (
+        <progress
+          className="w-full h-1 accent-primary"
+          value={tc.progress.completed}
+          max={Math.max(1, tc.progress.total)}
+          aria-label={translate("tool.report.chapters", {
+            completed: tc.progress.completed,
+            total: tc.progress.total,
+          })}
+        />
       )}
       {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
     </div>
@@ -1511,12 +1718,35 @@ export function MessageBubble({
       )}
 
       {/* Streaming placeholder when no blocks yet */}
-      {blocks.length === 0 && !message.content && message.isStreaming && (
-        <div className="flex items-center gap-2 text-muted-foreground py-1.5">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          <span className="text-[12.5px]">Thinking…</span>
-        </div>
-      )}
+      {blocks.length === 0 &&
+        !message.content &&
+        message.isStreaming &&
+        !message.activeActivities?.length && (
+          <div className="flex items-center gap-2 text-muted-foreground py-1.5">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-[12.5px]">
+              {translate("message.thinking")}
+            </span>
+          </div>
+        )}
+
+      {message.isStreaming &&
+        message.activeActivities?.map((activity) => (
+          <div
+            key={activity}
+            role="status"
+            aria-live="polite"
+            className="my-2 flex items-center gap-2 text-muted-foreground"
+          >
+            <Loader2
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 animate-spin"
+            />
+            <span className="text-[12.5px]">
+              {translate(`chat.activity.${activity}`)}
+            </span>
+          </div>
+        ))}
 
       {/* Persisted deliverables (from DB) — rendered as download badges.
           These are also rendered inline inside tool_call blocks via
