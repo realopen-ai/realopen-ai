@@ -13,6 +13,7 @@ from app.agent.protocol import model_messages
 from app.agent.tracing import observe, timestamp
 from app.prompts import format_prompt
 from app.services import providers, tool_capabilities
+from app.services import coder_settings
 from app.services.context_compactor import context_budget, compact_conversation
 from app.services.agent_activity import activity_events
 
@@ -137,7 +138,10 @@ async def chat_with_tool_recovery(
             timeout=1200,
             format="json",
             think=False,
-            options={"num_predict": 2048, "temperature": 0},
+            options={
+                "num_predict": coder_settings.effective().generation_limit,
+                "temperature": 0.2,
+            },
         )
         try:
             fallback["message"] = recovery_message(
@@ -161,7 +165,10 @@ async def chat_with_tool_recovery(
                 tools=CODER_TOOLS,
                 timeout=1200,
                 think=False,
-                options={"num_predict": 2048, "temperature": 0},
+                options={
+                    "num_predict": coder_settings.effective().generation_limit,
+                    "temperature": 0.2,
+                },
             )
         except (httpx.HTTPStatusError, providers.ProviderStreamError) as error:
             failure = error

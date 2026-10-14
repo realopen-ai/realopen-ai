@@ -405,6 +405,26 @@ async def compact_conversation(
             )
         return messages, False
     soft_limit = int(budget.input_limit * preferences.compaction_threshold)
+    if total > soft_limit:
+        current_state = any(
+            (item.get("metadata") or {}).get("agent_coder_state")
+            and not (item.get("metadata") or {}).get("historical_state")
+            for item in messages
+        )
+        snapshots = [
+            item
+            for item in messages
+            if current_state
+            and (item.get("metadata") or {}).get("agent_coder_state")
+            and (item.get("metadata") or {}).get("historical_state")
+        ]
+        if snapshots:
+            messages = [item for item in messages if item not in snapshots]
+            total = size(messages)
+            if total <= soft_limit:
+                if on_start:
+                    on_start()
+                return messages, True
     if total <= soft_limit:
         return messages, False
 
@@ -476,7 +496,11 @@ async def compact_conversation(
     # repeatedly rewrite a tiny summary. Require useful historical material.
     if (
         total <= budget.input_limit
-        and sum(_estimate_message_tokens(messages[i]) for g in candidates for i in g)
+        and sum(
+            _estimate_message_tokens(messages[i])
+            for g in candidates[:remove_count]
+            for i in g
+        )
         < 512
     ):
         return messages, False

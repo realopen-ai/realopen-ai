@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select, text
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
+from app.agent.coder.working_state import RunState, compact_output
+from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.coder.tooling import (
     CODER_TOOLS,
     dispatch_tool,
@@ -31,7 +33,7 @@ from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
 from app.core.prompt_security import untrusted_context_message
-from app.services import sandbox_host, tool_capabilities
+from app.services import sandbox_host, tool_capabilities, coder_settings
 from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
 from app.services.sandbox_commands import persist_command, split_command_output
@@ -45,28 +47,16 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-CODER_SYSTEM_PROMPT = "\n\n".join(
-    (get_prompt("coder_system"), get_prompt("coder_fastapi_reference"))
-)
+CODER_SYSTEM_PROMPT = get_prompt("coder_system")
 COMMAND_TOOLS = {
     "run_command",
     "run_tests",
     "install_dependencies",
     "setup_python_project",
+    "scaffold_project",
+    "check_preview",
 }
 READ_TOOLS = {"list_files", "read_file", "search_files"}
-
-
-@dataclass
-class RunState:
-    worklog: list[dict] = field(default_factory=list)
-    files_changed: list[str] = field(default_factory=list)
-    tests_run: list[dict] = field(default_factory=list)
-    writes_by_path: dict[str, int] = field(default_factory=dict)
-    step_index: int = 0
-    command_failures: int = 0
-    preview_started: bool = False
-    successful_validation: bool = False
 
 
 async def _record_command(
@@ -197,7 +187,7 @@ def _event_for_step(
             if name in READ_TOOLS
             else (
                 "file_write"
-                if name == "write_file"
+                if name in {"write_file", "edit_file"}
                 else "preview" if name == "start_preview" else "code_exec"
             )
         )
@@ -206,6 +196,9 @@ def _event_for_step(
         "list_files": "Listing workspace files",
         "read_file": f"Reading {args.get('path', 'file')}",
         "write_file": f"Writing {args.get('path', 'file')}",
+        "edit_file": f"Editing {args.get('path', 'file')}",
+        "scaffold_project": "Creating project starter",
+        "check_preview": "Checking frontend/API connection",
         "search_files": f"Searching for {args.get('query', '')}",
         "run_tests": "Running tests",
         "install_dependencies": "Installing dependencies",
@@ -253,6 +246,9 @@ async def _run_step(
 ) -> tuple[str, dict | None]:
     state.step_index += 1
     args = normalize_tool_args(name, args)
+    args = {key: value for key, value in args.items() if not key.startswith("_")}
+    if name in {"write_file", "edit_file"}:
+        args.update(state.read_arguments(args["path"]))
     start_event = _event_for_step(
         name,
         args,
@@ -314,7 +310,9 @@ async def _run_step(
                 task_id=task_id,
                 tool_name=name,
                 sequence=state.step_index,
-                command=str(start_event.get("code", "")),
+                command=str(
+                    (event or {}).get("command") or start_event.get("code", "")
+                ),
                 output=output,
                 exit_code=event.get("exit_code") if event else None,
                 started_at=started_at,
@@ -326,7 +324,13 @@ async def _run_step(
             "durationMs": round((time.monotonic() - started_monotonic) * 1000, 1),
             "output": output[:20_000],
         }
-        if name == "setup_python_project":
+        if event and event.get("command"):
+            completed["code"] = event["command"]
+        if (
+            name in {"setup_python_project", "scaffold_project"}
+            or event
+            and event.get("changed")
+        ):
             completed["refreshFiles"] = True
         if name in READ_TOOLS:
             completed["fileContent"] = output[:20_000]
@@ -340,6 +344,9 @@ async def _run_step(
             ):
                 if event.get(source) is not None:
                     completed[target] = event[source]
+            if event.get("exit_code") not in (None, 0):
+                completed["status"] = "error"
+                completed["error"] = output
         if event_queue is not None:
             event_queue.put_nowait(completed)
         failed = event and event.get("exit_code") not in (None, 0)
@@ -388,40 +395,31 @@ async def _run_step(
 def _track_step(
     state: RunState, name: str, args: dict, output: str, event: dict | None
 ) -> str:
-    state.worklog.append(
-        {
-            "tool": name,
-            "args": args,
-            "result": output[:2000],
-            "at": datetime.utcnow().isoformat(),
-        }
-    )
-    if event and event.get("file") and event["file"] not in state.files_changed:
-        state.files_changed.append(event["file"])
-    if event and event.get("preview_url"):
-        state.preview_started = True
-    if event and event.get("command"):
-        state.tests_run.append(event)
-        command = str(event["command"]).lower()
-        if event.get("exit_code") == 0 and (
-            name == "run_tests"
-            or "pytest" in command
-            or "bun test" in command
-            or "npm test" in command
-        ):
-            state.successful_validation = True
-    if (
-        event
-        and event.get("exit_code") not in (None, 0)
-        and not event.get("corrective")
-    ):
-        state.command_failures += 1
-        if state.command_failures >= 4:
-            return (
-                "Coder stopped after four failed commands to avoid a retry loop. "
-                "The last failure was: " + output[:500]
-            )
-    return ""
+    return state.record(name, normalize_tool_args(name, args), output, event)
+
+
+def _rejected_step(state, name, args, error, queue, parent_id, task_id, sandbox_id):
+    """Expose validation failures without pretending a sandbox action ran."""
+    state.step_index += 1
+    if queue is not None:
+        event = _event_for_step(
+            name,
+            args,
+            f"{parent_id or task_id}-step-{state.step_index}",
+            parent_id,
+            sandbox_id,
+        )
+        queue.put_nowait(
+            {
+                **event,
+                "status": "error",
+                "error": error,
+                "output": error,
+                "completedAt": _now_ms(),
+                "durationMs": 0,
+            }
+        )
+    return state.record(name, args, error, {"exit_code": 1})
 
 
 async def _save_progress(task_id: uuid.UUID, state: RunState) -> None:
@@ -431,6 +429,13 @@ async def _save_progress(task_id: uuid.UUID, state: RunState) -> None:
         record.files_changed = state.files_changed
         record.tests_run = state.tests_run
         await db.commit()
+
+
+async def _check_cancellation(task_id):
+    async with async_session_factory() as db:
+        current = await db.get(SandboxTask, task_id)
+        if current and current.cancellation_requested:
+            raise RuntimeError("Coding task cancelled")
 
 
 class CoderAgent(BaseTool):
@@ -453,6 +458,7 @@ class CoderAgent(BaseTool):
     def get_required_params(self) -> list[str]:
         return ["task"]
 
+    @coder_settings.with_snapshot
     @traced_coder_execution
     async def execute(
         self,
@@ -481,6 +487,7 @@ class CoderAgent(BaseTool):
                 call,
             )
         task_id = uuid.uuid4()
+        state = None
         try:
             conversation, sandbox = await _create_task(conversation_id, task_id, task)
             observe("coder_identity", task_id, sandbox.id)
@@ -506,25 +513,47 @@ class CoderAgent(BaseTool):
                 {"role": "user", "content": task, "metadata": {"agent_request": True}},
             ]
             state = RunState()
+            try:
+                manifest = await sandbox_host.call(
+                    "files/read", sandbox, {"path": "/workspace/.realopen-project.json"}
+                )
+                project = json.loads(manifest.get("content", ""))
+                if isinstance(project, dict) and set(project) == {
+                    "backend",
+                    "frontend",
+                }:
+                    state.project = project
+            except Exception:
+                # Existing non-starter repositories remain supported.
+                pass
             transient_text_models = set()
             final = ""
             failed = False
-            for _round in range(24):
+            premature_finals = 0
+            incomplete_generations = 0
+            preferences = coder_settings.effective()
+            observe("limits", preferences.max_rounds)
+            for _round in range(preferences.max_rounds):
+                # Keep earlier request bytes intact for prefix-cache reuse.
+                # Superseded snapshots are application-owned, not user data;
+                # the compactor may prune them when the budget fills up.
+                for item in messages:
+                    metadata = item.get("metadata") or {}
+                    if metadata.get("agent_coder_state"):
+                        metadata.update(agent_context=False, historical_state=True)
+                messages.append(state.context())
                 native_tools = (
                     model not in transient_text_models
                     and tool_capabilities.should_try_native(model)
                 )
-                async with async_session_factory() as db:
-                    current = await db.get(SandboxTask, task_id)
-                    if current and current.cancellation_requested:
-                        raise RuntimeError("Coding task cancelled")
+                await _check_cancellation(task_id)
                 async for activity in activity_events(
                     lambda on_start: compact_conversation(
                         messages,
                         model,
                         tools=CODER_TOOLS if native_tools else None,
                         native_tools=native_tools,
-                        max_output_tokens=2048,
+                        max_output_tokens=preferences.generation_limit,
                         on_start=on_start,
                     ),
                     "context_compaction",
@@ -542,20 +571,24 @@ class CoderAgent(BaseTool):
                     CODER_TOOLS if native_tools else None,
                     {t["function"]["name"] for t in CODER_TOOLS},
                     [],
-                    {"think": False, "temperature": 0, "max_output_tokens": 2048},
+                    {
+                        "think": False,
+                        "temperature": 0.2,
+                        "max_output_tokens": preferences.generation_limit,
+                    },
                 )
-                message = (
-                    await chat_with_tool_recovery(
-                        model,
-                        messages,
-                        transient_text_models=transient_text_models,
-                        **(
-                            {"on_activity": _event_queue.put_nowait}
-                            if _event_queue is not None
-                            else {}
-                        ),
-                    )
-                ).get("message", {})
+                response = await chat_with_tool_recovery(
+                    model,
+                    messages,
+                    transient_text_models=transient_text_models,
+                    **(
+                        {"on_activity": _event_queue.put_nowait}
+                        if _event_queue is not None
+                        else {}
+                    ),
+                )
+                message = response.get("message", {})
+                await _check_cancellation(task_id)
                 observe(
                     "chunk",
                     {
@@ -566,10 +599,79 @@ class CoderAgent(BaseTool):
                 )
                 calls = parse_calls(message)
                 observe("parsed", calls, calls, message.get("content", ""))
+                if response.get("done_reason", response.get("finish_reason")) in {
+                    "length",
+                    "max_tokens",
+                }:
+                    incomplete_generations += 1
+                    error = "Generation reached its output limit; no calls from this incomplete response were executed. Use smaller files or targeted edits and split work across rounds."
+                    rejected = normalize_native_calls(calls)
+                    if rejected:
+                        messages.append(
+                            assistant_call_message(
+                                message.get("content", ""),
+                                rejected,
+                                message.get("thinking", ""),
+                            )
+                        )
+                        for item in rejected:
+                            observe("begin_tool", item["tool"], item["raw_arguments"])
+                            observe(
+                                "end_tool", "failed", error=error, validation_error=True
+                            )
+                            messages.append(
+                                tool_result_message(
+                                    item, error, application_feedback=True
+                                )
+                            )
+                            _rejected_step(
+                                state,
+                                item["tool"],
+                                item["args"],
+                                error,
+                                _event_queue,
+                                _parent_tool_call_id,
+                                task_id,
+                                sandbox.id,
+                            )
+                    else:
+                        messages.append({"role": "user", "content": error})
+                    if incomplete_generations >= 2:
+                        failed, final = True, error
+                        break
+                    continue
+                incomplete_generations = 0
                 if not calls:
                     final = message.get("content", "")
-                    break
+                    missing = state.completion_missing()
+                    if not missing:
+                        break
+                    premature_finals += 1
+                    if premature_finals >= 2:
+                        failed, final = (
+                            True,
+                            "Coder output remains unverified: " + ", ".join(missing),
+                        )
+                        break
+                    messages.extend(
+                        [
+                            {"role": "assistant", "content": final},
+                            {
+                                "role": "user",
+                                "content": get_prompt("coder_validate_completion")
+                                + "\nMissing: "
+                                + ", ".join(missing),
+                            },
+                        ]
+                    )
+                    if _round + 1 == preferences.max_rounds:
+                        failed, final = (
+                            True,
+                            "Coder output remains unverified: " + ", ".join(missing),
+                        )
+                    continue
                 normalized_calls = normalize_native_calls(calls)
+                premature_finals = 0
                 messages.append(
                     assistant_call_message(
                         message.get("content", ""),
@@ -583,27 +685,65 @@ class CoderAgent(BaseTool):
                     observe("begin_tool", name, item["raw_arguments"])
                     if item.get("parse_error"):
                         observe("end_tool", "failed", error=item["parse_error"])
-                        messages.append(tool_result_message(item, item["parse_error"]))
-                        continue
-                    if name == "write_file":
-                        path = str(args.get("path", ""))
-                        state.writes_by_path[path] = (
-                            state.writes_by_path.get(path, 0) + 1
+                        messages.append(
+                            tool_result_message(
+                                item, item["parse_error"], application_feedback=True
+                            )
                         )
-                        if state.writes_by_path[path] > 2:
-                            observe(
-                                "end_tool", "skipped", error="third rewrite refused"
-                            )
-                            messages.append(
-                                tool_result_message(
-                                    item,
-                                    (
-                                        f"Refused a third rewrite of {path}. Read the current "
-                                        "file, run the narrowest test, and report a blocker."
-                                    ),
-                                )
-                            )
-                            continue
+                        abort_reason = _rejected_step(
+                            state,
+                            name,
+                            {"raw": item["raw_arguments"]},
+                            item["parse_error"],
+                            _event_queue,
+                            _parent_tool_call_id,
+                            task_id,
+                            sandbox.id,
+                        )
+                        if abort_reason:
+                            break
+                        continue
+                    schema = next(
+                        (
+                            tool["function"]["parameters"]
+                            for tool in CODER_TOOLS
+                            if tool["function"]["name"] == name
+                        ),
+                        None,
+                    )
+                    errors = (
+                        ["Unknown coder tool"]
+                        if schema is None
+                        else argument_errors(
+                            normalize_structured_arguments(args, schema), schema
+                        )
+                    )
+                    if errors:
+                        output = (
+                            "Invalid tool arguments; nothing was executed: "
+                            + "; ".join(errors)
+                        )
+                        observe(
+                            "end_tool", "failed", error=output, validation_error=True
+                        )
+                        messages.append(
+                            tool_result_message(item, output, application_feedback=True)
+                        )
+                        abort_reason = _rejected_step(
+                            state,
+                            name,
+                            args,
+                            output,
+                            _event_queue,
+                            _parent_tool_call_id,
+                            task_id,
+                            sandbox.id,
+                        )
+                        if abort_reason:
+                            break
+                        continue
+                    args = normalize_structured_arguments(args, schema)
+                    await _check_cancellation(task_id)
                     output, event = await _run_step(
                         sandbox=sandbox,
                         conversation=conversation,
@@ -618,29 +758,40 @@ class CoderAgent(BaseTool):
                     messages.append(
                         tool_result_message(
                             item,
-                            output,
+                            (
+                                output
+                                if name in {"load_skill", "read_file"}
+                                else compact_output(output)
+                            ),
                             skill_guidance=name == "load_skill" and not event,
+                            application_feedback=bool(
+                                event and event.get("corrective")
+                            ),
                         )
                     )
                     if abort_reason:
-                        for skipped in normalized_calls[call_index + 1 :]:
-                            observe(
-                                "begin_tool",
-                                skipped["tool"],
-                                skipped["raw_arguments"],
-                            )
-                            observe(
-                                "end_tool",
-                                "skipped",
-                                error="coder command failure budget exhausted",
-                            )
-                            messages.append(
-                                tool_result_message(
-                                    skipped,
-                                    "Skipped because the coder command failure budget was exhausted.",
-                                )
-                            )
                         break
+                if abort_reason:
+                    # Every attempted native call needs a matching result,
+                    # including siblings skipped after a validation/parsing
+                    # failure exhausts the no-progress budget.
+                    for skipped in normalized_calls[call_index + 1 :]:
+                        observe(
+                            "begin_tool",
+                            skipped["tool"],
+                            skipped["raw_arguments"],
+                        )
+                        observe(
+                            "end_tool",
+                            "skipped",
+                            error="coder no-progress budget exhausted",
+                        )
+                        messages.append(
+                            tool_result_message(
+                                skipped,
+                                "Skipped because the coder no-progress budget was exhausted.",
+                            )
+                        )
                 await _save_progress(task_id, state)
                 if abort_reason:
                     failed, final = True, abort_reason
@@ -648,7 +799,7 @@ class CoderAgent(BaseTool):
             else:
                 failed, final = (
                     True,
-                    "Coder stopped after reaching its 24-round safety limit.",
+                    f"Coder stopped after reaching its {preferences.max_rounds}-round safety limit.",
                 )
                 observe(
                     "finish",
@@ -717,13 +868,32 @@ class CoderAgent(BaseTool):
                 ),
                 call,
             )
+        except asyncio.CancelledError:
+            observe("finish", "cancelled", "coder execution cancelled")
+            try:
+                if state is not None:
+                    await _save_progress(task_id, state)
+                await self._fail_task(task_id, RuntimeError("Coding task cancelled"))
+            except Exception:
+                logger.warning("Could not save cancelled coder task", exc_info=False)
+            raise
         except Exception as exc:
+            if state is not None:
+                try:
+                    await _save_progress(task_id, state)
+                except Exception:
+                    logger.warning(
+                        "Could not save interrupted coder progress", exc_info=False
+                    )
             observe(
                 "finish",
                 "cancelled" if str(exc) == "Coding task cancelled" else "failed",
                 str(exc),
             )
-            await self._fail_task(task_id, exc)
+            try:
+                await self._fail_task(task_id, exc)
+            except Exception:
+                logger.warning("Could not persist failed coder task", exc_info=False)
             call.status, call.completed_at, call.error = "error", time.time(), str(exc)
             return ToolResult(
                 False,

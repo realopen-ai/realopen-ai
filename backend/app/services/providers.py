@@ -539,6 +539,7 @@ async def chat_once(
             "model": data.get("model", model),
             "done": True,
             "provider": "groq",
+            "finish_reason": choice.get("finish_reason"),
             **(
                 {"usage": runtime_usage(data, "groq")}
                 if runtime_usage(data, "groq")
