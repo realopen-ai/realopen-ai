@@ -166,7 +166,7 @@ class Trace:
                 "max_output_tokens": "provider_default",
                 "temperature": "provider_default",
             },
-            "max_rounds": 10,
+            "max_rounds": settings.AGENT_MAX_ROUNDS,
             "request": {
                 "messages": self.safe(request.get("messages", [])),
                 "user_message": self.safe(

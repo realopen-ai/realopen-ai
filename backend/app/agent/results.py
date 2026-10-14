@@ -122,6 +122,6 @@ def compact_result(
         shortened=True,
         result_ref=result_ref,
         original_chars=len(text),
-        message="This is a shortened model view, not the complete output. Use read_tool_result with result_ref and offset to retrieve omitted evidence before relying on it.",
+        message="This is a shortened model view, not the complete output. Read omitted evidence with read_tool_result(result_ref); it defaults to offset 0 and 3000 characters. Continue with next_offset; offsets/limits are characters, not pages or lines.",
     )
     return ResultView(json.dumps(data, ensure_ascii=False, separators=(",", ":")), True)

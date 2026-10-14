@@ -57,14 +57,25 @@ class DiscoverToolsTool(BaseTool):
 class ReadToolResultTool(BaseTool):
     name = "read_tool_result"
     display_name = "Read tool result"
-    description = "Read another page of a shortened result from this request using its exact result_ref."
+    description = "Read exact text from a shortened result in this request. Offsets and limits count characters, not pages or lines. Omit offset/limit to read the first 3000 characters; continue using returned next_offset."
     tool_type = ToolType.TOOL_OUTPUT
 
     def get_parameters(self):
         return {
             "result_ref": {"type": "string"},
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 6000},
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": "Zero-based character offset. Start at 0 or use the previous next_offset exactly.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 6000,
+                "default": 3000,
+                "description": "Number of characters to read (default 3000). Small values retrieve only tiny fragments, not whole sections.",
+            },
         }
 
     def get_required_params(self):

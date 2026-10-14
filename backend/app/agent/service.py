@@ -54,6 +54,7 @@ from app.services.context_compactor import (
 )
 from app.services import model_prefs
 from app.services import providers
+from app.services.report_evidence import evidence_records
 from app.services import skills as skill_store
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
@@ -426,6 +427,7 @@ async def run_agent_stream(
     available_tools = routing.enabled_tools(registry, configs_snapshot)
     result_store = {}
     result_metadata_store = {}
+    research_evidence = []
     pending_tool_contexts = []
     resource_context_loaded = set()
 
@@ -832,7 +834,7 @@ async def run_agent_stream(
             _refresh_protocol()
             _dbg("Model override after tool call → %s", resolved_model)
 
-    max_rounds = 10
+    max_rounds = settings.AGENT_MAX_ROUNDS
     observe("limits", max_rounds)
     coder_attempted = False
     format_failures = 0
@@ -1564,8 +1566,9 @@ async def run_agent_stream(
                 coder_attempted = True
 
             if tool_name == "use_report_gen":
-                # Keep user constraints even when a small router drops them.
-                tool_args["_user_request"] = last_user
+                # These fields belong to the application, not the tool schema.
+                tool_args.pop("_evidence", None)
+                tool_args.pop("_user_request", None)
 
             # RAG: inject conversation_id
             if tool_name in {
@@ -1644,7 +1647,12 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
-            if tool_name == "discover_tools":
+            if tool_name == "use_report_gen":
+                # Execution-only handoff: raw evidence is not repeated in SSE
+                # or supplied by the model. The writer bounds its own context.
+                exec_args["_user_request"] = last_user
+                exec_args["_evidence"] = list(research_evidence)
+            elif tool_name == "discover_tools":
                 exec_args["_tool_loader"] = load_tools
                 exec_args["_loaded_tools"] = frozenset(selected_tools)
             elif tool_name == "read_tool_result":
@@ -1796,6 +1804,9 @@ async def run_agent_stream(
                 "source_tool": tool_name,
                 "source_title": tool.get_display_name(),
             }
+            research_evidence.extend(
+                evidence_records(result_ref, tool, tool_args, result)
+            )
             can_page = (
                 "read_tool_result" in available_tools
                 and registry.get("read_tool_result")
@@ -1947,12 +1958,23 @@ async def run_agent_stream(
             return
 
     # Max rounds exhausted
-    limit_message = "I've completed my analysis."
+    limit_message = (
+        f"I reached the {max_rounds}-round limit before confirming the request was complete. "
+        "Any successful outputs have been kept."
+    )
+    returned_tools = sorted({item["tool"] for item in execution_state.successes})
+    if returned_tools:
+        limit_message += (
+            "\n\nTools that returned results: " + ", ".join(returned_tools) + "."
+        )
     observe(
         "finish", "max_rounds_reached", "agent round limit exhausted", limit_message
     )
     yield _sse_event(
         "message",
         {"message": {"role": "assistant", "content": limit_message}},
+    )
+    yield _sse_event(
+        "error", {"error": "Agent round limit reached; the request may be incomplete."}
     )
     yield _sse_event("done", {})

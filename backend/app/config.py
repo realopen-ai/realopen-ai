@@ -655,6 +655,7 @@ class Settings(BaseSettings):
     AGENT_CONTEXT_MARGIN_TOKENS: int = 256
     AGENT_TOOL_CALLING_MODE: Literal["auto", "text"] = "auto"
     AGENT_TOOL_ROUTING_MAX_TOOLS: int = 4
+    AGENT_MAX_ROUNDS: int = 15
     AGENT_TOOL_RESULT_MAX_CHARS: int = 6000
     AGENT_TOOL_VALIDATION_MAX_FAILURES: int = (
         3  # Initial attempt + two repairs, per tool/request.
