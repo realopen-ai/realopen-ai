@@ -362,6 +362,7 @@ async def compact_conversation(
     tools=None,
     max_output_tokens=None,
     native_tools=True,
+    on_start=None,
 ) -> Tuple[List[Dict], bool]:
     """Budget the actual request and summarize whole exchanges, never partial pairs.
 
@@ -480,6 +481,8 @@ async def compact_conversation(
     ):
         return messages, False
 
+    if on_start:
+        on_start()
     while True:
         removed = {i for group in candidates[:remove_count] for i in group}
         # Replace contiguous runs IN PLACE. In particular, tool activity

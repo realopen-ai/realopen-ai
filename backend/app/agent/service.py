@@ -39,6 +39,7 @@ from app.agent.tools import config_store
 from app.agent import routing
 from app.agent.results import compact_result
 from app.agent.base import ToolArgumentError
+from app.services.agent_activity import activity_events
 from app.config import settings
 from app.core.logger import is_debug
 from app.core.prompt_security import untrusted_context_message
@@ -963,13 +964,21 @@ async def run_agent_stream(
             # Compact if approaching context limit (essential for small models)
             try:
                 budget = context_budget(resolved_model, max_output_tokens)
-                compacted, was_compacted = await compact_conversation(
-                    inference_messages,
-                    resolved_model,
-                    tools=inference_tools,
-                    max_output_tokens=budget.output,
-                    native_tools=use_native_tools and not repair_schema,
-                )
+                async for activity in activity_events(
+                    lambda on_start: compact_conversation(
+                        inference_messages,
+                        resolved_model,
+                        tools=inference_tools,
+                        max_output_tokens=budget.output,
+                        native_tools=use_native_tools and not repair_schema,
+                        on_start=on_start,
+                    ),
+                    "context_compaction",
+                ):
+                    if activity.get("event"):
+                        yield _sse_event("agent_activity", activity)
+                    else:
+                        compacted, was_compacted = activity["result"]
                 if was_compacted:
                     previous_length = len(inference_messages)
                     inference_messages = compacted
@@ -1634,6 +1643,9 @@ async def run_agent_stream(
                                     nested_event = await asyncio.wait_for(
                                         event_queue.get(), timeout=0.1
                                     )
+                                    if nested_event.get("event") == "agent_activity":
+                                        yield _sse_event("agent_activity", nested_event)
+                                        continue
                                     if (
                                         tool_name == "summarize_artifact"
                                         and on_tool_call_update
