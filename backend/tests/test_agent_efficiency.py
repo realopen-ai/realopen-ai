@@ -73,6 +73,60 @@ def test_custom_keywords_always_load_and_disabled_are_hard_preferences():
 
 
 @pytest.mark.parametrize(
+    "query, expected",
+    [
+        (
+            "Create a quiz with exactly 5 multiple-choice questions about NumPy basics: array creation, reshape, indexing, axis sums, and broadcasting.",
+            "create_quiz",
+        ),
+        ("Create flashcards about Spanish", "create_flashcard_deck"),
+        ("Create a study note about photosynthesis", "create_study_note"),
+        ("Create an Excel spreadsheet", "use_excel_gen"),
+    ],
+)
+def test_always_loaded_tools_cannot_crowd_out_request_relevant_schemas(query, expected):
+    registry = service.get_tool_registry()
+    configs = defaults(registry)
+    baseline = {
+        "delegate_to_coder",
+        "discover_tools",
+        "manage_memory",
+        "rag_search",
+        "use_code_exec",
+        "use_webfetch",
+        "use_websearch",
+    }
+    for name in baseline:
+        configs[name]["always_load"] = True
+    original = deepcopy(configs)
+    selected = routing.select_tools(query, registry, configs, limit=1)
+    assert baseline <= selected
+    assert expected in selected
+    assert len(selected - baseline) == 1
+    assert configs == original  # Selection never resets a user's preferences.
+
+
+def test_disabled_and_custom_keyword_preferences_still_apply_with_full_baseline():
+    registry = service.get_tool_registry()
+    configs = defaults(registry)
+    for name in ("use_websearch", "use_webfetch", "use_code_exec", "manage_memory"):
+        configs[name]["always_load"] = True
+    configs["create_quiz"].update(enabled=False, always_load=True)
+    assert "create_quiz" not in routing.select_tools(
+        "Create a quiz", registry, configs, limit=1
+    )
+    configs["create_quiz"].update(
+        enabled=True, always_load=False, tags=["Practice Time"]
+    )
+    assert "create_quiz" not in routing.select_tools(
+        "Create a quiz", registry, configs, limit=1
+    )
+    assert "create_quiz" in routing.select_tools(
+        "Practice Time", registry, configs, limit=1
+    )
+
+
+@pytest.mark.parametrize(
     "custom", ["tags", "enabled", "model", "custom", "edited", "unknown_time"]
 )
 def test_default_migration_preserves_customized_or_uncertain_rows(custom):

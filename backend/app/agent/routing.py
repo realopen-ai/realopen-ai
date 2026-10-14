@@ -46,7 +46,11 @@ def enabled_tools(registry, configs, *, notebook=False):
 
 
 def select_tools(query, registry, configs, *, limit=4):
-    """Honor forced tools/custom tags; rank ordinary defaults by specificity."""
+    """Rank request tools without spending their budget on always-load tools.
+
+    Explicit/custom keyword matches remain mandatory. User-configured
+    always-load tools are a separate baseline, not competitors for that budget.
+    """
     available = enabled_tools(registry, configs)
     tags_by_name = {}
     for name in available:
@@ -73,6 +77,9 @@ def select_tools(query, registry, configs, *, limit=4):
         word for values in vocabulary.values() for word in values
     )
     query_words = set(words(query))
+    always_loaded = {
+        name for name in available if configs.get(name, {}).get("always_load", False)
+    }
     mandatory, ranked = set(), []
     for name, tool in available.items():
         if name == "read_tool_result" and not configs.get(name, {}).get("always_load"):
@@ -105,7 +112,8 @@ def select_tools(query, registry, configs, *, limit=4):
         threshold = max(2, -min(ranked)[0] * 0.5)
         ranked = [candidate for candidate in ranked if -candidate[0] >= threshold]
     return mandatory | {
-        name for _, name in sorted(ranked)[: max(0, limit - len(mandatory))]
+        name
+        for _, name in sorted(ranked)[: max(0, limit - len(mandatory - always_loaded))]
     }
 
 
