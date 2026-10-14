@@ -119,7 +119,11 @@ class CreateFlashcardDeckTool(BaseTool):
                 }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
-            failure_kind = "validation"
+            failure_kind = (
+                "execution"
+                if isinstance(exc, HTTPException) and exc.status_code not in {400, 422}
+                else "validation"
+            )
             call.status = "error"
             if isinstance(exc, ValidationError):
                 detail = "; ".join(
@@ -128,7 +132,12 @@ class CreateFlashcardDeckTool(BaseTool):
                 )
             else:
                 detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            output = f"Invalid flashcards: {detail}"
+            prefix = (
+                "Invalid flashcards"
+                if failure_kind == "validation"
+                else "Could not save flashcards"
+            )
+            output = f"{prefix}: {detail}"
             call.error = output
         except Exception:
             logger.exception("Flashcard creation failed")

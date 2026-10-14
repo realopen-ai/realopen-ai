@@ -166,15 +166,30 @@ class CreateStudyNoteTool(BaseTool):
                 }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
-            failure_kind = "validation"
+            failure_kind = (
+                "execution"
+                if isinstance(exc, HTTPException) and exc.status_code not in {400, 422}
+                else "validation"
+            )
             call.status = "error"
-            output = "Invalid study note: " + (
-                "; ".join(
-                    error["msg"]
-                    for error in exc.errors(include_input=False, include_url=False)[:3]
+            prefix = (
+                "Invalid study note"
+                if failure_kind == "validation"
+                else "Could not save study note"
+            )
+            output = (
+                prefix
+                + ": "
+                + (
+                    "; ".join(
+                        error["msg"]
+                        for error in exc.errors(include_input=False, include_url=False)[
+                            :3
+                        ]
+                    )
+                    if isinstance(exc, ValidationError)
+                    else str(exc.detail if isinstance(exc, HTTPException) else exc)
                 )
-                if isinstance(exc, ValidationError)
-                else str(exc.detail if isinstance(exc, HTTPException) else exc)
             )
             call.error = output
         except Exception:
