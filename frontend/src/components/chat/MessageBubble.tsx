@@ -1586,12 +1586,35 @@ export function MessageBubble({
       )}
 
       {/* Streaming placeholder when no blocks yet */}
-      {blocks.length === 0 && !message.content && message.isStreaming && (
-        <div className="flex items-center gap-2 text-muted-foreground py-1.5">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          <span className="text-[12.5px]">Thinking…</span>
-        </div>
-      )}
+      {blocks.length === 0 &&
+        !message.content &&
+        message.isStreaming &&
+        !message.activeActivities?.length && (
+          <div className="flex items-center gap-2 text-muted-foreground py-1.5">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-[12.5px]">
+              {translate("message.thinking")}
+            </span>
+          </div>
+        )}
+
+      {message.isStreaming &&
+        message.activeActivities?.map((activity) => (
+          <div
+            key={activity}
+            role="status"
+            aria-live="polite"
+            className="my-2 flex items-center gap-2 text-muted-foreground"
+          >
+            <Loader2
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 animate-spin"
+            />
+            <span className="text-[12.5px]">
+              {translate(`chat.activity.${activity}`)}
+            </span>
+          </div>
+        ))}
 
       {/* Persisted deliverables (from DB) — rendered as download badges.
           These are also rendered inline inside tool_call blocks via

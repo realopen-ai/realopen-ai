@@ -1,4 +1,4 @@
-import type { ToolCallResult } from "@/store/chatStore";
+import type { ToolCallResult, AgentActivity } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
@@ -22,6 +22,7 @@ export interface StreamCallbacks {
     updates: Partial<ToolCallResult>,
   ) => void;
   onMemoryExtractionStart?: () => void;
+  onAgentActivity?: (activity: AgentActivity, active: boolean) => void;
   onMemoryExtractionDone?: (data: {
     count: number;
     ran: boolean;
@@ -476,9 +477,18 @@ export function dispatchAgentEvent(
   }
 
   // ── Memory extraction start ──
+  if (
+    eventType === "agent_activity" &&
+    ["context_compaction", "conversation_summary"].includes(p.activity) &&
+    typeof p.active === "boolean"
+  ) {
+    callbacks.onAgentActivity?.(p.activity, p.active);
+  }
+
   if (eventType === "memory_extraction_start") {
     log("   🧠 memory_extraction_start event received");
     callbacks.onMemoryExtractionStart?.();
+    callbacks.onAgentActivity?.("memory_extraction", true);
   }
 
   // ── Memory extraction done ──
@@ -490,6 +500,7 @@ export function dispatchAgentEvent(
       `   🧠 memory_extraction_done event received  count=${count}  ran=${ran}  pending=${pending}`,
     );
     callbacks.onMemoryExtractionDone?.({ count, ran, pending });
+    callbacks.onAgentActivity?.("memory_extraction", false);
   }
 
   // ── Conversation auto-title (LLM-generated from the first message) ──
