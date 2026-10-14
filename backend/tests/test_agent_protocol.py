@@ -1,6 +1,7 @@
 """Protocol/context integration tests; all inference and retrieval are mocked."""
 
 import json
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -473,7 +474,9 @@ async def test_invalid_fallback_is_repaired_without_execution(agent, monkeypatch
     )
     events = await run(model="small-model")
     assert agent.executed == [{"input": "fixed"}]
-    assert "Invalid tool JSON" in captured[1]["messages"][-1]["content"]
+    assert any(
+        "Invalid tool JSON" in message["content"] for message in captured[1]["messages"]
+    )
     assert captured[1]["format"]["properties"]["tool"]["enum"] == ["echo"]
     rejected = next(
         e["tool_call"]
@@ -1248,11 +1251,89 @@ async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
     assert "BROKEN_JSON_ARRAY" not in json.dumps(repair["messages"])
     assert any("ARGUMENT REBUILD ROUND" in m["content"] for m in repair["messages"])
     assert repair["messages"][0]["content"] == captured[0]["messages"][0]["content"]
-    assert "arguments.input: expected array" in repair["messages"][-1]["content"]
+    assert any(
+        "arguments.input: expected array" in message["content"]
+        for message in repair["messages"]
+    )
     assert not any('"args"' in e.get("message", {}).get("content", "") for e in events)
     assert "format" not in captured[2]
     assert captured[2]["tools"]
     assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_patch_first", [False, True])
+async def test_local_validation_repairs_only_reported_fields_and_revalidates(
+    agent, monkeypatch, bad_patch_first
+):
+    original = {"input": "Broken formatting", "untouched": "Keep exactly"}
+    monkeypatch.setattr(
+        agent,
+        "get_parameters",
+        lambda: {
+            "input": {"type": "string"},
+            "untouched": {"type": "string"},
+        },
+    )
+    attempts = []
+
+    async def execute(**kwargs):
+        attempts.append(deepcopy(kwargs))
+        if kwargs["input"] != "Fixed formatting":
+            return ToolResult(
+                False,
+                "input: Invalid formatting",
+                failure_kind="validation",
+                validation_issues=[
+                    {"path": ["input"], "message": "Invalid formatting"}
+                ],
+            )
+        return ToolResult(True, "Saved")
+
+    monkeypatch.setattr(agent, "execute", execute)
+    correction = json.dumps(
+        {
+            "tool": "echo",
+            "corrections": [{"path": "/input", "value": "Fixed formatting"}],
+        }
+    )
+    responses = [[{"tool_calls": [call(original)], "done": True}]]
+    if bad_patch_first:
+        responses.append([{"content": '{"tool":"echo","corrections":', "done": True}])
+    responses.extend(
+        [[{"content": correction, "done": True}], [{"content": "Done", "done": True}]]
+    )
+    captured = script(monkeypatch, responses)
+    events = await run()
+    assert attempts == [original, {**original, "input": "Fixed formatting"}]
+    for request in captured[1:-1]:
+        assert request["tools"] is None
+        assert set(request["format"]["properties"]) == {"tool", "corrections"}
+        context = str(request["messages"])
+        assert "FIELD CORRECTION ROUND" in context
+        assert "APPLICATION TOOL PROTOCOL" not in context
+        assert "Keep exactly" not in context
+    assert not any(event["event"] == "error" for event in events)
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_schema_deferred_guesses_are_excluded_from_later_repair_context(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(service, "_select_tools", lambda _: set())
+    responses = [
+        [{"tool_calls": [call({"input": "GUESSED_WITHOUT_SCHEMA"})], "done": True}],
+        [{"tool_calls": [call({})], "done": True}],
+        [{"content": '{"tool":"echo","args":{"input":"fixed"}}', "done": True}],
+        [{"content": "Done", "done": True}],
+    ]
+    captured = script(monkeypatch, responses)
+    events = await run()
+    assert "GUESSED_WITHOUT_SCHEMA" not in str(captured[2]["messages"])
+    assert "APPLICATION TOOL PROTOCOL" not in str(captured[2]["messages"])
+    assert agent.executed == [{"input": "fixed"}]
+    assert events[-1]["event"] == "done"
 
 
 @pytest.mark.asyncio

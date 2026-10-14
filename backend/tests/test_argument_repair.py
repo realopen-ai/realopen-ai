@@ -12,6 +12,8 @@ from app.agent.argument_repair import (
     rebuild_view,
     required_shape,
     response_schema,
+    conditional_shapes,
+    field_repair,
 )
 from app.agent.protocol import assistant_call_message, tool_result_message
 from app.agent.tools.quizzes import CreateQuizTool
@@ -50,18 +52,21 @@ def test_rebuild_schema_has_exact_tool_and_real_nested_types(tool):
     assert original == snapshot
 
 
-def test_shape_includes_nested_conditional_required_fields_not_source_ids():
-    shape = required_shape(schema(CreateQuizTool())["function"]["parameters"])
+def test_shape_separates_conditional_required_fields_not_source_ids():
+    parameters = schema(CreateQuizTool())["function"]["parameters"]
+    shape = required_shape(parameters)
     item = shape["questions"][0]
-    assert {
-        "type",
-        "prompt",
-        "options",
-        "correct_option",
-        "answer",
-        "explanation",
-    } <= set(item)
-    assert isinstance(item["options"], list)
+    assert set(item) == {"type", "prompt", "explanation"}
+    variants = {
+        example["when"]["type"]: example for example in conditional_shapes(parameters)
+    }
+    mc = variants["multiple_choice"]["shape"]
+    short = variants["short_answer"]["shape"]
+    assert set(mc) == {"type", "prompt", "explanation", "options", "correct_option"}
+    assert isinstance(mc["options"], list)
+    assert mc["type"] == "multiple_choice"
+    assert set(short) == {"type", "prompt", "explanation", "answer"}
+    assert short["type"] == "short_answer"
     assert "source_document_id" not in item
     assert "source_artifact" not in item
 
@@ -104,8 +109,9 @@ def test_rebuild_view_keeps_context_successes_and_untrusted_errors_not_bad_paylo
     assert "Keep security and notebook rules" in view[0]["content"]
     assert any(m.get("tool_call_id") == "ok" for m in view)
     assert not any(m.get("tool_call_id") == "bad" for m in view)
-    assert "arguments.questions: expected array" in view[-1]["content"]
-    assert "UNTRUSTED_SOURCE_DATA" in view[-1]["content"]
+    assert "arguments.questions: expected array" in view[-2]["content"]
+    assert "UNTRUSTED_SOURCE_DATA" in view[-2]["content"]
+    assert "ARGUMENT REBUILD ROUND" in view[-1]["content"]
 
 
 def test_parallel_success_is_retained_while_failed_call_and_thinking_are_removed():
@@ -164,6 +170,148 @@ def test_native_compatible_reply_cannot_execute_parallel_or_other_tools():
         [{"tool": "create_quiz", "args": {}}] * 2,
     ):
         assert "parse_error" in native_rebuild(calls, "create_quiz")
+
+
+def sample_repair():
+    original = {
+        "title": "Unchanged title",
+        "questions": [
+            {
+                "type": "short_answer",
+                "prompt": 'What prints?```python\nprint(r"\\n")\n```',
+                "answer": "Literal escape",
+                "explanation": "Unchanged",
+            },
+            {
+                "type": "multiple_choice",
+                "prompt": "Untouched question",
+                "options": ["A", "B"],
+                "correct_option": 1,
+                "explanation": "Keep this",
+            },
+        ],
+    }
+    repair = field_repair(
+        original,
+        schema(CreateQuizTool())["function"]["parameters"],
+        [
+            {
+                "path": ["questions", 0, "prompt"],
+                "message": "Opening fence needs its own line",
+            },
+        ],
+    )
+    assert repair is not None
+    return original, repair
+
+
+def test_field_corrections_preserve_unaffected_arguments_and_literal_code():
+    original, repair = sample_repair()
+    snapshot = deepcopy(original)
+    fixed = 'What prints?\n\n```python\nprint(r"\\n")\n```'
+    text = json.dumps(
+        {
+            "tool": "create_quiz",
+            "corrections": [{"path": "/questions/0/prompt", "value": fixed}],
+        }
+    )
+    call = parse_rebuild(text, "create_quiz", repair)
+    assert "parse_error" not in call
+    assert call["args"]["questions"][0]["prompt"] == fixed
+    assert call["args"]["title"] == original["title"]
+    assert call["args"]["questions"][1:] == original["questions"][1:]
+    assert call["args"]["questions"][0]["answer"] == original["questions"][0]["answer"]
+    assert original == snapshot and repair.arguments == snapshot
+    decoder = response_schema(schema(CreateQuizTool()), repair)
+    assert set(decoder["properties"]) == {"tool", "corrections"}
+    assert (
+        decoder["properties"]["corrections"]["items"]["anyOf"][0]["properties"][
+            "value"
+        ]["type"]
+        == "string"
+    )
+
+
+@pytest.mark.parametrize(
+    "corrections",
+    [
+        [],
+        [{"path": "/title", "value": "Hijacked"}],
+        [{"path": "/questions/0/prompt", "value": "Fixed"}] * 2,
+        [{"path": "/questions/0/prompt", "value": 42}],
+        [{"path": "/questions/-1/prompt", "value": "Bad index"}],
+        [{"path": "/questions/0/prompt", "value": "Fixed", "op": "remove"}],
+    ],
+)
+def test_unsafe_incomplete_and_wrong_type_corrections_cannot_execute(corrections):
+    original, repair = sample_repair()
+    call = parse_rebuild(
+        json.dumps({"tool": "create_quiz", "corrections": corrections}),
+        "create_quiz",
+        repair,
+    )
+    assert call["parse_error"] and call["args"] == {}
+    assert call["repair_mode"] == "fields"
+    assert repair.arguments == original
+
+
+def test_unknown_root_missing_and_overlapping_issue_paths_need_rebuilding():
+    original, _ = sample_repair()
+    parameters = schema(CreateQuizTool())["function"]["parameters"]
+    for paths in [
+        [],
+        [[]],
+        [["invented"]],
+        [["questions", 30, "prompt"]],
+        [["questions", 0], ["questions", 0, "prompt"]],
+        [["questions", True]],
+    ]:
+        assert (
+            field_repair(original, parameters, [{"path": path} for path in paths])
+            is None
+        )
+
+
+def test_repair_context_isolates_protocol_and_retains_full_writing_guidance():
+    messages = [
+        {"role": "system", "content": "Core security policy"},
+        {
+            "role": "user",
+            "content": "Use native tools and discovery",
+            "metadata": {"agent_tool_protocol": True},
+        },
+        {"role": "user", "content": "Keep source", "metadata": {"agent_context": True}},
+        assistant_call_message(
+            "",
+            [
+                {
+                    "id": "deferred",
+                    "tool": "create_quiz",
+                    "args": {"query": "GUESSED_SCHEMA"},
+                }
+            ],
+        ),
+        tool_result_message(
+            {"id": "deferred", "tool": "create_quiz"}, "Schema loaded, no execution"
+        ),
+    ]
+    original = deepcopy(messages)
+    _, repair = sample_repair()
+    view = rebuild_view(
+        messages, schema(CreateQuizTool()), {"deferred"}, "Misplaced fence", repair
+    )
+    joined = json.dumps(view)
+    assert (
+        "Use native tools and discovery" not in joined
+        and "GUESSED_SCHEMA" not in joined
+    )
+    assert "Keep source" in joined
+    assert view[0] == messages[0] and messages == original
+    assert "Code-block example" in view[-1]["content"]
+    assert "INSIDE string values" in view[-1]["content"]
+    assert "do not escape apostrophes" in view[-1]["content"]
+    assert "Unchanged title" not in joined and "Untouched question" not in joined
+    assert "UNTRUSTED_SOURCE_DATA" in view[-2]["content"]
 
 
 @pytest.mark.parametrize(

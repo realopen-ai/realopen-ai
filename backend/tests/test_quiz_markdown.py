@@ -92,6 +92,35 @@ def test_shared_writing_prompt_demonstrates_decoded_multiline_markdown():
     assert "encode line breaks once" in guidance
 
 
+@pytest.mark.parametrize("fence", ["```python", "~~~~sql", "````javascript"])
+def test_inline_opening_fence_reports_correct_location_not_missing_closer(fence):
+    prompt = (
+        f"What prints?{fence}\nprint(1)\n{fence.rstrip('abcdefghijklmnopqrstuvwxyz')}"
+    )
+    with pytest.raises(ValidationError) as error:
+        Question(type="short_answer", prompt=prompt, answer="1")
+    message = error.value.errors()[0]["msg"]
+    assert "Misplaced opening code fence at line 1, column 13" in message
+    assert "newline before the opening fence" in message
+    assert "Unclosed" not in message
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_structured_paths_for_safe_targeted_correction():
+    result = await CreateQuizTool().execute(
+        title="Formatting",
+        questions=[
+            {
+                "type": "short_answer",
+                "prompt": "What prints?```python\nprint(1)\n```",
+                "answer": "1",
+            }
+        ],
+    )
+    assert result.validation_issues[0]["path"] == ["questions", 0, "prompt"]
+    assert "Misplaced opening" in result.validation_issues[0]["message"]
+
+
 def test_shared_example_is_valid_and_used_by_the_agent():
     guidance = format_prompt("quiz_writing")
     example = json.loads(guidance.split("```json\n", 1)[1].split("\n```", 1)[0])
