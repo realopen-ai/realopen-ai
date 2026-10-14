@@ -19,7 +19,12 @@ from app.api.models import router
 from app.config import settings
 from app.db.models import AppState
 from app.db.session import get_db
-from app.services import agent_settings, context_compactor, tool_capabilities
+from app.services import (
+    agent_settings,
+    coder_settings,
+    context_compactor,
+    tool_capabilities,
+)
 
 
 class Adapter:
@@ -39,6 +44,7 @@ class Adapter:
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     monkeypatch.setattr(agent_settings, "_overrides", {})
+    monkeypatch.setattr(coder_settings, "_overrides", {})
     monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOW", 8192)
     monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOWS", {})
     monkeypatch.setattr(settings, "AGENT_OUTPUT_RESERVE_TOKENS", 2048)
@@ -233,3 +239,86 @@ async def test_active_request_keeps_snapshot_while_new_request_sees_saved_change
     await new.aclose()
     await running.aclose()
     assert agent_settings.effective().generation_limit == 1024
+
+
+def test_coder_preferences_persist_reset_and_do_not_change_general_settings(
+    client, database, monkeypatch
+):
+    defaults = coder_settings.defaults()
+    assert defaults["context_window"] == 16384
+    assert defaults["generation_limit"] == 4096
+    before = client.get("/api/agent/settings").json()["settings"]
+    values = {**defaults, "generation_limit": 6144, "max_rounds": 20}
+    result = client.put("/api/coder/settings", json=values)
+    assert result.status_code == 200, result.text
+    monkeypatch.setattr(coder_settings, "_overrides", {})
+    assert client.get("/api/coder/settings").json()["settings"] == values
+    assert client.get("/api/agent/settings").json()["settings"] == before
+    assert client.delete("/api/coder/settings").json()["settings"] == defaults
+    with Session(database) as session:
+        assert session.get(AppState, coder_settings.STATE_KEY) is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"context_window": 1024},
+        {"context_window": True},
+        {"generation_limit": 16384},
+        {"max_rounds": 97},
+        {"max_rounds": 0},
+        {"unknown": 1},
+    ],
+)
+def test_invalid_coder_preferences_do_not_change_saved_values(client, change):
+    before = client.get("/api/coder/settings").json()["settings"]
+    assert (
+        client.put("/api/coder/settings", json={**before, **change}).status_code == 422
+    )
+    assert client.get("/api/coder/settings").json()["settings"] == before
+
+
+@pytest.mark.asyncio
+async def test_coder_snapshot_is_frozen_and_isolated_from_parallel_general_requests(
+    monkeypatch,
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    @coder_settings.with_snapshot
+    async def coder():
+        entered.set()
+        await release.wait()
+        return (
+            coder_settings.effective().generation_limit,
+            context_compactor.context_budget("local").window,
+        )
+
+    running = asyncio.create_task(coder())
+    await entered.wait()
+    assert context_compactor.context_budget("local").window == 8192
+    monkeypatch.setattr(coder_settings, "_overrides", {"generation_limit": 6000})
+    release.set()
+    assert await running == (4096, 16384)
+    assert coder_settings.effective().generation_limit == 6000
+    assert agent_settings.effective().generation_limit == 2048
+
+
+@pytest.mark.asyncio
+async def test_failed_coder_commit_does_not_publish_preferences():
+    before = coder_settings.effective().model_dump()
+    db = SimpleNamespace(
+        execute=AsyncMock(), commit=AsyncMock(side_effect=RuntimeError("DB failed"))
+    )
+    with pytest.raises(RuntimeError):
+        await coder_settings.save(
+            db, coder_settings.CoderPreferences(**{**before, "max_rounds": 10})
+        )
+    assert coder_settings.effective().model_dump() == before
+    timestamps = [
+        value
+        for value in db.execute.call_args.args[0]
+        .compile(dialect=postgresql.dialect())
+        .params.values()
+        if isinstance(value, datetime)
+    ]
+    assert len(timestamps) == 2 and all(value.tzinfo is None for value in timestamps)

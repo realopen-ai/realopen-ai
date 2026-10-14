@@ -3,6 +3,7 @@
 import functools
 import json
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Literal
@@ -139,3 +140,13 @@ def with_snapshot(function):
                 _snapshot.reset(token)
 
     return wrapped
+
+
+@contextmanager
+def preference_snapshot(preferences):
+    """Temporarily supply a request-local budget to shared inference services."""
+    token = _snapshot.set(preferences)
+    try:
+        yield
+    finally:
+        _snapshot.reset(token)
