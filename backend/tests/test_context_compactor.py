@@ -29,6 +29,7 @@ What is mocked:
     compact_conversation / summarize_conversation orchestration tests.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -426,6 +427,35 @@ async def test_compact_skips_below_threshold():
     out, compacted = await compact_conversation(msgs, "m-128k")  # huge window
     assert out is msgs
     assert compacted is False
+
+
+@pytest.mark.asyncio
+async def test_soft_limit_does_not_repeatedly_rewrite_tiny_summary(monkeypatch):
+    monkeypatch.setattr(
+        cc, "context_budget", lambda *args: SimpleNamespace(input_limit=3000)
+    )
+    monkeypatch.setattr(
+        cc.agent_settings,
+        "effective",
+        lambda: SimpleNamespace(
+            history_compaction=True, compaction_threshold=0.8, recent_turns=6
+        ),
+    )
+    messages = [
+        {"role": "system", "content": "Instructions"},
+        {"role": "user", "content": "Task", "metadata": {"agent_request": True}},
+        {
+            "role": "user",
+            "content": "[Compacted conversation] Earlier files inspected.",
+            "metadata": {"compaction": True},
+        },
+        {"role": "assistant", "content": "x" * 4500},
+        {"role": "assistant", "content": "y" * 4500},
+    ]
+    with patch.object(cc, "_llm_summarize", new=AsyncMock()) as summary:
+        result, compacted = await compact_conversation(messages, "test")
+    assert result is messages and not compacted
+    summary.assert_not_awaited()
 
 
 @pytest.mark.asyncio
