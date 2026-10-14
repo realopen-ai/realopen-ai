@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class ToolType(str, Enum):
+    TOOL_ACCESS = "tool_access"
+    TOOL_OUTPUT = "tool_output"
     WEB_SEARCH = "websearch"
     WEB_FETCH = "webfetch"
     VISION = "vision"
@@ -42,7 +44,7 @@ class ToolCall:
     id: str
     type: ToolType
     name: str
-    status: str = "running"  # running | completed | error
+    status: str = "running"  # running | completed | warning (deferred) | error
     title: str = ""
     started_at: float = 0.0
     completed_at: Optional[float] = None

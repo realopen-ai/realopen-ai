@@ -21,8 +21,11 @@ from app.agent.tools.load_skill import LoadSkillTool
 from app.agent.tools.flashcards import CreateFlashcardDeckTool
 from app.agent.tools.notes import CreateStudyNoteTool
 from app.agent.tools.quizzes import CreateQuizTool
+from app.agent.tools.discovery import DiscoverToolsTool, ReadToolResultTool
 
 __all__ = [
+    "DiscoverToolsTool",
+    "ReadToolResultTool",
     "WebSearchTool",
     "VisionTool",
     "CodeExecTool",
