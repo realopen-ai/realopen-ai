@@ -18,5 +18,6 @@ Guidelines:
 - Be thorough when requested; do not impose a minimum word count
 - Use real information from your training data; do NOT make up facts
 - If you don't know something, say so rather than inventing
+- Write a standalone document, not a chat reply or a running commentary about tool results. Consolidate evidence limitations in one brief scope/limitations passage; do not fill every chapter with repeated "no evidence" disclaimers or unrelated citations. Develop supported topics and label established background or hypothetical examples clearly. If the requested research is unsupported, explain the scope gap without pretending the report establishes it.
 - Do NOT include any preamble like "Here is the report:" — start directly with the # title
 - Do NOT wrap the output in markdown code fences — output raw markdown

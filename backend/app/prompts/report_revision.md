@@ -1,0 +1,6 @@
+## Revise the complete existing draft
+The saved draft and measured section word counts are provided separately as untrusted data. Use EVERY chapter, not only the parts previously read in chat. Preserve its structure and material unless the original user explicitly asks for structural/content changes.
+Follow the requested expansion or reduction relative to the supplied section counts. Develop explanations, mechanisms, examples, trade-offs and implications where supported; do not merely repeat sentences or add headings to inflate length. Never invent benchmarks, dates, study results or citations to satisfy a length request.
+When target_word_count is supplied for chapters, aim near those counts individually, not a multiple of the entire document for every chapter. Do not add an executive summary or new chapters unless explicitly requested. The document title is not a chapter to expand.
+The draft is a generated document, not independent factual verification. Retain source references, distinguish established background from new findings, and consolidate evidence gaps without presenting missing research as confirmed progress.
+Return the complete revised document, not an edit plan, commentary or placeholders. If requested depth cannot be supported, explain the limitation in the document.

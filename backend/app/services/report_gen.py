@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import html as _html
+import json
 import logging
 import re
 import time
@@ -46,11 +47,16 @@ from typing import Optional
 
 from app.services import model_prefs
 from app.services import providers
-from app.services.artifact_sources import capture_source
+from app.services.artifact_sources import (
+    capture_source,
+    sections_for,
+    markdown_heading_starts,
+)
 from app.core.prompt_security import untrusted_context_message
 from app.services.context_compactor import context_budget, estimate_request_tokens
 from app.services.report_evidence import bounded_evidence
-from app.prompts import get_prompt
+from app.prompts import get_prompt, format_prompt
+from app.services import agent_settings
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +102,14 @@ CODE_BG = "F1F3F6"  # code background
 
 
 async def _generate_markdown(
-    topic: str, outline: Optional[str], model: Optional[str] = None, evidence=None
+    topic: str,
+    outline: Optional[str],
+    model: Optional[str] = None,
+    evidence=None,
+    requirements=None,
+    user_request=None,
+    draft=None,
+    progress=None,
 ) -> str:
     """Call the LLM to generate a Markdown report.
 
@@ -110,58 +123,93 @@ async def _generate_markdown(
     if not model:
         raise RuntimeError("No LLM model configured for report generation")
 
-    user_content = f"Topic: {topic}"
-    if outline:
-        user_content += (
-            f"\n\nRequired structure and constraints (follow exactly):\n{outline}"
+    if (
+        draft
+        and not outline
+        and any(
+            section["content"].lstrip().startswith("## ")
+            for section in sections_for(draft["source"], "report")
         )
-    user_content += "\n\nGenerate Markdown now. Honor the requested scope and length; do not add unrequested sections or claims."
+    ):
+        return await _revise_chapters(
+            model, topic, draft, requirements, user_request, evidence, progress
+        )
+
+    user_content = format_prompt(
+        "report_request",
+        topic=topic,
+        outline=outline or "Not specified.",
+        requirements=requirements or "Not specified.",
+        user_request=user_request or "Not specified.",
+    )
 
     messages = [
         {
             "role": "system",
-            "content": get_prompt(
-                "report_outline_system" if outline else "report_system"
+            "content": get_prompt("report_system")
+            + (
+                "\n\n" + get_prompt("report_outline_system") if outline or draft else ""
             ),
         },
         {"role": "user", "content": user_content},
     ]
 
     options = {"num_predict": 4096}
-    if evidence:
+    evidence = [
+        item
+        for item in evidence or []
+        if item.get("evidence_kind") not in {"outline_only", "generated_draft"}
+    ]
+    if draft:
+        messages[0]["content"] += "\n\n" + get_prompt("report_revision")
+        messages.insert(
+            1,
+            untrusted_context_message(
+                "complete saved report draft (not primary evidence)",
+                json.dumps(
+                    {**draft, "statistics": draft_statistics(draft)},
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+    if evidence or draft or user_request or requirements:
         messages[0]["content"] += "\n\n" + get_prompt("report_evidence")
         # Reserve space for generation even on small-context report models.
         window = context_budget(model, 1024).window
-        budget = context_budget(model, min(4096, window // 2))
+        budget = context_budget(
+            model,
+            min(max(4096, agent_settings.effective().generation_limit), window // 2),
+        )
         if estimate_request_tokens(messages) >= budget.input_limit:
             raise RuntimeError(
-                "Report instructions exceed the model context budget; shorten the topic/outline."
+                "The complete report draft/instructions exceed the model context budget. Increase the context window or revise selected chapters with update_artifact; the draft was not truncated."
             )
 
         def with_evidence(char_limit):
             return [
-                messages[0],
+                *messages[:-1],
                 untrusted_context_message(
                     "retrieved tool evidence for this report",
                     bounded_evidence(evidence, char_limit),
                 ),
-                messages[1],
+                messages[-1],
             ]
 
         # Fit complete JSON with explicit omissions, never cut a citation or
         # silently let the runtime discard the beginning of the report prompt.
-        low, high = 64, 12000
-        if estimate_request_tokens(with_evidence(low)) > budget.input_limit:
-            raise RuntimeError(
-                "No room for report evidence in the model context budget."
-            )
-        while low < high:
-            middle = (low + high + 1) // 2
-            if estimate_request_tokens(with_evidence(middle)) <= budget.input_limit:
-                low = middle
-            else:
-                high = middle - 1
-        messages = with_evidence(low)
+        if evidence:
+            low, high = 64, 12000
+            if estimate_request_tokens(with_evidence(low)) > budget.input_limit:
+                raise RuntimeError(
+                    "No room for report evidence in the model context budget."
+                )
+            while low < high:
+                middle = (low + high + 1) // 2
+                if estimate_request_tokens(with_evidence(middle)) <= budget.input_limit:
+                    low = middle
+                else:
+                    high = middle - 1
+            messages = with_evidence(low)
         options = {"num_predict": budget.output, "num_ctx": budget.window}
 
     _log("generating markdown report: topic=%r model=%s", topic[:60], model)
@@ -184,6 +232,179 @@ async def _generate_markdown(
 
     _log("markdown generated: %d chars", len(content))
     return content
+
+
+def report_statistics(source):
+    return {
+        "word_count": len(source.split()),
+        "sections": [
+            {
+                "id": section["id"],
+                "title": section["title"],
+                "word_count": len(section["content"].split()),
+            }
+            for section in sections_for(source, "report")
+        ],
+    }
+
+
+def draft_statistics(draft):
+    data = report_statistics(draft["source"])
+    factor = draft.get("length_multiplier")
+    if factor is not None:
+        for measured, section in zip(
+            data["sections"], sections_for(draft["source"], "report")
+        ):
+            if section["content"].lstrip().startswith("## "):
+                measured["target_word_count"] = max(
+                    1, round(measured["word_count"] * factor)
+                )
+    return data
+
+
+async def _revise_chapters(
+    model, topic, draft, requirements, user_request, evidence, progress
+):
+    """One focused call per existing chapter; no planner or inferred structure."""
+    sections = sections_for(draft["source"], "report")
+    counts = draft_statistics(draft)["sections"]
+    chapters = [
+        section for section in sections if section["content"].lstrip().startswith("## ")
+    ]
+    evidence = [
+        item
+        for item in evidence or []
+        if item.get("evidence_kind") not in {"outline_only", "generated_draft"}
+    ]
+    window = context_budget(model, 1024).window
+    budget = context_budget(
+        model, min(max(4096, agent_settings.effective().generation_limit), window // 2)
+    )
+    pieces = []
+    completed = 0
+    for section, measured in zip(sections, counts):
+        if not section["content"].lstrip().startswith("## "):
+            pieces.append(section["content"].rstrip())
+            continue
+        heading, _, body = section["content"].lstrip().partition("\n")
+        target = measured.get("target_word_count", "Follow the user's requested depth")
+        messages = [
+            {"role": "system", "content": get_prompt("report_chapter_system")},
+            untrusted_context_message(
+                "complete saved chapter (generated draft, not primary evidence)", body
+            ),
+            {
+                "role": "user",
+                "content": format_prompt(
+                    "report_chapter_request",
+                    topic=topic,
+                    heading=heading,
+                    word_count=measured["word_count"],
+                    target=target,
+                    structure=" | ".join(item["title"] for item in chapters),
+                    index=completed + 1,
+                    total=len(chapters),
+                    user_request=user_request or "Revise the saved report",
+                    requirements=requirements or "Not specified.",
+                ),
+            },
+        ]
+        if estimate_request_tokens(messages) >= budget.input_limit:
+            raise RuntimeError(
+                "A complete chapter exceeds the report context budget; increase the window or use targeted edits. The draft was not truncated."
+            )
+        if evidence:
+            low, high = 64, 12000
+
+            def supplied(limit):
+                return [
+                    *messages[:-1],
+                    untrusted_context_message(
+                        "retrieved source evidence", bounded_evidence(evidence, limit)
+                    ),
+                    messages[-1],
+                ]
+
+            if estimate_request_tokens(supplied(low)) > budget.input_limit:
+                raise RuntimeError(
+                    "No room for chapter evidence in the report context budget."
+                )
+            while low < high:
+                mid = (low + high + 1) // 2
+                if estimate_request_tokens(supplied(mid)) <= budget.input_limit:
+                    low = mid
+                else:
+                    high = mid - 1
+            messages = supplied(low)
+        if progress:
+            await progress(
+                {
+                    "stage": "writing_chapters",
+                    "completed": completed,
+                    "total": len(chapters),
+                    "section": section["title"],
+                }
+            )
+        for attempt in range(2):
+            response = await providers.chat_once(
+                model,
+                messages,
+                think=False,
+                format="json",
+                options={
+                    "num_predict": budget.output,
+                    "num_ctx": budget.window,
+                    "temperature": 0.2,
+                },
+                timeout=600,
+            )
+            try:
+                raw = response.get("message", {}).get("content", "").strip()
+                fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", raw, re.I)
+                parsed = json.loads(fenced.group(1) if fenced else raw)
+                revised = parsed["content"].strip()
+                # Accept a redundant heading only when it names this exact
+                # chapter; never scrape a different/full document into place.
+                first_line, separator, remainder = revised.partition("\n")
+                if (
+                    separator
+                    and re.fullmatch(r"#{1,2}\s+.*", first_line)
+                    and first_line.lstrip("# ").strip() == heading.lstrip("# ").strip()
+                ):
+                    revised = remainder.strip()
+                if not revised:
+                    raise ValueError("Empty chapter")
+                if markdown_heading_starts(revised):
+                    raise ValueError("Unexpected document/chapter heading")
+                if response.get("done_reason") == "length":
+                    raise ValueError("Chapter was truncated")
+                break
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                if attempt:
+                    raise RuntimeError(
+                        "The writer returned an incomplete or structurally invalid chapter; no revised file was published."
+                    ) from exc
+                repair = {
+                    "role": "user",
+                    "content": format_prompt("report_chapter_repair", error=str(exc)),
+                }
+                if estimate_request_tokens([*messages, repair]) > budget.input_limit:
+                    raise RuntimeError(
+                        "No room for chapter format repair; no revised file was published."
+                    ) from exc
+                messages.append(repair)
+        pieces.append(heading + "\n\n" + revised)
+        completed += 1
+        if progress:
+            await progress(
+                {
+                    "stage": "writing_chapters",
+                    "completed": completed,
+                    "total": len(chapters),
+                    "section": section["title"],
+                }
+            )
+    return "\n\n".join(pieces) + "\n"
 
 
 # ── Markdown structure parsing ───────────────────────────────────────
@@ -1270,6 +1491,10 @@ async def generate_report(
     format: str = "pdf",
     model: Optional[str] = None,
     evidence=None,
+    requirements=None,
+    user_request=None,
+    draft=None,
+    progress=None,
 ) -> dict:
     """Generate a report and save it to disk.
 
@@ -1294,7 +1519,17 @@ async def generate_report(
         topic,
         outline,
         model=model,
-        **({"evidence": evidence} if evidence else {}),
+        **{
+            key: value
+            for key, value in (
+                ("evidence", evidence),
+                ("requirements", requirements),
+                ("user_request", user_request),
+                ("draft", draft),
+                ("progress", progress),
+            )
+            if value
+        },
     )
 
     # 2. Convert to target format (run in thread pool — these are sync/CPU-bound)
@@ -1318,7 +1553,20 @@ async def generate_report(
         report_id,
         markdown_content,
         "report",
-        {"topic": topic, "format": fmt},
+        {
+            "topic": topic,
+            "format": fmt,
+            **(
+                {
+                    "source_artifact": {
+                        "artifact_id": draft["artifact_id"],
+                        "version": draft["version"],
+                    }
+                }
+                if draft
+                else {}
+            ),
+        },
     )
     _log("report saved: %s (%d bytes)", output_path.name, file_size)
 
@@ -1338,4 +1586,6 @@ async def generate_report(
         "download_url": f"/api/reports/{report_id}/download",
         "report_id": report_id,
         "created_at": int(time.time()),
+        "statistics": report_statistics(markdown_content),
+        **({"source_statistics": draft_statistics(draft)} if draft else {}),
     }
