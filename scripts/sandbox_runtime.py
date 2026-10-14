@@ -12,6 +12,7 @@ import posixpath
 import re
 import shlex
 import tarfile
+import uuid
 from dataclasses import dataclass
 
 try:
@@ -28,6 +29,32 @@ FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
 PREVIEW_PORTS = (FRONTEND_PORT, BACKEND_PORT)
 MAX_FILE_READ_BYTES = 5 * 1024 * 1024
+
+
+class FileConflictError(ValueError):
+    """A checked workspace write was based on stale or missing content."""
+
+
+CHECKED_REPLACE = """
+import fcntl, hashlib, json, os, sys
+target, staged, expected = sys.argv[1:]
+with open('/tmp/realopen-workspace-write.lock', 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    exists = os.path.isfile(target)
+    current = None
+    if exists:
+        with open(target, 'rb') as source:
+            current = hashlib.file_digest(source, 'sha256').hexdigest()
+    if (expected == 'missing' and exists) or (expected != 'missing' and current != expected):
+        print('File changed; read the current file before editing again.', file=sys.stderr)
+        sys.exit(3)
+    with open(staged, 'rb') as source:
+        data = source.read()
+    if target.endswith('.py'):
+        compile(data.decode('utf-8'), target, 'exec')
+    os.replace(staged, target)
+    print(json.dumps({'sha256': hashlib.sha256(data).hexdigest(), 'written': len(data)}))
+"""
 
 
 def repair_python_indentation(data: bytes) -> bytes:
@@ -119,7 +146,6 @@ class SandboxRuntime:
             self.client.volumes.create(
                 spec.volume_name, labels={LABEL: spec.sandbox_id}
             )
-        self._ensure_workspace_owner(spec)
         return self.start(spec)
 
     def _ensure_workspace_owner(self, spec: SandboxSpec) -> None:
@@ -128,6 +154,8 @@ class SandboxRuntime:
             spec.image,
             ["chown", "-R", "1000:1000", WORKSPACE],
             remove=True,
+            user="0:0",
+            network_mode="none",
             volumes={spec.volume_name: {"bind": WORKSPACE, "mode": "rw"}},
         )
 
@@ -141,7 +169,6 @@ class SandboxRuntime:
         # This also repairs volumes created before ownership initialization
         # was introduced. The short-lived helper has no application data or
         # Docker socket; the long-lived container remains UID 1000/cap-drop.
-        self._ensure_workspace_owner(spec)
         container = self._container(spec.container_name)
         if container is not None:
             container.reload()
@@ -178,6 +205,9 @@ class SandboxRuntime:
         if container.status != "running":
             container.start()
             container.reload()
+        # The first main-container mount may copy the image directory's root
+        # ownership into an empty volume. Repair after that mount, not before.
+        self._ensure_workspace_owner(spec)
         return self.status(spec)
 
     def stop(self, spec: SandboxSpec) -> dict:
@@ -337,7 +367,46 @@ class SandboxRuntime:
         except ValueError as exc:
             raise RuntimeError("Could not determine file size") from exc
 
-    def write_file(self, spec: SandboxSpec, path: str, data: bytes) -> None:
+    def write_file(
+        self,
+        spec: SandboxSpec,
+        path: str,
+        data: bytes,
+        expected_sha256: str | None = None,
+    ) -> dict | None:
+        if expected_sha256 is not None:
+            if expected_sha256 != "missing" and not re.fullmatch(
+                r"[0-9a-f]{64}", expected_sha256
+            ):
+                raise ValueError("Invalid expected file hash")
+            container, target = self._resolved_workspace_path(spec, path)
+            if target.endswith(".py"):
+                # Checked writes never repair malformed source heuristically.
+                compile(data.decode("utf-8"), target, "exec")
+            staged = posixpath.join(
+                posixpath.dirname(target),
+                ".roai-"
+                + uuid.uuid4().hex
+                + (".py" if target.endswith(".py") else ".tmp"),
+            )
+            try:
+                self.write_file(spec, staged, data)
+                result = container.exec_run(
+                    ["python3", "-c", CHECKED_REPLACE, target, staged, expected_sha256],
+                    demux=True,
+                )
+                stdout, stderr = result.output or (b"", b"")
+                if result.exit_code == 3:
+                    raise FileConflictError(
+                        (stderr or b"File changed").decode("utf-8", "replace")
+                    )
+                if result.exit_code:
+                    raise RuntimeError(
+                        (stderr or b"Checked write failed").decode("utf-8", "replace")
+                    )
+                return json.loads(stdout)
+            finally:
+                container.exec_run(["rm", "-f", "--", staged], demux=True)
         container, target = self._resolved_workspace_path(spec, path)
         if target.endswith(".py"):
             data = repair_python_indentation(data)
