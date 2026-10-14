@@ -31,7 +31,7 @@ from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
 from app.core.prompt_security import untrusted_context_message
-from app.services import sandbox_host
+from app.services import sandbox_host, tool_capabilities
 from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
 from app.services.sandbox_commands import persist_command, split_command_output
@@ -506,9 +506,14 @@ class CoderAgent(BaseTool):
                 {"role": "user", "content": task, "metadata": {"agent_request": True}},
             ]
             state = RunState()
+            transient_text_models = set()
             final = ""
             failed = False
             for _round in range(24):
+                native_tools = (
+                    model not in transient_text_models
+                    and tool_capabilities.should_try_native(model)
+                )
                 async with async_session_factory() as db:
                     current = await db.get(SandboxTask, task_id)
                     if current and current.cancellation_requested:
@@ -517,7 +522,8 @@ class CoderAgent(BaseTool):
                     lambda on_start: compact_conversation(
                         messages,
                         model,
-                        tools=CODER_TOOLS,
+                        tools=CODER_TOOLS if native_tools else None,
+                        native_tools=native_tools,
                         max_output_tokens=2048,
                         on_start=on_start,
                     ),
@@ -533,7 +539,7 @@ class CoderAgent(BaseTool):
                     _round + 1,
                     model,
                     messages,
-                    CODER_TOOLS,
+                    CODER_TOOLS if native_tools else None,
                     {t["function"]["name"] for t in CODER_TOOLS},
                     [],
                     {"think": False, "temperature": 0, "max_output_tokens": 2048},
@@ -542,6 +548,7 @@ class CoderAgent(BaseTool):
                     await chat_with_tool_recovery(
                         model,
                         messages,
+                        transient_text_models=transient_text_models,
                         **(
                             {"on_activity": _event_queue.put_nowait}
                             if _event_queue is not None

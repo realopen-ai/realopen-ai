@@ -1,7 +1,7 @@
 """Remember native-tool protocol rejections, scoped to model and endpoint.
 
-Unknown models are tried natively. Only explicit protocol rejections are
-remembered, never inference quality, tool execution, or connectivity failures.
+Unknown models are tried natively. Only explicit unsupported-tool rejections
+are remembered, never parser, execution, or connectivity failures.
 The existing persistent state volume holds atomic, per-model JSON records.
 """
 
@@ -22,7 +22,7 @@ from app.services import providers, agent_settings
 
 logger = logging.getLogger(__name__)
 _fallbacks: set[Path] = set()
-_REASONS = {"unsupported_tools", "native_parser"}
+_REASONS = {"unsupported_tools"}
 
 
 def _directory() -> Path:
@@ -62,8 +62,8 @@ def should_try_native(model: str) -> bool:
         return True
 
 
-def rejection_reason(error: Exception) -> str | None:
-    """Recognize tool protocol errors, not arbitrary 4xx/5xx failures."""
+def _provider_error_message(error: Exception) -> str | None:
+    """Read provider diagnostics, never failed_generation/model output."""
     if isinstance(error, httpx.HTTPStatusError):
         if error.response.status_code not in {400, 422, 500, 501}:
             return None
@@ -86,21 +86,57 @@ def rejection_reason(error: Exception) -> str | None:
         message = str(error)
     else:
         return None
-    message = message.lower()
+    return message.lower()
+
+
+def rejection_reason(error: Exception) -> str | None:
+    """Only explicit lack of native-tool support warrants a durable fallback."""
+    message = _provider_error_message(error)
+    if message is None:
+        return None
     if re.search(
         r"(?:does not|doesn't|cannot|can't)\s+support\s+(?:native\s+)?(?:tools|tool calling|function calling)"
         r"|unsupported\s+(?:native\s+)?(?:tools|tool calling|function calling)"
-        r"|(?:tools|tool calling|function calling)\s+(?:(?:is|are)\s+)?(?:currently\s+)?(?:not supported|unsupported|not available|not enabled)",
+        r"|(?:tools|tool calling|function calling)\s+(?:(?:is|are)\s+)?(?:currently\s+)?(?:not supported|unsupported)",
         message,
     ):
+        # Reject schema/format limitations, not the model's tool capability.
+        if re.search(
+            r"\b(?:schema|format|arguments?|parameters?|configuration)\b", message
+        ):
+            return None
         return "unsupported_tools"
+    return None
+
+
+def native_parser_error(error: Exception) -> bool:
+    """Transient malformed tool output, distinct from unsupported tools.
+
+    Callers use this only for an inference attempt with native tools enabled.
+    Generic XML/JSON/configuration errors must not trigger protocol recovery.
+    """
+    message = _provider_error_message(error)
+    if message is None:
+        return False
+    if re.search(r"\b(?:schema|configuration|manifest)\b", message):
+        return False
     if re.search(
         r"(?:failed|unable|error)[^\n]{0,40}pars(?:e|ing)[^\n]{0,40}(?:tool|function)[ _-]?call"
         r"|(?:tool|function)[ _-]?call[^\n]{0,40}pars(?:e|ing)[^\n]{0,20}(?:error|failed)",
         message,
     ):
-        return "native_parser"
-    return None
+        return True
+    xml_error = re.search(
+        r"xml\s+(?:syntax|parse|parsing)\s+error|(?:invalid|malformed)\s+xml", message
+    )
+    tool_tag = re.search(r"</?(?:function|parameter|tool_call)(?:[\s=>])", message)
+    json_error = re.search(
+        r"(?:invalid|malformed)\s+json|json\s+(?:syntax|parse|parsing)\s+error", message
+    )
+    tool_context = re.search(
+        r"(?:tool|function)[ _-]?(?:call|arguments)|\barguments\b", message
+    )
+    return bool((xml_error and tool_tag) or (json_error and tool_context))
 
 
 def _write(path: Path, data: dict) -> None:
@@ -120,9 +156,7 @@ def _write(path: Path, data: dict) -> None:
 
 async def remember_fallback(model: str, reason: str) -> None:
     if reason not in _REASONS:
-        raise ValueError(
-            "Only confirmed native-tool protocol failures may be remembered"
-        )
+        raise ValueError("Only explicit unsupported-tools rejections may be remembered")
     try:
         path = _path(model)
         _fallbacks.add(path)

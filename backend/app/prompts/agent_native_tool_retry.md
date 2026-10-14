@@ -1,0 +1,2 @@
+The previous native tool-call attempt failed before any of its tool calls were executed. Successful actions from earlier rounds remain completed; do not repeat them.
+Retry the required tool call using the currently exposed protocol and exact schema. If a preceding assistant message contains text already shown to the user, continue without repeating that text. Do not quote broken tool syntax. A parsing error is transient, not evidence that the model lacks native tool support.

@@ -125,7 +125,7 @@ async def _chat_attempt(
 
 
 async def chat_with_tool_recovery(
-    model: str, messages: list[dict], *, on_activity=None
+    model: str, messages: list[dict], *, on_activity=None, transient_text_models=None
 ) -> dict:
     async def text_attempt():
         fallback = await _chat_attempt(
@@ -148,33 +148,46 @@ async def chat_with_tool_recovery(
             raise
         return fallback
 
-    if not tool_capabilities.should_try_native(model):
+    if (
+        transient_text_models is not None and model in transient_text_models
+    ) or not tool_capabilities.should_try_native(model):
         return await text_attempt()
-    try:
-        result = await _chat_attempt(
-            model,
-            messages,
-            tools=CODER_TOOLS,
-            timeout=1200,
-            think=False,
-            options={"num_predict": 2048, "temperature": 0},
-        )
-        return result
-    except (httpx.HTTPStatusError, providers.ProviderStreamError) as first_error:
-        reason = tool_capabilities.rejection_reason(first_error)
-        # Retain one-off recovery for generic server errors, but never cache it
-        # as a model capability. Authentication/rate-limit failures propagate.
-        server_error = isinstance(
-            first_error, httpx.HTTPStatusError
-        ) and first_error.response.status_code in {500, 502, 503, 504}
-        if not reason and not server_error:
-            raise
-        if reason:
-            await tool_capabilities.remember_fallback(model, reason)
+    failure = None
+    for native_attempt in range(2):
         try:
-            return await text_attempt()
-        except Exception as recovery_error:
-            raise RuntimeError(
-                "The coder model emitted an invalid tool call and JSON recovery "
-                f"also failed: {recovery_error}"
-            ) from first_error
+            return await _chat_attempt(
+                model,
+                messages,
+                tools=CODER_TOOLS,
+                timeout=1200,
+                think=False,
+                options={"num_predict": 2048, "temperature": 0},
+            )
+        except (httpx.HTTPStatusError, providers.ProviderStreamError) as error:
+            failure = error
+            reason = tool_capabilities.rejection_reason(error)
+            parser_failure = tool_capabilities.native_parser_error(error)
+            # Existing generic server-error recovery stays one-off. Auth,
+            # rate limits, connection errors and validation errors propagate.
+            server_error = isinstance(
+                error, httpx.HTTPStatusError
+            ) and error.response.status_code in {500, 502, 503, 504}
+            if reason:
+                await tool_capabilities.remember_fallback(model, reason)
+                break
+            if parser_failure:
+                if native_attempt == 0:
+                    continue
+                if transient_text_models is not None:
+                    transient_text_models.add(model)
+                break
+            if not server_error:
+                raise
+            break
+    try:
+        return await text_attempt()
+    except Exception as recovery_error:
+        raise RuntimeError(
+            "The coder model emitted an invalid tool call and JSON recovery "
+            f"also failed: {recovery_error}"
+        ) from failure

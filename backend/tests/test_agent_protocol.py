@@ -303,7 +303,10 @@ async def test_native_rejection_retries_and_next_request_skips_probe(
                     400, request=request, text="model does not support tools"
                 ),
             )
-        if messages[-1]["role"] == "user" and "Use echo" == messages[-1]["content"]:
+        if not any(
+            "Source: tool result: echo" in message.get("content", "")
+            for message in messages
+        ):
             yield {
                 "content": '```tool\n{"tool":"echo","args":{"input":"one"}}\n```',
                 "done": True,
@@ -352,7 +355,9 @@ async def test_reasoning_only_native_failure_retries_cleanly(agent, monkeypatch)
 
     monkeypatch.setattr(service.providers, "stream_chat", stream)
     events = await run()
-    assert len(attempts) == 2
+    assert len(attempts) == 3
+    assert [bool(attempt["tools"]) for attempt in attempts] == [True, True, False]
+    assert tool_capabilities.should_try_native("qwen3:4b")
     assert any(e["event"] == "thinking_done" for e in events)
     assert events[-1]["event"] == "done"
 
@@ -369,9 +374,13 @@ async def test_partial_answer_is_not_replayed_on_native_failure(agent, monkeypat
 
     monkeypatch.setattr(service.providers, "stream_chat", stream)
     events = await run()
-    assert count == 1
+    assert count == 3
     assert events[-1]["event"] == "error"
-    assert not tool_capabilities.should_try_native("qwen3:4b")
+    assert tool_capabilities.should_try_native("qwen3:4b")
+    assert (
+        "".join(e["message"]["content"] for e in events if e["event"] == "message")
+        == "Partial answer"
+    )
 
 
 @pytest.mark.asyncio

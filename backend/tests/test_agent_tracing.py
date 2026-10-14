@@ -18,6 +18,51 @@ from app.config import settings
 
 
 @pytest.mark.asyncio
+async def test_parser_retry_keeps_failed_attempts_separate_from_selected_response(
+    trace_setup, monkeypatch
+):
+    count = 0
+
+    async def stream(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count <= 2:
+            yield {
+                "content": f"Failed attempt {count}",
+                "tool_calls": [native({"input": "discarded"})],
+            }
+            raise service.providers.ProviderStreamError(
+                "XML syntax error: <function> closed by </parameter>"
+            )
+        if count == 3:
+            yield {
+                "content": '```tool\n{"tool":"echo","args":{"input":"selected"}}\n```',
+                "done": True,
+            }
+        else:
+            yield {"content": "Done", "done": True}
+
+    monkeypatch.setattr(service.providers, "stream_chat", stream)
+    await run()
+    (row,) = await saved(trace_setup)
+    attempts = row["rounds"][0]["model_attempts"]
+    assert len(attempts) == 3
+    assert [attempt["recovery"] for attempt in attempts] == [False, True, True]
+    assert attempts[0]["response"]["message"]["tool_calls"][0]["function"][
+        "arguments"
+    ] == {"input": "discarded"}
+    assert attempts[0]["error"]["type"] == "ProviderStreamError"
+    assert attempts[1]["response"]["message"]["content"] == "Failed attempt 2"
+    assert attempts[2]["exposed_tool_schemas"] is None
+    first = row["rounds"][0]
+    assert "Failed attempt" not in first["model_response"]["content"]
+    assert first["model_response"]["native_tool_calls"] == []
+    assert first["tool_calls"][0]["arguments"] == {"input": "selected"}
+    assert row["outcome"]["successful_tool_calls"] == 1
+    assert row["outcome"]["failed_tool_calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_argument_rebuild_keeps_raw_failed_attempts_and_json_response(
     trace_setup, monkeypatch
 ):
@@ -323,6 +368,35 @@ async def test_coder_invalid_recovery_is_preserved(coder_setup, monkeypatch):
         row["rounds"][0]["parse_diagnostics"][0]["status"]
         == "invalid_recovery_response"
     )
+
+
+@pytest.mark.asyncio
+async def test_coder_parser_fallback_stays_local_to_one_execution(
+    coder_setup, monkeypatch
+):
+    coder_responses(
+        monkeypatch,
+        [
+            service.providers.ProviderStreamError("failed to parse tool call"),
+            service.providers.ProviderStreamError("failed to parse tool call"),
+            {"content": '{"tool":"list_files","args":{"path":"/workspace"}}'},
+            {"content": '{"final":"Done"}'},
+        ],
+    )
+    result = await coder_agent.CoderAgent().execute(
+        task="List files", conversation_id="conversation-1"
+    )
+    assert result.success
+    (row,) = await saved(coder_setup / "coder")
+    attempts = row["rounds"][0]["model_attempts"]
+    assert len(attempts) == 3
+    assert [bool(attempt["exposed_tool_schemas"]) for attempt in attempts] == [
+        True,
+        True,
+        False,
+    ]
+    assert row["rounds"][1]["exposed_tool_schemas"] is None
+    assert service.tool_capabilities.should_try_native(row["model"]["resolved"])
 
 
 @pytest.mark.asyncio
