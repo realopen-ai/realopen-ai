@@ -421,7 +421,12 @@ def edited_source(version, kind, changes):
             raise HTTPException(422, "Section cannot be empty")
         if kind == "excel":
             spec = json.loads(source)
-            replacement = json.loads(content)
+            try:
+                replacement = json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    422, "Sheet edit content must be valid JSON"
+                ) from exc
             index = int(section_id.removeprefix("sheet-")) - 1
             if not isinstance(replacement, dict):
                 raise HTTPException(422, "Sheet must be a JSON object")
