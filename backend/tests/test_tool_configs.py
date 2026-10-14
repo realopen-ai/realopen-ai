@@ -204,12 +204,13 @@ class TestSeeding:
         assert result["loaded"] == len(registry_names)
 
     @pytest.mark.asyncio
-    async def test_seeded_defaults_mirror_previous_behavior(self, db):
+    async def test_seeded_defaults_use_lean_routing(self, db):
         await config_store.seed_and_load()
         # websearch was an always-tool
         cfg = config_store.get_tool_config("use_websearch")
         assert cfg["enabled"] is True
-        assert cfg["always_load"] is True
+        assert cfg["always_load"] is False
+        assert config_store.get_tool_config("discover_tools")["always_load"] is True
         # excel was tag-gated
         excel = config_store.get_tool_config("use_excel_gen")
         assert excel["always_load"] is False
@@ -290,7 +291,7 @@ class TestSeeding:
         db["use_websearch"].config = {"enabled": True}
         config_store._cache["use_websearch"] = {"enabled": True}
         cfg = config_store.get_tool_config("use_websearch")
-        assert cfg["always_load"] is True  # default filled in
+        assert cfg["always_load"] is False  # lean default filled in
         assert cfg["custom"]["providers"]["searxng"]["enabled"] is True
         # stored row untouched
         assert db["use_websearch"].config == {"enabled": True}
@@ -339,7 +340,7 @@ class TestApi:
         assert ws["display_name"] == "Web Search"
         assert "search the web" in ws["description"].lower()
         assert ws["config"]["enabled"] is True
-        assert ws["config"]["always_load"] is True
+        assert ws["config"]["always_load"] is False
         assert ws["custom_schema"] is not None
         assert ws["has_custom"] is True
         # secret metadata present, but never a value
@@ -703,23 +704,21 @@ class TestSemantics:
         )
         assert "use_websearch" not in service._select_tools("weather search news")
 
-    def test_defaults_preserve_original_behavior(self, client):
-        """Fresh defaults select exactly like the pre-config system."""
-        from app.agent.tools.tool_defaults import _ALWAYS_TOOLS, _KEYWORD_TOOLS
-
-        for msg in (
-            "hello there",
-            "search the web for current info",
+    def test_defaults_expose_small_relevant_sets(self, client):
+        assert service._select_tools("hello there") == {"discover_tools"}
+        assert "use_excel_gen" in service._select_tools("make me an excel spreadsheet")
+        assert "use_websearch" in service._select_tools(
+            "search the web for current info"
+        )
+        assert "search_past_conversations" in service._select_tools(
+            "remember what we discussed last week"
+        )
+        for message in (
+            "Create a quiz about NumPy",
             "make me an excel spreadsheet",
-            "look at this image",
-            "remember what we discussed last week",
+            "search the web for current info",
         ):
-            expected = set(_ALWAYS_TOOLS)
-            lower = msg.lower()
-            for kw, tools in _KEYWORD_TOOLS.items():
-                if kw in lower:
-                    expected.update(tools)
-            assert service._select_tools(msg) == expected, msg
+            assert len(service._select_tools(message)) <= 4
 
 
 # ─── 4. Model override ─────────────────────────────────────────────

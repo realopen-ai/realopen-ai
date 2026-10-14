@@ -323,7 +323,8 @@ async def test_native_rejection_retries_and_next_request_skips_probe(
         False,
     ]
     assert len(agent.executed) == 2
-    assert "Available schemas:" in captured[1][0][0]["content"]
+    assert any("Available schemas:" in m["content"] for m in captured[1][0])
+    assert captured[0][0][0]["content"] == captured[1][0][0]["content"]
     assert all(m["role"] != "tool" for messages, kw in captured[1:] for m in messages)
     assert not tool_capabilities.should_try_native("unknown-custom-model:4b")
 
@@ -414,7 +415,7 @@ async def test_fallback_prompt_has_schema_and_single_envelope(agent, monkeypatch
     )
     await run(model="small-model")
     assert captured[0]["tools"] is None
-    assert '"required":["input"]' in captured[0]["messages"][0]["content"]
+    assert any('"required":["input"]' in m["content"] for m in captured[0]["messages"])
     second = captured[1]["messages"]
     assert all("tool_calls" not in m and m["role"] != "tool" for m in second)
     assistant = next(m for m in second if m["role"] == "assistant")
@@ -696,11 +697,11 @@ async def test_model_switch_changes_protocol_and_runtime_budget(agent, monkeypat
     assert captured[1]["model"] == "small-model"
     assert captured[1]["options"]["num_ctx"] == 10000
     assert captured[1]["tools"] is None
-    assert "Available schemas:" in captured[1]["messages"][0]["content"]
+    assert any("Available schemas:" in m["content"] for m in captured[1]["messages"])
     assert (
-        "Use the provided native function tools"
-        not in captured[1]["messages"][0]["content"]
+        captured[0]["messages"][0]["content"] == captured[1]["messages"][0]["content"]
     )
+    assert "Use the provided native function tools" not in str(captured[1]["messages"])
     assert all(m["role"] != "tool" for m in captured[1]["messages"])
 
 
@@ -1245,7 +1246,8 @@ async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
     )
     assert repair["think"] is False
     assert "BROKEN_JSON_ARRAY" not in json.dumps(repair["messages"])
-    assert "ARGUMENT REBUILD ROUND" in repair["messages"][0]["content"]
+    assert any("ARGUMENT REBUILD ROUND" in m["content"] for m in repair["messages"])
+    assert repair["messages"][0]["content"] == captured[0]["messages"][0]["content"]
     assert "arguments.input: expected array" in repair["messages"][-1]["content"]
     assert not any('"args"' in e.get("message", {}).get("content", "") for e in events)
     assert "format" not in captured[2]
