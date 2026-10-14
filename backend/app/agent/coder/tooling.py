@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import hashlib
 import posixpath
 import re
 import shlex
@@ -11,9 +12,48 @@ from collections.abc import Callable
 
 from app.services import sandbox_host
 from app.services import skills as skill_store
+from app.agent.coder.starters import scaffold, BACKENDS, FRONTENDS
 
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
+
+# Only application source/configuration participates in progress. Dependency
+# trees, generated builds, test caches and runtime databases do not invalidate
+# a successful check merely because it produced normal byproducts.
+SOURCE_FINGERPRINT = """
+import hashlib, json, os
+from pathlib import Path
+root = Path('/workspace')
+skip = {'.git', '.venv', 'venv', 'node_modules', 'dist', 'build', '__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.cache', 'coverage'}
+runtime_suffixes = {'.sqlite', '.sqlite3', '.db', '.log', '.pid', '.pyc', '.tsbuildinfo'}
+result = {}
+for directory, dirs, files in os.walk(root, followlinks=False):
+    dirs[:] = [name for name in dirs if name not in skip and not Path(directory, name).is_symlink()]
+    for name in files:
+        path = Path(directory, name)
+        if path.is_symlink() or path.suffix in runtime_suffixes or name in {'.coverage'} or name.endswith(('-wal', '-shm', '-journal')):
+            continue
+        with path.open('rb') as source:
+            result[str(path)] = hashlib.file_digest(source, 'sha256').hexdigest()
+print(json.dumps(result))
+"""
+
+
+async def source_fingerprint(sandbox):
+    try:
+        result = await sandbox_host.call(
+            "exec",
+            sandbox,
+            {"command": "python3 -c " + shlex.quote(SOURCE_FINGERPRINT), "timeout": 20},
+            timeout=30,
+        )
+        if result.get("exit_code") == 0:
+            data = json.loads(result.get("stdout", ""))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
 
 
 def workspace_path(path: object, default: str = "/workspace") -> str:
@@ -35,7 +75,7 @@ def workspace_path(path: object, default: str = "/workspace") -> str:
 def normalize_tool_args(name: str, args: dict) -> dict:
     """Normalize file-oriented tool arguments before events or API calls."""
     normalized = dict(args)
-    if name in {"read_file", "write_file"}:
+    if name in {"read_file", "write_file", "edit_file"}:
         normalized["path"] = workspace_path(normalized.get("path"))
     elif name in {"list_files", "search_files"}:
         normalized["path"] = workspace_path(normalized.get("path", "/workspace"))
@@ -64,6 +104,25 @@ COMMAND_PROPERTIES = {
 
 CODER_TOOLS = [
     _function(
+        "scaffold_project",
+        "Create a new FastAPI/SQLite and/or Vite/TypeScript starter with local Pico CSS. Never overwrites existing files. Implement the requested app and rerun validation.",
+        {
+            "name": {"type": "string"},
+            "backend": {"type": "string", "enum": ["none", *BACKENDS]},
+            "frontend": {"type": "string", "enum": ["none", *FRONTENDS]},
+        },
+        ("name", "backend", "frontend"),
+    ),
+    _function(
+        "check_preview",
+        "Smoke-test a running preview with a real HTTP request. For a full-stack app, request an /api path through frontend port 6767 after starting both services.",
+        {
+            "port": {"type": "integer", "enum": [FRONTEND_PORT, BACKEND_PORT]},
+            "path": {"type": "string"},
+        },
+        ("port", "path"),
+    ),
+    _function(
         "load_skill",
         "Load the full instructions for one relevant skill from the catalog.",
         {"name": {"type": "string"}, "resource": {"type": "string"}},
@@ -82,9 +141,23 @@ CODER_TOOLS = [
     _function("list_files", "List the workspace tree.", {"path": {"type": "string"}}),
     _function(
         "read_file",
-        "Read a UTF-8 workspace file.",
-        {"path": {"type": "string"}},
+        "Read exact UTF-8 content with character-offset pagination. Read before editing. Follow next_offset to read more.",
+        {
+            "path": {"type": "string"},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+        },
         ("path",),
+    ),
+    _function(
+        "edit_file",
+        "Make one targeted edit to a file you have read. old_text must match exactly once; new_text replaces it (empty removes it). Stale reads or ambiguous matches leave the file unchanged.",
+        {
+            "path": {"type": "string"},
+            "old_text": {"type": "string", "minLength": 1},
+            "new_text": {"type": "string"},
+        },
+        ("path", "old_text", "new_text"),
     ),
     _function(
         "write_file",
@@ -131,6 +204,29 @@ CODER_TOOLS = [
 async def dispatch_tool(
     sandbox, name: str, args: dict, progress: Callable[[dict], None] | None = None
 ) -> tuple[str, dict | None]:
+    if name == "scaffold_project":
+        return await scaffold(sandbox, args, _setup_python_project)
+    if name == "check_preview":
+        path, port = args["path"], args["port"]
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/")
+            or path.startswith("//")
+            or port not in {FRONTEND_PORT, BACKEND_PORT}
+        ):
+            raise ValueError("Use a relative preview path and a published sandbox port")
+        command = (
+            "curl --fail-with-body --silent --show-error --max-time 15 --retry 5 --retry-connrefused --retry-delay 1 --retry-max-time 10 "
+            + shlex.quote(f"http://127.0.0.1:{port}{path}")
+        )
+        result = await sandbox_host.call(
+            "exec", sandbox, {"command": command, "timeout": 20}, timeout=40
+        )
+        return json.dumps(result), {
+            "command": command,
+            "exit_code": result.get("exit_code"),
+            "port": port,
+        }
     if name == "load_skill":
         return (
             skill_store.load_for_agent(
@@ -149,9 +245,68 @@ async def dispatch_tool(
         return json.dumps(result)[:40_000], None
     if name == "read_file":
         result = await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
-        return result.get("content", "")[:80_000], None
+        content = result.get("content", "")
+        offset, limit = args.get("offset", 0), args.get("limit", 6000)
+        if (
+            type(offset) is not int
+            or offset < 0
+            or type(limit) is not int
+            or not 1 <= limit <= 16000
+        ):
+            raise ValueError(
+                "Read offset/limit must be nonnegative character counts within bounds"
+            )
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        page = {
+            "path": args["path"],
+            "sha256": digest,
+            "offset": offset,
+            "total_chars": len(content),
+            "content": content[offset : offset + limit],
+            "next_offset": offset + limit if offset + limit < len(content) else None,
+        }
+        return json.dumps(page, ensure_ascii=False), {
+            "read": page,
+            "file_content": page["content"],
+        }
     if name == "write_file":
         return await _write_file(sandbox, args)
+    if name == "edit_file":
+        expected = args.get("_expected_sha256")
+        if not expected:
+            return (
+                "Read this file with read_file before editing it; nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
+        content = (
+            await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
+        )["content"]
+        if hashlib.sha256(content.encode()).hexdigest() != expected:
+            return (
+                "File changed; read_file again before editing. Nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
+        old, new = args["old_text"], args["new_text"]
+        if not old or content.count(old) != 1:
+            return (
+                "old_text must match exactly once. Read/search for a larger unique context; nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
+        start = content.index(old)
+        covered = start
+        for left, right in sorted(args.get("_read_ranges", [])):
+            if left > covered:
+                break
+            covered = max(covered, right)
+        if covered < start + len(old):
+            return (
+                "Read the exact target text with read_file before editing it. Nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
+        return await _write_file(
+            sandbox,
+            {**args, "content": content.replace(old, new, 1), "_full_read": True},
+        )
     if name == "search_files":
         query = shlex.quote(str(args["query"]))
         path = shlex.quote(str(args.get("path", "/workspace")))
@@ -194,6 +349,7 @@ async def _setup_python_project(
     project_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(args["name"]))[:80]
     dependencies = [str(item) for item in args.get("dependencies", [])]
     dev_dependencies = [str(item) for item in args.get("dev_dependencies", [])]
+
     # Starlette 1.7's TestClient uses the httpx2 package. Small coder models
     # frequently remember pytest but omit this transitive test dependency.
     def requirement_name(item: str) -> str:
@@ -211,7 +367,10 @@ async def _setup_python_project(
     if not project_name or not all(
         requirement.fullmatch(item) for item in dependencies + dev_dependencies
     ):
-        return "Invalid Python project name or dependency requirement.", None
+        return "Invalid Python project name or dependency requirement.", {
+            "exit_code": 1,
+            "corrective": True,
+        }
     content = (
         "[project]\n"
         f"name = {json.dumps(project_name)}\n"
@@ -221,10 +380,23 @@ async def _setup_python_project(
         "[dependency-groups]\n"
         f"dev = [{', '.join(json.dumps(item) for item in dev_dependencies)}]\n"
     )
+    if (
+        await sandbox_host.call(
+            "files/stat", sandbox, {"path": "/workspace/pyproject.toml"}
+        )
+    ).get("exists"):
+        return (
+            "Python project already exists; use uv add/sync instead of replacing its configuration.",
+            {"exit_code": 1, "corrective": True},
+        )
     await sandbox_host.call(
-        "files/write",
+        "files/write-checked",
         sandbox,
-        {"path": "/workspace/pyproject.toml", "content": content},
+        {
+            "path": "/workspace/pyproject.toml",
+            "content": content,
+            "expected_sha256": "missing",
+        },
     )
     if progress:
         progress(
@@ -247,6 +419,7 @@ async def _setup_python_project(
         "file_content": content,
         "command": "uv sync --all-groups",
         "exit_code": result.get("exit_code"),
+        "changed": True,
     }
 
 
@@ -255,11 +428,10 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
         return (
             "Direct pyproject.toml writes are disabled. Use setup_python_project "
             "for a new project or `uv add`/`uv remove` for an existing project.",
-            None,
+            {"exit_code": 1, "corrective": True},
         )
     content = str(args.get("content", ""))
     if str(args.get("path", "")).endswith(".py"):
-        content = _repair_python_indentation(content)
         try:
             compile(content, str(args["path"]), "exec")
         except SyntaxError as exc:
@@ -275,63 +447,45 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
                 },
             )
     previous = ""
-    try:
+    current = await sandbox_host.call("files/stat", sandbox, {"path": args["path"]})
+    if current.get("exists"):
+        if not args.get("_expected_sha256") or not args.get("_full_read"):
+            return (
+                "Read the complete current file before replacing it, or use edit_file after reading the relevant section. Nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
         previous = (
             await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
         ).get("content", "")
-    except Exception:
-        pass
+        if hashlib.sha256(previous.encode()).hexdigest() != args["_expected_sha256"]:
+            return (
+                "File changed; read_file again before editing. Nothing was changed.",
+                {"exit_code": 1, "corrective": True},
+            )
+        if previous == content:
+            return "File already contains this content; nothing changed.", {
+                "changed": False
+            }
     usage = await sandbox_host.call("usage", sandbox)
-    current = await sandbox_host.call("files/stat", sandbox, {"path": args["path"]})
     projected_usage = max(0, usage["usage_bytes"] - current["size"]) + len(
         content.encode()
     )
     if projected_usage > sandbox.workspace_quota_bytes:
-        return "Workspace quota exceeded; stop and report this.", None
+        return "Workspace quota exceeded; stop and report this.", {"exit_code": 1}
     await sandbox_host.call(
-        "files/write", sandbox, {"path": args["path"], "content": content}
+        "files/write-checked",
+        sandbox,
+        {
+            "path": args["path"],
+            "content": content,
+            "expected_sha256": (
+                args.get("_expected_sha256") if current.get("exists") else "missing"
+            ),
+        },
     )
     written_content = content
     if str(args["path"]).endswith(".py"):
-        formatted = await sandbox_host.call(
-            "exec",
-            sandbox,
-            {
-                "command": (
-                    "autopep8 --in-place --aggressive -- "
-                    + shlex.quote(str(args["path"]))
-                ),
-                "timeout": 30,
-            },
-            timeout=50,
-        )
-        if formatted.get("exit_code") != 0:
-            raise RuntimeError(
-                "Python formatting failed: "
-                + (
-                    formatted.get("stderr")
-                    or formatted.get("stdout")
-                    or "unknown error"
-                )
-            )
-        validation = await sandbox_host.call(
-            "exec",
-            sandbox,
-            {
-                "command": "python3 -m py_compile " + shlex.quote(str(args["path"])),
-                "timeout": 30,
-            },
-            timeout=50,
-        )
-        if validation.get("exit_code") != 0:
-            raise RuntimeError(
-                "Python validation failed after formatting: "
-                + (
-                    validation.get("stderr")
-                    or validation.get("stdout")
-                    or "unknown error"
-                )
-            )
+        # Checked host writes format/compile staging content before publication.
         written_content = (
             await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
         ).get("content", content)
@@ -347,30 +501,9 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
         "file": args["path"],
         "diff": "\n".join(list(diff)[:5]),
         "file_content": written_content,
+        "sha256": hashlib.sha256(written_content.encode()).hexdigest(),
+        "changed": previous != written_content,
     }
-
-
-def _repair_python_indentation(content: str) -> str:
-    """Repair off-grid indentation only when the source cannot be parsed."""
-    try:
-        compile(content, "<coder-write>", "exec")
-        return content
-    except IndentationError:
-        repaired = []
-        for line in content.splitlines(keepends=True):
-            match = re.match(r"^( +)(?=\S)", line)
-            if match and len(match.group(1)) % 4:
-                width = max(4, (len(match.group(1)) // 4) * 4)
-                line = " " * width + line[len(match.group(1)) :]
-            repaired.append(line)
-        candidate = "".join(repaired)
-        try:
-            compile(candidate, "<coder-write>", "exec")
-        except (IndentationError, SyntaxError):
-            return content
-        return candidate
-    except SyntaxError:
-        return content
 
 
 async def _run_command(sandbox, args: dict) -> tuple[str, dict | None]:
@@ -408,18 +541,40 @@ async def _run_command(sandbox, args: dict) -> tuple[str, dict | None]:
             {"command": command, "exit_code": 2, "corrective": True},
         )
     timeout = int(args.get("timeout", 120))
+    before = await source_fingerprint(sandbox)
     result = await sandbox_host.call(
         "exec", sandbox, {"command": command, "timeout": timeout}, timeout=timeout + 20
     )
+    after = await source_fingerprint(sandbox)
+    known = before is not None and after is not None
+    changed_files = (
+        [
+            path
+            for path in before.keys() | after.keys()
+            if before.get(path) != after.get(path)
+        ]
+        if known
+        else []
+    )
+    if not known:
+        result["validation_warning"] = (
+            "Source-change tracking was unavailable. This command alone cannot verify the current application; rerun validation once tracking is available."
+        )
     usage = await sandbox_host.call("usage", sandbox)
     if usage["usage_bytes"] > sandbox.workspace_quota_bytes:
         return "Workspace quota exceeded after this command; stop and report it.", {
             "command": command,
-            "exit_code": result.get("exit_code"),
+            "exit_code": 1,
+            "files": changed_files,
+            "changed": bool(changed_files),
+            "changes_unknown": not known,
         }
     return json.dumps(result)[:80_000], {
         "command": command,
         "exit_code": result.get("exit_code"),
+        "files": changed_files,
+        "changed": bool(changed_files),
+        "changes_unknown": not known,
     }
 
 
@@ -441,6 +596,7 @@ async def infer_preview(sandbox) -> tuple[str, int] | None:
     except Exception:
         pass
     for path, module in (
+        ("/workspace/backend/app.py", "backend.app:app"),
         ("/workspace/app/main.py", "app.main:app"),
         ("/workspace/main.py", "main:app"),
     ):
