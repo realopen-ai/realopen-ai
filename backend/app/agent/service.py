@@ -29,6 +29,7 @@ from app.agent.tracing import observe, traced_execution, timestamp
 from app.agent.execution_state import ExecutionState
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.argument_repair import (
+    field_repair,
     rebuild_view,
     response_schema,
     parse_rebuild,
@@ -835,12 +836,26 @@ async def run_agent_stream(
     coder_attempted = False
     format_failures = 0
     execution_state = ExecutionState()
+    repair_plans = {}
     exhausted_tool = None
 
-    def validation_feedback(call, errors):
+    def validation_feedback(call, errors, *, arguments=None, issues=None):
         nonlocal ollama_tools, exhausted_tool
         error = "; ".join(errors)
         execution_state.record(call, False, error, validation=True)
+        if arguments is not None and issues:
+            repair_tool = registry.get(call["tool"])
+            repair_plans[call["tool"]] = field_repair(
+                arguments,
+                {
+                    "type": "object",
+                    "properties": repair_tool.get_parameters(),
+                    "required": repair_tool.get_required_params(),
+                },
+                issues,
+            )
+        elif call.get("repair_mode") != "fields":
+            repair_plans.pop(call["tool"], None)
         retryable = (
             execution_state.validation_failures[call["tool"]]
             < agent_settings.effective().repair_attempts + 1
@@ -910,6 +925,7 @@ async def run_agent_stream(
             if not repair_names or s["function"]["name"] in repair_names
         ]
         repair_schema = None
+        repair_plan = None
         if repair_names:
             repair_name = next(
                 name
@@ -922,6 +938,7 @@ async def run_agent_stream(
                 if schema["function"]["name"] == repair_name
             )
             request_tools = [repair_schema]
+            repair_plan = repair_plans.get(repair_name)
         _refresh_protocol()
 
         # A concurrent request or delegated coder may have learned this model's
@@ -945,8 +962,9 @@ async def run_agent_stream(
             inference_messages = rebuild_view(
                 messages,
                 repair_schema,
-                execution_state.rejected_call_ids,
+                execution_state.rejected_call_ids | execution_state.deferred_call_ids,
                 execution_state.failures[repair_name]["error"],
+                repair=repair_plan,
             )
         inference_tools = (
             request_tools if use_native_tools and not repair_schema else None
@@ -997,7 +1015,9 @@ async def run_agent_stream(
                 )
                 return
             ollama_messages = model_messages(
-                inference_messages, use_native_tools and not repair_schema
+                inference_messages,
+                use_native_tools and not repair_schema,
+                fenced_tools=not repair_schema,
             )
 
             full_response = ""
@@ -1046,7 +1066,9 @@ async def run_agent_stream(
                 if repair_schema:
                     latency_options["think"] = False
                     if structured_outputs.should_try_schema(resolved_model):
-                        latency_options["format"] = response_schema(repair_schema)
+                        latency_options["format"] = response_schema(
+                            repair_schema, repair_plan
+                        )
                 if not providers.is_groq_model(resolved_model):
                     latency_options["options"]["num_ctx"] = budget.window
                 async for chunk in providers.stream_chat(
@@ -1198,10 +1220,12 @@ async def run_agent_stream(
             tool_calls = [
                 (
                     native_rebuild(
-                        _convert_native_tool_calls(native_tool_calls), repair_name
+                        _convert_native_tool_calls(native_tool_calls),
+                        repair_name,
+                        repair_plan,
                     )
                     if native_tool_calls
-                    else parse_rebuild(full_response, repair_name)
+                    else parse_rebuild(full_response, repair_name, repair_plan)
                 )
             ]
         elif native_tool_calls:
@@ -1394,6 +1418,7 @@ async def run_agent_stream(
                 schema_started = time.time()
                 schema_clock = time.monotonic()
                 await load_tools([tool_name])
+                execution_state.deferred_call_ids.add(call["id"])
                 observe(
                     "end_tool", "deferred", error="schema loaded; call was not executed"
                 )
@@ -1508,6 +1533,7 @@ async def run_agent_stream(
             }
             tool_args = normalize_structured_arguments(tool_args, schema)
             tool_args = tool.normalize_arguments(tool_args)
+            repair_arguments = deepcopy(tool_args)
             errors = argument_errors(tool_args, schema)
             if errors:
                 feedback = validation_feedback(call, errors)
@@ -1851,8 +1877,15 @@ async def run_agent_stream(
             # Feed result back
             feedback = view.content
             if not result.success and result.failure_kind == "validation":
-                feedback = validation_feedback(call, [result.output])
+                feedback = validation_feedback(
+                    call,
+                    [result.output],
+                    arguments=repair_arguments,
+                    issues=result.validation_issues,
+                )
             else:
+                if result.success:
+                    repair_plans.pop(tool_name, None)
                 execution_state.record(
                     call,
                     result.success,

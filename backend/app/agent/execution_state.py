@@ -59,6 +59,7 @@ class ExecutionState:
         self.validation_failures = {}
         self.attempt_counts = {}
         self.rejected_call_ids = set()
+        self.deferred_call_ids = set()
 
     def record(self, call, success, output, *, validation=False, generated=None):
         name = call["tool"]
