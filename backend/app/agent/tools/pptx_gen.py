@@ -107,7 +107,10 @@ class PptxGenTool(BaseTool):
             tool_call.completed_at = time.time()
             tool_call.error = "Topic cannot be empty"
             return ToolResult(
-                success=False, output="Topic cannot be empty.", tool_call=tool_call
+                success=False,
+                output="Topic cannot be empty.",
+                tool_call=tool_call,
+                failure_kind="validation",
             )
 
         # Fetch the actual available templates from the DB at runtime.

@@ -74,7 +74,9 @@ class ReportGenTool(BaseTool):
             },
             "outline": {
                 "type": "string",
-                "description": ("Optional section outline to guide the report structure"),
+                "description": (
+                    "Optional section outline to guide the report structure"
+                ),
             },
             "format": {
                 "type": "string",
@@ -122,6 +124,7 @@ class ReportGenTool(BaseTool):
                 success=False,
                 output="Report generation failed: topic cannot be empty. Provide a 'topic' field.",
                 tool_call=tool_call,
+                failure_kind="validation",
             )
 
         fmt = format if format in ("pdf", "docx") else _configured_default_format()
@@ -141,7 +144,9 @@ class ReportGenTool(BaseTool):
             result = await generate_report(
                 topic=topic.strip(),
                 outline="\n\n".join(
-                    part for part in (outline or requirements, kwargs.get("_user_request")) if part
+                    part
+                    for part in (outline or requirements, kwargs.get("_user_request"))
+                    if part
                 )
                 or None,
                 format=fmt,

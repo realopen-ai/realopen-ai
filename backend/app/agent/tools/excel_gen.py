@@ -140,6 +140,7 @@ class ExcelGenTool(BaseTool):
                     "Provide a 'brief' field describing the spreadsheet."
                 ),
                 tool_call=tool_call,
+                failure_kind="validation",
             )
 
         _log(
