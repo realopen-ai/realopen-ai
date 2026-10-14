@@ -8,6 +8,8 @@ Each tool supports:
 """
 
 import logging
+import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -68,6 +70,22 @@ class ToolResult:
     output: str  # Text to feed back to the LLM
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
     failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
+
+    def __post_init__(self):
+        # Unknown failures are operational, never automatically argument repairs.
+        if not self.success:
+            if self.failure_kind is None:
+                self.failure_kind = "execution"
+            if self.tool_call:
+                self.tool_call.status = "error"
+                if self.tool_call.completed_at is None:
+                    self.tool_call.completed_at = time.time()
+                if self.tool_call.error is None:
+                    self.tool_call.error = self.output
+
+
+class ToolArgumentError(ValueError):
+    """An explicitly identified caller-input error, not a service failure."""
 
 
 class BaseTool(ABC):
@@ -130,6 +148,21 @@ class BaseTool(ABC):
     def normalize_arguments(self, kwargs: dict) -> dict:
         """Tool-specific safe normalization before preflight; no side effects."""
         return kwargs
+
+    def invalid_arguments(self, message: str, call: Optional[ToolCall] = None):
+        """Return an explicit, side-effect-free validation rejection."""
+        if call is None:
+            call = ToolCall(
+                id=f"tc-invalid-{uuid.uuid4()}",
+                type=self.tool_type,
+                name=self.name,
+                title=self.get_display_name(),
+                started_at=time.time(),
+            )
+        call.status = "error"
+        call.completed_at = time.time()
+        call.error = call.output = message
+        return ToolResult(False, message, call, "validation")
 
     def _apply_aliases(self, kwargs: dict) -> dict:
         """Apply parameter aliases to normalize argument names."""
