@@ -38,6 +38,7 @@ from app.agent.argument_repair import (
 )
 from app.agent.tools import config_store
 from app.agent.tools.report_gen import generation_key as report_generation_key
+from app.agent.artifact_edit_state import ArtifactEditState
 from app.agent import routing
 from app.agent.results import compact_result
 from app.agent.base import ToolArgumentError
@@ -431,6 +432,7 @@ async def run_agent_stream(
     research_evidence = []
     generated_reports = {}
     inspected_reports = set()
+    artifact_edits = ArtifactEditState()
     pending_tool_contexts = []
     resource_context_loaded = set()
 
@@ -1524,6 +1526,67 @@ async def run_agent_stream(
                     return
                 continue
 
+            # Normalize declared structured fields before prerequisite checks,
+            # so JSON-encoded changes cannot bypass read receipts.
+            tool_args = tool._apply_aliases(dict(tool_args))
+            schema = {
+                "type": "object",
+                "properties": tool.get_parameters(),
+                "required": tool.get_required_params(),
+            }
+            tool_args = normalize_structured_arguments(tool_args, schema)
+            tool_args = tool.normalize_arguments(tool_args)
+            repair_arguments = deepcopy(tool_args)
+
+            if tool_name == "update_artifact":
+                reason = artifact_edits.missing_read(tool_args)
+                if reason:
+                    if (
+                        "read_artifact" in available_tools
+                        and "read_artifact" not in selected_tools
+                        and execution_state.validation_failures.get("read_artifact", 0)
+                        < agent_settings.effective().repair_attempts + 1
+                        and (config_store.get_tool_config("read_artifact") or {}).get(
+                            "enabled"
+                        )
+                        is not False
+                    ):
+                        await load_tools(["read_artifact"])
+                    feedback = format_prompt(
+                        "agent_artifact_read_required", reason=reason
+                    )
+                    execution_state.record_skipped(
+                        call, "artifact read prerequisite unmet"
+                    )
+                    observe(
+                        "end_tool", "skipped", error="artifact read prerequisite unmet"
+                    )
+                    now = int(time.time() * 1000)
+                    warning = {
+                        "id": call["id"],
+                        "type": ToolType.TOOL_ACCESS.value,
+                        "status": "warning",
+                        "title": "Read artifact before editing",
+                        "output": json.dumps(
+                            {
+                                "operation": "read_required",
+                                "requested": ["update_artifact"],
+                                "required_tools": ["read_artifact"],
+                                "action_executed": False,
+                            }
+                        ),
+                        "startedAt": now,
+                        "completedAt": now,
+                        "durationMs": 0,
+                    }
+                    if on_tool_call_update:
+                        on_tool_call_update(call["id"], warning)
+                    yield _sse_event("tool_call", {"tool_call": warning})
+                    messages.append(
+                        tool_result_message(call, feedback, application_feedback=True)
+                    )
+                    continue
+
             if tool_name == "delegate_to_coder":
                 if coder_attempted:
                     observe(
@@ -1541,15 +1604,6 @@ async def run_agent_stream(
 
             # Validate the same schema supplied to the model, before injecting
             # trusted execution-only kwargs. Aliases keep legacy tools usable.
-            tool_args = tool._apply_aliases(dict(tool_args))
-            schema = {
-                "type": "object",
-                "properties": tool.get_parameters(),
-                "required": tool.get_required_params(),
-            }
-            tool_args = normalize_structured_arguments(tool_args, schema)
-            tool_args = tool.normalize_arguments(tool_args)
-            repair_arguments = deepcopy(tool_args)
             errors = argument_errors(tool_args, schema)
             if errors:
                 feedback = validation_feedback(call, errors)
@@ -1862,6 +1916,9 @@ async def run_agent_stream(
             )
             if result.success and tool_name == "read_artifact":
                 inspected_reports.add(tool_args.get("artifact_id"))
+                artifact_edits.record_read(result.output)
+            if result.success and tool_name == "update_artifact":
+                artifact_edits.invalidate(tool_args.get("artifact_id"))
             if result.success and tool_name == "use_report_gen":
                 for output in result.tool_call.gen_results or []:
                     if output.get("artifact_id"):

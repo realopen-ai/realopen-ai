@@ -302,7 +302,7 @@ class UpdateArtifactTool(ArtifactTool):
     operation = "update"
     name = "update_artifact"
     display_name = "Update artifact"
-    description = "Edit generated files when requested. Read targets first and use exact version and section IDs. To change content, provide the complete replacement (Markdown for reports/slides, JSON for sheets). To remove a section/slide/sheet, set operation to delete and omit content; never replace it with a removal notice. Preserve unrelated content and at least one section. Failed edits leave previous versions intact; on conflicts, reread because section IDs may change. Uploads are read-only."
+    description = "Edit generated files when requested. A successful read_artifact of the same artifact/version is required in this request; schema loading is not a read. Copy exact section IDs/version from read results. An outline read suffices for deletion; read section content before replacement (Markdown for reports/slides, JSON for sheets). To remove a section/slide/sheet, set operation to delete and omit content. Preserve unrelated content and at least one section. Failed edits leave previous versions intact; reread after updates or conflicts because IDs may change. Uploads are read-only."
 
 
 class ExportArtifactTool(ArtifactTool):
