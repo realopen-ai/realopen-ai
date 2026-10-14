@@ -49,11 +49,14 @@ class ReportGenTool(BaseTool):
     """Generate a formatted report (PDF or DOCX) about a topic."""
 
     name = "use_report_gen"
+    output_formats = ("pdf", "docx")
     display_name = "Report Generation"
     description = (
         "Generate a formatted report (PDF or DOCX) about a topic. "
         "Use when the user asks for a report, document, or deliverable file. "
-        "The report is generated from scratch by the AI and saved as a downloadable file."
+        "The writer receives evidence from source tools used in this request. "
+        "Compile supported findings, preserve citations and disclose evidence gaps. "
+        "The report is saved as a downloadable file."
     )
     tool_type = ToolType.IMAGE_GEN  # reuse — produces a file deliverable
 
@@ -151,6 +154,9 @@ class ReportGenTool(BaseTool):
                 or None,
                 format=fmt,
                 model=model_override,
+                **(
+                    {"evidence": kwargs["_evidence"]} if kwargs.get("_evidence") else {}
+                ),
             )
 
             tool_call.status = "completed"

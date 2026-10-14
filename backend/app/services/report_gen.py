@@ -47,6 +47,9 @@ from typing import Optional
 from app.services import model_prefs
 from app.services import providers
 from app.services.artifact_sources import capture_source
+from app.core.prompt_security import untrusted_context_message
+from app.services.context_compactor import context_budget, estimate_request_tokens
+from app.services.report_evidence import bounded_evidence
 from app.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -93,7 +96,7 @@ CODE_BG = "F1F3F6"  # code background
 
 
 async def _generate_markdown(
-    topic: str, outline: Optional[str], model: Optional[str] = None
+    topic: str, outline: Optional[str], model: Optional[str] = None, evidence=None
 ) -> str:
     """Call the LLM to generate a Markdown report.
 
@@ -109,16 +112,57 @@ async def _generate_markdown(
 
     user_content = f"Topic: {topic}"
     if outline:
-        user_content += f"\n\nRequired structure and constraints (follow exactly):\n{outline}"
+        user_content += (
+            f"\n\nRequired structure and constraints (follow exactly):\n{outline}"
+        )
     user_content += "\n\nGenerate Markdown now. Honor the requested scope and length; do not add unrequested sections or claims."
 
     messages = [
         {
             "role": "system",
-            "content": get_prompt("report_outline_system" if outline else "report_system"),
+            "content": get_prompt(
+                "report_outline_system" if outline else "report_system"
+            ),
         },
         {"role": "user", "content": user_content},
     ]
+
+    options = {"num_predict": 4096}
+    if evidence:
+        messages[0]["content"] += "\n\n" + get_prompt("report_evidence")
+        # Reserve space for generation even on small-context report models.
+        window = context_budget(model, 1024).window
+        budget = context_budget(model, min(4096, window // 2))
+        if estimate_request_tokens(messages) >= budget.input_limit:
+            raise RuntimeError(
+                "Report instructions exceed the model context budget; shorten the topic/outline."
+            )
+
+        def with_evidence(char_limit):
+            return [
+                messages[0],
+                untrusted_context_message(
+                    "retrieved tool evidence for this report",
+                    bounded_evidence(evidence, char_limit),
+                ),
+                messages[1],
+            ]
+
+        # Fit complete JSON with explicit omissions, never cut a citation or
+        # silently let the runtime discard the beginning of the report prompt.
+        low, high = 64, 12000
+        if estimate_request_tokens(with_evidence(low)) > budget.input_limit:
+            raise RuntimeError(
+                "No room for report evidence in the model context budget."
+            )
+        while low < high:
+            middle = (low + high + 1) // 2
+            if estimate_request_tokens(with_evidence(middle)) <= budget.input_limit:
+                low = middle
+            else:
+                high = middle - 1
+        messages = with_evidence(low)
+        options = {"num_predict": budget.output, "num_ctx": budget.window}
 
     _log("generating markdown report: topic=%r model=%s", topic[:60], model)
 
@@ -126,7 +170,7 @@ async def _generate_markdown(
         model,
         messages,
         think=False,
-        options={"num_predict": 4096},
+        options=options,
         timeout=600.0,
     )
     content = data.get("message", {}).get("content", "").strip()
@@ -588,7 +632,11 @@ def _wrap_summary(body_html: str) -> str:
 
 def _build_cover_html(title: str, subtitle: str, topic: str) -> str:
     esc = _html.escape
-    topic_line = f'<div class="cover-meta-row cover-meta-topic">{esc(topic)}</div>' if topic else ""
+    topic_line = (
+        f'<div class="cover-meta-row cover-meta-topic">{esc(topic)}</div>'
+        if topic
+        else ""
+    )
     subtitle_html = f'<p class="cover-subtitle">{esc(subtitle)}</p>' if subtitle else ""
     return f"""
 <div class="cover">
@@ -629,7 +677,12 @@ def _build_toc_html(entries: list[tuple[str, str, str]]) -> str:
 
 def _css_escape(value: str) -> str:
     """Escape a string for safe embedding inside a CSS double-quoted string."""
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
 
 
 def _generate_pdf(
@@ -992,7 +1045,9 @@ def _add_formatted_text(paragraph, text: str) -> None:
     """Add text with inline **bold**, *italic* and `code` markdown."""
     from docx.shared import Pt
 
-    pattern = re.compile(r"(\*\*.+?\*\*|`[^`]+`|(?<!\*)\*(?!\*).+?(?<!\*)\*(?!\*))", re.DOTALL)
+    pattern = re.compile(
+        r"(\*\*.+?\*\*|`[^`]+`|(?<!\*)\*(?!\*).+?(?<!\*)\*(?!\*))", re.DOTALL
+    )
     for part in pattern.split(text):
         if not part:
             continue
@@ -1214,6 +1269,7 @@ async def generate_report(
     outline: Optional[str] = None,
     format: str = "pdf",
     model: Optional[str] = None,
+    evidence=None,
 ) -> dict:
     """Generate a report and save it to disk.
 
@@ -1221,6 +1277,7 @@ async def generate_report(
         topic: What the report is about.
         outline: Optional section outline to guide structure.
         format: "pdf" or "docx" (default "pdf").
+        evidence: Application-supplied source records, bounded for the writer.
 
     Returns:
         Dict with: report_id, filename, file_path, download_url, format
@@ -1233,7 +1290,12 @@ async def generate_report(
     reports_dir = _get_reports_dir()
 
     # 1. Generate Markdown via LLM
-    markdown_content = await _generate_markdown(topic, outline, model=model)
+    markdown_content = await _generate_markdown(
+        topic,
+        outline,
+        model=model,
+        **({"evidence": evidence} if evidence else {}),
+    )
 
     # 2. Convert to target format (run in thread pool — these are sync/CPU-bound)
     ext = "pdf" if fmt == "pdf" else "docx"
