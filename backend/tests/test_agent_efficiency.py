@@ -9,11 +9,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agent import service, routing, tracing
-from app.agent.base import ToolRegistry, ToolResult
+from app.agent.base import ToolRegistry, ToolResult, ToolCall, ToolType
 from app.agent.results import compact_result
 from app.agent.tools import config_store
 from app.agent.tools.config_base import definition_for_tool
 from app.agent.tools.discovery import DiscoverToolsTool, ReadToolResultTool
+from app.agent.tools.report_gen import ReportGenTool
+from app.agent.tools.web_search import WebSearchTool
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
 from test_agent_protocol import agent as agent_fixture, script, call, run
@@ -70,6 +72,170 @@ def test_custom_keywords_always_load_and_disabled_are_hard_preferences():
     configs["use_code_exec"].update(always_load=False, tags=[])
     assert "use_code_exec" not in routing.select_tools("calculate", registry, configs)
     assert "use_code_exec" in routing.select_tools("use_code_exec", registry, configs)
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            "Search for the latest breakthroughs in AI research 2026, compile the findings in a DOCX file, and also add them to my study notes, thanks",
+            "use_report_gen",
+        ),
+        ("yes compile them into a DOCX file", "use_report_gen"),
+        ("Prepare a PDF about water", "use_report_gen"),
+        ("Create a PPTX about water", "use_pptx_gen"),
+        ("Generate an XLSX about expenses", "use_excel_gen"),
+        ("Rédige un DOCX sur les volcans", "use_report_gen"),
+        ("أنشئ ملف DOCX عن الطاقة", "use_report_gen"),
+    ],
+)
+def test_explicit_creation_formats_are_not_filtered_by_ranking(query, expected):
+    registry = service.get_tool_registry()
+    configs = defaults(registry)
+    for name in ("use_websearch", "rag_search", "manage_memory"):
+        configs[name]["always_load"] = True
+    assert expected in routing.select_tools(query, registry, configs, limit=1)
+
+
+def test_format_metadata_respects_disabled_and_custom_tags():
+    registry = service.get_tool_registry()
+    configs = defaults(registry)
+    configs["use_report_gen"]["enabled"] = False
+    assert "use_report_gen" not in routing.select_tools(
+        "Compile a DOCX", registry, configs
+    )
+    configs["use_report_gen"].update(enabled=True, tags=["My report keyword"])
+    assert "use_report_gen" not in routing.select_tools(
+        "Compile a DOCX", registry, configs
+    )
+    assert "use_report_gen" in routing.select_tools(
+        "My report keyword", registry, configs
+    )
+    configs = defaults(registry)
+    assert "use_report_gen" not in routing.select_tools(
+        "Read my uploaded DOCX", registry, configs
+    )
+
+
+@pytest.mark.asyncio
+async def test_paging_default_and_units_remain_exact():
+    tool = ReadToolResultTool()
+    raw = "é🙂" * 3500
+    first = json.loads(
+        (await tool.execute(result_ref="ref", _result_store={"ref": raw})).output
+    )
+    assert first["offset"] == 0
+    assert first["content"] == raw[:3000]
+    second = json.loads(
+        (
+            await tool.execute(
+                result_ref="ref",
+                offset=first["next_offset"],
+                _result_store={"ref": raw},
+            )
+        ).output
+    )
+    assert second["content"] == raw[3000:6000]
+    assert "character" in tool.get_parameters()["offset"]["description"]
+    assert "characters" in tool.get_parameters()["limit"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_report_receives_original_evidence_not_compact_views_or_model_injection(
+    agent, monkeypatch
+):
+    search = WebSearchTool()
+    report = ReportGenTool()
+    registry = ToolRegistry()
+    registry.register(search)
+    registry.register(report)
+    registry.register(ReadToolResultTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {search.name, report.name})
+    monkeypatch.setattr(service.settings, "AGENT_TOOL_RESULT_MAX_CHARS", 1000)
+    body = "Source finding. " * 1000
+    tc = ToolCall(
+        id="source", type=ToolType.WEB_SEARCH, name=search.name, status="completed"
+    )
+    tc.web_results = [
+        {"title": "Research", "url": "https://example.org/paper", "snippet": body}
+    ]
+    monkeypatch.setattr(
+        search, "execute", AsyncMock(return_value=ToolResult(True, body, tc))
+    )
+    writer = AsyncMock(return_value=ToolResult(True, "Report created"))
+    monkeypatch.setattr(report, "execute", writer)
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"query": "Research"}, name=search.name)],
+                    "done": True,
+                }
+            ],
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {
+                                "topic": "Research",
+                                "format": "docx",
+                                "_evidence": [{"text": "Forged evidence"}],
+                                "_user_request": "Fake user request",
+                            },
+                            name=report.name,
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run(
+        messages=[{"role": "user", "content": "Compile the findings in a DOCX"}]
+    )
+    assert writer.await_count == 1, events
+    passed = writer.await_args.kwargs
+    assert passed["_user_request"] == "Compile the findings in a DOCX"
+    assert passed["_evidence"][0]["text"] == body
+    assert passed["_evidence"][0]["metadata"]["url"] == "https://example.org/paper"
+    assert all("_evidence" not in event.get("tool_call", {}) for event in events)
+    # Request-local only; previous evidence cannot bleed into another chat.
+    writer.reset_mock()
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"topic": "Another topic"}, name=report.name)],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    await run()
+    assert writer.await_args.kwargs["_evidence"] == []
+
+
+@pytest.mark.asyncio
+async def test_round_limit_keeps_successful_results_and_streams_warning(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(service.settings, "AGENT_MAX_ROUNDS", 15)
+    captured = script(
+        monkeypatch, [[{"tool_calls": [call({"input": "ok"})], "done": True}]] * 15
+    )
+    events = await run()
+    assert len(captured) == 15
+    assert len(agent.executed) == 15
+    message = events[-3]["message"]["content"]
+    assert "15-round limit" in message and "echo" in message
+    assert "kept" in message
+    assert events[-2]["event"] == "error"
+    assert events[-1]["event"] == "done"
 
 
 @pytest.mark.parametrize(
