@@ -162,6 +162,7 @@ class ArtifactTool(BaseTool):
                         if offset < 0:
                             raise ToolArgumentError("Offset must be nonnegative")
                         data = service.read(current, args.get("section_id"), offset)
+                        data["artifact_kind"] = artifact.kind
                         data["document_id"] = (
                             str(artifact.document_id) if artifact.document_id else None
                         )
@@ -197,6 +198,7 @@ class ArtifactTool(BaseTool):
                             raise ToolArgumentError("Summary question exceeds limit")
                         data = {
                             "artifact_id": str(artifact.id),
+                            "artifact_kind": artifact.kind,
                             "version": current.number,
                             **await service.summarize(
                                 db,

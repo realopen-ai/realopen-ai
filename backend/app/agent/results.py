@@ -22,6 +22,7 @@ def reference_metadata(data):
                 "title",
                 "type",
                 "kind",
+                "artifact_kind",
                 "status",
                 "version",
                 "offset",

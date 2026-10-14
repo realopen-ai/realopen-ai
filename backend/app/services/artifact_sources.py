@@ -6,6 +6,27 @@ from datetime import date, datetime
 from pathlib import Path
 
 
+def markdown_heading_starts(source):
+    """Document/chapter headings only; fenced code is not document structure."""
+    starts, offset, fence = [], 0, None
+    for line in source.splitlines(keepends=True):
+        marker = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if (
+                marker
+                and marker[1][0] == fence[0]
+                and len(marker[1]) >= len(fence)
+                and not line[marker.end() :].strip()
+            ):
+                fence = None
+        elif marker:
+            fence = marker[1]
+        elif re.match(r"#{1,2} .+", line):
+            starts.append(offset)
+        offset += len(line)
+    return starts
+
+
 def sections_for(source: str, kind: str) -> list[dict]:
     if kind == "excel":
         spec = json.loads(source)
@@ -33,16 +54,18 @@ def sections_for(source: str, kind: str) -> list[dict]:
             for i, block in enumerate(blocks)
             if block.strip()
         ]
-    starts = [match.start() for match in re.finditer(r"(?m)^#{1,2} .+$", source)]
+    starts = markdown_heading_starts(source)
     if not starts or starts[0] != 0:
         starts.insert(0, 0)
     starts.append(len(source))
     return [
         {
             "id": f"section-{i + 1}",
-            "title": source[start:end].splitlines()[0].lstrip("# ")
-            if source[start:end].strip()
-            else "Introduction",
+            "title": (
+                source[start:end].splitlines()[0].lstrip("# ")
+                if source[start:end].strip()
+                else "Introduction"
+            ),
             "content": source[start:end],
         }
         for i, (start, end) in enumerate(zip(starts, starts[1:]))
@@ -50,7 +73,9 @@ def sections_for(source: str, kind: str) -> list[dict]:
     ]
 
 
-def capture_source(directory: Path, report_id: str, source: str, kind: str, settings: dict):
+def capture_source(
+    directory: Path, report_id: str, source: str, kind: str, settings: dict
+):
     # Sidecar remains available if a generation completes before metadata is
     # committed. Never expose source in chat/SSE or regenerate it using an LLM.
     payload = {"source": source, "kind": kind, "settings": settings}

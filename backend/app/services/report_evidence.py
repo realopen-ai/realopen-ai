@@ -56,7 +56,20 @@ def evidence_records(result_ref, tool, arguments, result):
         value = json.loads(text)
     except (ValueError, TypeError):
         value = None
-    return [{**provenance, "metadata": reference_metadata(value), "text": text}]
+    kind = "retrieved_source"
+    if isinstance(value, dict):
+        if "sections" in value and "content" not in value:
+            kind = "outline_only"
+        elif value.get("artifact_kind") in {"report", "presentation", "excel"}:
+            kind = "generated_draft"
+    return [
+        {
+            **provenance,
+            "metadata": reference_metadata(value),
+            "evidence_kind": kind,
+            "text": text,
+        }
+    ]
 
 
 def bounded_evidence(records, limit=12000):
