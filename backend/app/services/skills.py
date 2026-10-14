@@ -235,6 +235,16 @@ def routing_catalog(role: str) -> str:
     return "\n".join(lines)
 
 
+def install_builtin_skills():
+    """Install missing bundled skills, never overwrite customized/disabled ones."""
+    bundled = Path(__file__).resolve().parent.parent / "agent" / "coder" / "skills"
+    if not bundled.exists():
+        return
+    for source in bundled.iterdir():
+        if source.is_dir() and not _directory(source.name).exists():
+            shutil.copytree(source, _directory(source.name))
+
+
 def read_resource(slug: str, resource: str) -> str:
     relative = PurePosixPath(resource)
     if (
