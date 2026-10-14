@@ -14,6 +14,7 @@ TODO: This is a naive but effective first version. Future improvements could inc
 """
 
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -59,6 +60,15 @@ class WebFetchTool(BaseTool):
         return ["url"]
 
     async def execute(self, *, url: str, **kwargs) -> ToolResult:
+        try:
+            urlsplit(
+                url
+            )  # Reject malformed bracketed hosts before httpx normalizes them.
+            parsed = httpx.URL(url)
+        except (httpx.InvalidURL, TypeError, ValueError):
+            return self.invalid_arguments("Provide a valid absolute HTTP or HTTPS URL.")
+        if parsed.scheme not in {"http", "https"} or not parsed.host:
+            return self.invalid_arguments("Provide a valid absolute HTTP or HTTPS URL.")
         timeout_s, max_chars = _configured_limits()
         async with httpx.AsyncClient(
             timeout=float(timeout_s), follow_redirects=True

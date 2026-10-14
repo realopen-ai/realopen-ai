@@ -13,6 +13,7 @@ from app.agent.base import BaseTool, ToolRegistry, ToolResult, ToolType
 from app.agent.tools.quizzes import CreateQuizTool
 from app.agent.tools.flashcards import CreateFlashcardDeckTool
 from app.agent.tools.notes import CreateStudyNoteTool
+from app.agent.tools.web_search import WebSearchTool, web_search_service
 from app.services.blocks import BlockBuilder
 from app.agent.protocol import (
     assistant_call_message,
@@ -168,6 +169,83 @@ async def test_saved_zero_repairs_stops_after_first_invalid_call(agent, monkeypa
     assert events[-1]["event"] == "error"
     assert "after bounded repairs" in events[-1]["error"].lower()
     assert not agent.executed
+
+
+@pytest.mark.asyncio
+async def test_web_search_internal_validation_uses_bounded_repair(agent, monkeypatch):
+    registry = ToolRegistry()
+    registry.register(WebSearchTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"use_websearch"})
+    search = AsyncMock(
+        return_value={
+            "no_providers": False,
+            "results": [],
+            "errors": [],
+            "by_provider": {},
+        }
+    )
+    monkeypatch.setattr(web_search_service, "search", search)
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"query": "  "}, name="use_websearch")],
+                    "done": True,
+                }
+            ],
+            [
+                {
+                    "content": json.dumps(
+                        {"tool": "use_websearch", "args": {"query": "Climate"}}
+                    ),
+                    "done": True,
+                }
+            ],
+            [{"content": "No results found.", "done": True}],
+        ],
+    )
+    events = await run()
+    assert events[-1]["event"] == "done"
+    assert len(captured) == 3
+    assert captured[1]["format"]["type"] == "object"
+    assert "format" not in captured[2]
+    search.assert_awaited_once_with("Climate")
+    updates = [event["tool_call"] for event in events if event["event"] == "tool_call"]
+    assert any(update["status"] == "error" for update in updates)
+    assert any(update["status"] == "completed" for update in updates)
+
+
+@pytest.mark.asyncio
+async def test_web_search_provider_failure_does_not_enter_argument_repair(
+    agent, monkeypatch
+):
+    registry = ToolRegistry()
+    registry.register(WebSearchTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"use_websearch"})
+    search = AsyncMock(side_effect=TimeoutError("Provider timed out"))
+    monkeypatch.setattr(web_search_service, "search", search)
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"query": "Climate"}, name="use_websearch")],
+                    "done": True,
+                }
+            ],
+            [{"content": "Search is unavailable.", "done": True}],
+        ],
+    )
+    events = await run()
+    assert events[-1]["event"] == "done"
+    assert len(captured) == 2
+    assert "format" not in captured[1]
+    assert captured[1]["tools"]
+    assert '"kind":"execution"' in str(captured[1]["messages"])
+    search.assert_awaited_once_with("Climate")
 
 
 @pytest.mark.asyncio

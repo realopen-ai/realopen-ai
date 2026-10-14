@@ -75,6 +75,10 @@ class WebSearchTool(BaseTool):
         )
 
         try:
+            if not query or not query.strip():
+                return self.invalid_arguments(
+                    "Search query cannot be empty.", tool_call
+                )
             outcome = await web_search_service.search(query)
 
             if outcome["no_providers"]:

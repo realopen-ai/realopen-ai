@@ -22,7 +22,10 @@ from app.services import rag
 @pytest.fixture(autouse=True)
 def ordinary_conversation(monkeypatch):
     # These tool-formatting tests have no notebook or live database.
-    monkeypatch.setattr("app.agent.tools.rag_search.selected_document_ids", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "app.agent.tools.rag_search.selected_document_ids", AsyncMock(return_value=None)
+    )
+
 
 # ─── Registration ───────────────────────────────────────────────────
 
@@ -54,10 +57,11 @@ async def test_rag_tool_empty_query_returns_gracefully():
     """An empty query short-circuits without touching the DB."""
     tool = RagSearchTool()
     result = await tool.execute(query="")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "No query" in result.output
     assert result.tool_call is not None
-    assert result.tool_call.status == "completed"
+    assert result.tool_call.status == "error"
 
 
 @pytest.mark.asyncio
@@ -65,7 +69,8 @@ async def test_rag_tool_whitespace_query_returns_gracefully():
     """A whitespace-only query short-circuits too."""
     tool = RagSearchTool()
     result = await tool.execute(query="   ")
-    assert result.success is True
+    assert result.success is False
+    assert result.failure_kind == "validation"
     assert "No query" in result.output
 
 
