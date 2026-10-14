@@ -36,6 +36,7 @@ import httpx
 
 from app.config import settings
 from app.agent.tracing import observe, observe_provider_request
+from app.services.inference_stats import runtime_usage
 
 # ─── Groq constants ─────────────────────────────────────────────────
 
@@ -538,6 +539,11 @@ async def chat_once(
             "model": data.get("model", model),
             "done": True,
             "provider": "groq",
+            **(
+                {"usage": runtime_usage(data, "groq")}
+                if runtime_usage(data, "groq")
+                else {}
+            ),
         }
 
     # Ollama path — kwargs pass through unchanged (think/format/options)
@@ -558,6 +564,9 @@ async def chat_once(
         raise ProviderStreamError(str(data["error"]))
     data.setdefault("done", True)
     data.setdefault("provider", "ollama")
+    usage = runtime_usage(data)
+    if usage:
+        data["usage"] = usage
     return data
 
 
@@ -622,6 +631,8 @@ async def stream_chat(
         payload = _groq_payload(model, messages, stream=True, tools=tools, **kwargs)
         await observe_provider_request(model, payload)
         accumulator = _GroqToolCallAccumulator()
+        usage = None
+        finish_reason = None
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST",
@@ -647,6 +658,7 @@ async def stream_chat(
                         continue
                     if chunk.get("error"):
                         raise ProviderStreamError(str(chunk["error"]))
+                    usage = runtime_usage(chunk, "groq") or usage
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -665,6 +677,7 @@ async def stream_chat(
                             "done": False,
                         }
                     if finish:
+                        finish_reason = finish
                         calls = accumulator.flush()
                         if calls or finish == "tool_calls":
                             yield {
@@ -673,19 +686,20 @@ async def stream_chat(
                                 "tool_calls": calls,
                                 "done": False,
                             }
-                        yield {
-                            "thinking": "",
-                            "content": "",
-                            "tool_calls": [],
-                            "done": True,
-                            "finish_reason": finish,
-                        }
-                        return
+                        # Usage may arrive in a separate frame after finish_reason.
+                        # Keep draining metadata without delaying visible tokens.
         # Stream ended without finish_reason (connection closed) — flush.
         calls = accumulator.flush()
         if calls:
             yield {"thinking": "", "content": "", "tool_calls": calls, "done": False}
-        yield {"thinking": "", "content": "", "tool_calls": [], "done": True}
+        yield {
+            "thinking": "",
+            "content": "",
+            "tool_calls": [],
+            "done": True,
+            **({"finish_reason": finish_reason} if finish_reason else {}),
+            **({"usage": usage} if usage else {}),
+        }
         return
 
     # Ollama path — JSON-lines streaming, already close to normalized
@@ -725,4 +739,5 @@ async def stream_chat(
                     "tool_calls": msg.get("tool_calls", []) or [],
                     "done": bool(chunk.get("done")),
                     "finish_reason": chunk.get("done_reason"),
+                    **({"usage": runtime_usage(chunk)} if runtime_usage(chunk) else {}),
                 }
