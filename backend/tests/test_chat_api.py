@@ -283,8 +283,9 @@ def env(monkeypatch, db_override):
     e.list_result = [e.conv]
 
     # ── agent loop ──
-    async def fake_agent(*, messages=None, model=None, images=None,
-                         conversation_id=None, **kw):
+    async def fake_agent(
+        *, messages=None, model=None, images=None, conversation_id=None, **kw
+    ):
         e.agent_calls.append(
             {
                 "messages": messages,
@@ -306,15 +307,21 @@ def env(monkeypatch, db_override):
 
     # ── persistence (independent sessions) ──
     async def fake_persist(conv_id, role, content, model=None, **kwargs):
-        call = {"conv_id": conv_id, "role": role, "content": content,
-                "model": model}
+        call = {"conv_id": conv_id, "role": role, "content": content, "model": model}
         call.update(kwargs)
         e.persists.append(call)
         return e.persist_result
 
-    async def fake_update(message_id, *, content=None, blocks=None,
-                          generation_duration=None, deliverables=None,
-                          completion_status=None, **kw):
+    async def fake_update(
+        message_id,
+        *,
+        content=None,
+        blocks=None,
+        generation_duration=None,
+        deliverables=None,
+        completion_status=None,
+        **kw,
+    ):
         e.updates.append(
             {
                 "message_id": message_id,
@@ -345,8 +352,10 @@ def env(monkeypatch, db_override):
             raise e.title_error
         return e.title_result
 
-    async def fake_summarize(db, conv_id, model, min_messages=None):
+    async def fake_summarize(db, conv_id, model, min_messages=None, *, on_start=None):
         e.summarize_calls.append({"conv_id": conv_id, "model": model})
+        if on_start and e.summarize_result:
+            on_start()
         if e.summarize_error is not None:
             raise e.summarize_error
         return e.summarize_result
@@ -512,8 +521,9 @@ def env(monkeypatch, db_override):
     )
 
     # ── multipart document digestion ──
-    async def fake_digest(db, *, file_bytes, filename, scope,
-                          conversation_id=None, progress=None, **kw):
+    async def fake_digest(
+        db, *, file_bytes, filename, scope, conversation_id=None, progress=None, **kw
+    ):
         e.digest_calls.append(
             {
                 "filename": filename,
@@ -529,14 +539,22 @@ def env(monkeypatch, db_override):
         if progress is not None:
             progress(
                 SimpleNamespace(
-                    stage="extracting_text", percent=10, details=filename,
-                    document_id=None, total_chunks=0, total_images=0,
+                    stage="extracting_text",
+                    percent=10,
+                    details=filename,
+                    document_id=None,
+                    total_chunks=0,
+                    total_images=0,
                 )
             )
             progress(
                 SimpleNamespace(
-                    stage="done", percent=100, details="ready",
-                    document_id=str(DOC_ID), total_chunks=3, total_images=1,
+                    stage="done",
+                    percent=100,
+                    details="ready",
+                    document_id=str(DOC_ID),
+                    total_chunks=3,
+                    total_images=1,
                 )
             )
         if e.digest_error is not None:
@@ -545,9 +563,7 @@ def env(monkeypatch, db_override):
             id=DOC_ID, filename=filename, total_chunks=3, total_images=1
         )
 
-    monkeypatch.setattr(
-        chat_module.rag_service, "digest_document", fake_digest
-    )
+    monkeypatch.setattr(chat_module.rag_service, "digest_document", fake_digest)
     return e
 
 
@@ -583,9 +599,7 @@ async def test_chat_happy_path_with_conversation(client, env):
     assert env.add_message_calls[1]["model"] == "qwen3:4b"
 
     # auto-title invoked with the last user message
-    assert env.title_calls == [
-        {"conv_id": CONV_ID, "user_message": "ping"}
-    ]
+    assert env.title_calls == [{"conv_id": CONV_ID, "user_message": "ping"}]
 
 
 @pytest.mark.asyncio
@@ -861,9 +875,7 @@ async def test_stream_in_band_error_event_fails_the_turn(client, env):
         },
     )
     events = sse_events(r.text)
-    in_band = [
-        ev for ev in events if ev.get("event") == "error" and ev.get("error")
-    ]
+    in_band = [ev for ev in events if ev.get("event") == "error" and ev.get("error")]
     assert in_band and in_band[0]["error"] == "tool crashed"
 
     # the snapshot is finalized with completion_status="error" + error block
@@ -1080,9 +1092,7 @@ async def test_multipart_invalid_messages_json_falls_back(client, env):
         data={"messages": '{"broken'},
     )
     assert r.status_code == 200
-    assert env.agent_calls[0]["messages"] == [
-        {"role": "user", "content": '{"broken'}
-    ]
+    assert env.agent_calls[0]["messages"] == [{"role": "user", "content": '{"broken'}]
 
 
 @pytest.mark.asyncio
@@ -1103,9 +1113,7 @@ async def test_multipart_invalid_conversation_id_is_ignored(client, env):
 @pytest.mark.asyncio
 async def test_multipart_in_band_error_and_debug_logging(client, env, monkeypatch):
     monkeypatch.setattr(chat_module, "is_debug", lambda: True)
-    env.agent_events = default_agent_events() + [
-        {"event": "error", "error": "boom"}
-    ]
+    env.agent_events = default_agent_events() + [{"event": "error", "error": "boom"}]
     r = await client.post(
         "/api/chat/stream/multipart",
         data={
@@ -1114,9 +1122,7 @@ async def test_multipart_in_band_error_and_debug_logging(client, env, monkeypatc
         },
     )
     events = sse_events(r.text)
-    in_band = [
-        ev for ev in events if ev.get("event") == "error" and ev.get("error")
-    ]
+    in_band = [ev for ev in events if ev.get("event") == "error" and ev.get("error")]
     assert in_band and in_band[0]["error"] == "boom"
     assert env.updates[-1]["completion_status"] == "error"
     assert any(b["type"] == "error" for b in env.updates[-1]["blocks"])
@@ -1179,7 +1185,9 @@ async def test_multipart_memory_extraction_failure_reports_error(client, env):
     failed = [
         ev for ev in sse_events(r.text) if ev.get("event") == "memory_extraction_done"
     ]
-    assert failed and failed[0]["error"] == "Memory extraction failed. Check server logs."
+    assert (
+        failed and failed[0]["error"] == "Memory extraction failed. Check server logs."
+    )
     assert "watermark read failed" not in r.text
     assert env.summarize_calls  # summarization still attempted (non-fatal)
     assert r.text.rstrip().endswith("data: [DONE]")
@@ -1345,9 +1353,9 @@ async def test_resume_stream_finished_404(client, env):
 async def test_resume_stream_live_200(client, env):
     stream = FakeActiveStream(
         events=[
-            "data: {\"event\": \"message\", \"message\": {\"content\": \"head\"}}\n\n",
-            "data: {\"event\": \"message\", \"message\": {\"content\": \"mid\"}}\n\n",
-            "data: {\"event\": \"message\", \"message\": {\"content\": \"tail\"}}\n\n",
+            'data: {"event": "message", "message": {"content": "head"}}\n\n',
+            'data: {"event": "message", "message": {"content": "mid"}}\n\n',
+            'data: {"event": "message", "message": {"content": "tail"}}\n\n',
             "data: [DONE]\n\n",
         ],
         persisted_through=2,
