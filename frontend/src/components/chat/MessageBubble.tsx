@@ -28,6 +28,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
 import { elapsedMilliseconds } from "@/lib/timing";
+import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -501,6 +502,14 @@ function ToolCallBlockView({
       label: translate("tool.skill.done"),
       runningLabel: translate("tool.skill.running"),
     },
+    tool_access: {
+      label: translate("tool.access.done"),
+      runningLabel: translate("tool.access.running"),
+    },
+    tool_output: {
+      label: translate("tool.output.done"),
+      runningLabel: translate("tool.output.running"),
+    },
     file_read: {
       label: translate("tool.fileRead.done"),
       runningLabel: translate("tool.fileRead.running"),
@@ -557,17 +566,24 @@ function ToolCallBlockView({
   };
 
   // Display label: "Generating..." while running, "Generated ..." when done
+  const access =
+    tc.type === "tool_access" ? toolAccessDetails(tc.output) : null;
   const displayLabel =
-    tc.status === "error"
-      ? translate("chat.toolFailed")
-      : tc.status === "running"
-        ? runningLabel
-        : label;
+    tc.status === "warning"
+      ? translate("tool.access.deferred")
+      : tc.status === "error"
+        ? translate("chat.toolFailed")
+        : tc.status === "running"
+          ? runningLabel
+          : access && !access.loaded.length && access.alreadyLoaded.length
+            ? translate("tool.access.alreadyDone")
+            : label;
 
   // Short target shown inline after the label (file path for file tools,
   // query for searches) — keeps the row scannable.
-  const shortTarget =
-    tc.filePath && tc.filePath !== "/workspace"
+  const shortTarget = access?.requested.length
+    ? access.requested.join(", ")
+    : tc.filePath && tc.filePath !== "/workspace"
       ? tc.filePath
       : tc.type === "websearch" || tc.type === "deepsearch"
         ? tc.query
@@ -583,12 +599,13 @@ function ToolCallBlockView({
   // Auto-expand while running so the user sees progress, AND auto-expand
   // when completed with deliverables so the download badge is visible.
   const autoExpand =
-    tc.status === "error" ||
-    tc.status === "running" ||
-    ((tc.type === "file_read" || tc.type === "file_write") &&
-      tc.status === "completed") ||
-    ((isReportTool || isPresentationTool || isExcelTool) &&
-      tc.status === "completed");
+    tc.type !== "tool_access" &&
+    (tc.status === "error" ||
+      tc.status === "running" ||
+      ((tc.type === "file_read" || tc.type === "file_write") &&
+        tc.status === "completed") ||
+      ((isReportTool || isPresentationTool || isExcelTool) &&
+        tc.status === "completed"));
   const isExpanded = expanded || autoExpand;
 
   return (
@@ -604,10 +621,19 @@ function ToolCallBlockView({
           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-muted-foreground" />
         ) : tc.status === "error" ? (
           <XCircle className="w-3.5 h-3.5 shrink-0 text-danger" />
+        ) : tc.status === "warning" ? (
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 text-warning" />
         ) : (
           <Check className="w-3.5 h-3.5 shrink-0 text-success" />
         )}
-        <span className="text-[12.5px] text-muted-foreground group-hover:text-foreground transition-colors truncate">
+        <span
+          className={cn(
+            "text-[12.5px] transition-colors truncate",
+            tc.status === "warning"
+              ? "text-warning"
+              : "text-muted-foreground group-hover:text-foreground",
+          )}
+        >
           {displayLabel}
         </span>
         {shortTarget && (
@@ -698,6 +724,7 @@ function ToolCallDetail({
       </p>
     );
   }
+  if (tc.type === "tool_access") return <ToolAccessDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
@@ -730,6 +757,54 @@ function ToolCallDetail({
     return <ImageGenDetail tc={tc} />;
   }
   return <GenericToolDetail tc={tc} />;
+}
+
+function ToolAccessDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const access = toolAccessDetails(tc.output);
+  const fields = [
+    ["tool.access.requested", access.requested],
+    ["tool.access.loaded", access.loaded],
+    ["tool.access.alreadyLoaded", access.alreadyLoaded],
+  ] as const;
+  return (
+    <div className="space-y-2 text-[12.5px]">
+      {fields
+        .filter(([, names]) => names.length)
+        .map(([label, names]) => (
+          <div key={label}>
+            <p className="text-muted-foreground">{translate(label)}</p>
+            <p
+              dir="ltr"
+              className="font-mono text-foreground break-words text-left"
+            >
+              {names.join(", ")}
+            </p>
+          </div>
+        ))}
+      <p
+        className={
+          tc.status === "warning" ? "text-warning" : "text-muted-foreground"
+        }
+      >
+        {translate(
+          tc.status === "running"
+            ? "tool.access.loadingInfo"
+            : access.deferred
+              ? "tool.access.deferredInfo"
+              : "tool.access.loadInfo",
+        )}
+      </p>
+      {!access.requested.length && tc.output && (
+        <pre
+          dir="ltr"
+          className="whitespace-pre-wrap break-words text-left text-muted-foreground"
+        >
+          {tc.output}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function FileToolDetail({ tc }: { tc: ToolCallResult }) {

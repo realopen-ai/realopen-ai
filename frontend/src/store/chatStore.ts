@@ -27,6 +27,8 @@ export interface ToolCallResult {
     | "vision"
     | "code_exec"
     | "skill"
+    | "tool_access"
+    | "tool_output"
     | "flashcards"
     | "notes"
     | "quizzes"
@@ -37,7 +39,7 @@ export interface ToolCallResult {
     | "image_gen"
     | "sandbox"
     | "preview";
-  status: "running" | "completed" | "error";
+  status: "running" | "completed" | "warning" | "error";
   title: string;
   startedAt: number;
   completedAt?: number;

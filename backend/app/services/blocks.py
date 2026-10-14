@@ -104,7 +104,7 @@ class BlockBuilder:
             block is None
             and tc_id
             and updates.get("type")
-            and updates.get("status") in {"error", "completed"}
+            and updates.get("status") in {"error", "completed", "warning"}
         ):
             self.on_tool_call_start({"id": tc_id, **updates})
             block = self._tool_call_blocks[tc_id]

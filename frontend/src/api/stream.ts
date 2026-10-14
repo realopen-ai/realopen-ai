@@ -614,7 +614,11 @@ export function dispatchAgentEvent(
           genResults: tc.genResults,
         });
       }
-    } else if (tc.status === "completed" || tc.status === "error") {
+    } else if (
+      tc.status === "completed" ||
+      tc.status === "error" ||
+      tc.status === "warning"
+    ) {
       log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
 
       // Validation can reject a call before execution starts. Register its
