@@ -88,6 +88,7 @@ class CreateFlashcardDeckTool(BaseTool):
             title="Creating flashcards",
             started_at=started,
         )
+        failure_kind = None
         try:
             body = DeckInput(
                 title=title,
@@ -118,6 +119,11 @@ class CreateFlashcardDeckTool(BaseTool):
                 }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            failure_kind = (
+                "execution"
+                if isinstance(exc, HTTPException) and exc.status_code not in {400, 422}
+                else "validation"
+            )
             call.status = "error"
             if isinstance(exc, ValidationError):
                 detail = "; ".join(
@@ -126,7 +132,12 @@ class CreateFlashcardDeckTool(BaseTool):
                 )
             else:
                 detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            output = f"Invalid flashcards: {detail}"
+            prefix = (
+                "Invalid flashcards"
+                if failure_kind == "validation"
+                else "Could not save flashcards"
+            )
+            output = f"{prefix}: {detail}"
             call.error = output
         except Exception:
             logger.exception("Flashcard creation failed")
@@ -135,7 +146,7 @@ class CreateFlashcardDeckTool(BaseTool):
             call.error = output
         call.completed_at = time.time()
         call.output = output
-        return ToolResult(call.status == "completed", output, call)
+        return ToolResult(call.status == "completed", output, call, failure_kind)
 
 
 tool_registry.register(CreateFlashcardDeckTool())

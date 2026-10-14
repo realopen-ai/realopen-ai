@@ -58,13 +58,17 @@ def safe_value(value, limit, secrets=(), seen=None, depth=0):
         for secret in secrets:
             value = value.replace(secret, "[REDACTED]")
         value = re.sub(r"(?i)\bBearer\s+[\w.\-]+", "Bearer [REDACTED]", value)
-        value = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", value)
+        value = re.sub(
+            r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", value
+        )
         value = re.sub(
             r"(?i)((?:api[_-]?key|password|passwd|access[_-]?token|refresh[_-]?token|token|secret|authorization)[\"']?\s*(?:[=:]|\bis\b)\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)",
             r"\1[REDACTED]",
             value,
         )
-        value = re.sub(r"data:[^\s,]+;base64,[A-Za-z0-9+/=]+", "[BINARY DATA OMITTED]", value)
+        value = re.sub(
+            r"data:[^\s,]+;base64,[A-Za-z0-9+/=]+", "[BINARY DATA OMITTED]", value
+        )
         value = re.sub(r"\b(?:sk-|gsk_)[A-Za-z0-9_-]{16,}", "[REDACTED]", value)
         return (
             value
@@ -89,7 +93,11 @@ def safe_value(value, limit, secrets=(), seen=None, depth=0):
                     else (
                         {
                             "omitted": "asset",
-                            "items": (len(item) if isinstance(item, (str, list, bytes)) else None),
+                            "items": (
+                                len(item)
+                                if isinstance(item, (str, list, bytes))
+                                else None
+                            ),
                         }
                         if _ASSET_KEY.match(str(key))
                         else safe_value(item, limit, secrets, seen, depth + 1)
@@ -119,7 +127,9 @@ class Trace:
         self.generating = False
         self.prompts = {}
         self.secrets = tuple(
-            value for key, value in os.environ.items() if _SECRET_KEY.search(key) and value
+            value
+            for key, value in os.environ.items()
+            if _SECRET_KEY.search(key) and value
         ) + tuple(
             value
             for key, value in settings.model_dump().items()
@@ -180,7 +190,9 @@ class Trace:
         }
 
     def safe(self, value, result=False):
-        sanitized = safe_value(value, self.result_limit if result else self.limit, self.secrets)
+        sanitized = safe_value(
+            value, self.result_limit if result else self.limit, self.secrets
+        )
         if result and not isinstance(sanitized, (str, type(None))):
             serialized = json.dumps(sanitized, ensure_ascii=False)
             if len(serialized) > self.result_limit:
@@ -202,7 +214,9 @@ class Trace:
         for message in messages:
             if message.get("role") == "system":
                 content = self.safe(message.get("content", ""))
-                digest = hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+                digest = hashlib.sha256(
+                    json.dumps(content, sort_keys=True).encode()
+                ).hexdigest()
                 self.prompts[digest] = content
                 result.append(
                     {
@@ -222,7 +236,11 @@ class Trace:
                     result.append(
                         {
                             **self.safe(
-                                {key: value for key, value in message.items() if key != "content"}
+                                {
+                                    key: value
+                                    for key, value in message.items()
+                                    if key != "content"
+                                }
                             ),
                             "content": self.safe(content, result=True),
                         }
@@ -233,7 +251,9 @@ class Trace:
 
     def end_round(self, decision):
         if self.round is not None:
-            self.round["duration_ms"] = round((time.monotonic() - self.round_started) * 1000, 3)
+            self.round["duration_ms"] = round(
+                (time.monotonic() - self.round_started) * 1000, 3
+            )
             self.round["decision"] = decision
         self.generating = False
 
@@ -279,7 +299,9 @@ class Trace:
         if chunk.get("thinking"):
             self.round["inference"]["thinking_observed"] = True
         for key in ("content", "thinking"):
-            response[key] += (chunk.get(key) or "")[: max(0, self.limit - len(response[key]))]
+            response[key] += (chunk.get(key) or "")[
+                : max(0, self.limit - len(response[key]))
+            ]
             if len(response[key]) >= self.limit:
                 response["truncated"] = True
         response["native_tool_calls"].extend(self.safe(chunk.get("tool_calls") or []))
@@ -297,7 +319,11 @@ class Trace:
                     diagnostics.append(
                         {
                             "name": (call.get("function") or {}).get("name"),
-                            "status": ("parsed" if isinstance(parsed, dict) else "invalid_shape"),
+                            "status": (
+                                "parsed"
+                                if isinstance(parsed, dict)
+                                else "invalid_shape"
+                            ),
                         }
                     )
                 except ValueError as exc:
@@ -312,7 +338,9 @@ class Trace:
                 diagnostics.append(
                     {
                         "name": (call.get("function") or {}).get("name"),
-                        "status": ("parsed" if isinstance(args, dict) else "invalid_shape"),
+                        "status": (
+                            "parsed" if isinstance(args, dict) else "invalid_shape"
+                        ),
                     }
                 )
         # Observe rejected text candidates without changing the existing parser.
@@ -325,6 +353,9 @@ class Trace:
                         "status": "invalid_json",
                         "error": str(exc),
                         "raw_candidate": self.safe(match[1]),
+                        "represented_by_call": bool(
+                            len(calls) == 1 and calls[0].get("parse_error")
+                        ),
                     }
                 )
         self.round["parsed_tool_calls"] = self.safe(calls)
@@ -337,7 +368,11 @@ class Trace:
             and model == self.round["model"]
         ):
             self.round["provider_settings"] = self.safe(
-                {key: value for key, value in payload.items() if key not in {"messages", "tools"}}
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"messages", "tools"}
+                }
             )
             defaults = defaults or {}
             self.round["model_defaults"] = self.safe(defaults)
@@ -350,7 +385,9 @@ class Trace:
                 ("think", "think"),
             ):
                 value = (
-                    payload.get("max_tokens") if field == "max_output_tokens" else payload.get(key)
+                    payload.get("max_tokens")
+                    if field == "max_output_tokens"
+                    else payload.get(key)
                 )
                 if value is None:
                     value = options.get(key)
@@ -375,7 +412,9 @@ class Trace:
             and self.round
             and model == self.round["model"]
         ):
-            self.round.setdefault("malformed_provider_frames", []).append(self.safe(raw))
+            self.round.setdefault("malformed_provider_frames", []).append(
+                self.safe(raw)
+            )
 
     def model_attempt(
         self,
@@ -388,7 +427,10 @@ class Trace:
         duration_ms=None,
     ):
         if self.round is not None:
-            if isinstance(response, dict) and (response.get("message") or {}).get("thinking"):
+            self.round["inference"]["native_tools"] = bool(tools)
+            if isinstance(response, dict) and (response.get("message") or {}).get(
+                "thinking"
+            ):
                 self.round["inference"]["thinking_observed"] = True
             self.round.setdefault("model_attempts", []).append(
                 {
@@ -428,15 +470,22 @@ class Trace:
             "execution_status": "pending",
             "validation": {"status": "not_observed"},
         }
-        (self.round["tool_calls"] if self.round else self.data["preparation_tools"]).append(
-            self.tool
-        )
+        (
+            self.round["tool_calls"] if self.round else self.data["preparation_tools"]
+        ).append(self.tool)
 
     def tool_identity(self, tool_call_id):
         if self.tool is not None:
             self.tool["tool_call_id"] = tool_call_id
 
-    def end_tool(self, status, output=None, error=None, execution_args=None):
+    def end_tool(
+        self,
+        status,
+        output=None,
+        error=None,
+        execution_args=None,
+        validation_error=False,
+    ):
         if self.tool is None:
             return
         self.tool.update(
@@ -456,8 +505,11 @@ class Trace:
                 if status == "completed"
                 else (
                     "reported_validation_error"
-                    if isinstance(error, str)
-                    and (error.startswith("Invalid ") or "ValidationError" in error)
+                    if validation_error
+                    or (
+                        isinstance(error, str)
+                        and (error.startswith("Invalid ") or "ValidationError" in error)
+                    )
                     else "not_observed"
                 )
             ),
@@ -473,9 +525,7 @@ class Trace:
                 (
                     "interrupted"
                     if status == "shutdown"
-                    else "cancelled"
-                    if status == "cancelled"
-                    else "failed"
+                    else "cancelled" if status == "cancelled" else "failed"
                 ),
                 error=reason,
             )
@@ -490,7 +540,9 @@ class Trace:
             "total_tool_calls": len(calls)
             + sum(
                 sum(
-                    d.get("status") == "invalid_json" and "raw_candidate" in d
+                    d.get("status") == "invalid_json"
+                    and "raw_candidate" in d
+                    and not d.get("represented_by_call")
                     for d in rnd["parse_diagnostics"]
                 )
                 for rnd in self.data["rounds"]
@@ -502,13 +554,17 @@ class Trace:
                 )
                 for rnd in self.data["rounds"]
             ),
-            "successful_tool_calls": sum(c["execution_status"] == "completed" for c in calls),
+            "successful_tool_calls": sum(
+                c["execution_status"] == "completed" for c in calls
+            ),
             "failed_tool_calls": sum(
                 c["execution_status"] in {"failed", "unavailable"} for c in calls
             )
             + sum(
                 sum(
-                    d.get("status") == "invalid_json" and "raw_candidate" in d
+                    d.get("status") == "invalid_json"
+                    and "raw_candidate" in d
+                    and not d.get("represented_by_call")
                     for d in rnd["parse_diagnostics"]
                 )
                 for rnd in self.data["rounds"]
@@ -517,7 +573,9 @@ class Trace:
             "interrupted_tool_calls": sum(
                 c["execution_status"] in {"cancelled", "interrupted"} for c in calls
             ),
-            "skipped_tool_calls": sum(c["execution_status"] == "skipped" for c in calls),
+            "skipped_tool_calls": sum(
+                c["execution_status"] == "skipped" for c in calls
+            ),
             "final_assistant_response": (
                 response
                 if response is not None
@@ -528,7 +586,9 @@ class Trace:
                 )
             ),
             "final_response_source": (
-                "application" if response is not None else "model" if self.data["rounds"] else None
+                "application"
+                if response is not None
+                else "model" if self.data["rounds"] else None
             ),
             "quality_evaluated": False,
         }
@@ -536,7 +596,9 @@ class Trace:
 
 def observe(method, *args, **kwargs):
     trace = current_trace.get()
-    if trace is not None and (trace.data["outcome"]["status"] == "running" or method == "finish"):
+    if trace is not None and (
+        trace.data["outcome"]["status"] == "running" or method == "finish"
+    ):
         try:
             getattr(trace, method)(*args, **kwargs)
         except Exception:
@@ -546,7 +608,11 @@ def observe(method, *args, **kwargs):
 async def observe_provider_request(model, payload, local=False):
     """Read model defaults only for traced requests; never alter inference payloads."""
     trace = current_trace.get()
-    if trace is None or asyncio.current_task() is not trace.owner_task or not trace.generating:
+    if (
+        trace is None
+        or asyncio.current_task() is not trace.owner_task
+        or not trace.generating
+    ):
         return
     defaults = {
         "lookup_status": "not_exposed",
@@ -638,7 +704,9 @@ def _write(directory, data, prompts):
             path = root / f"{data['timestamp'][:10]}.jsonl"
             fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as stream:
-                stream.write(json.dumps(data, ensure_ascii=True, allow_nan=False) + "\n")
+                stream.write(
+                    json.dumps(data, ensure_ascii=True, allow_nan=False) + "\n"
+                )
                 stream.flush()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -647,13 +715,17 @@ def _write(directory, data, prompts):
 def _persist(trace):
     # Bound/redact large results off the event loop, preserving raw data only in memory.
     def calls(items):
-        return [{**call, "output": trace.safe(call.get("output"), result=True)} for call in items]
+        return [
+            {**call, "output": trace.safe(call.get("output"), result=True)}
+            for call in items
+        ]
 
     record = {
         **trace.data,
         "preparation_tools": calls(trace.data["preparation_tools"]),
         "rounds": [
-            {**round_, "tool_calls": calls(round_["tool_calls"])} for round_ in trace.data["rounds"]
+            {**round_, "tool_calls": calls(round_["tool_calls"])}
+            for round_ in trace.data["rounds"]
         ],
     }
     _write(trace.directory, trace.safe(record), trace.safe(trace.prompts))
@@ -682,7 +754,9 @@ def enqueue(trace):
             _worker = asyncio.create_task(_consume(_queue))
         _queue.put_nowait(trace)
     except Exception:
-        logger.warning("Agent trace queue full or unavailable; trace dropped", exc_info=False)
+        logger.warning(
+            "Agent trace queue full or unavailable; trace dropped", exc_info=False
+        )
 
 
 async def flush_traces():
@@ -769,7 +843,9 @@ def traced_coder_execution(function):
                 trace = Trace(
                     {
                         "conversation_id": request.get("conversation_id"),
-                        "messages": [{"role": "user", "content": request.get("task", "")}],
+                        "messages": [
+                            {"role": "user", "content": request.get("task", "")}
+                        ],
                         "model": "coder",
                     }
                 )
@@ -786,7 +862,11 @@ def traced_coder_execution(function):
                 logger.warning("Coder trace initialization failed", exc_info=False)
                 token = current_trace.set(None)
             result = await function(*args, **kwargs)
-            observe("finish", "completed" if result.success else "failed", "coder tool returned")
+            observe(
+                "finish",
+                "completed" if result.success else "failed",
+                "coder tool returned",
+            )
             return result
         except asyncio.CancelledError:
             observe("finish", "cancelled", "coder task cancelled")

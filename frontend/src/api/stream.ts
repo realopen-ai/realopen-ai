@@ -617,6 +617,23 @@ export function dispatchAgentEvent(
     } else if (tc.status === "completed" || tc.status === "error") {
       log(`   🔧 tool_call ${tc.status}: type=${tc.type}`);
 
+      // Validation can reject a call before execution starts. Register its
+      // terminal event too; the store deduplicates IDs already present from
+      // a running event or a persisted/replayed snapshot.
+      if (tc.type) {
+        callbacks.onToolCallStart({
+          ...tc,
+          id: tcId,
+          title: tc.title ?? tc.type,
+          startedAt: epochMilliseconds(tc.startedAt),
+          completedAt:
+            tc.completedAt == null
+              ? undefined
+              : epochMilliseconds(tc.completedAt),
+          ...persistedToolCallDetails(tc),
+        });
+      }
+
       const updates: Partial<ToolCallResult> = {
         status: tc.status,
       };

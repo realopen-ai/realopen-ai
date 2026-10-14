@@ -1,11 +1,28 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.config import settings
 from app.services import model_prefs
 from app.services import providers
+from app.services import agent_settings
+from app.db.session import get_db
 
 router = APIRouter()
+
+
+@router.get("/agent/settings")
+async def get_agent_settings(db=Depends(get_db)):
+    return await agent_settings.load(db)
+
+
+@router.put("/agent/settings")
+async def put_agent_settings(body: agent_settings.AgentPreferences, db=Depends(get_db)):
+    return await agent_settings.save(db, body)
+
+
+@router.delete("/agent/settings")
+async def reset_agent_settings(db=Depends(get_db)):
+    return await agent_settings.reset(db)
 
 
 @router.get("/profile/models")

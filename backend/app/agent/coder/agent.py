@@ -20,6 +20,12 @@ from app.agent.coder.tooling import (
     normalize_tool_args,
 )
 from app.agent.tracing import observe, traced_coder_execution
+from app.agent.protocol import (
+    assistant_call_message,
+    tool_result_message,
+    normalize_native_calls,
+)
+from app.services.context_compactor import compact_conversation
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt
@@ -455,6 +461,8 @@ class CoderAgent(BaseTool):
         _parent_tool_call_id: str | None = None,
         **kwargs,
     ) -> ToolResult:
+        if not task or not task.strip():
+            return self.invalid_arguments("Provide a concrete coding task.")
         started = time.time()
         call = ToolCall(
             id=f"tc-coder-{int(started * 1000)}",
@@ -489,7 +497,7 @@ class CoderAgent(BaseTool):
                 coder_prompt += "\n\n" + skill_catalog
             messages = [
                 {"role": "system", "content": coder_prompt},
-                {"role": "user", "content": task},
+                {"role": "user", "content": task, "metadata": {"agent_request": True}},
             ]
             state = RunState()
             final = ""
@@ -499,6 +507,9 @@ class CoderAgent(BaseTool):
                     current = await db.get(SandboxTask, task_id)
                     if current and current.cancellation_requested:
                         raise RuntimeError("Coding task cancelled")
+                messages, _ = await compact_conversation(
+                    messages, model, tools=CODER_TOOLS, max_output_tokens=2048
+                )
                 observe(
                     "begin_round",
                     _round + 1,
@@ -525,17 +536,22 @@ class CoderAgent(BaseTool):
                 if not calls:
                     final = message.get("content", "")
                     break
-                messages.append(message)
+                normalized_calls = normalize_native_calls(calls)
+                messages.append(
+                    assistant_call_message(
+                        message.get("content", ""),
+                        normalized_calls,
+                        message.get("thinking", ""),
+                    )
+                )
                 abort_reason = ""
-                for call_index, item in enumerate(calls):
-                    fn = item.get("function", item)
-                    name, args = fn.get("name", ""), fn.get("arguments", {})
-                    observe("begin_tool", name, args)
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {}
+                for call_index, item in enumerate(normalized_calls):
+                    name, args = item["tool"], item["args"]
+                    observe("begin_tool", name, item["raw_arguments"])
+                    if item.get("parse_error"):
+                        observe("end_tool", "failed", error=item["parse_error"])
+                        messages.append(tool_result_message(item, item["parse_error"]))
+                        continue
                     if name == "write_file":
                         path = str(args.get("path", ""))
                         state.writes_by_path[path] = (
@@ -546,13 +562,13 @@ class CoderAgent(BaseTool):
                                 "end_tool", "skipped", error="third rewrite refused"
                             )
                             messages.append(
-                                {
-                                    "role": "tool",
-                                    "content": (
+                                tool_result_message(
+                                    item,
+                                    (
                                         f"Refused a third rewrite of {path}. Read the current "
                                         "file, run the narrowest test, and report a blocker."
                                     ),
-                                }
+                                )
                             )
                             continue
                     output, event = await _run_step(
@@ -566,19 +582,30 @@ class CoderAgent(BaseTool):
                         event_queue=_event_queue,
                     )
                     abort_reason = _track_step(state, name, args, output, event)
-                    messages.append({"role": "tool", "content": output})
+                    messages.append(
+                        tool_result_message(
+                            item,
+                            output,
+                            skill_guidance=name == "load_skill" and not event,
+                        )
+                    )
                     if abort_reason:
-                        for skipped in calls[call_index + 1 :]:
-                            skipped_fn = skipped.get("function", skipped)
+                        for skipped in normalized_calls[call_index + 1 :]:
                             observe(
                                 "begin_tool",
-                                skipped_fn.get("name", ""),
-                                skipped_fn.get("arguments", {}),
+                                skipped["tool"],
+                                skipped["raw_arguments"],
                             )
                             observe(
                                 "end_tool",
                                 "skipped",
                                 error="coder command failure budget exhausted",
+                            )
+                            messages.append(
+                                tool_result_message(
+                                    skipped,
+                                    "Skipped because the coder command failure budget was exhausted.",
+                                )
                             )
                         break
                 await _save_progress(task_id, state)

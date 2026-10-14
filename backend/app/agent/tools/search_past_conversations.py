@@ -96,13 +96,7 @@ class SearchPastConversationsTool(BaseTool):
         )
 
         if not query or not query.strip():
-            tool_call.status = "completed"
-            tool_call.completed_at = time.time()
-            return ToolResult(
-                success=True,
-                output="No search query provided.",
-                tool_call=tool_call,
-            )
+            return self.invalid_arguments("No search query provided.", tool_call)
 
         _log("execute START query=%r conv=%s", query[:80], conversation_id)
 

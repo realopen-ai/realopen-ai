@@ -98,8 +98,16 @@ class BlockBuilder:
             self._tool_call_blocks[tc_id] = block
 
     def on_tool_call_update(self, tc_id: str, updates: dict):
-        """Update an existing tool_call block by ID."""
+        """Update a call, or register a rejection/completion without a start."""
         block = self._tool_call_blocks.get(tc_id)
+        if (
+            block is None
+            and tc_id
+            and updates.get("type")
+            and updates.get("status") in {"error", "completed"}
+        ):
+            self.on_tool_call_start({"id": tc_id, **updates})
+            block = self._tool_call_blocks[tc_id]
         if block is not None:
             block["tool_call"].update(updates)
         # Extract deliverables from genResults (reports, presentations,

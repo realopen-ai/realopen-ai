@@ -17,6 +17,7 @@ import {
 import { useAiStore } from "@/store/aiStore";
 import { useT, useSettingsStore } from "@/store/settingsStore";
 import { ModelSelect } from "@/components/settings/ModelSelect";
+import { AdvancedAiSettings } from "@/components/settings/AdvancedAiSettings";
 import { Button } from "@/components/ui/button";
 import { SectionHeader, StatusDot } from "@/components/ui/primitives";
 
@@ -297,6 +298,7 @@ export function AiTab() {
         <SectionHeader title={t("settings.ai.providers")} />
         <ProvidersSection />
       </section>
+      <AdvancedAiSettings />
     </div>
   );
 }

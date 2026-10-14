@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime
 from typing import Any, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message
 from app.services.embeddings import get_embedding
 from app.services.context_compactor import summarize_conversation
 from app.config import settings
+from app.services.context_relevance import relevant_context, topic_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -173,13 +174,15 @@ async def get_relevant_summaries(
     query: str,
     exclude_conversation_id: Optional[uuid.UUID] = None,
     top_k: int = 3,
-    threshold: float = 0.4,
+    threshold: float = 0.65,
 ) -> List[dict]:
     """Find conversation summaries relevant to the current user query.
 
     Uses pgvector cosine similarity on summary embeddings.
     Falls back to keyword matching (ILIKE) if vector search unavailable.
     """
+    if not topic_tokens(query):
+        return []
     try:
         query_embedding = await get_embedding(query)
         if query_embedding is None:
@@ -188,7 +191,8 @@ async def get_relevant_summaries(
             )
 
         # Vector search on summary embeddings
-        vec_stmt = text("""
+        vec_stmt = text(
+            """
             SELECT id, title, summary,
                    EXTRACT(EPOCH FROM summary_at)::bigint AS summary_at_epoch,
                    model,
@@ -200,7 +204,8 @@ async def get_relevant_summaries(
               AND 1 - (summary_embedding <=> CAST(:q AS vector)) >= :thr
             ORDER BY sim DESC
             LIMIT :lim
-        """).bindparams(
+        """
+        ).bindparams(
             q=str(query_embedding),
             thr=threshold,
             lim=top_k * 2 if exclude_conversation_id else top_k,
@@ -213,6 +218,10 @@ async def get_relevant_summaries(
         for row in rows:
             cid = str(row[0])
             if exclude_conversation_id and uuid.UUID(cid) == exclude_conversation_id:
+                continue
+            if not relevant_context(
+                query, str(row[1] or "") + " " + str(row[2]), float(row[5] or 0)
+            ):
                 continue
             summaries.append(
                 {
@@ -243,13 +252,11 @@ async def _keyword_summary_search(
     """Fallback: keyword search on conversation summaries."""
     try:
         # Extract significant keywords from query (words >= 3 chars)
-        keywords = [w for w in query.lower().split() if len(w) >= 3][:5]
+        keywords = sorted(topic_tokens(query))[:8]
         if not keywords:
             return []
 
         # Build ILIKE conditions
-        from sqlalchemy import or_
-
         conditions = [Conversation.summary.ilike(f"%{kw}%") for kw in keywords]
         stmt = (
             select(Conversation)
@@ -269,6 +276,8 @@ async def _keyword_summary_search(
 
         summaries = []
         for c in conversations:
+            if not relevant_context(query, (c.title or "") + " " + c.summary):
+                continue
             if len(summaries) >= limit:
                 break
             summaries.append(
@@ -311,15 +320,6 @@ async def build_cross_session_context(
         exclude_conversation_id=conv_uuid,
         top_k=max_summaries,
     )
-
-    # If vector search returned nothing, try recent summaries
-    if not summaries:
-        recent = await get_recent_summaries(
-            db,
-            limit=max_summaries,
-            exclude_conversation_id=conv_uuid,
-        )
-        summaries = recent[:max_summaries]
 
     if not summaries:
         return ""

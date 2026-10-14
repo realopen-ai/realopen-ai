@@ -272,6 +272,12 @@ interface ChatState {
     messageId: string,
     token: string,
   ) => void;
+  /** Render terminal SSE/transport errors immediately without replacing text. */
+  appendErrorBlock: (
+    conversationId: string,
+    messageId: string,
+    error: string,
+  ) => void;
   /** Start a new tool_call block with status=running. Returns the block ID
    * (which matches the backend tool call ID for later updates). */
   startToolCallBlock: (
@@ -833,6 +839,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     { id: blockId, type: "text" as const, content: token },
                   ],
                   content: (m.content ?? "") + token,
+                };
+              }),
+            }
+          : c,
+      ),
+    }));
+  },
+
+  appendErrorBlock: (conversationId, messageId, error) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              messages: c.messages.map((m) => {
+                if (m.id !== messageId) return m;
+                const blocks = m.blocks ?? [];
+                const duplicate = blocks.some(
+                  (block) => block.type === "error" && block.content === error,
+                );
+                // Legacy messages may have text but no block representation.
+                const previous: MessageBlock[] =
+                  !blocks.length && m.content
+                    ? [
+                        {
+                          id: `block-${messageId}-text`,
+                          type: "text",
+                          content: m.content,
+                        },
+                      ]
+                    : blocks;
+                return {
+                  ...m,
+                  completionStatus: "error" as const,
+                  blocks: duplicate
+                    ? blocks
+                    : [
+                        ...previous,
+                        {
+                          id: `block-${messageId}-${previous.length}`,
+                          type: "error" as const,
+                          content: error,
+                        },
+                      ],
                 };
               }),
             }

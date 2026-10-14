@@ -452,6 +452,25 @@ async def test_upload_reads_work_without_embeddings_and_are_read_only(store):
 
 
 @pytest.mark.asyncio
+async def test_public_documents_remain_explicitly_accessible_but_not_auto_injected(store):
+    conversation = uuid.uuid4()
+    public_id, attached_id = uuid.uuid4(), uuid.uuid4()
+    with Session(store.engine) as db:
+        db.execute(text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation.hex})
+        db.add_all([
+            Document(id=public_id, filename="Public.pdf", original_filename="Public.pdf", file_path="public.pdf", scope="public"),
+            Document(id=attached_id, filename="Attached.pdf", original_filename="Attached.pdf", file_path="attached.pdf", scope="conversation", conversation_id=conversation),
+        ])
+        db.commit()
+    async with store.factory() as db:
+        automatic = await service.catalog(db, conversation, scoped=True, include_public=False)
+        explicit = await service.catalog(db, conversation, scoped=True)
+    assert {item["id"] for item in automatic["items"]} == {str(attached_id)}
+    assert {item["id"] for item in explicit["items"]} == {str(public_id), str(attached_id)}
+
+
+
+@pytest.mark.asyncio
 async def test_scope_enforcement_and_reference_validation(store):
     conversation, other = uuid.uuid4(), uuid.uuid4()
     with store.engine.begin() as conn:

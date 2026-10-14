@@ -1,33 +1,26 @@
-"""
-Context Compactor for RealOpen-AI.
+"""Budget agent requests and summarize complete historical exchanges.
 
-Auto-summarizes conversation history as it approaches the model's
-context window limit. This is essential for local models with small
-context windows.
+Estimates include schemas, thinking and tool transcripts; generation reserves
+and runtime windows use explicit configuration. Summaries remain untrusted
+context. Protected task/source metadata is retained, and an oversized request
+fails safely when compaction cannot make it fit. Callers retain the compacted
+working transcript across subsequent rounds.
 
-Also handles end-of-conversation summarization for cross-session memory.
-
-IMPROVEMENTS:
-- Tool-call-aware token estimation: counts tool_calls[].function.arguments
-  (not just content), with 4 tokens overhead per tool_call. Without this,
-  a tool-only assistant turn (content=None, large tool body) reads as
-  ~0 tokens and compaction triggers late.
-- Better token estimate: 0.3 tokens/char (was 0.4) — closer to real BPE
-  output. Code and CJK are still underestimated but less so.
-- Post-trim tool-message sanitization: drops orphan `role:"tool"`
-  messages whose parent was compacted away, preventing the OpenAI API's
-  "tool message without preceding tool_call" 400 error.
-- Refuse-to-compact on summarizer failure: returns the original messages
-  intact rather than silently dropping the older half.
+Also provides conversation-end summarization for cross-session retrieval.
 """
 
 import logging
+import json
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from app.config import settings
 from app.prompts import get_prompt
+from app.core.prompt_security import untrusted_context_message
+from app.agent.protocol import model_messages
+from app.services import providers, agent_settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,29 +38,15 @@ def _log(msg: str, *args: Any) -> None:
     print(f"[context_compactor] {formatted}", flush=True)
 
 
-# ── Constants ───────────────────────────────────────────────────
-
-# Default context lengths by model size for estimation
-DEFAULT_CONTEXT_LENGTHS: Dict[str, int] = {
-    "4k": 4096,
-    "8k": 8192,
-    "16k": 16384,
-    "32k": 32768,
-    "128k": 131072,
-}
-
-
 def _estimate_tokens(text: str) -> int:
-    """Rough token count: ~0.3 tokens per character for English text.
+    """Heuristic text estimate, weighted for denser non-ASCII tokenization.
 
-    Uses 0.3 (chars * 0.3) instead of the commonly-cited 0.25
-    (chars/4) because 0.3 is closer to real BPE output. Still a rough
-    estimate — code and CJK are off, but better than 0.4 which
-    overestimates English and triggers compaction too early.
+    Not a provider tokenizer: templates/images still require a safety margin.
     """
     if not text:
         return 0
-    return max(1, int(len(text) * 0.3))
+    # Non-ASCII languages/code symbols tokenize more densely than English.
+    return max(1, int(len(text) * 0.3 + sum(ord(c) > 127 for c in text) * 0.7))
 
 
 def _estimate_message_tokens(msg: Dict) -> int:
@@ -82,6 +61,7 @@ def _estimate_message_tokens(msg: Dict) -> int:
       blind to large tool arguments.
     """
     total = 4  # per-message overhead
+    total += _estimate_tokens(msg.get("thinking") or "")
     content = msg.get("content", "")
     if isinstance(content, str):
         total += _estimate_tokens(content)
@@ -104,45 +84,71 @@ def _estimate_message_tokens(msg: Dict) -> int:
             name = str(fn.get("name", ""))
             args = fn.get("arguments", "")
             if not isinstance(args, str):
-                import json as _json
-
                 try:
-                    args = _json.dumps(args)
+                    args = json.dumps(args, ensure_ascii=False)
                 except Exception:
                     args = str(args)
-            total += _estimate_tokens(name + args)
+            total += _estimate_tokens(name + args + str(tc.get("id") or ""))
 
     # role:"tool" messages carry tool_call_id + content — count the content
     # (already handled above) plus a small overhead for the tool_call_id ref.
     if msg.get("role") == "tool":
-        total += 4
+        total += 4 + _estimate_tokens(
+            str(msg.get("tool_name") or "") + str(msg.get("tool_call_id") or "")
+        )
 
     return total
 
 
 def _estimate_context_window(model_name: str) -> int:
-    """Estimate a model's context window from its name.
+    """Return the configured effective runtime window, never a name heuristic."""
+    return settings.AGENT_CONTEXT_WINDOWS.get(
+        model_name, agent_settings.effective().context_window
+    )
 
-    Falls back to 8192 for unknown models (conservative for 4B/7B).
-    """
-    ml = model_name.lower()
-    if "128k" in ml or "131k" in ml:
-        return 131072
-    if "32k" in ml:
-        return 32768
-    if "16k" in ml:
-        return 16384
-    if "8k" in ml:
-        return 8192
-    if "4k" in ml:
-        return 4096
-    # Heuristic: models mentioning 70b, 34b, 32b likely have larger context
-    if any(x in ml for x in ("70b", "72b", "34b", "32b", "405b")):
-        return 16384
-    if any(x in ml for x in ("3b", "4b", "7b", "8b")):
-        return 8192
-    # Default conservative
-    return 8192
+
+class ContextBudgetExceeded(ValueError):
+    """The protected request/context cannot fit without losing user data."""
+
+
+@dataclass(frozen=True)
+class ContextBudget:
+    window: int
+    output: int
+    margin: int
+
+    @property
+    def input_limit(self):
+        return self.window - self.output - self.margin
+
+
+def context_budget(model: str, max_output_tokens=None) -> ContextBudget:
+    budget = ContextBudget(
+        _estimate_context_window(model),
+        (
+            max_output_tokens
+            if max_output_tokens is not None
+            else agent_settings.effective().generation_limit
+        ),
+        settings.AGENT_CONTEXT_MARGIN_TOKENS,
+    )
+    if (
+        budget.window <= 0
+        or budget.output <= 0
+        or budget.margin < 0
+        or budget.input_limit <= 0
+    ):
+        raise ContextBudgetExceeded(
+            "Invalid context/output budget; increase the context window or reduce the output reserve."
+        )
+    return budget
+
+
+def estimate_request_tokens(messages, tools=None):
+    """Estimate the full input, including schemas and message/template overhead."""
+    return sum(_estimate_message_tokens(m) for m in messages) + (
+        _estimate_tokens(json.dumps(tools, ensure_ascii=False)) + 8 if tools else 0
+    )
 
 
 # ── Compaction prompt ────────────────────────────────────────────
@@ -151,6 +157,21 @@ def _estimate_context_window(model_name: str) -> int:
 async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Optional[str]:
     """Call the LLM to produce a summary. Returns None on failure."""
     try:
+        if providers.is_groq_model(model):
+            response = await providers.chat_once(
+                model,
+                [
+                    {
+                        "role": "system",
+                        "content": get_prompt("context_compactor_system"),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                timeout=120,
+                think=False,
+                options={"num_predict": max_tokens},
+            )
+            return (response.get("message", {}).get("content") or "").strip()
         async with httpx.AsyncClient(timeout=120.0) as client:
             _log(
                 " =================== Calling LLM for summary (model=%s, max_tokens=%d)",
@@ -170,12 +191,15 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                     ],
                     "think": False,
                     "stream": False,
-                    "options": {"num_predict": max_tokens},
+                    "options": {
+                        "num_predict": max_tokens,
+                        "num_ctx": _estimate_context_window(model),
+                    },
                 },
             )
             resp.raise_for_status()
             _log(
-                " =================== LLM summary response=%d",
+                " =================== LLM summary response=%s",
                 resp.json(),
             )
             data = resp.json()
@@ -204,8 +228,7 @@ def _format_message_for_compaction(msg: Dict) -> str:
                     parts.append("[image]")
         content = " ".join(parts)
 
-    # Include tool_calls in the compaction text so the summary knows what
-    # tools were called and with what arguments (truncated).
+    # Keep complete text/arguments; bounded summarization batches large inputs.
     tool_calls = msg.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         tc_parts = []
@@ -214,18 +237,13 @@ def _format_message_for_compaction(msg: Dict) -> str:
             name = fn.get("name", "unknown")
             args = fn.get("arguments", "")
             if not isinstance(args, str):
-                import json as _json
-
                 try:
-                    args = _json.dumps(args)
+                    args = json.dumps(args, ensure_ascii=False)
                 except Exception:
                     args = str(args)
-            if len(args) > 200:
-                args = args[:200] + "…"
             tc_parts.append(f"[tool: {name}({args})]")
         content = (str(content) + " " + " ".join(tc_parts)).strip()
 
-    content = str(content)[:2000]  # Cap per-message
     return f"{role}: {content}"
 
 
@@ -235,179 +253,273 @@ def _build_compaction_text(messages: List[Dict]) -> str:
 
 
 def _sanitize_tool_messages_after_compact(messages: List[Dict]) -> List[Dict]:
-    """Drop orphan tool/assistant-tool_calls messages after compaction.
-
-    After compaction splits the conversation, a `role:"tool"` message
-    may end up without its parent `assistant.tool_calls` message (which
-    got summarized into the compacted block). Ollama/OpenAI APIs reject
-    this with "tool message without preceding tool_call". Similarly, a
-    dangling `assistant.tool_calls` with no following tool response
-    breaks the pairing.
-
-    Two passes:
-    1. Drop orphan `role:"tool"` messages (no preceding assistant.tool_calls).
-    2. Strip `tool_calls` from assistant messages that have no following
-       tool response (keep their text content if any).
-    """
-    if not messages:
-        return messages
-
-    result: List[Dict] = []
-    for i, m in enumerate(messages):
-        role = m.get("role")
-        if role == "tool":
-            # Check if the previous KEPT message is an assistant with tool_calls
-            has_parent = False
-            if result:
-                prev = result[-1]
+    """Preserve complete parallel exchanges; discard only truly orphaned results."""
+    result = []
+    pending = []
+    for message in messages:
+        if message.get("role") == "tool":
+            matches = [
+                call
+                for call in pending
                 if (
-                    prev.get("role") == "assistant"
-                    and isinstance(prev.get("tool_calls"), list)
-                    and prev["tool_calls"]
-                ):
-                    has_parent = True
-            if not has_parent:
-                _log("dropping orphan tool message after compaction")
+                    message.get("tool_call_id") == call.get("id")
+                    if message.get("tool_call_id")
+                    else (
+                        message.get("tool_name")
+                        == (call.get("function") or {}).get("name")
+                        if message.get("tool_name")
+                        else True
+                    )
+                )
+            ]
+            if not matches:
                 continue
-        result.append(dict(m))
+            result.append(dict(message))
+            pending.remove(matches[0])
+            continue
+        if pending:
+            parent = next((m for m in reversed(result) if m.get("tool_calls")), None)
+            if parent:
+                unmatched = {id(c) for c in pending}
+                parent["tool_calls"] = [
+                    c for c in parent["tool_calls"] if id(c) not in unmatched
+                ]
+                if not parent["tool_calls"]:
+                    parent.pop("tool_calls")
+                    parent["content"] = (
+                        parent.get("content") or "(tool call summarized)"
+                    )
+            pending = []
+        result.append(dict(message))
+        if message.get("tool_calls"):
+            pending = list(message["tool_calls"])
+    if pending:
+        parent = next((m for m in reversed(result) if m.get("tool_calls")), None)
+        if parent:
+            unmatched = {id(c) for c in pending}
+            parent["tool_calls"] = [
+                c for c in parent["tool_calls"] if id(c) not in unmatched
+            ]
+            if not parent["tool_calls"]:
+                parent.pop("tool_calls")
+                parent["content"] = parent.get("content") or "(tool call summarized)"
+    return result
 
-    # Pass 2: strip dangling assistant.tool_calls (no following tool response)
-    final: List[Dict] = []
-    for i, m in enumerate(result):
-        if (
-            m.get("role") == "assistant"
-            and isinstance(m.get("tool_calls"), list)
-            and m["tool_calls"]
-        ):
-            # Check if any of the next messages is a tool response
-            has_response = False
-            for nxt in result[i + 1 :]:
-                if nxt.get("role") == "tool":
-                    has_response = True
-                    break
-                if nxt.get("role") == "user":
-                    break  # user message ends the tool-response window
-            if not has_response:
-                _log("stripping dangling assistant.tool_calls after compaction")
-                m = {k: v for k, v in m.items() if k != "tool_calls"}
-                # If content is empty/None, give it a placeholder so the
-                # message isn't dropped by the API for having no content.
-                if not m.get("content"):
-                    m["content"] = "(tool call summarized)"
-        final.append(m)
 
-    return final
+def _protected(message):
+    meta = message.get("metadata") or {}
+    if meta.get("compaction"):
+        return False
+    content = str(message.get("content") or "")
+    return bool(
+        meta.get("agent_context")
+        or meta.get("agent_request")
+        or (
+            message.get("role") == "user"
+            and (
+                content.startswith("[Context:")
+                or content.startswith("<<<UNTRUSTED_SOURCE_DATA>>>")
+            )
+        )
+    )
+
+
+async def _summarize_bounded(model, text, max_tokens=None):
+    """Summarize bounded source batches, then their summaries if necessary."""
+    summary_tokens = (
+        settings.CONTEXT_COMPACT_SUMMARY_TOKENS if max_tokens is None else max_tokens
+    )
+    limit = (
+        context_budget(model, summary_tokens).input_limit
+        - _estimate_tokens(get_prompt("context_compactor_system"))
+        - 8
+    )
+    if limit < 128:
+        return None
+    for _ in range(3):
+        if _estimate_tokens(text) <= limit:
+            return await _llm_summarize(model, text, max_tokens=summary_tokens)
+        # A conservative character batch is shorter than the token budget.
+        summaries = []
+        for offset in range(0, len(text), limit):
+            part = await _llm_summarize(
+                model, text[offset : offset + limit], max_tokens=summary_tokens
+            )
+            if not part:
+                return None
+            summaries.append(part)
+        combined = "\n\n".join(summaries)
+        if len(combined) >= len(text):
+            return None
+        text = combined
+    return None
 
 
 async def compact_conversation(
     messages: List[Dict],
     model: str,
+    *,
+    tools=None,
+    max_output_tokens=None,
+    native_tools=True,
 ) -> Tuple[List[Dict], bool]:
-    """Check if compaction is needed and compact if so.
+    """Budget the actual request and summarize whole exchanges, never partial pairs.
 
-    Args:
-        messages: Current conversation messages (including system prompt and
-            any dynamic context messages appended after the conversation).
-        model: Ollama model name (for context window detection)
-
-    Returns:
-        (compacted_messages, was_compacted)
+    Limits are configured per model, not inferred from its advertised/name window.
+    Estimates include tool schemas, output reserve and a template/safety margin.
+    Protected current-request/context data is never silently truncated.
     """
-    if len(messages) < 8:
-        return messages, False
-
-    context_length = _estimate_context_window(model)
-    total_tokens = sum(_estimate_message_tokens(m) for m in messages)
-    usage_pct = total_tokens / context_length if context_length else 0
-
-    if usage_pct < settings.CONTEXT_COMPACT_THRESHOLD:
-        return messages, False
-
-    _log(
-        "Context at %.0f%% (%d/%d tokens) — compacting",
-        usage_pct * 100,
-        total_tokens,
-        context_length,
-    )
-
-    # Split into system + conversation + tail-context.
-    # Tail-context messages (memories, cross-session, datetime) are
-    # user-role messages we appended AFTER the conversation — they should
-    # NOT be compacted away. Identify them by the untrusted-context guard
-    # markers or the [Context: ...] prefix.
-    system_msgs = [m for m in messages if m.get("role") == "system"]
-    convo_msgs = []
-    tail_context_msgs = []
-    for m in messages:
-        if m.get("role") == "system":
-            continue
-        content = str(m.get("content", ""))
-        # Tail context messages are wrapped in untrusted guards or have
-        # the [Context: ...] prefix. Keep them out of compaction.
-        if "<<<UNTRUSTED_SOURCE_DATA>>>" in content or content.startswith("[Context:"):
-            tail_context_msgs.append(m)
-        else:
-            convo_msgs.append(m)
-
-    if len(convo_msgs) < settings.CONTEXT_COMPACT_PRESERVE_TURNS + 2:
-        return messages, False
-
-    # Summarize older half, keep recent turns
-    split = len(convo_msgs) - settings.CONTEXT_COMPACT_PRESERVE_TURNS
-    older = convo_msgs[:split]
-    recent = convo_msgs[split:]
-
-    compaction_text = _build_compaction_text(older)
-    if not compaction_text:
-        return messages, False
-
-    # Count existing compactions for the header
-    existing_compactions = sum(
-        1 for m in system_msgs if "[Compacted conversation" in str(m.get("content", ""))
-    )
-
-    summary = await _llm_summarize(
-        model, compaction_text, settings.CONTEXT_COMPACT_SUMMARY_TOKENS
-    )
-    if not summary:
-        # Refuse-to-compact on failure: return original intact rather
-        # than silently dropping the older half.
-        logger.warning("Compaction summary failed — keeping original messages")
-        _log("Compaction summary failed — keeping original messages")
-        return messages, False
-
-    # Build the compacted message list
-    summary_msg = {
-        "role": "system",
-        "content": (
-            f"[Compacted conversation #{existing_compactions + 1} — "
-            f"{len(older)} earlier messages summarized]\n\n{summary}"
-        ),
-    }
-
-    # Replace old compaction summaries with the latest one (avoid stacking)
-    compacted_system = [
+    budget = context_budget(model, max_output_tokens)
+    # Demote legacy system-role summaries to history after the real prefix.
+    legacy = [
         m
-        for m in system_msgs
-        if "[Compacted conversation" not in str(m.get("content", ""))
+        for m in messages
+        if m.get("role") == "system"
+        and str(m.get("content", "")).startswith("[Compacted conversation")
     ]
+    if legacy:
+        messages = [m for m in messages if m not in legacy]
+        insertion = next(
+            (i for i, m in enumerate(messages) if m.get("role") != "system"),
+            len(messages),
+        )
+        history = []
+        for m in legacy:
+            historical = untrusted_context_message(
+                "compacted conversation", m["content"]
+            )
+            historical["metadata"]["compaction"] = True
+            history.append(historical)
+        messages[insertion:insertion] = history
 
-    # Reassemble: system prefix + compaction summary + recent convo + tail context
-    result = compacted_system + [summary_msg] + recent + tail_context_msgs
+    def size(items):
+        return estimate_request_tokens(model_messages(items, native_tools), tools)
 
-    # Sanitize: drop orphan tool messages left by the compaction split
-    result = _sanitize_tool_messages_after_compact(result)
+    total = size(messages)
+    preferences = agent_settings.effective()
+    if not preferences.history_compaction:
+        if total > budget.input_limit:
+            raise ContextBudgetExceeded(
+                "History compaction is disabled and the request exceeds the context budget. Enable compaction or narrow the request."
+            )
+        return messages, False
+    soft_limit = int(budget.input_limit * preferences.compaction_threshold)
+    if total <= soft_limit:
+        return messages, False
 
-    new_tokens = sum(_estimate_message_tokens(m) for m in result)
-    _log(
-        "Compacted: %d → %d tokens (%d messages → %d messages)",
-        total_tokens,
-        new_tokens,
-        len(messages),
-        len(result),
+    # Build atomic groups; an assistant and all its tool results stay together.
+    candidates = []
+    for index, message in enumerate(messages):
+        if message.get("role") == "system" and not str(
+            message.get("content", "")
+        ).startswith("[Compacted conversation"):
+            continue
+        if _protected(message):
+            continue
+        if (
+            message.get("role") == "tool"
+            and candidates
+            and candidates[-1][-1] == index - 1
+            and messages[candidates[-1][0]].get("tool_calls")
+        ):
+            candidates[-1].append(index)
+        else:
+            candidates.append([index])
+    # Always preserve the latest user request if the caller did not mark it.
+    latest_user = next(
+        (
+            i
+            for i, m in reversed(list(enumerate(messages)))
+            if m.get("role") == "user"
+            and not _protected(m)
+            and not (m.get("metadata") or {}).get("compaction")
+        ),
+        None,
     )
+    if any((m.get("metadata") or {}).get("agent_request") for m in messages):
+        latest_user = None
+    if latest_user is not None:
+        candidates = [g for g in candidates if latest_user not in g]
+    # Never summarize the latest tool exchange: it is the model's exact
+    # feedback, not historical context. This includes all parallel results.
+    request_boundary = next(
+        (
+            i
+            for i, m in enumerate(messages)
+            if (m.get("metadata") or {}).get("agent_request")
+        ),
+        latest_user,
+    )
+    latest_exchange = next(
+        (
+            g
+            for g in reversed(candidates)
+            if messages[g[0]].get("tool_calls")
+            and (request_boundary is None or g[0] > request_boundary)
+        ),
+        None,
+    )
+    if latest_exchange is not None:
+        candidates = [g for g in candidates if g != latest_exchange]
+    if not candidates:
+        if total > budget.input_limit:
+            raise ContextBudgetExceeded(
+                "The current request, source context and tool schemas exceed the input budget. Narrow the request/context or increase AGENT_CONTEXT_WINDOW."
+            )
+        return messages, False
 
-    return result, True
+    # Prefer the configured recent suffix; shorten it only to satisfy the budget.
+    preserve = preferences.recent_turns - (1 if latest_user is not None else 0)
+    remove_count = max(1, len(candidates) - max(0, preserve))
+    # A soft budget crossing is not a reason to summarize a greeting or
+    # repeatedly rewrite a tiny summary. Require useful historical material.
+    if (
+        total <= budget.input_limit
+        and sum(_estimate_message_tokens(messages[i]) for g in candidates for i in g)
+        < 512
+    ):
+        return messages, False
+
+    while True:
+        removed = {i for group in candidates[:remove_count] for i in group}
+        # Replace contiguous runs IN PLACE. In particular, tool activity
+        # after the current request must never move before that request.
+        result = []
+        index = 0
+        while index < len(messages):
+            if index not in removed:
+                result.append(messages[index])
+                index += 1
+                continue
+            start = index
+            while index in removed:
+                index += 1
+            summary = await _summarize_bounded(
+                model, _build_compaction_text(messages[start:index])
+            )
+            if not summary:
+                if total <= budget.input_limit:
+                    return messages, False
+                raise ContextBudgetExceeded(
+                    "Context compaction failed; no oversized request was sent."
+                )
+            summary_message = untrusted_context_message(
+                "compacted conversation", "[Compacted conversation]\n" + summary
+            )
+            summary_message["metadata"]["compaction"] = True
+            result.append(summary_message)
+        result = _sanitize_tool_messages_after_compact(result)
+        new_size = size(result)
+        if new_size <= budget.input_limit and total - new_size >= 64:
+            return result, True
+        if new_size <= budget.input_limit and total <= budget.input_limit:
+            return messages, False
+        if remove_count >= len(candidates):
+            raise ContextBudgetExceeded(
+                "The current request, execution state and latest tool feedback cannot fit even after compaction. Narrow the request or increase AGENT_CONTEXT_WINDOW."
+            )
+        # Regenerate from all newly removed messages; do not discard them silently.
+        remove_count = len(candidates)
 
 
 # ── Conversation-end summary for cross-session memory ────────────
@@ -435,7 +547,7 @@ async def summarize_conversation(
     sampled = convo_msgs[:2] + convo_msgs[-4:]
     text = _build_compaction_text(sampled)
 
-    summary = await _llm_summarize(model, text, max_tokens=300)
+    summary = await _summarize_bounded(model, text, max_tokens=300)
     return summary if (summary and len(summary) > 20) else None
 
 

@@ -24,6 +24,14 @@ SKILLS_DIR = (
 )
 
 
+class SkillReferenceError(ValueError):
+    """The caller supplied an invalid skill/resource identifier."""
+
+
+class SkillReferenceNotFound(FileNotFoundError):
+    """A requested skill/resource does not exist; not a filesystem I/O failure."""
+
+
 def skills_root() -> Path:
     root = confined_path(SKILLS_DIR.parent, SKILLS_DIR.name)
     root.mkdir(parents=True, exist_ok=True)
@@ -76,7 +84,7 @@ def _render(meta: dict, body: str) -> str:
 
 def _directory(slug: str) -> Path:
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug) or len(slug) > 64:
-        raise ValueError("Invalid skill identifier")
+        raise SkillReferenceError("Invalid skill identifier")
     return confined_path(skills_root(), slug)
 
 
@@ -90,7 +98,9 @@ def _record(directory: Path, include_content: bool = False) -> dict:
         for path in sorted(directory.rglob("*"))
         if not path.is_symlink()
         and path.is_file()
-        and not any(parent.is_symlink() for parent in path.parents if parent != directory)
+        and not any(
+            parent.is_symlink() for parent in path.parents if parent != directory
+        )
     ]
     result = {"id": directory.name, **normalized, "files": files}
     if include_content:
@@ -118,7 +128,7 @@ def list_skills(role: str | None = None, enabled_only: bool = False) -> list[dic
 def get_skill(slug: str) -> dict:
     directory = _directory(slug)
     if not confined_path(directory, SKILL_FILE).is_file():
-        raise FileNotFoundError(slug)
+        raise SkillReferenceNotFound(slug)
     return _record(directory, include_content=True)
 
 
@@ -140,7 +150,9 @@ def save_skill(
     slug = skill_id or slugify(name)
     directory = _directory(slug)
     directory.mkdir(parents=True, exist_ok=True)
-    confined_path(directory, SKILL_FILE).write_text(_render(meta, content), encoding="utf-8")
+    confined_path(directory, SKILL_FILE).write_text(
+        _render(meta, content), encoding="utf-8"
+    )
     return get_skill(slug)
 
 
@@ -231,10 +243,10 @@ def read_resource(slug: str, resource: str) -> str:
         or "\\" in resource
         or resource == SKILL_FILE
     ):
-        raise ValueError("Invalid skill resource path")
+        raise SkillReferenceError("Invalid skill resource path")
     target = confined_path(_directory(slug), Path(*relative.parts))
     if not target.is_file():
-        raise FileNotFoundError(resource)
+        raise SkillReferenceNotFound(resource)
     try:
         return bounded_text(target, MAX_INSTRUCTIONS)
     except UnicodeDecodeError as exc:

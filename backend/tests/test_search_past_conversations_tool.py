@@ -118,7 +118,9 @@ class TestSearchExecute:
         search = AsyncMock(return_value=_result_rows(2))
         with (
             _patched_session(db),
-            patch("app.agent.tools.search_past_conversations.search_past_messages", search),
+            patch(
+                "app.agent.tools.search_past_conversations.search_past_messages", search
+            ),
         ):
             result = await SearchPastConversationsTool().execute(query="topic")
 
@@ -138,7 +140,9 @@ class TestSearchExecute:
         search = AsyncMock(return_value=[])
         with (
             _patched_session(db),
-            patch("app.agent.tools.search_past_conversations.search_past_messages", search),
+            patch(
+                "app.agent.tools.search_past_conversations.search_past_messages", search
+            ),
         ):
             await SearchPastConversationsTool().execute(query="anything")
 
@@ -157,7 +161,9 @@ class TestSearchExecute:
         conv_id = str(uuid.uuid4())
         with (
             _patched_session(object()),
-            patch("app.agent.tools.search_past_conversations.search_past_messages", search),
+            patch(
+                "app.agent.tools.search_past_conversations.search_past_messages", search
+            ),
         ):
             await SearchPastConversationsTool().execute(
                 query="q", conversation_id=conv_id
@@ -172,9 +178,10 @@ class TestSearchExecute:
         ):
             result = await SearchPastConversationsTool().execute(query="   ")
 
-        assert result.success is True
+        assert result.success is False
+        assert result.failure_kind == "validation"
         assert result.output == "No search query provided."
-        assert result.tool_call.status == "completed"
+        assert result.tool_call.status == "error"
         search.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -230,7 +237,9 @@ class TestSearchExecute:
         with (
             _patched_session(object()),
             patch("app.agent.tools.config_store.get_tool_config", return_value=cfg),
-            patch("app.agent.tools.search_past_conversations.search_past_messages", search),
+            patch(
+                "app.agent.tools.search_past_conversations.search_past_messages", search
+            ),
         ):
             await SearchPastConversationsTool().execute(query="q")
         assert search.await_args.kwargs["limit"] == 3

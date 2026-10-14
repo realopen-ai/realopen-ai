@@ -5,13 +5,25 @@ import uuid
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, StrictInt, model_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 from sqlalchemy import select
 
-from app.db.models import Quiz, QuizAttempt, StudyNote, DocumentChunk, Artifact, ArtifactVersion
+from app.db.models import (
+    Quiz,
+    QuizAttempt,
+    StudyNote,
+    DocumentChunk,
+    Artifact,
+    ArtifactVersion,
+)
 from app.learn.service import now, utc, check_sources
-from app.services.artifact_refs import ArtifactReference, REFERENCE_SCHEMA, validate_reference
+from app.services.artifact_refs import (
+    ArtifactReference,
+    REFERENCE_SCHEMA,
+    validate_reference,
+)
 from app.learn.schemas import similar_question
+from app.learn.quiz_markdown import mask_code_blocks, validate_code_fences
 
 QUESTION_SCHEMA = {
     "type": "object",
@@ -27,7 +39,7 @@ QUESTION_SCHEMA = {
             "items": {"type": "string", "maxLength": 500},
             "minItems": 2,
             "maxItems": 6,
-            "description": "All multiple-choice answers belong here, not in prompt. Markdown supported; no A)/B) labels.",
+            "description": "One answer per array entry, never a newline-joined list of choices. Markdown supported; no A)/B) labels. Keep choices out of prompt.",
         },
         "correct_option": {
             "type": "integer",
@@ -53,30 +65,61 @@ QUESTION_SCHEMA = {
         "source_artifact": REFERENCE_SCHEMA,
     },
     "required": ["type", "prompt", "explanation"],
+    "allOf": [
+        {
+            "if": {
+                "properties": {"type": {"enum": ["multiple_choice"]}},
+                "required": ["type"],
+            },
+            "then": {"required": ["options", "correct_option"]},
+        },
+        {
+            "if": {
+                "properties": {"type": {"enum": ["short_answer"]}},
+                "required": ["type"],
+            },
+            "then": {"required": ["answer"]},
+        },
+    ],
 }
 
 
 def clean_question_choices(prompt: str, option_count: int) -> str:
-    # Mask code without changing offsets, so slicing preserves the original Markdown.
-    prose = re.sub(
-        r"(?ms)^\s*(`{3,}|~{3,}).*?^\s*\1\s*$",
-        lambda match: " " * len(match.group()),
-        prompt,
-    )
-    labels = list(re.finditer(r"(?<!\w)([A-Fa-f])([).])\s+", prose))
+    prose = mask_code_blocks(prompt)
+    labels = list(re.finditer(r"(?<!\w)([A-Fa-f])([).])(?:\s+|$)", prose))
     if len(labels) < 2:
         return prompt
-    stem = prompt[: labels[0].start()].rstrip()
+    boundary = prompt[: labels[0].start()]
+    # A standalone list heading belongs to the choices, not the question.
+    # Require a question/line/colon boundary before it: prose mentioning
+    # "choices" in the middle of a sentence must not be silently removed.
+    heading = re.search(
+        r"(?i)\b(?:answer[ \t]+)?(?:options|choices)[ \t]*:?[ \t]*$", boundary
+    )
+    has_list_heading = False
+    if heading:
+        before_heading = boundary[: heading.start()]
+        if before_heading.rstrip().endswith(("?", "？", "؟", ":")) or re.search(
+            r"\n[ \t]*$", before_heading
+        ):
+            boundary = before_heading
+            has_list_heading = True
+    stem = boundary.rstrip()
     choices = [
         prompt[
-            label.end() : labels[index + 1].start() if index + 1 < len(labels) else len(prompt)
+            label.end() : (
+                labels[index + 1].start() if index + 1 < len(labels) else len(prompt)
+            )
         ].strip()
         for index, label in enumerate(labels)
     ]
     expected = [chr(ord("A") + index) for index in range(option_count)]
-    boundary = prompt[: labels[0].start()]
     # A question-ending '?' or a separate list line establishes a clear boundary.
-    clear_boundary = stem.endswith(("?", "？", "؟")) or bool(re.search(r"\n[ \t]*$", boundary))
+    clear_boundary = (
+        stem.endswith(("?", "？", "؟"))
+        or bool(re.search(r"\n[ \t]*$", boundary))
+        or has_list_heading
+    )
     if (
         stem
         and clear_boundary
@@ -91,6 +134,37 @@ def clean_question_choices(prompt: str, option_count: int) -> str:
     )
 
 
+def validate_option_choices(options: list[str]) -> None:
+    """Catch overlapping choice lists without splitting or reindexing answers.
+
+    Newlines alone are valid Markdown. A stronger signal is an unfenced
+    multiline entry containing another complete option as a standalone line.
+    Code/output blocks and ordinary multiline prose remain allowed.
+    """
+    normalized = [" ".join(option.casefold().split()) for option in options]
+    for index, option in enumerate(options):
+        # Fenced programs/output can legitimately include the entire text of
+        # another option, e.g. printing one line versus printing several lines.
+        if mask_code_blocks(option) != option:
+            continue
+        lines = [
+            " ".join(line.casefold().split())
+            for line in option.splitlines()
+            if line.strip()
+        ]
+        if len(lines) < 2:
+            continue
+        for other_index, other in enumerate(normalized):
+            if index != other_index and other in lines:
+                raise ValueError(
+                    f"options.{index} contains options.{other_index} as a separate line, "
+                    "suggesting bundled answer choices. Put one independent answer per "
+                    "array entry, remove duplicates, and set correct_option to its "
+                    "zero-based index in the repaired array. Do not join choices with "
+                    "newlines; use a fenced block for a single multiline code/output answer."
+                )
+
+
 class Question(BaseModel):
     type: Literal["multiple_choice", "short_answer"]
     prompt: str = Field(min_length=1, max_length=2000)
@@ -102,6 +176,19 @@ class Question(BaseModel):
     source_page: int | None = Field(default=None, ge=1)
     source_chunk_id: uuid.UUID | None = None
     source_artifact: ArtifactReference | None = None
+
+    @field_validator("prompt", "answer", "explanation", "options")
+    @classmethod
+    def validate_markdown(cls, value):
+        if isinstance(value, list):
+            for index, option in enumerate(value):
+                try:
+                    validate_code_fences(option)
+                except ValueError as exc:
+                    raise ValueError(f"Option {index}: {exc}") from exc
+        else:
+            validate_code_fences(value)
+        return value
 
     @model_validator(mode="after")
     def validate_question(self):
@@ -118,13 +205,18 @@ class Question(BaseModel):
                 raise ValueError("Provide two to six nonempty options")
             if len({value.casefold() for value in self.options}) != len(self.options):
                 raise ValueError("Options must be distinct")
-            if self.correct_option is None or not 0 <= self.correct_option < len(self.options):
+            validate_option_choices(self.options)
+            if self.correct_option is None or not 0 <= self.correct_option < len(
+                self.options
+            ):
                 raise ValueError("Invalid correct option")
             self.answer = ""
         elif not self.answer:
             raise ValueError("Short-answer questions require an expected answer")
         else:
-            if " ".join(self.answer.casefold().split()) == " ".join(self.prompt.casefold().split()):
+            if " ".join(self.answer.casefold().split()) == " ".join(
+                self.prompt.casefold().split()
+            ):
                 raise ValueError("Question and expected answer must differ")
             self.options = []
             self.correct_option = None
@@ -185,12 +277,15 @@ def quiz_dict(quiz, editor=False):
         "question_count": len(quiz.questions),
         "grounded": bool(
             quiz.source_note_id
-            or any(q.get("source_document_id") or q.get("source_artifact") for q in quiz.questions)
+            or any(
+                q.get("source_document_id") or q.get("source_artifact")
+                for q in quiz.questions
+            )
         ),
         "questions": quiz.questions if editor else public_questions(quiz.questions),
-        "source_conversation_id": str(quiz.source_conversation_id)
-        if quiz.source_conversation_id
-        else None,
+        "source_conversation_id": (
+            str(quiz.source_conversation_id) if quiz.source_conversation_id else None
+        ),
         "source_note_id": str(quiz.source_note_id) if quiz.source_note_id else None,
         "created_at": utc(quiz.created_at) if quiz.created_at else None,
         "updated_at": utc(quiz.updated_at) if quiz.updated_at else None,
@@ -217,7 +312,8 @@ async def save_quiz(db, body, quiz=None):
         if body.source_document_id and not question.source_document_id:
             question.source_document_id = body.source_document_id
         await check_sources(
-            db, body.model_copy(update={"source_document_id": question.source_document_id})
+            db,
+            body.model_copy(update={"source_document_id": question.source_document_id}),
         )
         if question.source_chunk_id:
             chunk = await db.get(DocumentChunk, question.source_chunk_id)
@@ -227,7 +323,9 @@ async def save_quiz(db, body, quiz=None):
                 raise HTTPException(422, "Page does not match source chunk")
             if question.source_page is None:
                 question.source_page = chunk.page_number
-        if (question.source_page or question.source_chunk_id) and not question.source_document_id:
+        if (
+            question.source_page or question.source_chunk_id
+        ) and not question.source_document_id:
             raise HTTPException(422, "Page and chunk require a source document")
         reference = await validate_reference(
             db, question.source_artifact, body.source_conversation_id
@@ -276,7 +374,9 @@ async def save_quiz(db, body, quiz=None):
 
 
 async def get_attempt(db, quiz_id, attempt_id, lock=False):
-    query = select(QuizAttempt).where(QuizAttempt.id == attempt_id, QuizAttempt.quiz_id == quiz_id)
+    query = select(QuizAttempt).where(
+        QuizAttempt.id == attempt_id, QuizAttempt.quiz_id == quiz_id
+    )
     if lock:
         query = query.with_for_update()
     attempt = (await db.execute(query)).scalar_one_or_none()
@@ -296,8 +396,12 @@ def attempt_dict(attempt):
         "snapshot": snapshot,
         "answers": attempt.answers,
         "results": results,
-        "score": sum(r["correct"] is True for r in results.values()) if results else None,
-        "needs_review": sum(r["correct"] is None for r in results.values()) if results else 0,
+        "score": (
+            sum(r["correct"] is True for r in results.values()) if results else None
+        ),
+        "needs_review": (
+            sum(r["correct"] is None for r in results.values()) if results else 0
+        ),
         "created_at": utc(attempt.created_at) if attempt.created_at else None,
         "submitted_at": utc(attempt.submitted_at) if attempt.submitted_at else None,
     }

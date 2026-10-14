@@ -136,6 +136,32 @@ class ManageMemoryTool(BaseTool):
                 success=False,
                 output=f"Invalid action: {action}. Use list/add/edit/delete/search.",
                 tool_call=tool_call,
+                failure_kind="validation",
+            )
+
+        required = {
+            "add": "text",
+            "edit": "memory_id",
+            "delete": "memory_id",
+            "search": "query",
+        }.get(action)
+        if required and not (kwargs.get(required) or "").strip():
+            messages = {
+                "add": "Memory text cannot be empty. Provide a 'text' field.",
+                "edit": "Edit requires a memory_id (prefix match accepted).",
+                "delete": "Delete requires a memory_id (prefix match accepted).",
+                "search": "Search requires a query.",
+            }
+            return self.invalid_arguments(messages[action], tool_call)
+        category = kwargs.get("category")
+        if category is not None and category not in VALID_CATEGORIES:
+            return self.invalid_arguments(
+                f"Unknown memory category. Use one of: {sorted(VALID_CATEGORIES)}",
+                tool_call,
+            )
+        if action == "edit" and not (kwargs.get("text") or "").strip() and not category:
+            return self.invalid_arguments(
+                "Edit requires at least one of: text, category.", tool_call
             )
 
         try:
@@ -162,15 +188,6 @@ class ManageMemoryTool(BaseTool):
                 elif action == "add":
                     text = (kwargs.get("text") or "").strip()
                     category = kwargs.get("category") or "fact"
-                    if not text:
-                        tool_call.status = "error"
-                        tool_call.completed_at = time.time()
-                        tool_call.error = "Memory text cannot be empty"
-                        return ToolResult(
-                            success=False,
-                            output="Memory text cannot be empty. Provide a 'text' field.",
-                            tool_call=tool_call,
-                        )
                     # Check for duplicates first (lightweight — exact + fuzzy only,
                     # no vector call to keep this fast).
                     duplicates = await manager.find_duplicates(db, text)
@@ -198,82 +215,59 @@ class ManageMemoryTool(BaseTool):
                     memory_id = (kwargs.get("memory_id") or "").strip()
                     new_text = (kwargs.get("text") or "").strip()
                     new_category = kwargs.get("category")
-                    if not memory_id:
-                        result_text = (
-                            "Edit requires a memory_id (prefix match accepted)."
+                    memory = await self._find_by_prefix(manager, db, memory_id)
+                    if not memory:
+                        return self.invalid_arguments(
+                            f"No memory found with id starting '{memory_id}'. List or search memories to obtain an existing ID.",
+                            tool_call,
                         )
-                    else:
-                        # Find by prefix match
-                        memory = await self._find_by_prefix(manager, db, memory_id)
-                        if not memory:
-                            result_text = (
-                                f"No memory found with id starting '{memory_id}'."
-                            )
-                        else:
-                            updates = {}
-                            if new_text:
-                                updates["text"] = new_text
-                            if new_category and new_category in VALID_CATEGORIES:
-                                updates["category"] = new_category
-                            if not updates:
-                                result_text = (
-                                    "Edit requires at least one of: text, category."
-                                )
-                            else:
-                                updated = await manager.update_memory(
-                                    db, str(memory.id), **updates
-                                )
-                                if updated:
-                                    await db.commit()
-                                    result_text = (
-                                        f"Memory updated (id: {str(updated.id)[:8]}): "
-                                        f"{updated.text} [{updated.category}]"
-                                    )
-                                    _log("LLM edited memory %s", str(updated.id)[:8])
-                                else:
-                                    result_text = "Memory update failed."
+                    updates = {}
+                    if new_text:
+                        updates["text"] = new_text
+                    if new_category:
+                        updates["category"] = new_category
+                    updated = await manager.update_memory(db, str(memory.id), **updates)
+                    if not updated:
+                        return ToolResult(False, "Memory update failed.", tool_call)
+                    await db.commit()
+                    result_text = (
+                        f"Memory updated (id: {str(updated.id)[:8]}): "
+                        f"{updated.text} [{updated.category}]"
+                    )
+                    _log("LLM edited memory %s", str(updated.id)[:8])
 
                 elif action == "delete":
                     memory_id = (kwargs.get("memory_id") or "").strip()
-                    if not memory_id:
-                        result_text = (
-                            "Delete requires a memory_id (prefix match accepted)."
+                    memory = await self._find_by_prefix(manager, db, memory_id)
+                    if not memory:
+                        return self.invalid_arguments(
+                            f"No memory found with id starting '{memory_id}'. List or search memories to obtain an existing ID.",
+                            tool_call,
                         )
-                    else:
-                        memory = await self._find_by_prefix(manager, db, memory_id)
-                        if not memory:
-                            result_text = (
-                                f"No memory found with id starting '{memory_id}'."
-                            )
-                        else:
-                            text_snapshot = memory.text
-                            deleted = await manager.delete_memory(db, str(memory.id))
-                            if deleted:
-                                await db.commit()
-                                result_text = (
-                                    f"Memory deleted: '{text_snapshot}' "
-                                    f"(was id {str(memory.id)[:8]})"
-                                )
-                                _log("LLM deleted memory %s", str(memory.id)[:8])
-                            else:
-                                result_text = "Memory delete failed."
+                    text_snapshot = memory.text
+                    deleted = await manager.delete_memory(db, str(memory.id))
+                    if not deleted:
+                        return ToolResult(False, "Memory delete failed.", tool_call)
+                    await db.commit()
+                    result_text = (
+                        f"Memory deleted: '{text_snapshot}' "
+                        f"(was id {str(memory.id)[:8]})"
+                    )
+                    _log("LLM deleted memory %s", str(memory.id)[:8])
 
                 elif action == "search":
                     query = (kwargs.get("query") or "").strip()
-                    if not query:
-                        result_text = "Search requires a query."
+                    memories = await manager.search_memories(db, query, limit=10)
+                    if not memories:
+                        result_text = f"No memories matching '{query}'."
                     else:
-                        memories = await manager.search_memories(db, query, limit=10)
-                        if not memories:
-                            result_text = f"No memories matching '{query}'."
-                        else:
-                            lines = [f"Memories matching '{query}' ({len(memories)}):"]
-                            for m in memories:
-                                pin = " [pinned]" if m.pinned else ""
-                                lines.append(
-                                    f"- [{m.category}] {m.text}{pin} (id: {str(m.id)[:8]})"
-                                )
-                            result_text = "\n".join(lines)
+                        lines = [f"Memories matching '{query}' ({len(memories)}):"]
+                        for m in memories:
+                            pin = " [pinned]" if m.pinned else ""
+                            lines.append(
+                                f"- [{m.category}] {m.text}{pin} (id: {str(m.id)[:8]})"
+                            )
+                        result_text = "\n".join(lines)
 
                 tool_call.status = "completed"
                 tool_call.completed_at = time.time()

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from app.learn.quizzes import QuizInput, Question
-from app.prompts import format_prompt, get_prompt
+from app.prompts import format_prompt
 from app.services import model_prefs, providers
 from app.services.artifact_refs import ArtifactReference
 
@@ -26,7 +26,9 @@ async def from_note(note, body):
     if body.selection is not None and body.selection not in note.content:
         raise HTTPException(422, "Selection no longer belongs to the saved note")
     if not content.strip() or len(content) > 12000:
-        raise HTTPException(422, "Select a nonempty section of at most 12000 characters")
+        raise HTTPException(
+            422, "Select a nonempty section of at most 12000 characters"
+        )
     messages = [
         {
             "role": "system",
@@ -36,12 +38,14 @@ async def from_note(note, body):
                 question_type=body.type,
                 difficulty=body.difficulty,
                 language=body.language or "the source language",
-                writing_guidance=get_prompt("quiz_writing"),
+                writing_guidance=format_prompt("quiz_writing"),
             ),
         },
         {
             "role": "user",
-            "content": json.dumps({"title": note.title, "content": content}, ensure_ascii=False),
+            "content": json.dumps(
+                {"title": note.title, "content": content}, ensure_ascii=False
+            ),
         },
     ]
     try:
@@ -61,7 +65,9 @@ async def from_note(note, body):
                 raw = result.get("message", {}).get("content", "")
                 if not isinstance(raw, str) or len(raw) > 100000:
                     raise ValueError("Invalid response size")
-                parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip()))
+                parsed = json.loads(
+                    re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+                )
                 questions = [
                     Question.model_validate(
                         {
@@ -112,11 +118,13 @@ async def from_note(note, body):
                         "content": format_prompt(
                             "quiz_generation_retry",
                             error=str(exc)[:1000],
-                            writing_guidance=get_prompt("quiz_writing"),
+                            writing_guidance=format_prompt("quiz_writing"),
                         ),
                     }
                 )
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, "Local quiz generation unavailable. Nothing was saved.") from exc
+        raise HTTPException(
+            502, "Local quiz generation unavailable. Nothing was saved."
+        ) from exc

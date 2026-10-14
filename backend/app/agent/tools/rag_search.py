@@ -114,14 +114,8 @@ class RagSearchTool(BaseTool):
         )
 
         if not query or not query.strip():
-            tool_call.status = "completed"
-            tool_call.completed_at = time.time()
             _log("empty query — nothing to search")
-            return ToolResult(
-                success=True,
-                output="No query provided.",
-                tool_call=tool_call,
-            )
+            return self.invalid_arguments("No query provided.", tool_call)
 
         _log("execute START  query=%r  conv=%s", query[:80], conversation_id)
 

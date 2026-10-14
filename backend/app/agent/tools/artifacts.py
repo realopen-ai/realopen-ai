@@ -7,11 +7,19 @@ import uuid
 import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
-from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.base import (
+    BaseTool,
+    ToolCall,
+    ToolResult,
+    ToolType,
+    ToolArgumentError,
+    tool_registry,
+)
 from app.db.session import async_session_factory
 from app.services import artifacts as service
 from app.api.artifacts import UpdateArtifact
 from app.agent.tools import config_store
+from app.agent.validation import argument_errors
 
 
 class ArtifactTool(BaseTool):
@@ -95,6 +103,17 @@ class ArtifactTool(BaseTool):
             title=self.display_name,
             started_at=time.time(),
         )
+        failure_kind = None
+        errors = argument_errors(
+            {"artifact_id": artifact_id, **args},
+            {
+                "type": "object",
+                "properties": self.get_parameters(),
+                "required": self.get_required_params(),
+            },
+        )
+        if errors:
+            return self.invalid_arguments("; ".join(errors), call)
 
         async def progress(update):
             call.progress = update
@@ -113,28 +132,35 @@ class ArtifactTool(BaseTool):
             conversation_id = (
                 uuid.UUID(str(conversation_id)) if conversation_id else None
             )
+            if self.operation != "list":
+                try:
+                    artifact_id = uuid.UUID(str(artifact_id))
+                except (ValueError, TypeError, AttributeError) as exc:
+                    raise ToolArgumentError(
+                        "Provide an exact artifact UUID from attachments or list_artifacts."
+                    ) from exc
             async with async_session_factory() as db:
                 if self.operation == "list":
                     offset = int(args.get("offset", 0))
                     if offset < 0:
-                        raise ValueError("Offset must be nonnegative")
+                        raise ToolArgumentError("Offset must be nonnegative")
                     data = await service.catalog(
                         db, conversation_id, scoped=True, offset=offset
                     )
                 else:
                     artifact = await service.get_artifact(
-                        db, uuid.UUID(str(artifact_id)), conversation_id, scoped=True
+                        db, artifact_id, conversation_id, scoped=True
                     )
                     number = args.get("version")
                     if number is not None and (
                         not isinstance(number, int) or number < 1
                     ):
-                        raise ValueError("Version must be positive")
+                        raise ToolArgumentError("Version must be positive")
                     current = await service.get_version(db, artifact, number)
                     if self.operation == "read":
                         offset = int(args.get("offset", 0))
                         if offset < 0:
-                            raise ValueError("Offset must be nonnegative")
+                            raise ToolArgumentError("Offset must be nonnegative")
                         data = service.read(current, args.get("section_id"), offset)
                         data["document_id"] = (
                             str(artifact.document_id) if artifact.document_id else None
@@ -168,7 +194,7 @@ class ArtifactTool(BaseTool):
                     else:
                         question = args.get("question") or "Summarize this document"
                         if not isinstance(question, str) or len(question) > 1000:
-                            raise ValueError("Summary question exceeds limit")
+                            raise ToolArgumentError("Summary question exceeds limit")
                         data = {
                             "artifact_id": str(artifact.id),
                             "version": current.number,
@@ -208,9 +234,19 @@ class ArtifactTool(BaseTool):
                 "a retry will reuse them. Do not retry automatically; ask the user "
                 "whether to resume or summarize a smaller section."
             )
-        except (HTTPException, ValueError, ValidationError, KeyError) as exc:
+        except (ToolArgumentError, ValidationError) as exc:
+            return self.invalid_arguments(str(exc), call)
+        except HTTPException as exc:
+            # Permissions, missing/deleted assets, stale versions and renderers
+            # are not failures that an argument-only rebuild can safely fix.
+            failure_kind = (
+                "validation" if exc.status_code in {400, 422} else "execution"
+            )
             call.status = "error"
-            call.error = str(exc.detail if isinstance(exc, HTTPException) else exc)
+            call.error = call.output = str(exc.detail)
+        except (ValueError, KeyError) as exc:
+            call.status = "error"
+            call.error = str(exc)
             call.output = call.error
         except Exception:
             logging.getLogger(__name__).exception("Artifact operation failed")
@@ -219,7 +255,7 @@ class ArtifactTool(BaseTool):
                 "Artifact operation failed. Previous versions remain unchanged."
             )
         call.completed_at = time.time()
-        return ToolResult(call.status == "completed", call.output, call)
+        return ToolResult(call.status == "completed", call.output, call, failure_kind)
 
 
 class ListArtifactsTool(ArtifactTool):

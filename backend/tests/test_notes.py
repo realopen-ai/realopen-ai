@@ -72,7 +72,10 @@ def test_note_validation(client, body):
 
 def test_note_provenance_validation(client):
     assert (
-        client.post("/api/learn/notes", json={"title": "Note", "source_page": 4}).status_code == 422
+        client.post(
+            "/api/learn/notes", json={"title": "Note", "source_page": 4}
+        ).status_code
+        == 422
     )
 
 
@@ -137,7 +140,9 @@ async def test_missing_note_sources():
 
     for field in ("source_conversation_id", "source_document_id", "source_chunk_id"):
         with pytest.raises(HTTPException) as error:
-            await notes.create_note(DB(), NoteInput(title="Note", **{field: uuid.uuid4()}))
+            await notes.create_note(
+                DB(), NoteInput(title="Note", **{field: uuid.uuid4()})
+            )
         assert error.value.status_code in (404, 422)
 
 
@@ -154,7 +159,10 @@ def test_note_flashcards_share_service_and_preserve_source(client, database):
         json={
             "title": "Docker cards",
             "cards": [
-                {"front": "What connects containers on one host?", "back": "A bridge network."}
+                {
+                    "front": "What connects containers on one host?",
+                    "back": "A bridge network.",
+                }
             ],
         },
     )
@@ -164,15 +172,21 @@ def test_note_flashcards_share_service_and_preserve_source(client, database):
     assert deck["card_count"] == 1 and deck["due_count"] == 1
     assert (
         client.post(
-            f"/api/learn/notes/{note['id']}/flashcards", json={"title": "Bad", "cards": []}
+            f"/api/learn/notes/{note['id']}/flashcards",
+            json={"title": "Bad", "cards": []},
         ).status_code
         == 422
     )
     client.delete(f"/api/learn/notes/{note['id']}")
-    assert client.get(f"/api/learn/flashcards/{deck['id']}").json()["source_note_id"] is None
+    assert (
+        client.get(f"/api/learn/flashcards/{deck['id']}").json()["source_note_id"]
+        is None
+    )
 
 
-@pytest.mark.parametrize("action", ["shorter", "clearer", "expand", "bullets", "flashcards"])
+@pytest.mark.parametrize(
+    "action", ["shorter", "clearer", "expand", "bullets", "flashcards"]
+)
 def test_note_proposals_are_focused_and_never_auto_save(client, monkeypatch, action):
     note = create(client)
     captured = []
@@ -185,7 +199,14 @@ def test_note_proposals_are_focused_and_never_auto_save(client, monkeypatch, act
         return {
             "message": {
                 "content": json.dumps(
-                    {"cards": [{"front": "What connects containers?", "back": "Bridge networks."}]}
+                    {
+                        "cards": [
+                            {
+                                "front": "What connects containers?",
+                                "back": "Bridge networks.",
+                            }
+                        ]
+                    }
                     if action == "flashcards"
                     else {"content": "## Concise\nBridge networks connect containers."}
                 )
@@ -196,13 +217,23 @@ def test_note_proposals_are_focused_and_never_auto_save(client, monkeypatch, act
     monkeypatch.setattr(note_actions.providers, "chat_once", chat)
     result = client.post(
         f"/api/learn/notes/{note['id']}/propose",
-        json={"action": action, "selection": "Containers use bridge networks.", "count": 1},
+        json={
+            "action": action,
+            "selection": "Containers use bridge networks.",
+            "count": 1,
+        },
     )
     assert result.status_code == 200, result.text
     assert len(captured) == 1 and len(captured[0][0]) == 2
-    assert json.loads(captured[0][0][1]["content"])["content"] == "Containers use bridge networks."
+    assert (
+        json.loads(captured[0][0][1]["content"])["content"]
+        == "Containers use bridge networks."
+    )
     assert captured[0][1]["think"] is False
-    assert client.get(f"/api/learn/notes/{note['id']}").json()["content"] == note["content"]
+    assert (
+        client.get(f"/api/learn/notes/{note['id']}").json()["content"]
+        == note["content"]
+    )
 
 
 def test_proposal_retry_failure_and_bounds(client, monkeypatch):
@@ -222,7 +253,10 @@ def test_proposal_retry_failure_and_bounds(client, monkeypatch):
     assert client.post(path, json={"action": "shorter"}).status_code == 422
     assert len(calls) == 2
     assert (
-        client.post(path, json={"action": "shorter", "selection": "Not in note"}).status_code == 422
+        client.post(
+            path, json={"action": "shorter", "selection": "Not in note"}
+        ).status_code
+        == 422
     )
     long = create(client, content="x" * 12001)
     assert (
@@ -241,7 +275,9 @@ def test_proposal_retry_failure_and_bounds(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_note_creation_uses_trusted_context_and_compact_artifact(database, monkeypatch):
+async def test_agent_note_creation_uses_trusted_context_and_compact_artifact(
+    database, monkeypatch
+):
     from app.agent.tools import notes as tool_module
 
     @asynccontextmanager
@@ -253,12 +289,16 @@ async def test_agent_note_creation_uses_trusted_context_and_compact_artifact(dat
     tool = tool_module.CreateStudyNoteTool()
     assert set(tool.get_required_params()) == {"title", "content"}
     assert "conversation_id" not in tool.get_parameters()
-    result = await tool.execute(title="Networking", content="## Bridge\nConnected containers.")
+    result = await tool.execute(
+        title="Networking", content="## Bridge\nConnected containers."
+    )
     assert result.success
     artifact = json.loads(result.output)
     assert artifact["type"] == "study_note" and "content" not in artifact
     with Session(database) as db:
-        assert db.get(StudyNote, uuid.UUID(artifact["note_id"])).content.startswith("## Bridge")
+        assert db.get(StudyNote, uuid.UUID(artifact["note_id"])).content.startswith(
+            "## Bridge"
+        )
 
     result = await tool.execute(
         title="Conversation notes",
@@ -287,3 +327,198 @@ async def test_agent_note_creation_uses_trusted_context_and_compact_artifact(dat
             saved = db.get(StudyNote, uuid.UUID(artifact["note_id"]))
             assert saved.source_document_id is None
             assert saved.source_chunk_id is None and saved.source_page is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "",
+        {},
+        {
+            "artifact_id": "learn_note_001",
+            "version": 1,
+            "section_id": "web_fundamentals",
+        },
+        {"artifact_id": str(uuid.uuid4()), "version": 0, "section_id": "section"},
+        {"artifact_id": str(uuid.uuid4()), "version": 1},
+    ],
+)
+async def test_agent_ignores_malformed_optional_artifact_reference(
+    database, monkeypatch, reference
+):
+    from app.agent.tools import notes as tool_module
+    from app.agent.validation import argument_errors
+
+    @asynccontextmanager
+    async def factory():
+        with Session(database, expire_on_commit=False) as db:
+            yield AsyncAdapter(db)
+
+    monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    tool = tool_module.CreateStudyNoteTool()
+    raw = {
+        "title": "HTTP",
+        "content": "## Requests\nA note.",
+        "source_artifact": reference,
+    }
+    normalized = tool.normalize_arguments(raw)
+    assert normalized["source_artifact"] is None
+    assert raw["source_artifact"] == reference
+    assert not argument_errors(
+        normalized,
+        {
+            "type": "object",
+            "properties": tool.get_parameters(),
+            "required": tool.get_required_params(),
+        },
+    )
+    result = await tool.execute(**raw)
+    assert result.success, result.output
+    with Session(database) as db:
+        saved = db.get(StudyNote, uuid.UUID(json.loads(result.output)["note_id"]))
+        assert saved.source_artifact is None
+        assert saved.content == raw["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404, 422])
+async def test_agent_drops_unknown_or_inaccessible_artifact_uuid(
+    database, monkeypatch, status
+):
+    from app.agent.tools import notes as tool_module
+    from unittest.mock import AsyncMock
+
+    @asynccontextmanager
+    async def factory():
+        with Session(database, expire_on_commit=False) as db:
+            yield AsyncAdapter(db)
+
+    monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    monkeypatch.setattr(
+        tool_module,
+        "validate_reference",
+        AsyncMock(side_effect=HTTPException(status, "Invalid source")),
+    )
+    result = await tool_module.CreateStudyNoteTool().execute(
+        title="HTTP",
+        content="A note.",
+        source_artifact={
+            "artifact_id": str(uuid.uuid4()),
+            "version": 1,
+            "section_id": "section",
+        },
+    )
+    assert result.success, result.output
+    with Session(database) as db:
+        saved = db.get(StudyNote, uuid.UUID(json.loads(result.output)["note_id"]))
+        assert saved.source_artifact is None
+
+
+@pytest.mark.asyncio
+async def test_agent_drops_unknown_document_uuid_and_orphaned_metadata(
+    database, monkeypatch
+):
+    from app.agent.tools import notes as tool_module
+    from unittest.mock import AsyncMock
+
+    @asynccontextmanager
+    async def factory():
+        with Session(database, expire_on_commit=False) as db:
+            yield AsyncAdapter(db)
+
+    monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    monkeypatch.setattr(
+        tool_module,
+        "check_sources",
+        AsyncMock(side_effect=HTTPException(404, "Source document not found")),
+    )
+    result = await tool_module.CreateStudyNoteTool().execute(
+        title="HTTP",
+        content="A note.",
+        source_document_id=str(uuid.uuid4()),
+        source_page=4,
+        source_chunk_id=str(uuid.uuid4()),
+    )
+    assert result.success, result.output
+    with Session(database) as db:
+        saved = db.get(StudyNote, uuid.UUID(json.loads(result.output)["note_id"]))
+        assert saved.source_document_id is None
+        assert saved.source_chunk_id is None and saved.source_page is None
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_valid_sources_and_trusted_conversation(monkeypatch):
+    from app.agent.tools import notes as tool_module
+    from unittest.mock import AsyncMock
+
+    conversation, document, chunk, artifact = [uuid.uuid4() for _ in range(4)]
+    db = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(document_id=document, page_number=4)
+        ),
+        commit=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def factory():
+        yield db
+
+    save = AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4(), title="HTTP"))
+    monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    monkeypatch.setattr(tool_module, "check_sources", AsyncMock())
+    monkeypatch.setattr(tool_module, "validate_reference", AsyncMock())
+    monkeypatch.setattr(tool_module, "create_note", save)
+    monkeypatch.setattr(tool_module, "attach_generated", AsyncMock())
+    result = await tool_module.CreateStudyNoteTool().execute(
+        title="HTTP",
+        content="A note.",
+        conversation_id=str(conversation),
+        source_document_id=str(document),
+        source_chunk_id=str(chunk),
+        source_page=4,
+        source_artifact={
+            "artifact_id": str(artifact),
+            "version": 1,
+            "section_id": "section",
+        },
+    )
+    assert result.success, result.output
+    body = save.call_args.args[1]
+    assert body.source_conversation_id == conversation
+    assert body.source_document_id == document
+    assert body.source_chunk_id == chunk and body.source_page == 4
+    assert body.source_artifact.artifact_id == artifact
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_ignore_reference_infrastructure_failure(monkeypatch):
+    from app.agent.tools import notes as tool_module
+    from unittest.mock import AsyncMock
+
+    db = SimpleNamespace(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def factory():
+        yield db
+
+    save = AsyncMock()
+    monkeypatch.setattr(tool_module, "async_session_factory", factory)
+    monkeypatch.setattr(
+        tool_module,
+        "validate_reference",
+        AsyncMock(side_effect=HTTPException(503, "Unavailable")),
+    )
+    monkeypatch.setattr(tool_module, "create_note", save)
+    result = await tool_module.CreateStudyNoteTool().execute(
+        title="HTTP",
+        content="A note.",
+        source_artifact={
+            "artifact_id": str(uuid.uuid4()),
+            "version": 1,
+            "section_id": "section",
+        },
+    )
+    assert not result.success
+    save.assert_not_awaited()
+    db.commit.assert_not_awaited()

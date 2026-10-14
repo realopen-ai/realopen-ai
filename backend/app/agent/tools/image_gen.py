@@ -56,6 +56,8 @@ class ImageGenTool(BaseTool):
 
     async def execute(self, *, prompt: str, **kwargs) -> ToolResult:
         """Run the enabled image-generation provider (service)."""
+        if not prompt or not prompt.strip():
+            return self.invalid_arguments("Image prompt cannot be empty.")
         start = time.time()
         # Model priority: Brain ▸ Tools override for this tool → the
         # image task slot (Settings ▸ AI ▸ Models) — local-only model.
