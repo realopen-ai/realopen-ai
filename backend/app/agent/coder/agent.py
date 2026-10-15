@@ -280,6 +280,14 @@ async def _run_step(
         nonlocal command_started
         if event_queue is None:
             return
+        if update.get("stage") in {"files_written", "project_written"}:
+            event_queue.put_nowait(
+                {
+                    "id": start_event["id"],
+                    "sandboxId": str(sandbox.id),
+                    "refreshFiles": True,
+                }
+            )
         if update.get("stage") == "project_written" and project_event:
             event_queue.put_nowait(
                 {
@@ -301,7 +309,11 @@ async def _run_step(
             sandbox,
             name,
             args,
-            setup_progress if name == "setup_python_project" else None,
+            (
+                setup_progress
+                if name in {"setup_python_project", "scaffold_project"}
+                else None
+            ),
         )
         if name in COMMAND_TOOLS:
             await _record_command(

@@ -26,7 +26,7 @@ FRONTENDS = {
 }
 
 
-async def scaffold(sandbox, args, setup_python):
+async def scaffold(sandbox, args, setup_python, progress=None):
     backend, frontend = args["backend"], args["frontend"]
     if (
         backend not in {"none", *BACKENDS}
@@ -90,6 +90,8 @@ async def scaffold(sandbox, args, setup_python):
             "changed": bool(created),
             "exit_code": 1,
         }
+    if progress:
+        progress({"stage": "files_written", "created_files": list(created)})
     checks = []
     try:
         if python_backend:
@@ -102,6 +104,7 @@ async def scaffold(sandbox, args, setup_python):
                         for key in ["dependencies", "dev_dependencies"]
                     },
                 },
+                progress,
             )
             checks.append(
                 {

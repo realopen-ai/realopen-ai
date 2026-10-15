@@ -16,6 +16,8 @@ from app.agent.coder.starters import scaffold, BACKENDS, FRONTENDS
 
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
+MAX_READ_CHARS = 16000
+MAX_READ_LINES = 400
 
 # Only application source/configuration participates in progress. Dependency
 # trees, generated builds, test caches and runtime databases do not invalidate
@@ -141,17 +143,17 @@ CODER_TOOLS = [
     _function("list_files", "List the workspace tree.", {"path": {"type": "string"}}),
     _function(
         "read_file",
-        "Read exact UTF-8 content with character-offset pagination. Read before editing. Follow next_offset to read more.",
+        "Read exact source text. Small files are returned whole. Optional start_line/end_line are 1-based inclusive LINE numbers, not characters. Large files return complete lines and next_line; continue from there.",
         {
             "path": {"type": "string"},
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
         },
         ("path",),
     ),
     _function(
         "edit_file",
-        "Make one targeted edit to a file you have read. old_text must match exactly once; new_text replaces it (empty removes it). Stale reads or ambiguous matches leave the file unchanged.",
+        "Replace one unique exact old_text match with new_text (empty removes it). Prefer inspecting current source, but no exact read-range proof is required. Concurrent changes, missing or ambiguous matches leave the file unchanged.",
         {
             "path": {"type": "string"},
             "old_text": {"type": "string", "minLength": 1},
@@ -161,7 +163,7 @@ CODER_TOOLS = [
     ),
     _function(
         "write_file",
-        "Create or replace a workspace file.",
+        "Create a file, or replace a complete file whose current contents you have read or just written. Prefer edit_file for targeted corrections.",
         {"path": {"type": "string"}, "content": {"type": "string"}},
         ("path", "content"),
     ),
@@ -201,11 +203,87 @@ CODER_TOOLS = [
 ]
 
 
+def _read_page(args: dict, content: str) -> tuple[dict, int]:
+    lines = content.splitlines(keepends=True)
+    start = args.get("start_line", 1)
+    end = args.get("end_line", max(1, len(lines)))
+    if (
+        type(start) is not int
+        or type(end) is not int
+        or start < 1
+        or end < start
+        or start > max(1, len(lines))
+    ):
+        raise ValueError(
+            f"Use 1-based inclusive start_line/end_line. This file has {len(lines)} lines; "
+            "omit both to read from the beginning."
+        )
+    if "offset" in args or "limit" in args:
+        raise ValueError(
+            "read_file now uses start_line/end_line (1-based lines), not offset/limit characters."
+        )
+    offset = sum(len(line) for line in lines[: start - 1])
+    selected, size = [], 0
+    for line in lines[start - 1 : min(end, start + MAX_READ_LINES - 1)]:
+        if size + len(line) > MAX_READ_CHARS:
+            if not selected:
+                raise ValueError(
+                    f"Line {start} exceeds the {MAX_READ_CHARS}-character read budget. "
+                    "Use search_files for a focused excerpt or edit_file with a unique exact match; "
+                    "no source text was silently truncated."
+                )
+            break
+        selected.append(line)
+        size += len(line)
+    last = start - 1 + len(selected)
+    return {
+        "path": args["path"],
+        "sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "start_line": start,
+        "end_line": last,
+        "total_lines": len(lines),
+        "total_chars": len(content),
+        "content": "".join(selected),
+        "next_line": last + 1 if last < len(lines) else None,
+    }, offset
+
+
+def _match_feedback(content: str, old: str) -> str:
+    positions, cursor = [], 0
+    while old and len(positions) < 4:
+        match = content.find(old, cursor)
+        if match < 0:
+            break
+        positions.append(content.count("\n", 0, match) + 1)
+        cursor = match + 1
+    if positions:
+        return (
+            f"old_text matches at line(s) {positions}. "
+            "Use read_file with start_line/end_line around the intended location. "
+            "For multiple matches, include more surrounding text to identify exactly one."
+        )
+    first = next((line for line in old.splitlines() if line.strip()), "")
+    lines = content.splitlines()
+    similar = difflib.get_close_matches(first, lines, n=3, cutoff=0.6) if first else []
+    # Corrective feedback is application-owned; do not promote source text
+    # (which can contain instructions) into that trusted message.
+    hints = sorted({lines.index(line) + 1 for line in similar})
+    return (
+        "old_text was not found verbatim. Read/search the current source and copy exact text. "
+        + (
+            "Similar lines to inspect with read_file (not replacements): "
+            + json.dumps(hints)
+            if hints
+            else ""
+        )
+    )
+
+
 async def dispatch_tool(
     sandbox, name: str, args: dict, progress: Callable[[dict], None] | None = None
 ) -> tuple[str, dict | None]:
     if name == "scaffold_project":
-        return await scaffold(sandbox, args, _setup_python_project)
+        return await scaffold(sandbox, args, _setup_python_project, progress)
     if name == "check_preview":
         path, port = args["path"], args["port"]
         if (
@@ -246,66 +324,42 @@ async def dispatch_tool(
     if name == "read_file":
         result = await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
         content = result.get("content", "")
-        offset, limit = args.get("offset", 0), args.get("limit", 6000)
-        if (
-            type(offset) is not int
-            or offset < 0
-            or type(limit) is not int
-            or not 1 <= limit <= 16000
-        ):
-            raise ValueError(
-                "Read offset/limit must be nonnegative character counts within bounds"
-            )
-        digest = hashlib.sha256(content.encode()).hexdigest()
-        page = {
-            "path": args["path"],
-            "sha256": digest,
-            "offset": offset,
-            "total_chars": len(content),
-            "content": content[offset : offset + limit],
-            "next_offset": offset + limit if offset + limit < len(content) else None,
-        }
+        page, offset = _read_page(args, content)
         return json.dumps(page, ensure_ascii=False), {
-            "read": page,
+            "read": {**page, "offset": offset},
             "file_content": page["content"],
         }
     if name == "write_file":
         return await _write_file(sandbox, args)
     if name == "edit_file":
-        expected = args.get("_expected_sha256")
-        if not expected:
-            return (
-                "Read this file with read_file before editing it; nothing was changed.",
-                {"exit_code": 1, "corrective": True},
-            )
         content = (
             await sandbox_host.call("files/read", sandbox, {"path": args["path"]})
         )["content"]
-        if hashlib.sha256(content.encode()).hexdigest() != expected:
+        current_hash = hashlib.sha256(content.encode()).hexdigest()
+        expected = args.get("_expected_sha256")
+        if expected and current_hash != expected:
             return (
-                "File changed; read_file again before editing. Nothing was changed.",
+                f"{args['path']} changed since your last snapshot. No edit was applied. "
+                "Read the current file, then retry against that version. "
+                + _match_feedback(content, args["old_text"]),
                 {"exit_code": 1, "corrective": True},
             )
         old, new = args["old_text"], args["new_text"]
-        if not old or content.count(old) != 1:
+        first = content.find(old) if old else -1
+        if first < 0 or content.find(old, first + 1) >= 0:
             return (
-                "old_text must match exactly once. Read/search for a larger unique context; nothing was changed.",
-                {"exit_code": 1, "corrective": True},
-            )
-        start = content.index(old)
-        covered = start
-        for left, right in sorted(args.get("_read_ranges", [])):
-            if left > covered:
-                break
-            covered = max(covered, right)
-        if covered < start + len(old):
-            return (
-                "Read the exact target text with read_file before editing it. Nothing was changed.",
+                f"No edit was applied to {args['path']}. "
+                + _match_feedback(content, old),
                 {"exit_code": 1, "corrective": True},
             )
         return await _write_file(
             sandbox,
-            {**args, "content": content.replace(old, new, 1), "_full_read": True},
+            {
+                **args,
+                "content": content.replace(old, new, 1),
+                "_expected_sha256": current_hash,
+                "_full_read": True,
+            },
         )
     if name == "search_files":
         query = shlex.quote(str(args["query"]))

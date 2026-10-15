@@ -100,6 +100,20 @@ class RunState:
                 if path not in self.files_changed:
                     self.files_changed.append(path)
                 self.reads.pop(path, None)
+        # A successful write establishes an exact snapshot too, including any
+        # host-side formatting. Do not make the model reread its own output.
+        if (
+            event.get("file")
+            and "file_content" in event
+            and event.get("sha256")
+            and event.get("exit_code") in (None, 0)
+        ):
+            content = event["file_content"]
+            self.reads[event["file"]] = {
+                "sha256": event["sha256"],
+                "total": len(content),
+                "ranges": [(0, len(content))],
+            }
         if event.get("project"):
             self.project = event["project"]
         if event.get("preview_url"):

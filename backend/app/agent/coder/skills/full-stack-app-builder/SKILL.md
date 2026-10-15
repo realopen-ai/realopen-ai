@@ -12,7 +12,7 @@ Load this skill only for relevant web projects. Preserve an existing repository'
 
 For a new empty project, use scaffold_project with backend="fastapi" or "none", frontend="vite" or "none", and a short project name. It provides local dependencies, SQLite connection helpers, backend health tests and a frontend API proxy. Read the generated files before extending them. The starter is not the user's finished application.
 
-Load references/fastapi.md only when implementing Python API/database behavior, and references/vite.md only for browser/UI work. Prefer edit_file over full replacement and copy exact text from read_file. Follow pagination; never guess missing source.
+Load references/fastapi.md only when implementing Python API/database behavior, and references/vite.md only for browser/UI work. Prefer edit_file over full replacement and copy exact current text. read_file uses 1-based start_line/end_line and next_line, never character offsets. Your latest successful write is also a known snapshot.
 
 Implement one complete user flow first: persisted data, a real endpoint, a browser request and visible result. Add backend tests for the actual application, not only starter health. Handle invalid input and loading/empty/error states. Style with locally installed Pico CSS and small custom CSS; never use CDN assets. Use another framework only when requested or already present.
 
