@@ -245,11 +245,11 @@ export function ChatArea({
           useChatStore
             .getState()
             .appendTextToken(capturedConvId, assistantMsgId, token),
-        onThinkingStart: () => {
+        onThinkingStart: (context) => {
           thinkingStartedAt = Date.now();
           useChatStore
             .getState()
-            .startThinkingBlock(capturedConvId, assistantMsgId);
+            .startThinkingBlock(capturedConvId, assistantMsgId, context);
         },
         onThinkingToken: (token: string) => {
           useChatStore

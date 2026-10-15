@@ -12,6 +12,7 @@ import {
   type ConversationDTO,
   type MessageDTO,
   type ModuleInfo,
+  type ThinkingContext,
 } from "@/api/client";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
@@ -97,7 +98,7 @@ export interface ToolCallResult {
  * Blocks are rendered in array order to preserve the chronological flow
  * of the agent turn (thinking → text → tool_call → thinking → ...).
  */
-export interface MessageBlock {
+export interface MessageBlock extends ThinkingContext {
   /** Frontend-generated stable ID for React keys. NOT persisted to DB
    * (the DB uses array index as implicit order). */
   id: string;
@@ -266,7 +267,11 @@ interface ChatState {
 
   // ── Block-based actions (replace the old toolCalls/thinking actions) ──
   /** Start a new thinking block. Closes any open text block. */
-  startThinkingBlock: (conversationId: string, messageId: string) => void;
+  startThinkingBlock: (
+    conversationId: string,
+    messageId: string,
+    context?: ThinkingContext,
+  ) => void;
   /** Append a thinking token to the current thinking block. */
   appendThinkingToken: (
     conversationId: string,
@@ -418,6 +423,14 @@ export function dtoToMessage(dto: MessageDTO): Message {
           type: b.type as MessageBlock["type"],
           content: b.content,
           duration: b.duration,
+          ...(b.agent === "coder"
+            ? {
+                agent: b.agent,
+                model: b.model,
+                round: b.round,
+                parentId: b.parentId,
+              }
+            : {}),
         };
       })
     : undefined;
@@ -746,7 +759,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // Block IDs are generated as `block-${msgId}-${counter}` so they're
   // stable across re-renders.
 
-  startThinkingBlock: (conversationId, messageId) => {
+  startThinkingBlock: (conversationId, messageId, context) => {
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === conversationId
@@ -765,6 +778,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       type: "thinking" as const,
                       content: "",
                       duration: null,
+                      ...context,
                     },
                   ],
                 };

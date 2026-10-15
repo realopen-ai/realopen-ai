@@ -2,6 +2,8 @@ export interface CoderPreferences {
   context_window: number;
   generation_limit: number;
   max_rounds: number;
+  thinking: boolean;
+  temperature: number;
 }
 export interface CoderSettingsResponse {
   settings: CoderPreferences;
@@ -40,6 +42,13 @@ export function validateCoderPreferences(
     "safety_margin" | "model_context_overrides"
   >,
 ): "range" | "budget" | null {
+  if (
+    typeof values.thinking !== "boolean" ||
+    !Number.isFinite(values.temperature) ||
+    values.temperature < 0 ||
+    values.temperature > 2
+  )
+    return "range";
   for (const [value, min, max] of [
     [values.context_window, 2048, 524288],
     [values.generation_limit, 128, 65536],

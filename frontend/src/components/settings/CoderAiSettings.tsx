@@ -85,6 +85,47 @@ export function CoderAiSettings() {
           }}
         >
           <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
+            <label className="space-y-1.5 text-[13px]">
+              <span className="flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  className="accent-primary"
+                  checked={draft.thinking}
+                  onChange={(e) => {
+                    setDraft({ ...draft, thinking: e.target.checked });
+                    setError(null);
+                    setSaved(false);
+                  }}
+                />
+                {t("settings.ai.coder.thinking")}
+              </span>
+              <span className="block text-xs leading-relaxed text-muted-foreground">
+                {t("settings.ai.coder.thinkingHint")}
+              </span>
+            </label>
+            <label className="space-y-1.5 text-[13px]">
+              <span className="block font-medium">
+                {t("settings.ai.coder.temperature")}
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={2}
+                step="any"
+                required
+                dir="ltr"
+                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                value={draft.temperature}
+                onChange={(e) => {
+                  setDraft({ ...draft, temperature: Number(e.target.value) });
+                  setError(null);
+                  setSaved(false);
+                }}
+              />
+              <span className="block text-xs leading-relaxed text-muted-foreground">
+                {t("settings.ai.coder.temperatureHint")}
+              </span>
+            </label>
             {fields.map(([key, min, max, label, hint]) => (
               <label key={key} className="space-y-1.5 text-[13px]">
                 <span className="block font-medium">

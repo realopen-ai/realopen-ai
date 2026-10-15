@@ -294,6 +294,7 @@ function ThinkingBlockView({ block }: { block: MessageBlock }) {
           <Brain className="w-5 h-5 shrink-0" />
         )}
         <span>
+          {block.agent === "coder" && `${translate("message.coder")} · `}
           {isThinking
             ? translate("message.thinking")
             : translate("message.thoughtFor", { seconds: roundedDuration })}

@@ -13,6 +13,8 @@ const settings = {
   context_window: 16384,
   generation_limit: 4096,
   max_rounds: 30,
+  thinking: true,
+  temperature: 0.6,
 };
 const response = {
   settings,
@@ -55,6 +57,10 @@ test("coder bounds and output/context budget are enforced", () => {
     { max_rounds: 97 },
     { max_rounds: 3 },
     { generation_limit: 4096.5 },
+    { temperature: -0.1 },
+    { temperature: 2.1 },
+    { temperature: Infinity },
+    { temperature: NaN },
   ]) {
     assert.equal(
       validateCoderPreferences({ ...settings, ...change }, response),
@@ -67,6 +73,17 @@ test("coder bounds and output/context budget are enforced", () => {
       response,
     ),
     "budget",
+  );
+  assert.equal(
+    validateCoderPreferences(
+      { ...settings, thinking: false, temperature: 0 },
+      response,
+    ),
+    null,
+  );
+  assert.equal(
+    validateCoderPreferences({ ...settings, temperature: 2 }, response),
+    null,
   );
   assert.equal(
     validateCoderPreferences(settings, {
@@ -105,7 +122,16 @@ test("coder settings labels exist in all supported languages", () => {
         "utf8",
       ),
     );
-    for (const key of ["title", "description", "rounds", "roundsHint"])
+    for (const key of [
+      "title",
+      "description",
+      "rounds",
+      "roundsHint",
+      "thinking",
+      "thinkingHint",
+      "temperature",
+      "temperatureHint",
+    ])
       assert.ok(locale[`settings.ai.coder.${key}`]?.trim());
   }
 });

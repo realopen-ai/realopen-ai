@@ -3,12 +3,13 @@ import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
 import { epochMilliseconds } from "@/lib/timing";
+import type { ThinkingContext } from "@/api/client";
 
 const log = createDebugLogger("stream");
 
 export interface StreamCallbacks {
   onToken: (token: string) => void;
-  onThinkingStart: () => void;
+  onThinkingStart: (context?: ThinkingContext) => void;
   onThinkingToken: (token: string) => void;
   onThinkingDone: (durationSeconds: number) => void;
   onGenerationDone: (data: {
@@ -444,7 +445,16 @@ export function dispatchAgentEvent(
   // ── Thinking start ──
   if (eventType === "thinking_start") {
     log("   🧠 thinking_start event received");
-    callbacks.onThinkingStart();
+    callbacks.onThinkingStart(
+      p.agent === "coder"
+        ? {
+            agent: "coder",
+            model: p.model,
+            round: p.round,
+            parentId: p.parentId,
+          }
+        : undefined,
+    );
   }
 
   // ── Thinking token ──
