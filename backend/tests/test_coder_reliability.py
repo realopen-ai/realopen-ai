@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -62,17 +63,20 @@ async def test_exact_paginated_reads_require_complete_coverage_for_replacement(
 ):
     sandbox, files, _ = workspace
     path = "/workspace/large.txt"
-    files[path] = "a" * 18000
+    files[path] = "abcdefghij\n" * 1500
     state = RunState()
-    for offset in [0, 12000, 6000]:
+    for first, last in [(1, 400), (801, 1200), (401, 800), (1201, 1500)]:
         output, event = await tooling.dispatch_tool(
-            sandbox, "read_file", {"path": path, "offset": offset}
+            sandbox, "read_file", {"path": path, "start_line": first, "end_line": last}
         )
         data = json.loads(output)
-        assert data["content"] == files[path][offset : offset + 6000]
+        assert data["content"] == "".join(
+            files[path].splitlines(keepends=True)[first - 1 : last]
+        )
+        assert data["next_line"] == (last + 1 if last < 1500 else None)
         assert data["sha256"] == sha(files[path])
         state.record("read_file", {"path": path}, output, event)
-        assert state.read_arguments(path)["_full_read"] == (offset == 6000)
+        assert state.read_arguments(path)["_full_read"] == (first == 1201)
     files[path] += "changed"
     _, event = await tooling.dispatch_tool(sandbox, "read_file", {"path": path})
     state.record("read_file", {"path": path}, "read", event)
@@ -80,7 +84,7 @@ async def test_exact_paginated_reads_require_complete_coverage_for_replacement(
 
 
 @pytest.mark.asyncio
-async def test_edit_and_replacement_require_read_and_reject_stale_or_ambiguous_text(
+async def test_targeted_edits_do_not_require_read_ranges_but_reject_stale_or_ambiguous_text(
     workspace,
 ):
     sandbox, files, _ = workspace
@@ -90,10 +94,7 @@ async def test_edit_and_replacement_require_read_and_reject_stale_or_ambiguous_t
         "path": path,
         "old_text": "const a = 1;",
         "new_text": "const a = 2;",
-        "_read_ranges": [(0, len(files[path]))],
     }
-    output, event = await tooling.dispatch_tool(sandbox, "edit_file", args)
-    assert event["exit_code"] == 1 and "Read this file" in output
     digest = sha(files[path])
     _, event = await tooling.dispatch_tool(
         sandbox, "edit_file", {**args, "old_text": " = 1;", "_expected_sha256": digest}
@@ -120,6 +121,174 @@ async def test_edit_and_replacement_require_read_and_reject_stale_or_ambiguous_t
         sandbox, "edit_file", {**args, "_expected_sha256": digest}
     )
     assert event["exit_code"] == 1 and files[path] == after
+
+
+@pytest.mark.asyncio
+async def test_small_files_are_read_whole_and_line_ranges_preserve_exact_source(
+    workspace,
+):
+    sandbox, files, _ = workspace
+    path = "/workspace/example.ts"
+    files[path] = "// élève\r\nconst a = 1;\r\nconst b = 2;\r\n"
+    output, event = await tooling.dispatch_tool(sandbox, "read_file", {"path": path})
+    page = json.loads(output)
+    assert page["content"] == files[path]
+    assert page["total_lines"] == 3 and page["next_line"] is None
+    output, event = await tooling.dispatch_tool(
+        sandbox,
+        "read_file",
+        {
+            "path": path,
+            "start_line": 2,
+            "end_line": 2,
+        },
+    )
+    assert json.loads(output)["content"] == "const a = 1;\r\n"
+    assert event["read"]["offset"] == len("// élève\r\n")
+    output, _ = await tooling.dispatch_tool(
+        sandbox,
+        "edit_file",
+        {
+            "path": path,
+            "old_text": "const b = 2;",
+            "new_text": "const b = 3;",
+        },
+    )
+    assert "Wrote" in output  # Exact match outside the read range is allowed.
+    for bad in [
+        {"start_line": 0},
+        {"start_line": 3, "end_line": 2},
+        {"offset": 15, "limit": 6},
+    ]:
+        with pytest.raises(ValueError, match="line"):
+            await tooling.dispatch_tool(sandbox, "read_file", {"path": path, **bad})
+
+
+@pytest.mark.asyncio
+async def test_empty_and_oversized_lines_are_explicit_not_silently_truncated(workspace):
+    sandbox, files, _ = workspace
+    path = "/workspace/data.txt"
+    files[path] = ""
+    output, event = await tooling.dispatch_tool(sandbox, "read_file", {"path": path})
+    state = RunState()
+    state.record("read_file", {"path": path}, output, event)
+    assert (
+        json.loads(output)["content"] == "" and state.read_arguments(path)["_full_read"]
+    )
+    files[path] = "x" * 17000
+    with pytest.raises(ValueError, match="exceeds.*read budget"):
+        await tooling.dispatch_tool(sandbox, "read_file", {"path": path})
+
+
+@pytest.mark.asyncio
+async def test_write_fail_test_targeted_fix_and_rerun_without_redundant_reads(
+    workspace, monkeypatch
+):
+    sandbox, files, _ = workspace
+    path = "/workspace/calculate.py"
+    state = RunState()
+    original_call = tooling.sandbox_host.call
+
+    monkeypatch.setattr(
+        tooling,
+        "source_fingerprint",
+        AsyncMock(side_effect=lambda _: {path: sha(files[path])}),
+    )
+
+    async def host(action, target, payload=None, **kwargs):
+        if action == "exec" and payload["command"] == "python calculate.py":
+            try:
+                exec(compile(files[path], path, "exec"), {})
+                return {"exit_code": 0, "stdout": "passed", "stderr": ""}
+            except NameError as error:
+                return {"exit_code": 1, "stdout": "", "stderr": str(error)}
+        return await original_call(action, target, payload, **kwargs)
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", host)
+
+    async def step(name, args):
+        if name in {"edit_file", "write_file"}:
+            args = {**args, **state.read_arguments(args["path"])}
+        output, event = await tooling.dispatch_tool(sandbox, name, args)
+        state.record(name, args, output, event)
+        return output, event
+
+    await step(
+        "write_file",
+        {"path": path, "content": "result = ceil(1.2)\nassert result == 2\n"},
+    )
+    assert state.read_arguments(path)["_full_read"]
+    _, failure = await step("run_tests", {"command": "python calculate.py"})
+    assert failure["exit_code"] == 1
+    _, edit = await step(
+        "edit_file",
+        {
+            "path": path,
+            "old_text": "result = ceil(1.2)",
+            "new_text": "from math import ceil\nresult = ceil(1.2)",
+        },
+    )
+    assert edit["changed"] and state.read_arguments(path)["_full_read"]
+    _, success = await step("run_tests", {"command": "python calculate.py"})
+    assert success["exit_code"] == 0
+    # Complete replacement can also use the known, successfully published snapshot.
+    _, replacement = await step(
+        "write_file", {"path": path, "content": files[path] + "assert ceil(2.1) == 3\n"}
+    )
+    assert replacement["changed"]
+
+
+@pytest.mark.asyncio
+async def test_edit_rejections_identify_missing_and_ambiguous_matches(workspace):
+    sandbox, files, _ = workspace
+    path = "/workspace/example.ts"
+    files[path] = "const a = 1;\nconst a = 1;\n"
+    original = files[path]
+    for old, expected in [
+        ("const a = 1;", "[1, 2]"),
+        ("const a = 2;", "not found verbatim"),
+    ]:
+        output, event = await tooling.dispatch_tool(
+            sandbox, "edit_file", {"path": path, "old_text": old, "new_text": "new"}
+        )
+        assert expected in output and event["corrective"] and files[path] == original
+    files[path] = "aaaa"
+    _, event = await tooling.dispatch_tool(
+        sandbox,
+        "edit_file",
+        {
+            "path": path,
+            "old_text": "aaa",
+            "new_text": "b",
+        },
+    )
+    assert (
+        event["corrective"] and files[path] == "aaaa"
+    )  # Overlapping matches are ambiguous too.
+
+
+@pytest.mark.asyncio
+async def test_atomic_edit_rejects_concurrent_change_during_publication(
+    workspace, monkeypatch
+):
+    sandbox, files, _ = workspace
+    path = "/workspace/entry.ts"
+    files[path] = "const value = 1;\n"
+    original_call = tooling.sandbox_host.call
+
+    async def host(action, target, payload=None, **kwargs):
+        if action == "files/write-checked":
+            files[path] = "const value = 99; // user's concurrent change\n"
+        return await original_call(action, target, payload, **kwargs)
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", host)
+    with pytest.raises(RuntimeError, match="409"):
+        await tooling.dispatch_tool(
+            sandbox,
+            "edit_file",
+            {"path": path, "old_text": "value = 1", "new_text": "value = 2"},
+        )
+    assert "99" in files[path]
 
 
 @pytest.mark.asyncio
@@ -171,6 +340,60 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
             {"name": "test-app", "backend": "fastapi", "frontend": "vite"},
         )
     assert files == snapshot
+
+
+@pytest.mark.asyncio
+async def test_scaffold_publishes_tree_refresh_before_dependency_setup_finishes(
+    workspace, monkeypatch
+):
+    sandbox, files, _ = workspace
+    sandbox.id = "scaffold-workspace"
+    original_call = tooling.sandbox_host.call
+    installing, release = asyncio.Event(), asyncio.Event()
+
+    async def host(action, target, payload=None, **kwargs):
+        if action == "exec" and payload.get("command") == "uv sync --all-groups":
+            installing.set()
+            await release.wait()
+        return await original_call(action, target, payload, **kwargs)
+
+    monkeypatch.setattr(tooling.sandbox_host, "call", host)
+    monkeypatch.setattr(agent, "dispatch_tool", tooling.dispatch_tool)
+    monkeypatch.setattr(agent, "_record_command", AsyncMock())
+    queue = asyncio.Queue()
+    running = asyncio.create_task(
+        agent._run_step(
+            sandbox=sandbox,
+            conversation=SimpleNamespace(id="conversation"),
+            task_id="task",
+            name="scaffold_project",
+            args={"name": "app", "backend": "fastapi", "frontend": "none"},
+            state=RunState(),
+            parent_id="delegate",
+            event_queue=queue,
+        )
+    )
+    try:
+        await asyncio.wait_for(installing.wait(), 1)
+        assert not running.done()
+        updates = []
+        while not queue.empty():
+            updates.append(queue.get_nowait())
+        refreshes = [update for update in updates if update.get("refreshFiles")]
+        assert len(refreshes) == 2  # Starter batch, then Python project configuration.
+        assert all(
+            update["sandboxId"] == sandbox.id and "status" not in update
+            for update in refreshes
+        )
+        assert (
+            "/workspace/backend/app.py" in files
+            and "/workspace/pyproject.toml" in files
+        )
+    finally:
+        release.set()
+        await running
+    completed = queue.get_nowait()
+    assert completed["status"] == "completed" and completed["refreshFiles"] is True
 
 
 @pytest.mark.asyncio
@@ -275,7 +498,7 @@ async def test_shell_with_unknown_file_changes_cannot_claim_verified_tests(
 
 
 @pytest.mark.asyncio
-async def test_edit_must_target_text_actually_read(workspace):
+async def test_edit_can_target_unique_text_outside_the_last_read_range(workspace):
     sandbox, files, _ = workspace
     path = "/workspace/a.txt"
     files[path] = "visible\nhidden"
@@ -290,7 +513,7 @@ async def test_edit_must_target_text_actually_read(workspace):
             "_read_ranges": [(0, 7)],
         },
     )
-    assert event["exit_code"] == 1 and files[path] == "visible\nhidden"
+    assert event["changed"] and files[path] == "visible\ngone"
 
 
 def test_full_stack_validation_requires_latest_build_tests_and_proxy_request():
