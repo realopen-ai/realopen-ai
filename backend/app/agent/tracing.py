@@ -881,7 +881,11 @@ def traced_coder_execution(function):
                     {
                         "conversation_id": request.get("conversation_id"),
                         "messages": [
-                            {"role": "user", "content": request.get("task", "")}
+                            {
+                                "role": "user",
+                                "content": request.get("_user_request")
+                                or request.get("task", ""),
+                            }
                         ],
                         "model": "coder",
                     }
@@ -892,6 +896,9 @@ def traced_coder_execution(function):
                     parent_trace_id=parent.data["trace_id"] if parent else None,
                     parent_tool_call_id=request.get("_parent_tool_call_id"),
                     max_rounds=coder_settings.effective().max_rounds,
+                )
+                trace.data["request"]["delegated_task"] = trace.safe(
+                    request.get("task", "")
                 )
                 token = current_trace.set(trace)
                 _active.add(trace)

@@ -31,7 +31,7 @@ from app.services.context_compactor import compact_conversation
 from app.services.agent_activity import activity_events
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
-from app.prompts import get_prompt
+from app.prompts import get_prompt, format_prompt
 from app.core.prompt_security import untrusted_context_message
 from app.services import sandbox_host, tool_capabilities, coder_settings
 from app.services import skills as skill_store
@@ -451,7 +451,7 @@ class CoderAgent(BaseTool):
         return {
             "task": {
                 "type": "string",
-                "description": "Concrete coding task and acceptance criteria.",
+                "description": "Faithful coding brief: preserve explicit user requirements. Label suggestions as optional; do not invent required ports, storage, frameworks or other constraints.",
             }
         }
 
@@ -467,6 +467,7 @@ class CoderAgent(BaseTool):
         conversation_id: str | None = None,
         _event_queue=None,
         _parent_tool_call_id: str | None = None,
+        _user_request: str | None = None,
         **kwargs,
     ) -> ToolResult:
         if not task or not task.strip():
@@ -510,7 +511,17 @@ class CoderAgent(BaseTool):
             messages = [
                 {"role": "system", "content": coder_prompt},
                 *([skill_context] if skill_catalog else []),
-                {"role": "user", "content": task, "metadata": {"agent_request": True}},
+                {
+                    "role": "user",
+                    "content": (
+                        format_prompt(
+                            "coder_delegation", user_request=_user_request, task=task
+                        )
+                        if _user_request
+                        else task
+                    ),
+                    "metadata": {"agent_request": True},
+                },
             ]
             state = RunState()
             try:
@@ -532,6 +543,37 @@ class CoderAgent(BaseTool):
             premature_finals = 0
             incomplete_generations = 0
             preferences = coder_settings.effective()
+            thinking_started = None
+
+            def on_thinking(token):
+                nonlocal thinking_started
+                if _event_queue is None:
+                    return
+                if token is None:
+                    if thinking_started is not None:
+                        _event_queue.put_nowait(
+                            {
+                                "event": "thinking_done",
+                                "thinkingDuration": round(
+                                    time.monotonic() - thinking_started, 3
+                                ),
+                            }
+                        )
+                        thinking_started = None
+                    return
+                if thinking_started is None:
+                    thinking_started = time.monotonic()
+                    _event_queue.put_nowait(
+                        {
+                            "event": "thinking_start",
+                            "agent": "coder",
+                            "model": model,
+                            "round": _round + 1,
+                            "parentId": _parent_tool_call_id,
+                        }
+                    )
+                _event_queue.put_nowait({"event": "thinking", "thinking": token})
+
             observe("limits", preferences.max_rounds)
             for _round in range(preferences.max_rounds):
                 # Keep earlier request bytes intact for prefix-cache reuse.
@@ -572,8 +614,8 @@ class CoderAgent(BaseTool):
                     {t["function"]["name"] for t in CODER_TOOLS},
                     [],
                     {
-                        "think": False,
-                        "temperature": 0.2,
+                        "think": preferences.thinking,
+                        "temperature": preferences.temperature,
                         "max_output_tokens": preferences.generation_limit,
                     },
                 )
@@ -582,7 +624,10 @@ class CoderAgent(BaseTool):
                     messages,
                     transient_text_models=transient_text_models,
                     **(
-                        {"on_activity": _event_queue.put_nowait}
+                        {
+                            "on_activity": _event_queue.put_nowait,
+                            "on_thinking": on_thinking,
+                        }
                         if _event_queue is not None
                         else {}
                     ),

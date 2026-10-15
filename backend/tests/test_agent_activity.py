@@ -273,3 +273,62 @@ async def test_delegated_coder_activity_keeps_its_event_type(agent, monkeypatch)
         for event in events
         if event["event"] == "tool_call"
     )
+
+
+@pytest.mark.asyncio
+async def test_coder_receives_original_request_and_thinking_is_forwarded_as_sse(
+    agent, monkeypatch
+):
+    agent.name = "delegate_to_coder"
+    registry = ToolRegistry()
+    registry.register(agent)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {agent.name})
+    original = "Build a FastAPI API with SQLite persistence and tests."
+    thinking = [
+        {
+            "event": "thinking_start",
+            "agent": "coder",
+            "round": 1,
+            "model": "ornith-1.5:9b",
+        },
+        {
+            "event": "thinking",
+            "thinking": "SQLite persistence is an explicit requirement.",
+        },
+        {"event": "thinking_done", "thinkingDuration": 0.5},
+    ]
+
+    async def execute(**kwargs):
+        assert kwargs["_user_request"] == original
+        assert kwargs["input"] == "Build an in-memory API on port 8000"
+        for event in thinking:
+            kwargs["_event_queue"].put_nowait(event)
+        return ToolResult(True, "Done")
+
+    monkeypatch.setattr(agent, "execute", execute)
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {"input": "Build an in-memory API on port 8000"},
+                            name=agent.name,
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run(messages=[{"role": "user", "content": original}])
+    forwarded = [event for event in events if event["event"].startswith("thinking")]
+    assert forwarded == thinking
+    assert all(
+        "event" not in event["tool_call"]
+        for event in events
+        if event["event"] == "tool_call"
+    )

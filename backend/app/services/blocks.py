@@ -50,10 +50,18 @@ class BlockBuilder:
         self._current_thinking = None
         self._thinking_started_at = None
 
-    def on_thinking_start(self):
+    def on_thinking_start(self, context: dict | None = None):
         """Open a new thinking block (closes any open text block)."""
         self._close_text()
         self._current_thinking = {"type": "thinking", "content": "", "duration": None}
+        if context and context.get("agent") == "coder":
+            self._current_thinking.update(
+                {
+                    key: context[key]
+                    for key in ("agent", "model", "round", "parentId")
+                    if context.get(key) is not None
+                }
+            )
         self._thinking_started_at = time.monotonic()
         self.blocks.append(self._current_thinking)
 

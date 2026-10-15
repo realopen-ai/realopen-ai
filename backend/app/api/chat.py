@@ -417,7 +417,7 @@ async def chat_stream(request: ChatRequest):
                         event_type = parsed.get("event")
 
                         if event_type == "thinking_start":
-                            builder.on_thinking_start()
+                            builder.on_thinking_start(parsed)
 
                         if event_type == "thinking" and parsed.get("thinking"):
                             builder.on_thinking_token(parsed["thinking"])
@@ -915,7 +915,7 @@ async def chat_stream_multipart(
                         event_type = parsed.get("event")
 
                         if event_type == "thinking_start":
-                            builder.on_thinking_start()
+                            builder.on_thinking_start(parsed)
 
                         if event_type == "thinking" and parsed.get("thinking"):
                             builder.on_thinking_token(parsed["thinking"])

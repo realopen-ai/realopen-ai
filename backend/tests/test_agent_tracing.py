@@ -246,6 +246,22 @@ def coder_setup(trace_setup, monkeypatch):
         )
 
     monkeypatch.setattr(coder_agent, "async_session_factory", session)
+
+    async def stream(model, history, tools=None, **kwargs):
+        response = await coder_provider.providers.chat_once(
+            model, history, tools=tools, **kwargs
+        )
+        message = response.get("message", {})
+        yield {
+            "content": message.get("content", ""),
+            "thinking": message.get("thinking", ""),
+            "tool_calls": message.get("tool_calls", []),
+            "done": True,
+            "finish_reason": response.get("done_reason", response.get("finish_reason")),
+            "usage": response.get("usage"),
+        }
+
+    monkeypatch.setattr(coder_provider.providers, "stream_chat", stream)
     return trace_setup
 
 
@@ -317,7 +333,7 @@ async def test_coder_trace_is_separate_and_restores_parent(coder_setup, monkeypa
     assert child["outcome"]["final_assistant_response"] == "Done"
     first = child["rounds"][0]
     assert first["inference"]["max_output_tokens"] == 4096
-    assert first["inference"]["temperature"] == 0.2
+    assert first["inference"]["temperature"] == 0.6
     assert first["tool_calls"][0]["arguments"]["path"] == "/app.py"
     assert first["tool_calls"][0]["effective_arguments"]["path"] == "/workspace/app.py"
     assert first["model_attempts"][0]["duration_ms"] >= 0
@@ -801,10 +817,166 @@ async def test_coder_nonstream_provider_settings_are_observed(coder_setup, monke
     ).success
     row = (await saved(coder_setup / "coder"))[0]
     attempt = row["rounds"][0]["model_attempts"][0]
-    assert attempt["inference"]["think"] is False
-    assert attempt["inference"]["temperature"] == 0.2
+    assert attempt["inference"]["think"] is True
+    assert attempt["inference"]["temperature"] == 0.6
     assert attempt["inference"]["max_output_tokens"] == 4096
     assert attempt["model_defaults"]["lookup_status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_coder_thinking_is_live_while_calls_wait_for_complete_response(
+    coder_setup, monkeypatch
+):
+    release = asyncio.Event()
+    queue = asyncio.Queue()
+    original = "Build a FastAPI service with SQLite persistence."
+    brief = "Build an in-memory service on port 8000."
+    requests = []
+
+    async def stream(model, messages, **kwargs):
+        requests.append((messages, kwargs))
+        if len(requests) == 1:
+            yield {"thinking": "Read the files first.", "done": False}
+            yield {
+                "tool_calls": [native({"path": "/workspace"}, "list_files")],
+                "done": False,
+            }
+            await release.wait()
+            yield {
+                "done": True,
+                "finish_reason": "stop",
+                "usage": {"output_tokens": 15},
+            }
+        else:
+            yield {
+                "thinking": "The user required SQLite, not in-memory storage.",
+                "done": False,
+            }
+            yield {"content": "Inspected files.", "done": True, "finish_reason": "stop"}
+
+    monkeypatch.setattr(coder_provider.providers, "stream_chat", stream)
+    running = asyncio.create_task(
+        coder_agent.CoderAgent().execute(
+            task=brief,
+            _user_request=original,
+            conversation_id="conversation-1",
+            _event_queue=queue,
+            _parent_tool_call_id="delegate-1",
+        )
+    )
+    received = []
+    try:
+        while not any(event.get("event") == "thinking" for event in received):
+            received.append(await asyncio.wait_for(queue.get(), 1))
+        assert not running.done()
+        coder_agent.dispatch_tool.assert_not_awaited()
+    finally:
+        release.set()
+        result = await running
+    assert result.success
+    while not queue.empty():
+        received.append(queue.get_nowait())
+    starts = [event for event in received if event.get("event") == "thinking_start"]
+    assert [event["round"] for event in starts] == [1, 2]
+    assert all(
+        event["agent"] == "coder" and event["parentId"] == "delegate-1"
+        for event in starts
+    )
+    assert (
+        len([event for event in received if event.get("event") == "thinking_done"]) == 2
+    )
+    assert all(
+        request[1]["think"] is True and request[1]["options"]["temperature"] == 0.6
+        for request in requests
+    )
+    delegated = next(
+        message["content"]
+        for message in requests[0][0]
+        if original in message.get("content", "")
+    )
+    assert (
+        brief in delegated
+        and "authoritative" in delegated
+        and "not a new user request" in delegated
+    )
+    coder_agent.dispatch_tool.assert_awaited_once()
+    (row,) = await saved(coder_setup / "coder")
+    assert row["request"]["user_message"] == original
+    assert row["request"]["delegated_task"] == brief
+    assert row["rounds"][0]["model_response"]["thinking"] == "Read the files first."
+    assert row["rounds"][0]["model_attempts"][0]["response"]["usage"] == {
+        "output_tokens": 15
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["incomplete", "error", "cancelled"])
+async def test_coder_interrupted_stream_closes_thinking_without_executing_partial_calls(
+    coder_setup, monkeypatch, termination
+):
+    async def stream(*args, **kwargs):
+        yield {"thinking": "Partial reasoning", "done": False}
+        yield {
+            "tool_calls": [native({"path": "/workspace"}, "list_files")],
+            "done": False,
+        }
+        if termination == "error":
+            raise RuntimeError("Connection lost")
+        if termination == "cancelled":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(coder_provider.providers, "stream_chat", stream)
+    queue = asyncio.Queue()
+    execution = coder_agent.CoderAgent().execute(
+        task="Inspect files", conversation_id="conversation-1", _event_queue=queue
+    )
+    if termination == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await execution
+    else:
+        assert not (await execution).success
+    coder_agent.dispatch_tool.assert_not_awaited()
+    events = list(queue._queue)
+    assert (
+        len([event for event in events if event.get("event") == "thinking_start"]) == 1
+    )
+    assert (
+        len([event for event in events if event.get("event") == "thinking_done"]) == 1
+    )
+    (row,) = await saved(coder_setup / "coder")
+    attempt = row["rounds"][0]["model_attempts"][0]
+    assert attempt["response"]["message"]["thinking"] == "Partial reasoning"
+    assert attempt["error"]
+
+
+@pytest.mark.asyncio
+async def test_coder_fallback_preserves_thinking_and_custom_inference_settings(
+    coder_setup, monkeypatch
+):
+    monkeypatch.setattr(
+        coder_settings, "_overrides", {"thinking": False, "temperature": 0}
+    )
+    monkeypatch.setattr(
+        coder_provider.tool_capabilities, "should_try_native", lambda _: False
+    )
+    requests, tokens = [], []
+
+    async def stream(model, messages, **kwargs):
+        requests.append(kwargs)
+        yield {"thinking": "Provider reasoning", "done": False}
+        yield {"content": '{"final":"Done"}', "done": True, "finish_reason": "stop"}
+
+    monkeypatch.setattr(coder_provider.providers, "stream_chat", stream)
+    result = await coder_provider.chat_with_tool_recovery(
+        "coder:test",
+        [{"role": "user", "content": "Inspect files"}],
+        on_thinking=tokens.append,
+    )
+    assert result["message"]["thinking"] == "Provider reasoning"
+    assert result["message"]["content"] == "Done"
+    assert tokens[0] == "Provider reasoning" and tokens[-1] is None
+    assert requests[0]["think"] is False and requests[0]["options"]["temperature"] == 0
+    assert requests[0]["tools"] is None
 
 
 @pytest.mark.asyncio

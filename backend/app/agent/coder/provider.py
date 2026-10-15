@@ -54,7 +54,14 @@ def recovery_message(content: str) -> dict:
 
 
 async def _chat_attempt(
-    model, messages, tools, *, recovery=False, on_activity=None, **kwargs
+    model,
+    messages,
+    tools,
+    *,
+    recovery=False,
+    on_activity=None,
+    on_thinking=None,
+    **kwargs,
 ):
     options = dict(kwargs.get("options") or {})
     budget = context_budget(model, options.get("num_predict"))
@@ -95,8 +102,45 @@ async def _chat_attempt(
                 messages, _ = activity["result"]
     messages = model_messages(messages, native=not recovery, fenced_tools=not recovery)
     started_at, started = timestamp(), time.monotonic()
+    result = None
     try:
-        result = await providers.chat_once(model, messages, tools=tools, **kwargs)
+        if on_thinking is None:
+            result = await providers.chat_once(model, messages, tools=tools, **kwargs)
+        else:
+            # Assemble complete calls before executing; forward only thinking live.
+            result = {
+                "model": model,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "thinking": "",
+                    "tool_calls": [],
+                },
+                "done": False,
+            }
+            try:
+                async for chunk in providers.stream_chat(
+                    model, messages, tools=tools, **kwargs
+                ):
+                    message = result["message"]
+                    message["content"] += chunk.get("content", "")
+                    token = chunk.get("thinking", "")
+                    if token:
+                        message["thinking"] += token
+                        on_thinking(token)
+                    elif chunk.get("content") or chunk.get("tool_calls"):
+                        on_thinking(None)
+                    message["tool_calls"].extend(chunk.get("tool_calls") or [])
+                    for key in ("finish_reason", "usage"):
+                        if chunk.get(key) is not None:
+                            result[key] = chunk[key]
+                    result["done"] = bool(chunk.get("done"))
+                if not result["done"]:
+                    raise providers.ProviderStreamError(
+                        "Coder model stream ended before completion"
+                    )
+            finally:
+                on_thinking(None)
     except BaseException as exc:
         error = {"type": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, httpx.HTTPStatusError):
@@ -107,6 +151,7 @@ async def _chat_attempt(
             "model_attempt",
             messages,
             tools,
+            response=result,
             error=error,
             recovery=recovery,
             started_at=started_at,
@@ -126,8 +171,15 @@ async def _chat_attempt(
 
 
 async def chat_with_tool_recovery(
-    model: str, messages: list[dict], *, on_activity=None, transient_text_models=None
+    model: str,
+    messages: list[dict],
+    *,
+    on_activity=None,
+    on_thinking=None,
+    transient_text_models=None,
 ) -> dict:
+    preferences = coder_settings.effective()
+
     async def text_attempt():
         fallback = await _chat_attempt(
             model,
@@ -135,18 +187,22 @@ async def chat_with_tool_recovery(
             tools=None,
             recovery=True,
             on_activity=on_activity,
+            on_thinking=on_thinking,
             timeout=1200,
             format="json",
-            think=False,
+            think=preferences.thinking,
             options={
                 "num_predict": coder_settings.effective().generation_limit,
-                "temperature": 0.2,
+                "temperature": preferences.temperature,
             },
         )
         try:
+            thinking = fallback.get("message", {}).get("thinking", "")
             fallback["message"] = recovery_message(
                 fallback.get("message", {}).get("content", "")
             )
+            if thinking:
+                fallback["message"]["thinking"] = thinking
         except Exception as parse_error:
             observe("recovery_error", str(parse_error))
             raise
@@ -163,11 +219,12 @@ async def chat_with_tool_recovery(
                 model,
                 messages,
                 tools=CODER_TOOLS,
+                on_thinking=on_thinking,
                 timeout=1200,
-                think=False,
+                think=preferences.thinking,
                 options={
                     "num_predict": coder_settings.effective().generation_limit,
-                    "temperature": 0.2,
+                    "temperature": preferences.temperature,
                 },
             )
         except (httpx.HTTPStatusError, providers.ProviderStreamError) as error:

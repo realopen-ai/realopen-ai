@@ -154,7 +154,7 @@ def _apply_event_to_builder(parsed: dict, builder: BlockBuilder) -> None:
     event_type = parsed.get("event")
 
     if event_type == "thinking_start":
-        builder.on_thinking_start()
+        builder.on_thinking_start(parsed)
 
     if event_type == "thinking" and parsed.get("thinking"):
         builder.on_thinking_token(parsed["thinking"])
@@ -916,9 +916,7 @@ class VoiceSession:
                     "modality": "voice",
                     "model": self._model_label,
                     "generationDuration": builder.generation_duration,
-                    "completionStatus": (
-                        "interrupted" if interrupted else "completed"
-                    ),
+                    "completionStatus": ("interrupted" if interrupted else "completed"),
                 },
             }
         )

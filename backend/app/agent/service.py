@@ -1845,7 +1845,10 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
-            if tool_name == "use_report_gen":
+            if tool_name == "delegate_to_coder":
+                # Original wording is application-owned, never a model rewrite.
+                exec_args["_user_request"] = last_user
+            elif tool_name == "use_report_gen":
                 # Execution-only handoff: raw evidence is not repeated in SSE
                 # or supplied by the model. The writer bounds its own context.
                 exec_args["_user_request"] = last_user
@@ -1884,6 +1887,19 @@ async def run_agent_stream(
                                     )
                                     if nested_event.get("event") == "agent_activity":
                                         yield _sse_event("agent_activity", nested_event)
+                                        continue
+                                    if (
+                                        tool_name == "delegate_to_coder"
+                                        and nested_event.get("event")
+                                        in {
+                                            "thinking_start",
+                                            "thinking",
+                                            "thinking_done",
+                                        }
+                                    ):
+                                        yield _sse_event(
+                                            nested_event["event"], nested_event
+                                        )
                                         continue
                                     if (
                                         tool_name

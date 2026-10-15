@@ -2,15 +2,25 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.agent.coder import agent, starters, tooling
+from app.config import load_profiles
 from app.agent.coder.working_state import RunState, compact_output, validation_kind
 from app.services import skills
 from app.services import agent_settings, context_compactor
+
+
+def test_hardware_profiles_default_to_official_ornith_coder_tags():
+    profiles = load_profiles(str(Path(__file__).resolve().parents[2] / "profiles.yml"))
+    large = {"nvidia_xlarge", "apple_large", "apple_xlarge"}
+    for name, profile in profiles.items():
+        coder = profile.get_model_by_role("default_coder")
+        assert coder.id == ("ornith-1.5:35b" if name in large else "ornith-1.5:9b")
 
 
 def sha(content):

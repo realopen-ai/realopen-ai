@@ -53,3 +53,28 @@ def test_progress_only_update_does_not_invent_a_tool_block():
     builder = BlockBuilder()
     builder.on_tool_call_update("missing", {"progress": {"completed": 1}})
     assert builder.to_db_blocks() == []
+
+
+def test_coder_thinking_metadata_survives_persistence_without_becoming_answer_text():
+    builder = BlockBuilder()
+    context = {
+        "agent": "coder",
+        "model": "ornith-1.5:9b",
+        "round": 2,
+        "parentId": "task",
+    }
+    builder.on_thinking_start(context)
+    builder.on_thinking_token("Inspect the existing routes first.")
+    builder.on_thinking_done(1.25)
+    builder.on_thinking_start()
+    builder.on_thinking_token("General assistant resumes.")
+    builder.on_thinking_done(2)
+    blocks = builder.to_db_blocks()
+    assert blocks[0] == {
+        "type": "thinking",
+        "content": "Inspect the existing routes first.",
+        "duration": 1.25,
+        **context,
+    }
+    assert "agent" not in blocks[1]
+    assert builder.get_text_content() == ""
