@@ -167,12 +167,14 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                     },
                     {"role": "user", "content": text},
                 ],
-                timeout=120,
+                timeout=settings.CONTEXT_SUMMARY_TIMEOUT_SECONDS,
                 think=False,
                 options={"num_predict": max_tokens},
             )
             return (response.get("message", {}).get("content") or "").strip()
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.CONTEXT_SUMMARY_TIMEOUT_SECONDS
+        ) as client:
             _log(
                 " =================== Calling LLM for summary (model=%s, max_tokens=%d)",
                 model,
@@ -205,7 +207,12 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
             data = resp.json()
             return data.get("message", {}).get("content", "").strip()
     except Exception as e:
-        logger.warning("Summarization LLM call failed: %s", e)
+        logger.warning(
+            "Summarization LLM call failed (%s, timeout=%ss): %s",
+            type(e).__name__,
+            settings.CONTEXT_SUMMARY_TIMEOUT_SECONDS,
+            e,
+        )
         _log(" ============================== LLM summarize failed for text: %s", text)
         return None
 
