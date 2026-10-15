@@ -506,9 +506,9 @@ export function ChatArea({
             setRightPanelTab("preview");
           }
           if (
-            updates.status === "completed" &&
-            (streamedToolTypes.get(toolCallId) === "file_write" ||
-              updates.refreshFiles)
+            updates.refreshFiles ||
+            (updates.status === "completed" &&
+              streamedToolTypes.get(toolCallId) === "file_write")
           ) {
             void useSandboxStore.getState().fetchFileTree();
           }

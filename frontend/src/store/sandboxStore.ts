@@ -122,6 +122,7 @@ interface SandboxState {
 }
 
 let conversationLoadRevision = 0;
+let fileTreeRevision = 0;
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -372,6 +373,7 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
     }));
   },
   fetchFileTree: async () => {
+    const revision = ++fileTreeRevision;
     const id = get().sandboxId;
     if (!id) {
       set({ fileTree: [] });
@@ -382,11 +384,14 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
       const d = await request<{ tree: FileNode[] }>(
         `/api/sandboxes/${id}/files`,
       );
-      set({ fileTree: visibleWorkspaceTree(d.tree) });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ fileTree: visibleWorkspaceTree(d.tree) });
     } catch (e) {
-      set({ error: String(e) });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ error: String(e) });
     } finally {
-      set({ isLoadingTree: false });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ isLoadingTree: false });
     }
   },
   fetchFileContent: async (path) => {
