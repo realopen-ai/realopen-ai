@@ -248,7 +248,14 @@ def test_coder_preferences_persist_reset_and_do_not_change_general_settings(
     assert defaults["context_window"] == 16384
     assert defaults["generation_limit"] == 4096
     before = client.get("/api/agent/settings").json()["settings"]
-    values = {**defaults, "generation_limit": 6144, "max_rounds": 20}
+    assert defaults["thinking"] is True and defaults["temperature"] == 0.6
+    values = {
+        **defaults,
+        "generation_limit": 6144,
+        "max_rounds": 20,
+        "thinking": False,
+        "temperature": 0.3,
+    }
     result = client.put("/api/coder/settings", json=values)
     assert result.status_code == 200, result.text
     monkeypatch.setattr(coder_settings, "_overrides", {})
@@ -267,6 +274,12 @@ def test_coder_preferences_persist_reset_and_do_not_change_general_settings(
         {"generation_limit": 16384},
         {"max_rounds": 97},
         {"max_rounds": 0},
+        {"thinking": "true"},
+        {"thinking": 1},
+        {"temperature": True},
+        {"temperature": "NaN"},
+        {"temperature": -0.1},
+        {"temperature": 2.1},
         {"unknown": 1},
     ],
 )
@@ -291,16 +304,57 @@ async def test_coder_snapshot_is_frozen_and_isolated_from_parallel_general_reque
         return (
             coder_settings.effective().generation_limit,
             context_compactor.context_budget("local").window,
+            coder_settings.effective().thinking,
+            coder_settings.effective().temperature,
         )
 
     running = asyncio.create_task(coder())
     await entered.wait()
     assert context_compactor.context_budget("local").window == 8192
-    monkeypatch.setattr(coder_settings, "_overrides", {"generation_limit": 6000})
+    monkeypatch.setattr(
+        coder_settings,
+        "_overrides",
+        {"generation_limit": 6000, "thinking": False, "temperature": 0},
+    )
     release.set()
-    assert await running == (4096, 16384)
+    assert await running == (4096, 16384, True, 0.6)
     assert coder_settings.effective().generation_limit == 6000
+    assert coder_settings.effective().thinking is False
+    assert coder_settings.effective().temperature == 0
     assert agent_settings.effective().generation_limit == 2048
+
+
+def test_legacy_coder_settings_keep_budgets_and_gain_inference_defaults(
+    client, database
+):
+    legacy = {"context_window": 20000, "generation_limit": 5000, "max_rounds": 20}
+    with Session(database) as session:
+        session.add(
+            AppState(
+                key=coder_settings.STATE_KEY,
+                value=json.dumps({"schema_version": 1, "settings": legacy}),
+            )
+        )
+        session.commit()
+    assert client.get("/api/coder/settings").json()["settings"] == {
+        **legacy,
+        "thinking": True,
+        "temperature": 0.6,
+    }
+
+
+@pytest.mark.parametrize("temperature", [0, 2])
+def test_coder_inference_boundary_settings_survive_reload(
+    client, monkeypatch, temperature
+):
+    values = {
+        **coder_settings.defaults(),
+        "thinking": False,
+        "temperature": temperature,
+    }
+    assert client.put("/api/coder/settings", json=values).status_code == 200
+    monkeypatch.setattr(coder_settings, "_overrides", {})
+    assert client.get("/api/coder/settings").json()["settings"] == values
 
 
 @pytest.mark.asyncio

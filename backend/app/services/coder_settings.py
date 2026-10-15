@@ -1,4 +1,4 @@
-"""Independent database-backed coder budgets; reuse shared context accounting."""
+"""Database-backed coder inference preferences and independent context budgets."""
 
 import functools
 import json
@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 STATE_KEY = "ai.coder_preferences"
 _overrides = {}
 _snapshot = ContextVar("coder_preferences_snapshot", default=None)
+DEFAULT_THINKING = True
+DEFAULT_TEMPERATURE = 0.6
 
 
 class CoderPreferences(BaseModel):
@@ -25,6 +27,10 @@ class CoderPreferences(BaseModel):
     context_window: int = Field(ge=2048, le=524288, strict=True)
     generation_limit: int = Field(ge=128, le=65536, strict=True)
     max_rounds: int = Field(ge=4, le=96, strict=True)
+    thinking: bool = Field(default=DEFAULT_THINKING, strict=True)
+    temperature: float = Field(
+        default=DEFAULT_TEMPERATURE, ge=0, le=2, strict=True, allow_inf_nan=False
+    )
 
     @model_validator(mode="after")
     def check_budget(self):
@@ -42,6 +48,8 @@ def defaults():
         "context_window": min(524288, settings.AGENT_CONTEXT_WINDOW * 2),
         "generation_limit": min(65536, settings.AGENT_OUTPUT_RESERVE_TOKENS * 2),
         "max_rounds": min(96, max(4, settings.AGENT_MAX_ROUNDS * 2)),
+        "thinking": DEFAULT_THINKING,
+        "temperature": DEFAULT_TEMPERATURE,
     }
 
 
