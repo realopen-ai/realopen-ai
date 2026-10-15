@@ -14,6 +14,7 @@ from app.agent.base import ToolResult, ToolRegistry
 from app.agent.coder import provider as coder_provider
 from app.config import settings
 from app.services import context_compactor as cc, conversation_memory as cm
+from app.services import chat_streams
 from app.services.agent_activity import activity_events
 from app.services.chat_streams import start_stream
 from test_agent_protocol import agent as agent_fixture, run, script, call
@@ -138,6 +139,49 @@ async def test_agent_forwards_compaction_activity_without_changing_rounds(
         i for i, event in enumerate(events) if event["event"] == "message"
     )
     assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_recoverable_summary_timeout_keeps_same_sse_subscription_through_later_rounds(
+    agent, monkeypatch
+):
+    monkeypatch.setattr(settings, "AGENT_CONTEXT_WINDOW", 12000)
+    monkeypatch.setattr(settings, "CONTEXT_COMPACT_THRESHOLD", 0.5)
+    monkeypatch.setattr(chat_streams, "HEARTBEAT_SECONDS", 0.01)
+    release = asyncio.Event()
+
+    async def timed_out_summary(*args, **kwargs):
+        await release.wait()
+        # _llm_summarize returns None after catching a provider ReadTimeout.
+        return None
+
+    monkeypatch.setattr(cc, "_llm_summarize", timed_out_summary)
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"input": "after timeout"})], "done": True}],
+            [{"content": "Finished after recovery", "done": True}],
+        ],
+    )
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 2000}
+        for i in range(12)
+    ]
+    messages = history + [{"role": "user", "content": "Use echo"}]
+    stream = await start_stream(
+        "summary-timeout-live", service.run_agent_stream(messages, model="local")
+    )
+    subscriber = stream.subscribe()
+    initial = await asyncio.wait_for(anext(subscriber), 1)
+    assert '"active": true' in initial
+    assert await asyncio.wait_for(anext(subscriber), 1) == ": keep-alive\n\n"
+    assert not stream.done
+    release.set()
+    rest = [event async for event in subscriber]
+    assert agent.executed == [{"input": "after timeout"}]
+    assert any("Finished after recovery" in event for event in rest)
+    assert not any('"event": "error"' in event for event in rest)
+    assert stream.done
 
 
 @pytest.mark.asyncio

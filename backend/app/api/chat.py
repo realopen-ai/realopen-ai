@@ -619,6 +619,7 @@ async def chat_stream(request: ChatRequest):
         active_stream.subscribe(),
         media_type="text/event-stream",
         headers={
+            "X-Stream-ID": active_stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -1106,6 +1107,7 @@ async def chat_stream_multipart(
         active_stream.subscribe(),
         media_type="text/event-stream",
         headers={
+            "X-Stream-ID": active_stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -1133,7 +1135,7 @@ async def resume_chat_stream(conversation_id: str, after: int | None = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid conversation ID") from exc
     stream = get_stream(normalized)
-    if stream is None or stream.done:
+    if stream is None or (stream.done and after is None):
         raise HTTPException(status_code=404, detail="No resumable stream")
     # Preserve DB-rendered blocks and deliver only the unpersisted live tail.
     cursor = stream.persisted_through if after is None else after
@@ -1141,6 +1143,8 @@ async def resume_chat_stream(conversation_id: str, after: int | None = None):
         stream.subscribe(after=cursor),
         media_type="text/event-stream",
         headers={
+            "X-Stream-Cursor": str(max(0, cursor)),
+            "X-Stream-ID": stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",

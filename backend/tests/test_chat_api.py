@@ -128,6 +128,7 @@ class FakeActiveStream:
     """Stand-in for chat_streams.ActiveChatStream (replays drained events)."""
 
     def __init__(self, events, persisted_through=0, done=False):
+        self.stream_id = "test-stream"
         self.events = events
         self.persisted_through = persisted_through
         self.done = done
@@ -1347,6 +1348,23 @@ async def test_resume_stream_finished_404(client, env):
     env.resume_stream = SimpleNamespace(done=True)
     r = await client.get(f"/api/chat/stream/{CONV_ID}/events")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_finished_stream_by_exact_cursor_returns_remaining_events(
+    client, env
+):
+    env.resume_stream = FakeActiveStream(
+        events=[
+            'data: {"event":"message","message":{"content":"already seen"}}\n\n',
+            'data: {"event":"message","message":{"content":"last round"}}\n\n',
+            "data: [DONE]\n\n",
+        ],
+        done=True,
+    )
+    response = await client.get(f"/api/chat/stream/{CONV_ID}/events?after=1")
+    assert response.status_code == 200 and response.headers["x-stream-cursor"] == "1"
+    assert "last round" in response.text and "already seen" not in response.text
 
 
 @pytest.mark.asyncio
