@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+// Optional, sequential Playwright runner. Never downloads a browser at runtime.
+const fs = require("node:fs");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+
+async function main() {
+  const args = process.argv.slice(2);
+  const port = args[0] === "--port" ? Number(args.splice(0, 2)[1]) : 6767;
+  if (![6767, 6969].includes(port) || !args.length || args.length > 10) {
+    throw new Error(
+      "Usage: roai-browser-test [--port 6767|6969] /workspace/tests/example.mjs (up to 10 files)",
+    );
+  }
+  const modulePath = "/opt/roai-browser/node_modules/playwright/index.mjs";
+  if (!fs.existsSync(modulePath)) {
+    throw new Error(
+      "Optional browser verification is not installed. Rebuild the sandbox with INSTALL_BROWSER_TESTS=true. Default DOM/API checks do not require it.",
+    );
+  }
+  const files = args.map((file) => {
+    const resolved = fs.realpathSync(path.resolve("/workspace", file));
+    if (!resolved.startsWith("/workspace/") || !resolved.endsWith(".mjs")) {
+      throw new Error("Browser tests must be .mjs files inside /workspace.");
+    }
+    return resolved;
+  });
+  const { chromium } = await import(pathToFileURL(modulePath).href);
+  const browser = await chromium.launch({ headless: true });
+  let stopping = false;
+  const stop = async (code) => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await browser.close();
+    } finally {
+      process.exit(code);
+    }
+  };
+  process.once("SIGTERM", () => void stop(143));
+  process.once("SIGINT", () => void stop(130));
+  const results = [];
+  try {
+    for (const file of files) {
+      const context = await browser.newContext({
+        baseURL: `http://127.0.0.1:${port}`,
+      });
+      let timer;
+      try {
+        const run = (await import(pathToFileURL(file).href)).default;
+        if (typeof run !== "function")
+          throw new Error(
+            "Export a default async function receiving { page, baseURL }.",
+          );
+        const page = await context.newPage();
+        page.setDefaultTimeout(10_000);
+        page.setDefaultNavigationTimeout(15_000);
+        await Promise.race([
+          run({ page, baseURL: `http://127.0.0.1:${port}` }),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Browser test exceeded 60 seconds")),
+              60_000,
+            );
+          }),
+        ]);
+        results.push({ file, status: "passed" });
+      } catch (error) {
+        results.push({ file, status: "failed", error: String(error) });
+      } finally {
+        clearTimeout(timer);
+        await context.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+  console.log(
+    "ROAI_BROWSER_RESULT=" +
+      JSON.stringify({
+        browser: "chromium-headless-shell",
+        workers: 1,
+        results,
+      }),
+  );
+  // Also exit after a test leaves application timers open, after browser cleanup.
+  process.exit(results.some((result) => result.status !== "passed") ? 1 : 0);
+}
+
+main().catch((error) => {
+  console.error(String(error));
+  process.exit(1);
+});

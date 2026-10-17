@@ -10,6 +10,7 @@ This directory builds the environment used by the dedicated coder agent. The hos
 - `helpers/roai-project-info`: project inspection.
 - `helpers/roai-python-setup`: run `uv sync --all-groups` from `/workspace`, requiring `pyproject.toml`.
 - `helpers/roai-node-setup`: run `bun install` from `/workspace`, requiring `package.json`.
+- `helpers/roai-browser-test`: optional, sequential Playwright verification; never downloads browsers at runtime.
 
 Helpers are installed as executable `roai-*` commands on the container's PATH. The default image command keeps the container alive; project servers are started separately.
 
@@ -36,6 +37,18 @@ The right panel exposes files, agent command output, an independent **User shell
 - Check the preview address for the actual host port, particularly with multiple workspaces. Frontend previews take priority when available.
 
 Use uv for Python dependencies and Bun for JavaScript dependencies. Installed dependencies and project files stay in the workspace volume.
+
+## Verification
+
+The default image is browser-free. Generated Vite projects include single-worker Vitest/happy-dom tests and type/build scripts. FastAPI tests use a temporary SQLite database. The coder can batch independent checks with `run_checks`; each exit code is retained. Shell pipelines use `pipefail`, so piping failing tests into `tail` does not turn them into success.
+
+Real-browser verification is optional. To include only Playwright and Chromium headless shell, build instead with:
+
+```sh
+make sandbox-build-browser
+```
+
+This adds disk space and uses browser RAM only while tests run; it does not change sandbox memory limits. `run_browser_tests` accepts workspace `.mjs` scripts exporting an async function receiving `{ page, baseURL }` (see the coder skill's testing reference). The runner executes sequentially, closes contexts/browser, and performs no cloud calls. Tests themselves may make network requests; use isolated test data. Results distinguish DOM tests, type/build checks, HTTP/API smoke checks and actual browser tests. A passing check is evidence only for its tested scope.
 
 ## Safety
 

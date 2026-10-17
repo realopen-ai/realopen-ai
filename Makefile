@@ -34,6 +34,10 @@ sandbox-install:
 sandbox-build:
 	@docker build -t realopenai-sandbox:latest sandbox
 
+.PHONY: sandbox-build-browser
+sandbox-build-browser:
+	@docker build --build-arg INSTALL_BROWSER_TESTS=true -t realopenai-sandbox:latest sandbox
+
 # ── Development mode (hot reload, debug ports exposed) ──
 .PHONY: dev
 dev: startup detect-hardware
