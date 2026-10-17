@@ -208,7 +208,8 @@ def client():
 @pytest.fixture
 def db_override():
     session = MagicMock(name="request-scoped-db")
-    app.dependency_overrides[get_db] = lambda: SessionCtx(session)
+    session.commit = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: session
     yield session
     app.dependency_overrides.clear()
 
@@ -217,6 +218,7 @@ def db_override():
 def env(monkeypatch, db_override):
     """Install recording fakes for every external of app.api.chat."""
     e = SimpleNamespace(
+        request_db=db_override,
         # agent
         agent_events=default_agent_events(),
         agent_error=None,
@@ -598,6 +600,7 @@ async def test_chat_happy_path_with_conversation(client, env):
     assert roles == ["user", "assistant"]
     assert env.add_message_calls[0]["content"] == "ping"
     assert env.add_message_calls[1]["model"] == "qwen3:4b"
+    assert env.request_db.commit.await_count == 1
 
     # auto-title invoked with the last user message
     assert env.title_calls == [{"conv_id": CONV_ID, "user_message": "ping"}]
@@ -763,9 +766,10 @@ async def test_stream_with_conversation_full_lifecycle(client, env):
     assert env.summarize_calls == [{"conv_id": CONV_ID, "model": "qwen3:4b"}]
     assert env.summ_sessions[0].commit.await_count == 1
 
-    # auto-title emitted as SSE
+    # Auto-title is the first streamed pipeline event, before the agent loop.
     title_events = [ev for ev in events if ev.get("event") == "conversation_title"]
     assert title_events and title_events[0]["title"] == "Auto Title"
+    assert events[0] == title_events[0]
 
     # stream markers + buffered stream started
     assert ("active", str(CONV_ID)) in env.marks
@@ -951,9 +955,9 @@ async def test_stream_summarization_failure_is_non_fatal(client, env):
     assert env.summarize_calls  # attempted …
     assert env.memory_calls  # … after memory extraction ran
     events = sse_events(r.text)
-    # the auto-title SSE event is still the last parsed event of the turn
-    assert events[-1]["event"] == "conversation_title"
-    assert events[-2]["event"] == "response_duration"
+    # Titling happens before the agent; post-turn work still finishes normally.
+    assert events[0]["event"] == "conversation_title"
+    assert events[-1]["event"] == "response_duration"
     assert r.text.rstrip().endswith("data: [DONE]")
 
 
