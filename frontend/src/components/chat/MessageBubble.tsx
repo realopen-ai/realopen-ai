@@ -43,6 +43,10 @@ import {
 } from "@/components/chat/FileViewerModal";
 import { cn } from "@/lib/utils";
 import { formatCodeExecOutput } from "@/lib/codeExecOutput";
+import {
+  presentCoderToolOutput,
+  type CoderCheck,
+} from "@/lib/coderToolPresentation";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { ReadAloudPlayer, type ReadingState } from "@/voice/readAloud";
@@ -733,7 +737,19 @@ function ToolCallDetail({
     format: ViewerFormat,
   ) => void;
 }) {
+  const coderPresentation =
+    tc.agent === "coder" || Boolean(tc.toolName) || tc.type === "sandbox"
+      ? presentCoderToolOutput(tc.output, {
+          toolName: tc.toolName,
+          title: tc.title,
+          exitCode: tc.exitCode,
+        })
+      : null;
   if (tc.status === "error") {
+    if (tc.type === "code_exec" && coderPresentation)
+      return <CodeExecDetail tc={tc} />;
+    if (coderPresentation)
+      return <CoderToolResultDetail result={coderPresentation} />;
     return (
       <p role="alert" className="whitespace-pre-wrap text-[11.5px] text-danger">
         {tc.error || tc.output || tc.title}
@@ -748,12 +764,15 @@ function ToolCallDetail({
   )
     return <ToolAccessDetail tc={tc} />;
   if (tc.type === "tool_output") return <ToolOutputDetail tc={tc} />;
+  if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "file_read" || tc.type === "file_write")
     return <FileToolDetail tc={tc} />;
   if (tc.type === "preview") return <PreviewToolDetail tc={tc} />;
+  if (coderPresentation)
+    return <CoderToolResultDetail result={coderPresentation} />;
   if (tc.type === "image_gen") {
     // Check genResults for report/presentation/excel deliverables
     const hasDeliverable = tc.genResults?.some(
@@ -764,7 +783,6 @@ function ToolCallDetail({
     const titleLower = (tc.title || "").toLowerCase();
     const isReportOrPptx =
       hasDeliverable ||
-  if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
       (tc.status === "running" &&
         (titleLower.includes("report") ||
           titleLower.includes("pptx") ||
@@ -783,24 +801,6 @@ function ToolCallDetail({
   return <GenericToolDetail tc={tc} />;
 }
 
-function ToolOutputDetail({ tc }: { tc: ToolCallResult }) {
-  const translate = useT();
-  const page = toolOutputDetails(tc.output);
-  if (!page)
-    return (
-      <p
-        dir={tc.output ? "ltr" : undefined}
-        className="whitespace-pre-wrap break-words text-[12.5px] text-muted-foreground"
-      >
-        {tc.output ||
-          translate(
-            tc.status === "running"
-              ? "tool.output.loadingInfo"
-              : "tool.output.unavailable",
-          )}
-      </p>
-    );
-  return (
 function SkillToolDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
   const resource = tc.skillResource || "SKILL.md";
@@ -831,6 +831,24 @@ function SkillToolDetail({ tc }: { tc: ToolCallResult }) {
   );
 }
 
+function ToolOutputDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const page = toolOutputDetails(tc.output);
+  if (!page)
+    return (
+      <p
+        dir={tc.output ? "ltr" : undefined}
+        className="whitespace-pre-wrap break-words text-[12.5px] text-muted-foreground"
+      >
+        {tc.output ||
+          translate(
+            tc.status === "running"
+              ? "tool.output.loadingInfo"
+              : "tool.output.unavailable",
+          )}
+      </p>
+    );
+  return (
     <div className="space-y-3 text-[12.5px]">
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
         {(page.sourceTitle || page.sourceTool) && (
@@ -1131,7 +1149,15 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
 
 function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
-  const output = formatCodeExecOutput(tc.output);
+  const isCoder = tc.agent === "coder" || Boolean(tc.toolName);
+  const coderOutput = isCoder
+    ? presentCoderToolOutput(tc.output, {
+        toolName: tc.toolName,
+        title: tc.title,
+        exitCode: tc.exitCode,
+      })
+    : null;
+  const output = coderOutput ? "" : formatCodeExecOutput(tc.output);
 
   return (
     <div className="space-y-2">
@@ -1158,6 +1184,7 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
           </pre>
         </div>
       )}
+      {coderOutput && <CoderToolResultDetail result={coderOutput} />}
       {output && (
         <div className="rounded-lg border border-border/60 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-1 border-b border-border/40 bg-card/60">
@@ -1182,6 +1209,137 @@ function CodeExecDetail({ tc }: { tc: ToolCallResult }) {
           </pre>
         </div>
       )}
+    </div>
+  );
+}
+
+function CoderCheckRow({ check }: { check: CoderCheck }) {
+  const icon =
+    check.status === "passed" ? (
+      <Check className="h-3.5 w-3.5 shrink-0 text-success" />
+    ) : check.status === "failed" ? (
+      <XCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
+    ) : (
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground" />
+    );
+  return (
+    <li className="rounded-md border border-border/50 bg-background/50 px-2.5 py-2">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5">{icon}</span>
+        <div className="min-w-0 flex-1">
+          <p className="break-words font-mono text-[11.5px] text-foreground/90">
+            {check.command || check.label}
+          </p>
+          {check.output && (
+            <pre className="mt-1.5 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+              {check.output}
+            </pre>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function CoderToolResultDetail({
+  result,
+}: {
+  result: NonNullable<ReturnType<typeof presentCoderToolOutput>>;
+}) {
+  const translate = useT();
+  return (
+    <div className="space-y-3">
+      <p className="text-[12.5px] font-medium text-foreground">
+        {result.summary}
+      </p>
+      {result.files.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            {translate("tool.coder.files")}
+          </p>
+          <ul className="space-y-1">
+            {result.files.map((path) => (
+              <li
+                key={path}
+                className="flex min-w-0 items-center gap-2 rounded-md bg-background/50 px-2.5 py-1.5"
+              >
+                <FileCode className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <span className="truncate font-mono text-[11.5px] text-foreground/85">
+                  {path}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {result.checks.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">
+            {translate("tool.coder.checks")}
+          </p>
+          <ul className="space-y-1.5">
+            {result.checks.map((check, index) => (
+              <CoderCheckRow
+                key={`${check.command || check.label}-${index}`}
+                check={check}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+      {result.facts.length > 0 && (
+        <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+          {result.facts.map((fact) => (
+            <div key={`${fact.label}-${fact.value}`} className="min-w-0">
+              <dt className="text-[10.5px] uppercase tracking-wide text-muted-foreground/70">
+                {fact.label}
+              </dt>
+              <dd className="truncate text-[11.5px] text-foreground/85">
+                {fact.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {result.stdout && (
+        <CoderOutputSection
+          label={translate("tool.detail.output")}
+          content={result.stdout}
+        />
+      )}
+      {result.stderr && (
+        <CoderOutputSection
+          label={translate("tool.coder.errors")}
+          content={result.stderr}
+          danger
+        />
+      )}
+    </div>
+  );
+}
+
+function CoderOutputSection({
+  label,
+  content,
+  danger = false,
+}: {
+  label: string;
+  content: string;
+  danger?: boolean;
+}) {
+  return (
+    <div className="overflow-hidden rounded-md border border-border/50">
+      <p className="border-b border-border/40 bg-card/60 px-2.5 py-1 text-[10.5px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <pre
+        className={cn(
+          "max-h-48 overflow-auto whitespace-pre-wrap break-words bg-sandbox-bg p-2.5 font-mono text-[11px] leading-relaxed",
+          danger ? "text-danger" : "text-terminal-green",
+        )}
+      >
+        {content}
+      </pre>
     </div>
   );
 }

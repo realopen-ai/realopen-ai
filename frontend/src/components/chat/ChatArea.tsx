@@ -225,6 +225,10 @@ export function ChatArea({
       const capturedGeneration = ++streamGenerationRef.current;
       const terminalToolIds = new Set<string>();
       const streamedToolTypes = new Map<string, ToolCallResult["type"]>();
+      const streamedToolCalls = new Map<
+        string,
+        Pick<ToolCallResult, "agent" | "toolName" | "title" | "exitCode">
+      >();
       let thinkingStartedAt: number | null = null;
 
       const finishInterruptedThinking = () => {
@@ -440,6 +444,12 @@ export function ChatArea({
           const s = useChatStore.getState();
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
           streamedToolTypes.set(toolCall.id, toolCall.type);
+          streamedToolCalls.set(toolCall.id, {
+            agent: toolCall.agent,
+            toolName: toolCall.toolName,
+            title: toolCall.title,
+            exitCode: toolCall.exitCode,
+          });
 
           // A rejected attempt is visible, but never ran in the workspace.
           if (toolCall.status !== "running") return;
@@ -496,7 +506,13 @@ export function ChatArea({
               .activateSandbox(updates.sandboxId, updates.sandbox);
           }
           if (terminalToolIds.has(toolCallId) && updates.output) {
-            const output = formatCodeExecOutput(updates.output);
+            const context = streamedToolCalls.get(toolCallId);
+            const output = formatCodeExecOutput(updates.output, {
+              coder: context?.agent === "coder" || Boolean(context?.toolName),
+              toolName: context?.toolName,
+              title: updates.title ?? context?.title,
+              exitCode: updates.exitCode ?? context?.exitCode,
+            });
             if (output) addTerminalLine(output);
           }
           if (updates.previewUrl) {
@@ -514,6 +530,7 @@ export function ChatArea({
           if (updates.status === "completed" || updates.status === "error") {
             terminalToolIds.delete(toolCallId);
             streamedToolTypes.delete(toolCallId);
+            streamedToolCalls.delete(toolCallId);
           }
         },
         onDone: () => {
@@ -623,6 +640,7 @@ export function ChatArea({
         // potentially long-running title generation or agent work.
         if (isFromHomePage) {
           setPendingConvId(convId);
+          navigate(`/${convId}`, { replace: true });
         }
       }
 
@@ -640,7 +658,6 @@ export function ChatArea({
       const allMessages = [
         ...(convBeforeSend?.messages ?? []).map((m) => ({
           role: m.role,
-          navigate(`/${convId}`, { replace: true });
           content: m.content,
         })),
         { role: "user" as const, content },
