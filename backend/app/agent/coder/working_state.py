@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.core.prompt_security import untrusted_context_message
+from app.agent.coder.context import CoderMemory
 
 
 def validation_kind(name, command):
@@ -168,6 +169,7 @@ def _application_role(path: object) -> str | None:
 
 @dataclass
 class RunState:
+    memory: CoderMemory = field(default_factory=CoderMemory)
     worklog: list = field(default_factory=list)
     files_changed: list = field(default_factory=list)
     tests_run: list = field(default_factory=list)
@@ -231,6 +233,7 @@ class RunState:
 
     def record(self, name, args, output, event):
         event = event or {}
+        self.memory.record(name, args, event)
         if "checks" in event:
             reason = ""
             for check in event["checks"]:
@@ -517,12 +520,19 @@ class RunState:
             )
         )
 
-    def context(self):
+    def context(self, model=None, *, source_limit=None):
         message = untrusted_context_message(
             "application coder working state",
             json.dumps(
                 {
                     "revision": self.revision,
+                    "continuation": {
+                        "compactions": self.memory.compactions,
+                        "loaded_resources": self.memory.resources,
+                        "active_sources": self.memory.source_context(
+                            model, source_limit
+                        ),
+                    },
                     "starter_commands_not_current_dependencies": {
                         role: {
                             key: value
@@ -561,7 +571,8 @@ class RunState:
                         {"tool": item["tool"], "result": item["result"][:600]}
                         for item in self.worklog[-3:]
                     ],
-                }
+                },
+                ensure_ascii=False,
             ),
         )
         message["metadata"].update(agent_context=True, agent_coder_state=True)
