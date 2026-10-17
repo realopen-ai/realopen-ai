@@ -1,5 +1,6 @@
 """Deterministic, extensible project setup; no model-generated packaging."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -20,6 +21,8 @@ FRONTENDS = {
     "vite": {
         "assets": "vite",
         "install": "bun install --cwd frontend",
+        "test": "bun run --cwd frontend test",
+        "typecheck": "bun run --cwd frontend typecheck",
         "build": "bun run --cwd frontend build",
         "preview": "bun run --cwd frontend dev -- --host 0.0.0.0 --port 6767",
     }
@@ -52,7 +55,36 @@ async def scaffold(sandbox, args, setup_python, progress=None):
             'import "@picocss/pico/css/pico.min.css";\nimport "./style.css";\ndocument.querySelector<HTMLParagraphElement>("#status")!.textContent = "Ready";\n'
         )
     project = {"backend": BACKENDS.get(backend), "frontend": FRONTENDS.get(frontend)}
-    files["/workspace/.realopen-project.json"] = json.dumps(project, indent=2)
+    starter_test_hashes = {
+        path: hashlib.sha256(content.encode()).hexdigest()
+        for path, content in files.items()
+        if "/tests/" in path
+        or any(marker in Path(path).name for marker in (".test.", ".spec."))
+    }
+    starter_source_hashes = {
+        path: hashlib.sha256(content.encode()).hexdigest()
+        for path, content in files.items()
+        if (
+            path.startswith("/workspace/frontend/src/")
+            and path not in starter_test_hashes
+        )
+        or (
+            path.startswith("/workspace/backend/")
+            and path.endswith(".py")
+            and path not in starter_test_hashes
+        )
+    }
+    files["/workspace/.realopen-project.json"] = json.dumps(
+        {
+            **project,
+            "starter": {
+                "schema_version": 1,
+                "source_hashes": starter_source_hashes,
+                "test_hashes": starter_test_hashes,
+            },
+        },
+        indent=2,
+    )
     python_backend = backend != "none" and BACKENDS[backend].get("setup") == "python"
     targets = [*files, *(["/workspace/pyproject.toml"] if python_backend else [])]
     for target in targets:
@@ -159,6 +191,8 @@ async def scaffold(sandbox, args, setup_python, progress=None):
     ), {
         "files": created,
         "project": project,
+        "starter_source_hashes": starter_source_hashes,
+        "starter_test_hashes": starter_test_hashes,
         "changed": True,
         "command": "\n".join(item["command"] for item in checks),
         "exit_code": 1 if any(item.get("exit_code") != 0 for item in checks) else 0,

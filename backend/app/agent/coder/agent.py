@@ -14,12 +14,14 @@ from sqlalchemy import select, text
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState, compact_output
+from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.coder.tooling import (
     CODER_TOOLS,
     dispatch_tool,
     infer_preview,
     normalize_tool_args,
+    source_fingerprint,
 )
 from app.agent.tracing import observe, traced_coder_execution
 from app.agent.protocol import (
@@ -55,6 +57,8 @@ COMMAND_TOOLS = {
     "setup_python_project",
     "scaffold_project",
     "check_preview",
+    "run_checks",
+    "run_browser_tests",
 }
 READ_TOOLS = {"list_files", "read_file", "search_files"}
 
@@ -202,6 +206,8 @@ def _event_for_step(
         "search_files": f"Searching for {args.get('query', '')}",
         "run_tests": "Running tests",
         "install_dependencies": "Installing dependencies",
+        "run_checks": "Running verification checks",
+        "run_browser_tests": "Running optional browser tests",
         "run_command": "Running command",
         "setup_python_project": "Setting up Python project",
         "start_preview": "Starting app preview",
@@ -211,6 +217,8 @@ def _event_for_step(
         "id": step_id,
         "parentId": parent_id,
         "type": event_type,
+        "agent": "coder",
+        "toolName": name,
         "status": "running",
         "title": title,
         "startedAt": _now_ms(),
@@ -225,6 +233,23 @@ def _event_for_step(
         )
         event.update({"language": "shell", "code": command})
     else:
+    if name in COMMAND_TOOLS | {"start_preview"}:
+        if name == "setup_python_project":
+            command = "uv sync --all-groups"
+        elif name in {"run_checks", "run_browser_tests"}:
+            # This also renders schema-rejected calls: arguments need not
+            # contain a valid string array yet. Display, never execute them.
+            entries = args.get("commands" if name == "run_checks" else "paths", [])
+            separator = "\n" if name == "run_checks" else " "
+            command = (
+                separator.join(map(str, entries))
+                if isinstance(entries, list)
+                else str(entries)
+            )
+            if name == "run_browser_tests":
+                command = "roai-browser-test " + command
+        else:
+            command = args.get("command", "")
         event["filePath"] = (
             "/workspace/pyproject.toml"
             if name == "setup_python_project"
@@ -282,6 +307,21 @@ async def _run_step(
             return
         if update.get("stage") in {"files_written", "project_written"}:
             event_queue.put_nowait(
+        if update.get("stage") == "check_completed":
+            check = update["check"]
+            event_queue.put_nowait(
+                {
+                    **start_event,
+                    "title": f"Verification check {update['index'] + 1}/{len(args['commands'])} finished",
+                    "output": json.dumps(
+                        {
+                            "command": check["command"],
+                            "exit_code": check.get("exit_code"),
+                            "result": check["output"],
+                        }
+                    )[:20_000],
+                }
+            )
                 {
                     "id": start_event["id"],
                     "sandboxId": str(sandbox.id),
@@ -311,12 +351,18 @@ async def _run_step(
             args,
             (
                 setup_progress
-                if name in {"setup_python_project", "scaffold_project"}
+                if name in {"setup_python_project", "scaffold_project", "run_checks"}
                 else None
             ),
         )
         if name in COMMAND_TOOLS:
             await _record_command(
+        if event is not None and (
+            name in {"scaffold_project", "setup_python_project"}
+            or configuration_changed(event)
+            and "project_facts" not in event
+        ):
+            event["project_facts"] = await project_snapshot(sandbox)
                 sandbox=sandbox,
                 conversation_id=conversation.id,
                 task_id=task_id,
@@ -455,7 +501,8 @@ class CoderAgent(BaseTool):
     display_name = "Workspace coding agent"
     description = (
         "Delegate a substantial coding or file task to a focused agent in "
-        "the conversation's persistent sandbox workspace."
+        "the conversation's persistent sandbox workspace. Report its verification "
+        "levels accurately: builds, API checks and simulated DOM tests are not real-browser verification."
     )
     tool_type = ToolType.SANDBOX
 
@@ -541,16 +588,29 @@ class CoderAgent(BaseTool):
                     "files/read", sandbox, {"path": "/workspace/.realopen-project.json"}
                 )
                 project = json.loads(manifest.get("content", ""))
-                if isinstance(project, dict) and set(project) == {
-                    "backend",
-                    "frontend",
-                }:
-                    state.project = project
+                if (
+                    isinstance(project, dict)
+                    and {"backend", "frontend"} <= project.keys()
+                    and any(project.get(role) for role in ("backend", "frontend"))
+                    and all(
+                        project.get(role) is None or isinstance(project.get(role), dict)
+                        for role in ("backend", "frontend")
+                    )
+                ):
+                    state.project = {
+                        "backend": project.get("backend"),
+                        "frontend": project.get("frontend"),
+                    }
+                    state.restore_scaffold_metadata(
+                        project.get("starter") or {},
+                        await source_fingerprint(sandbox) or {},
+                    )
             except Exception:
                 # Existing non-starter repositories remain supported.
                 pass
             transient_text_models = set()
             final = ""
+            state.project_facts = await project_snapshot(sandbox)
             failed = False
             premature_finals = 0
             incomplete_generations = 0
@@ -919,6 +979,8 @@ class CoderAgent(BaseTool):
                     {
                         "task_id": str(task_id),
                         "summary": final,
+                                "agent": "coder",
+                                "toolName": "start_preview",
                         "files_changed": state.files_changed,
                         "commands": state.tests_run,
                     }
@@ -933,6 +995,7 @@ class CoderAgent(BaseTool):
                 await self._fail_task(task_id, RuntimeError("Coding task cancelled"))
             except Exception:
                 logger.warning("Could not save cancelled coder task", exc_info=False)
+            final = final + "\n\n" + state.verification_summary()
             raise
         except Exception as exc:
             if state is not None:
@@ -950,6 +1013,7 @@ class CoderAgent(BaseTool):
             try:
                 await self._fail_task(task_id, exc)
             except Exception:
+                        "verification": state.verification_report(),
                 logger.warning("Could not persist failed coder task", exc_info=False)
             call.status, call.completed_at, call.error = "error", time.time(), str(exc)
             return ToolResult(

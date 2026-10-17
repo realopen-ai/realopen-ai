@@ -322,7 +322,9 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
     project = json.loads(output)["project"]
     assert project["backend"]["setup"] == "python"
     assert "sqlite3" in files["/workspace/backend/db.py"]
-    assert "TestClient" in files["/workspace/backend/tests/test_api.py"]
+    assert "TestClient" in files["/workspace/backend/tests/conftest.py"]
+    assert "tmp_path" in files["/workspace/backend/tests/conftest.py"]
+    assert "test_health(client)" in files["/workspace/backend/tests/test_api.py"]
     assert "@picocss/pico" in files["/workspace/frontend/package.json"]
     assert 'types="vite/client"' in files["/workspace/frontend/src/vite-env.d.ts"]
     assert '"/api"' in files["/workspace/frontend/vite.config.ts"]
@@ -363,6 +365,11 @@ async def test_scaffold_publishes_tree_refresh_before_dependency_setup_finishes(
     queue = asyncio.Queue()
     running = asyncio.create_task(
         agent._run_step(
+    manifest = json.loads(files["/workspace/.realopen-project.json"])
+    assert manifest["starter"]["schema_version"] == 1
+    assert "/workspace/backend/app.py" in manifest["starter"]["source_hashes"]
+    assert "/workspace/frontend/src/api.test.ts" in manifest["starter"]["test_hashes"]
+    assert event["starter_test_hashes"] == manifest["starter"]["test_hashes"]
             sandbox=sandbox,
             conversation=SimpleNamespace(id="conversation"),
             task_id="task",
@@ -523,16 +530,45 @@ def test_full_stack_validation_requires_latest_build_tests_and_proxy_request():
         {},
         "created",
         {
-            "files": ["app.py"],
-            "project": {"backend": {}, "frontend": {}},
+            "files": ["/workspace/backend/app.py", "/workspace/frontend/src/main.ts"],
+            "project": {
+                "backend": starters.BACKENDS["fastapi"],
+                "frontend": starters.FRONTENDS["vite"],
+            },
+            "starter_test_hashes": {
+                "/workspace/backend/tests/test_api.py": "a",
+                "/workspace/frontend/src/api.test.ts": "b",
+            },
             "changed": True,
         },
     )
-    # Real registry entries are nonempty.
-    state.project = {
-        "backend": starters.BACKENDS["fastapi"],
-        "frontend": starters.FRONTENDS["vite"],
-    }
+    assert "application implementation beyond the starter" in " ".join(
+        state.completion_missing()
+    )
+    state.record(
+        "edit_file",
+        {},
+        "backend app",
+        {"file": "/workspace/backend/app.py", "changed": True},
+    )
+    state.record(
+        "edit_file",
+        {},
+        "frontend app",
+        {"file": "/workspace/frontend/src/app.ts", "changed": True},
+    )
+    state.record(
+        "write_file",
+        {},
+        "backend tests",
+        {"file": "/workspace/backend/tests/test_items.py", "changed": True},
+    )
+    state.record(
+        "write_file",
+        {},
+        "frontend tests",
+        {"file": "/workspace/frontend/src/app.test.ts", "changed": True},
+    )
     state.record("run_tests", {}, "passed", {"command": "pytest", "exit_code": 0})
     state.record(
         "run_command", {}, "built", {"command": "bun run build", "exit_code": 0}
@@ -551,8 +587,20 @@ def test_full_stack_validation_requires_latest_build_tests_and_proxy_request():
         "check_preview", {"port": 6767, "path": "/api/health"}, "ok", {"exit_code": 0}
     )
     assert state.completion_missing() == []
-    state.record("edit_file", {}, "edited", {"file": "app.py", "changed": True})
-    assert len(state.completion_missing()) == 3
+    state.record(
+        "edit_file",
+        {},
+        "edited",
+        {"file": "/workspace/frontend/src/app.ts", "changed": True},
+    )
+    assert set(state.completion_missing()) == {
+        "backend tests",
+        "frontend test runner",
+        "frontend typecheck",
+        "frontend build",
+        "frontend application DOM tests",
+        "live preview smoke check",
+    }
     context = state.context()
     assert (
         context["metadata"]["agent_coder_state"]
@@ -573,6 +621,10 @@ def test_compact_outputs_are_bounded_and_retain_command_errors():
     assert len(compact) < 6000
     data = json.loads(compact)
     assert data["exit_code"] == 1
+    state.record("run_tests", {}, "passed", {"command": "vitest run", "exit_code": 0})
+    state.record(
+        "run_command", {}, "passed", {"command": "tsc --noEmit", "exit_code": 0}
+    )
     assert "first error" in data["stderr"] and "last error" in data["stderr"]
     assert len(compact_output(json.dumps({"items": list(range(20000))}))) < 6100
 

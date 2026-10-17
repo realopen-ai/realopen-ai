@@ -99,7 +99,20 @@ def compact_result(
             parsed = json.loads(text)
         except (ValueError, TypeError):
             parsed = None
-        if isinstance(parsed, dict) and isinstance(parsed.get("content"), str):
+        if name == "delegate_to_coder" and isinstance(parsed, dict):
+            # Never let verbose command logs crowd out the coder's measured
+            # verification levels when the general agent reports completion.
+            summary = str(parsed.get("summary", ""))
+            data = {
+                "metadata": reference_metadata(parsed),
+                "summary_excerpt": (
+                    summary
+                    if len(summary) <= 2000
+                    else summary[:1000] + "\n[…summary shortened…]\n" + summary[-1000:]
+                ),
+                "verification": parsed.get("verification"),
+            }
+        elif isinstance(parsed, dict) and isinstance(parsed.get("content"), str):
             # Exact artifact page: preserve structural references and advance
             # the real character offset, not a guessed section/page number.
             data = {key: value for key, value in parsed.items() if key != "content"}
