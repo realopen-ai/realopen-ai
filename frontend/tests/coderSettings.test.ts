@@ -15,6 +15,10 @@ const settings = {
   max_rounds: 30,
   thinking: true,
   temperature: 0.6,
+  handoff_tokens: 2048,
+  source_context_tokens: 4096,
+  recent_context_tokens: 4096,
+  tool_output_tokens: 1536,
 };
 const response = {
   settings,
@@ -61,6 +65,10 @@ test("coder bounds and output/context budget are enforced", () => {
     { temperature: 2.1 },
     { temperature: Infinity },
     { temperature: NaN },
+    { handoff_tokens: 0 },
+    { source_context_tokens: -1 },
+    { recent_context_tokens: 65537 },
+    { tool_output_tokens: 127 },
   ]) {
     assert.equal(
       validateCoderPreferences({ ...settings, ...change }, response),
@@ -131,6 +139,14 @@ test("coder settings labels exist in all supported languages", () => {
       "thinkingHint",
       "temperature",
       "temperatureHint",
+      "handoff",
+      "handoffHint",
+      "sourceContext",
+      "sourceContextHint",
+      "recentContext",
+      "recentContextHint",
+      "toolOutput",
+      "toolOutputHint",
     ])
       assert.ok(locale[`settings.ai.coder.${key}`]?.trim());
   }

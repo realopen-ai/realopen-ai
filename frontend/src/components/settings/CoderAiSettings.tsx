@@ -61,6 +61,10 @@ export function CoderAiSettings() {
     ["context_window", 2048, 524288, "context", "contextHint"],
     ["generation_limit", 128, 65536, "generation", "generationHint"],
     ["max_rounds", 4, 96, "rounds", "roundsHint"],
+    ["handoff_tokens", 128, 8192, "handoff", "handoffHint"],
+    ["source_context_tokens", 0, 65536, "sourceContext", "sourceContextHint"],
+    ["recent_context_tokens", 0, 65536, "recentContext", "recentContextHint"],
+    ["tool_output_tokens", 128, 16384, "toolOutput", "toolOutputHint"],
   ] as const;
   return (
     <section className="space-y-4 border-t border-border/50 pt-4">
@@ -130,7 +134,7 @@ export function CoderAiSettings() {
               <label key={key} className="space-y-1.5 text-[13px]">
                 <span className="block font-medium">
                   {t(
-                    `settings.ai.${key === "max_rounds" ? "coder" : "advanced"}.${label}`,
+                    `settings.ai.${key === "context_window" || key === "generation_limit" ? "advanced" : "coder"}.${label}`,
                   )}
                 </span>
                 <input
@@ -150,7 +154,7 @@ export function CoderAiSettings() {
                 />
                 <span className="block text-xs leading-relaxed text-muted-foreground">
                   {t(
-                    `settings.ai.${key === "max_rounds" ? "coder" : "advanced"}.${hint}`,
+                    `settings.ai.${key === "context_window" || key === "generation_limit" ? "advanced" : "coder"}.${hint}`,
                   )}
                 </span>
               </label>

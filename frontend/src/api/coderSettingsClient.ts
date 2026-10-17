@@ -4,6 +4,10 @@ export interface CoderPreferences {
   max_rounds: number;
   thinking: boolean;
   temperature: number;
+  handoff_tokens: number;
+  source_context_tokens: number;
+  recent_context_tokens: number;
+  tool_output_tokens: number;
 }
 export interface CoderSettingsResponse {
   settings: CoderPreferences;
@@ -53,6 +57,10 @@ export function validateCoderPreferences(
     [values.context_window, 2048, 524288],
     [values.generation_limit, 128, 65536],
     [values.max_rounds, 4, 96],
+    [values.handoff_tokens, 128, 8192],
+    [values.source_context_tokens, 0, 65536],
+    [values.recent_context_tokens, 0, 65536],
+    [values.tool_output_tokens, 128, 16384],
   ]) {
     if (!Number.isInteger(value) || value < min || value > max) return "range";
   }
