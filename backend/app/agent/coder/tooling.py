@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from app.services import sandbox_host
 from app.services import skills as skill_store
+from app.services.sandbox_manager import remember_preview_command
 from app.agent.coder.starters import scaffold, BACKENDS, FRONTENDS
 
 FRONTEND_PORT = 6767
@@ -193,7 +194,7 @@ CODER_TOOLS = [
     ),
     _function(
         "start_preview",
-        "Start the tested web app and expose it in the Preview panel.",
+        "Start or replace a supervised web-app preview. The command is persisted and automatically restored when this sandbox restarts.",
         {
             "command": {"type": "string"},
             "port": {"type": "integer", "enum": [FRONTEND_PORT, BACKEND_PORT]},
@@ -484,6 +485,8 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
             "for a new project or `uv add`/`uv remove` for an existing project.",
             {"exit_code": 1, "corrective": True},
         )
+        await remember_preview_command(sandbox, port, args["command"])
+        result["persistent"] = True
     content = str(args.get("content", ""))
     if str(args.get("path", "")).endswith(".py"):
         try:

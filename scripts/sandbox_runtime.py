@@ -13,7 +13,7 @@ import re
 import shlex
 import tarfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 try:
     import docker
@@ -102,6 +102,7 @@ class SandboxSpec:
     image: str
     cpu_limit: float
     memory_limit_mb: int
+    preview_commands: dict[int, str] = field(default_factory=dict)
 
 
 class SandboxRuntime:
@@ -170,6 +171,7 @@ class SandboxRuntime:
         # was introduced. The short-lived helper has no application data or
         # Docker socket; the long-lived container remains UID 1000/cap-drop.
         container = self._container(spec.container_name)
+        restore_previews = container is None
         if container is not None:
             container.reload()
             bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
@@ -183,6 +185,7 @@ class SandboxRuntime:
                     container.stop(timeout=5)
                 container.remove(force=True)
                 container = None
+                restore_previews = True
         if container is None:
             container = self.client.containers.create(
                 spec.image,
@@ -203,11 +206,16 @@ class SandboxRuntime:
         else:
             container.reload()
         if container.status != "running":
+            restore_previews = True
             container.start()
             container.reload()
         # The first main-container mount may copy the image directory's root
         # ownership into an empty volume. Repair after that mount, not before.
         self._ensure_workspace_owner(spec)
+        if restore_previews:
+            for port, command in sorted(spec.preview_commands.items()):
+                if port in PREVIEW_PORTS and command:
+                    self.exec_detached(spec, command, f"preview-{port}")
         return self.status(spec)
 
     def stop(self, spec: SandboxSpec) -> dict:
@@ -251,8 +259,8 @@ class SandboxRuntime:
         script = (
             f"echo $$ > /tmp/roai-{safe_id}.pid; "
             f"trap 'rm -f /tmp/roai-{safe_id}.pid' EXIT; "
-            f"exec timeout --signal=TERM {max(1, min(timeout, 1800))} "
-            f"bash -lc {shlex.quote(command)}"
+            f"exec timeout --signal=TERM --kill-after=5s {max(1, min(timeout, 1800))} "
+            f"bash -o pipefail -lc {shlex.quote(command)}"
         )
         wrapped = ["bash", "-lc", script]
         result = container.exec_run(wrapped, workdir=WORKSPACE, demux=True)
@@ -271,14 +279,36 @@ class SandboxRuntime:
         if not container or container.status != "running":
             raise RuntimeError("Sandbox is not running")
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", command_id)[:80] or "preview"
+        pid_path = f"/tmp/realopen-preview/{safe_id}.pid"
+        log_path = f"/tmp/realopen-preview/{safe_id}.log"
+        # A preview is a supervised sandbox service. Restart it if the dev
+        # server exits, replace an older service with the same id, and let the
+        # container lifecycle clean up the whole process group on stop.
+        service = (
+            "trap 'exit 0' TERM INT; "
+            "while true; do "
+            f"bash -o pipefail -lc {shlex.quote(command)}; status=$?; "
+            'echo "[realopen] preview exited with status $status; restarting"; '
+            "sleep 2; "
+            "done"
+        )
         wrapped = (
-            f"mkdir -p /tmp/realopen-preview; "
-            f"nohup bash -lc {shlex.quote(command)} "
-            f">/tmp/realopen-preview/{safe_id}.log 2>&1 "
-            "</dev/null &"
+            "mkdir -p /tmp/realopen-preview; "
+            f"if test -f {shlex.quote(pid_path)}; then "
+            f"old_pid=$(cat {shlex.quote(pid_path)}); "
+            'kill -TERM -- "-$old_pid" 2>/dev/null || true; '
+            "fi; "
+            f"nohup setsid bash -lc {shlex.quote(service)} "
+            f">{shlex.quote(log_path)} 2>&1 </dev/null & "
+            f"echo $! > {shlex.quote(pid_path)}"
         )
         container.exec_run(["bash", "-lc", wrapped], detach=True, workdir=WORKSPACE)
-        return {"command_id": safe_id, "started": True}
+        return {
+            "command_id": safe_id,
+            "started": True,
+            "supervised": True,
+            "log_path": log_path,
+        }
 
     def preview_target(self, spec: SandboxSpec, port: int) -> str:
         if port not in PREVIEW_PORTS:
@@ -344,10 +374,15 @@ class SandboxRuntime:
             ["head", "-c", str(max_bytes + 1), "--", target], demux=True
         )
         stdout, stderr = result.output or (b"", b"")
+        # Docker uses ``None`` for a demultiplexed stream that emitted no
+        # bytes. Empty files are valid and must read as ``b""`` rather than
+        # crashing while measuring the result.
+        stdout = stdout or b""
+        stderr = stderr or b""
         if result.exit_code:
-            detail = (
-                (stderr or b"Could not read file").decode("utf-8", "replace").strip()
-            )
+            detail = (stderr or b"Could not read file").decode(
+                "utf-8", "replace"
+            ).strip()
             raise RuntimeError(detail)
         if len(stdout) > max_bytes:
             raise ValueError(

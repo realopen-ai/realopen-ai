@@ -23,6 +23,7 @@ def payload(sandbox: Sandbox) -> dict:
         "image": sandbox.image,
         "cpu_limit": sandbox.cpu_limit,
         "memory_limit_mb": sandbox.memory_limit_mb,
+        "preview_commands": getattr(sandbox, "preview_commands", None) or {},
     }
 
 

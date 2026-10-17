@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import subprocess
+import shlex
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +28,28 @@ TREE_LOADER = importlib.machinery.SourceFileLoader(
 TREE_SPEC = importlib.util.spec_from_loader("roai_tree", TREE_LOADER)
 TREE_MODULE = importlib.util.module_from_spec(TREE_SPEC)
 TREE_LOADER.exec_module(TREE_MODULE)
+
+
+def test_runtime_shell_preserves_pipeline_failures():
+    captured = []
+
+    class Container:
+        status = "running"
+
+        def exec_run(self, command, **kwargs):
+            captured.append(command)
+            return SimpleNamespace(exit_code=1, output=(b"", b""))
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: Container()
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+    runtime.exec(spec, "false | tail -20")
+    assert "bash -o pipefail -lc" in captured[0][-1]
+    # Exercise the generated wrapper, not just a textual flag assertion.
+    wrapper = shlex.split(captured[0][-1])
+    inner_shell = wrapper[wrapper.index("bash") :]
+    result = subprocess.run(inner_shell, capture_output=True)
+    assert result.returncode == 1
 
 
 def test_checked_write_publishes_only_matching_hash_and_valid_python(tmp_path):
@@ -213,6 +236,24 @@ def test_runtime_file_read_is_bounded_and_binary_safe():
     ]
 
 
+def test_runtime_file_read_accepts_empty_demultiplexed_stdout():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    container = _BoundedReadContainer(b"")
+    original_exec_run = container.exec_run
+
+    def exec_run(command, demux=False):
+        result = original_exec_run(command, demux=demux)
+        if command[:2] == ["head", "-c"]:
+            result.output = (None, None)
+        return result
+
+    container.exec_run = exec_run
+    runtime._container = lambda _name: container
+    spec = SimpleNamespace(container_name="sandbox")
+
+    assert runtime.read_file(spec, "/workspace/file.bin") == b""
+
+
 def test_runtime_file_read_rejects_content_over_limit():
     runtime = object.__new__(MODULE.SandboxRuntime)
     runtime._container = lambda _name: _BoundedReadContainer(b"12345")
@@ -314,7 +355,125 @@ def test_host_payload_contains_only_runtime_fields():
         "image": "image",
         "cpu_limit": 1.5,
         "memory_limit_mb": 768,
+        "preview_commands": {},
     }
+
+
+def test_host_payload_includes_persistent_preview_commands():
+    from app.services.sandbox_host import payload
+
+    sandbox = SimpleNamespace(
+        id="abc",
+        volume_name="volume",
+        container_name="container",
+        image="image",
+        cpu_limit=1.5,
+        memory_limit_mb=768,
+        preview_commands={"6767": "bun run dev", "6969": "uv run uvicorn app:app"},
+    )
+    assert payload(sandbox)["preview_commands"] == sandbox.preview_commands
+
+
+def test_detached_previews_are_supervised_and_replace_the_same_port():
+    captured = []
+
+    class Container:
+        status = "running"
+
+        def exec_run(self, command, **kwargs):
+            captured.append((command, kwargs))
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: Container()
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+
+    result = runtime.exec_detached(spec, "bun run dev", "preview-6767")
+
+    script = captured[0][0][-1]
+    assert result["supervised"] is True
+    assert "while true" in script and "setsid" in script
+    assert 'kill -TERM -- "-$old_pid"' in script
+    assert "/tmp/realopen-preview/preview-6767.pid" in script
+
+
+def test_start_restores_previews_only_when_container_transitions_to_running():
+    class Container:
+        status = "exited"
+        attrs = {
+            "HostConfig": {"PortBindings": {"6767/tcp": [{}], "6969/tcp": [{}]}},
+            "Image": "image-id",
+        }
+
+        def reload(self):
+            return None
+
+        def start(self):
+            self.status = "running"
+
+    container = Container()
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime.client = SimpleNamespace(
+        volumes=SimpleNamespace(get=lambda _name: object()),
+        images=SimpleNamespace(get=lambda _name: SimpleNamespace(id="image-id")),
+    )
+    runtime._container = lambda _name: container
+    runtime._ensure_workspace_owner = lambda _spec: None
+    runtime.status = lambda _spec: {"status": "running", "running": True}
+    restored = []
+    runtime.exec_detached = lambda _spec, command, command_id: restored.append(
+        (command_id, command)
+    )
+    spec = MODULE.SandboxSpec(
+        "id",
+        "volume",
+        "container",
+        "image",
+        1,
+        256,
+        {6767: "bun run dev", 6969: "uv run uvicorn backend.app:app"},
+    )
+
+    runtime.start(spec)
+    runtime.start(spec)
+
+    assert restored == [
+        ("preview-6767", "bun run dev"),
+        ("preview-6969", "uv run uvicorn backend.app:app"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_command_is_saved_per_port(monkeypatch):
+    from app.services import sandbox_manager
+
+    record = SimpleNamespace(id="sandbox-id", preview_commands={"6969": "old backend"})
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def scalar(self, _statement):
+            return record
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(sandbox_manager, "async_session_factory", Session)
+    detached = SimpleNamespace(id="sandbox-id", preview_commands={})
+
+    await sandbox_manager.remember_preview_command(
+        detached, 6767, "bun run --cwd frontend dev"
+    )
+
+    assert record.preview_commands == {
+        "6767": "bun run --cwd frontend dev",
+        "6969": "old backend",
+    }
+    assert detached.preview_commands == record.preview_commands
 
 
 @pytest.mark.asyncio
@@ -675,6 +834,11 @@ async def test_python_setup_streams_file_write_before_sync_and_refreshes(monkeyp
     while not queue.empty():
         events.append(queue.get_nowait())
 
+    refreshes = [
+        event for event in events if event.get("refreshFiles") and "type" not in event
+    ]
+    assert refreshes and all(event["sandboxId"] == "sandbox-id" for event in refreshes)
+    events = [event for event in events if "type" in event]
     assert [(event["type"], event["status"]) for event in events] == [
         ("file_write", "running"),
         ("file_write", "completed"),

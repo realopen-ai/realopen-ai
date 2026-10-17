@@ -31,12 +31,17 @@ from fastapi import (  # noqa: E402
 )
 from fastapi.responses import StreamingResponse  # noqa: E402
 import httpx  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.voice.asr import create_asr_engine  # noqa: E402
 from app.voice.tts import create_tts_engine  # noqa: E402
-from sandbox_runtime import SandboxRuntime, SandboxSpec, FileConflictError  # noqa: E402
+from sandbox_runtime import (  # noqa: E402
+    PREVIEW_PORTS,
+    FileConflictError,
+    SandboxRuntime,
+    SandboxSpec,
+)
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -104,6 +109,7 @@ class SandboxPayload(BaseModel):
     image: str = "realopenai-sandbox:latest"
     cpu_limit: float = 2.0
     memory_limit_mb: int = 2048
+    preview_commands: dict[str, str] = Field(default_factory=dict)
 
     def spec(self) -> SandboxSpec:
         return SandboxSpec(
@@ -113,6 +119,14 @@ class SandboxPayload(BaseModel):
             image=self.image,
             cpu_limit=self.cpu_limit,
             memory_limit_mb=self.memory_limit_mb,
+            preview_commands={
+                int(port): command
+                for port, command in self.preview_commands.items()
+                if str(port).isdigit()
+                and int(port) in PREVIEW_PORTS
+                and isinstance(command, str)
+                and 0 < len(command) <= 32_000
+            },
         )
 
 

@@ -5,15 +5,38 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Sandbox
+from app.db.session import async_session_factory
 from app.services import sandbox_host
 
 DEFAULT_CPU_LIMIT = 2.0
 DEFAULT_MEMORY_LIMIT_MB = 2048
 DEFAULT_WORKSPACE_QUOTA_BYTES = 2 * 1024**3
 DEFAULT_IDLE_TIMEOUT_SECONDS = 1800
+
+
+async def remember_preview_command(sandbox: Sandbox, port: int, command: str) -> None:
+    """Persist a desired preview service and update the detached caller object.
+
+    Port keys make replacement deterministic: a new frontend or backend
+    preview supersedes the previous command for that same published port.
+    """
+    if port not in {6767, 6969} or not command or len(command) > 32_000:
+        raise ValueError("Invalid preview command")
+    async with async_session_factory() as db:
+        record = await db.scalar(
+            select(Sandbox).where(Sandbox.id == sandbox.id).with_for_update()
+        )
+        if record is None:
+            raise ValueError("Sandbox no longer exists")
+        previews = dict(record.preview_commands or {})
+        previews[str(port)] = command
+        record.preview_commands = previews
+        await db.commit()
+    sandbox.preview_commands = previews
 
 
 async def provision_sandbox(

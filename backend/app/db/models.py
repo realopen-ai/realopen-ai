@@ -33,10 +33,14 @@ class Notebook(Base):
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, unique=True
     )
     created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
     updated_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
 
 
@@ -51,14 +55,24 @@ class NotebookItem(Base):
         nullable=False,
         index=True,
     )
-    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
-    artifact_id = Column(UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="CASCADE"))
-    note_id = Column(UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="CASCADE"))
-    deck_id = Column(UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="CASCADE"))
+    document_id = Column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE")
+    )
+    artifact_id = Column(
+        UUID(as_uuid=True), ForeignKey("artifacts.id", ondelete="CASCADE")
+    )
+    note_id = Column(
+        UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="CASCADE")
+    )
+    deck_id = Column(
+        UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="CASCADE")
+    )
     quiz_id = Column(UUID(as_uuid=True), ForeignKey("quizzes.id", ondelete="CASCADE"))
     selected = Column(Boolean, nullable=False, default=True)
     created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
     __table_args__ = (
         CheckConstraint(
@@ -82,9 +96,13 @@ class Quiz(Base):
     source_conversation_id = Column(
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
     )
-    source_note_id = Column(UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="SET NULL"))
+    source_note_id = Column(
+        UUID(as_uuid=True), ForeignKey("study_notes.id", ondelete="SET NULL")
+    )
     created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
     updated_at = Column(
         DateTime(timezone=True),
@@ -98,7 +116,10 @@ class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     quiz_id = Column(
-        UUID(as_uuid=True), ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("quizzes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     # Snapshot answer keys stay server-side until the entire attempt is submitted.
     snapshot = Column(JSON, nullable=False)
@@ -108,7 +129,9 @@ class QuizAttempt(Base):
         UUID(as_uuid=True), ForeignKey("flashcard_decks.id", ondelete="SET NULL")
     )
     created_at = Column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
     )
     submitted_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -315,9 +338,15 @@ class Sandbox(Base):
     image = Column(String(255), nullable=False, default="realopenai-sandbox:latest")
     cpu_limit = Column(Float, nullable=False, default=2.0)
     memory_limit_mb = Column(Integer, nullable=False, default=2048)
-    workspace_quota_bytes = Column(BigInteger, nullable=False, default=2 * 1024 * 1024 * 1024)
+    workspace_quota_bytes = Column(
+        BigInteger, nullable=False, default=2 * 1024 * 1024 * 1024
+    )
     usage_bytes = Column(BigInteger, nullable=False, default=0)
     idle_timeout_seconds = Column(Integer, nullable=False, default=1800)
+    # Desired preview processes are sandbox state, not container state. The
+    # compute container is disposable, so the host runtime replays these
+    # commands whenever it starts a replacement container.
+    preview_commands = Column(JSONB, nullable=False, default=dict)
     last_active_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -410,7 +439,9 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
+    )
     role = Column(String(20), nullable=False)  # "user", "assistant", "system"
     content = Column(Text, nullable=False)
     model = Column(String(100), nullable=True)
@@ -470,14 +501,18 @@ class Artifact(Base):
     title = Column(String(512), nullable=False)
     kind = Column(String(24), nullable=False)
     conversation_id = Column(
-        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
     )
     document_id = Column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
     )
     current_version = Column(Integer, nullable=False, default=1)
     created_at = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
 
@@ -498,7 +533,9 @@ class ArtifactVersion(Base):
     outputs = Column(JSON, nullable=False, default=dict)
     restored_from = Column(Integer)
     created_at = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
 
@@ -537,7 +574,9 @@ class Document(Base):
     file_size_bytes = Column(Integer, nullable=False, default=0)
     content_hash = Column(String(64), nullable=True, index=True)  # sha256 hex
 
-    scope = Column(String(16), nullable=False, default="private")  # "private" | "public"
+    scope = Column(
+        String(16), nullable=False, default="private"
+    )  # "private" | "public"
     conversation_id = Column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -604,7 +643,9 @@ class DocumentChunk(Base):
     line_start = Column(Integer, nullable=True)
     line_end = Column(Integer, nullable=True)
 
-    chunk_type = Column(String(32), nullable=False, default="text")  # "text" | "image_description"
+    chunk_type = Column(
+        String(32), nullable=False, default="text"
+    )  # "text" | "image_description"
     # For chunk_type="image_description": relative path to the saved image.
     image_path = Column(String(1024), nullable=True)
 
@@ -631,7 +672,9 @@ class Memory(Base):
     source = Column(String(20), default="auto")  # "auto" | "user" | "ai_agent"
     pinned = Column(Boolean, default=False)
     uses = Column(Integer, default=0)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
+    )
     # 768-dim to match nomic-embed-text (see migration a8f3c2e1b7d4).
     # Populated by app.services.embeddings.get_embedding() on insert/update.
     embedding = Column(Vector(768), nullable=True)
@@ -704,6 +747,8 @@ class Template(Base):
     description = Column(Text, nullable=True)
     tags = Column(JSONB, nullable=True)  # ["corporate", "minimal", ...]
     thumbnail = Column(Text, nullable=True)  # base64-encoded small preview image
-    path = Column(String(1024), nullable=False)  # relative path: "research_template.pptx"
+    path = Column(
+        String(1024), nullable=False
+    )  # relative path: "research_template.pptx"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
