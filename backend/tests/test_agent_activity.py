@@ -341,6 +341,11 @@ async def test_coder_receives_original_request_and_thinking_is_forwarded_as_sse(
             "thinking": "SQLite persistence is an explicit requirement.",
         },
         {"event": "thinking_done", "thinkingDuration": 0.5},
+        {
+            "event": "persistence_checkpoint",
+            "agent": "coder",
+            "round": 1,
+        },
     ]
 
     async def execute(**kwargs):
@@ -370,7 +375,12 @@ async def test_coder_receives_original_request_and_thinking_is_forwarded_as_sse(
     )
     events = await run(messages=[{"role": "user", "content": original}])
     forwarded = [event for event in events if event["event"].startswith("thinking")]
-    assert forwarded == thinking
+    assert forwarded == thinking[:-1]
+    checkpoints = [
+        event for event in events if event["event"] == "persistence_checkpoint"
+    ]
+    assert checkpoints[0] == thinking[-1]
+    assert checkpoints[-1]["phase"] == "completed"
     assert all(
         "event" not in event["tool_call"]
         for event in events

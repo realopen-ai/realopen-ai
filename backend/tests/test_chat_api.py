@@ -783,6 +783,84 @@ async def test_stream_with_conversation_full_lifecycle(client, env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_stream_persists_delegated_coder_round_before_reconnect_cursor(
+    client, env, multipart
+):
+    env.agent_events = [
+        {"event": "thinking_start"},
+        {"event": "thinking", "thinking": "Delegate this task."},
+        {"event": "thinking_done", "thinkingDuration": 0.1},
+        {"event": "generation_done", "generationDuration": 0.2},
+        {
+            "event": "tool_call",
+            "tool_call": {
+                "id": "delegate-1",
+                "type": "sandbox",
+                "status": "running",
+                "title": "Workspace coding agent",
+            },
+        },
+        {
+            "event": "thinking_start",
+            "agent": "coder",
+            "round": 1,
+            "parentId": "delegate-1",
+        },
+        {"event": "thinking", "thinking": "Inspect the project."},
+        {"event": "thinking_done", "thinkingDuration": 0.3},
+        {
+            "event": "tool_call",
+            "tool_call": {
+                "id": "coder-read-1",
+                "type": "file_read",
+                "status": "completed",
+                "title": "Read app.py",
+                "agent": "coder",
+                "toolName": "read_file",
+            },
+        },
+        {
+            "event": "persistence_checkpoint",
+            "agent": "coder",
+            "round": 1,
+            "parentId": "delegate-1",
+        },
+        {"event": "done"},
+    ]
+
+    payload = {
+        "messages": [{"role": "user", "content": "build it"}],
+        "conversation_id": str(CONV_ID),
+    }
+    if multipart:
+        response = await client.post(
+            "/api/chat/stream/multipart",
+            data={**payload, "messages": json.dumps(payload["messages"])},
+        )
+    else:
+        response = await client.post("/api/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    assert [update["completion_status"] for update in env.updates] == [
+        "streaming",
+        "completed",
+    ]
+    checkpoint = env.updates[0]
+    assert any(
+        block.get("type") == "thinking"
+        and block.get("agent") == "coder"
+        and block.get("round") == 1
+        for block in checkpoint["blocks"]
+    )
+    assert any(
+        block.get("type") == "tool_call"
+        and block["tool_call"].get("toolName") == "read_file"
+        for block in checkpoint["blocks"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_agent_error_yields_error_event(client, env):
     env.agent_error = RuntimeError("agent exploded")
     r = await client.post(

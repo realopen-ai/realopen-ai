@@ -301,11 +301,13 @@ async def test_coder_trace_is_separate_and_restores_parent(coder_setup, monkeypa
             {"content": "Done"},
         ],
     )
+    event_queue = asyncio.Queue()
     try:
         result = await coder_agent.CoderAgent().execute(
             task="Build app",
             conversation_id="conversation-1",
             _parent_tool_call_id="delegate-1",
+            _event_queue=event_queue,
         )
         assert result.success
         assert tracing.current_trace.get() is parent
@@ -331,6 +333,16 @@ async def test_coder_trace_is_separate_and_restores_parent(coder_setup, monkeypa
     assert child["outcome"]["total_rounds"] == 2
     assert child["outcome"]["total_tool_calls"] == 2
     assert child["outcome"]["final_assistant_response"] == "Done"
+    queued_events = []
+    while not event_queue.empty():
+        queued_events.append(event_queue.get_nowait())
+    checkpoints = [
+        event
+        for event in queued_events
+        if event.get("event") == "persistence_checkpoint"
+    ]
+    assert [event["round"] for event in checkpoints] == [1, 2]
+    assert all(event["parentId"] == "delegate-1" for event in checkpoints)
     first = child["rounds"][0]
     assert first["inference"]["max_output_tokens"] == 4096
     assert first["inference"]["temperature"] == 0.6

@@ -66,6 +66,24 @@ async def test_generation_done_tracks_persisted_reconnect_checkpoint():
 
 
 @pytest.mark.asyncio
+async def test_coder_round_checkpoint_advances_the_durable_reconnect_cursor():
+    stream = ActiveChatStream(conversation_id="coder-checkpoint")
+    await stream.publish('data: {"event":"thinking","thinking":"coder round"}\n\n')
+    await stream.publish(
+        'data: {"event":"persistence_checkpoint","agent":"coder","round":1}\n\n'
+    )
+    await stream.publish(
+        'data: {"event":"thinking_start","agent":"coder","round":2}\n\n'
+    )
+    await stream.finish()
+
+    assert stream.persisted_through == 2
+    resumed = [event async for event in stream.subscribe(stream.persisted_through)]
+    assert len(resumed) == 1
+    assert '"round":2' in resumed[0]
+
+
+@pytest.mark.asyncio
 async def test_idle_heartbeats_do_not_finish_or_pollute_the_buffer_and_later_rounds_arrive(
     monkeypatch,
 ):

@@ -648,8 +648,31 @@ class CoderAgent(BaseTool):
                     )
                 _event_queue.put_nowait({"event": "thinking", "thinking": token})
 
+            def checkpoint_round(round_number: int) -> None:
+                """Ask the parent chat stream to durably save this coder round.
+
+                The event is application-owned and never enters the model
+                transcript. Queue ordering guarantees that every thinking and
+                tool event from the round is consumed before the checkpoint.
+                """
+                if _event_queue is not None and round_number > 0:
+                    _event_queue.put_nowait(
+                        {
+                            "event": "persistence_checkpoint",
+                            "agent": "coder",
+                            "round": round_number,
+                            "parentId": _parent_tool_call_id,
+                        }
+                    )
+
             observe("limits", preferences.max_rounds)
+            last_round = 0
             for _round in range(preferences.max_rounds):
+                # The previous iteration has fully completed, including all
+                # of its tool calls. Persist it before beginning new work.
+                if last_round:
+                    checkpoint_round(last_round)
+                last_round = _round + 1
                 # Keep earlier request bytes intact for prefix-cache reuse.
                 # Superseded snapshots are application-owned, not user data;
                 # the compactor may prune them when the budget fills up.
@@ -927,6 +950,9 @@ class CoderAgent(BaseTool):
                     response=final,
                 )
 
+            # A terminal round has no following iteration to checkpoint it.
+            checkpoint_round(last_round)
+
             if not failed and state.successful_validation and not state.preview_started:
                 inferred = await infer_preview(sandbox)
                 if inferred:
@@ -953,6 +979,8 @@ class CoderAgent(BaseTool):
                             {
                                 "id": f"{_parent_tool_call_id or task_id}-preview",
                                 "parentId": _parent_tool_call_id,
+                                "agent": "coder",
+                                "toolName": "start_preview",
                                 "type": "preview",
                                 "status": "completed",
                                 "title": "Started app preview",
@@ -965,7 +993,9 @@ class CoderAgent(BaseTool):
                                 "previewPort": port,
                             }
                         )
+                        checkpoint_round(last_round)
 
+            final = final + "\n\n" + state.verification_summary()
             await self._finish_task(task_id, state, final, failed)
             observe(
                 "finish",
@@ -979,12 +1009,11 @@ class CoderAgent(BaseTool):
                 not failed,
                 json.dumps(
                     {
-                                "agent": "coder",
-                                "toolName": "start_preview",
                         "task_id": str(task_id),
                         "summary": final,
                         "files_changed": state.files_changed,
                         "commands": state.tests_run,
+                        "verification": state.verification_report(),
                     }
                 ),
                 call,
@@ -993,7 +1022,6 @@ class CoderAgent(BaseTool):
             observe("finish", "cancelled", "coder execution cancelled")
             try:
                 if state is not None:
-            final = final + "\n\n" + state.verification_summary()
                     await _save_progress(task_id, state)
                 await self._fail_task(task_id, RuntimeError("Coding task cancelled"))
             except Exception:
@@ -1012,7 +1040,6 @@ class CoderAgent(BaseTool):
                 "cancelled" if str(exc) == "Coding task cancelled" else "failed",
                 str(exc),
             )
-                        "verification": state.verification_report(),
             try:
                 await self._fail_task(task_id, exc)
             except Exception:

@@ -58,6 +58,15 @@ test("coder thinking streams through ordinary blocks and retains its identity af
     { event: "thinking_done", thinkingDuration: 1.25 },
     callbacks,
   );
+  const savedBlocks = structuredClone(current().blocks);
+  assert.equal(
+    dispatchAgentEvent(
+      { event: "persistence_checkpoint", ...context },
+      callbacks,
+    ),
+    false,
+  );
+  assert.deepEqual(current().blocks, savedBlocks);
   dispatchAgentEvent({ event: "thinking_start" }, callbacks);
   dispatchAgentEvent(
     { event: "thinking", thinking: "General assistant resumes." },

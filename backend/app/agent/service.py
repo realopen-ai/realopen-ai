@@ -1908,6 +1908,15 @@ async def run_agent_stream(
                                     if (
                                         tool_name == "delegate_to_coder"
                                         and nested_event.get("event")
+                                        == "persistence_checkpoint"
+                                    ):
+                                        yield _sse_event(
+                                            "persistence_checkpoint", nested_event
+                                        )
+                                        continue
+                                    if (
+                                        tool_name == "delegate_to_coder"
+                                        and nested_event.get("event")
                                         in {
                                             "thinking_start",
                                             "thinking",
@@ -2087,6 +2096,12 @@ async def run_agent_stream(
                 if on_tool_call_update:
                     on_tool_call_update(tc_id, update_dict)
                 yield _sse_event("tool_call", {"tool_call": update_dict})
+
+                if tool_name == "delegate_to_coder":
+                    yield _sse_event(
+                        "persistence_checkpoint",
+                        {"agent": "coder", "phase": "completed", "parentId": tc_id},
+                    )
 
                 # If the tool produced deliverables (reports, presentations,
                 # excel workbooks), emit a separate SSE event so the

@@ -459,6 +459,18 @@ async def chat_stream(request: ChatRequest):
                                     )
                                 )
 
+                        if event_type == "persistence_checkpoint":
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
+
                         if event_type == "message" and parsed.get("message", {}).get(
                             "content"
                         ):
@@ -762,18 +774,6 @@ async def chat_stream_multipart(
         # know it has fresh documents to look up.
         digested_doc_filenames: List[str] = []
 
-        # ── Digest uploaded documents BEFORE running the agent loop.
-        # This way the agent's rag_search tool can find the docs on the
-        # very same turn. Each doc emits document_digest_* SSE events
-        # in REAL TIME via an asyncio.Queue — the user sees progress
-        # immediately in the chat conversation, not after digestion
-        # completes.
-        if doc_buffers and _conv_id:
-            import asyncio as _asyncio
-
-            for fname, fbytes in doc_buffers:
-                progress_queue: _asyncio.Queue = _asyncio.Queue()
-                _DONE_SENTINEL = object()
         # Keep the first-message lifecycle consistent with the JSON stream:
         # persist user → title conversation → process inputs → run agent.
         if _conv_id and _user_msg_for_title:
@@ -790,6 +790,18 @@ async def chat_stream_multipart(
             except Exception as e:
                 _log("   ⚠️  auto-title failed (non-fatal): %s", e)
 
+        # ── Digest uploaded documents BEFORE running the agent loop.
+        # This way the agent's rag_search tool can find the docs on the
+        # very same turn. Each doc emits document_digest_* SSE events
+        # in REAL TIME via an asyncio.Queue — the user sees progress
+        # immediately in the chat conversation, not after digestion
+        # completes.
+        if doc_buffers and _conv_id:
+            import asyncio as _asyncio
+
+            for fname, fbytes in doc_buffers:
+                progress_queue: _asyncio.Queue = _asyncio.Queue()
+                _DONE_SENTINEL = object()
 
                 def collect(p: "rag_service.DigestProgress", _f=fname) -> None:
                     try:
@@ -943,6 +955,18 @@ async def chat_stream_multipart(
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
                                 builder.on_generation_done(parsed["generationDuration"])
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
+
+                        if event_type == "persistence_checkpoint":
                             if _conv_id and builder.blocks:
                                 assistant_message_id = (
                                     await _persist_assistant_snapshot(
