@@ -385,6 +385,7 @@ class SandboxTask(Base):
     request = Column(Text, nullable=False)
     summary = Column(Text, nullable=True)
     worklog = Column(JSONB, nullable=False, default=list)
+    context_state = Column(JSONB, nullable=False, default=dict)
     files_changed = Column(JSONB, nullable=False, default=list)
     tests_run = Column(JSONB, nullable=False, default=list)
     cancellation_requested = Column(Boolean, nullable=False, default=False)

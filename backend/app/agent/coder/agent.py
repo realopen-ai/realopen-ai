@@ -13,8 +13,9 @@ from sqlalchemy import select, text
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
-from app.agent.coder.working_state import RunState, compact_output
+from app.agent.coder.working_state import RunState
 from app.agent.coder.project import configuration_changed, project_snapshot
+from app.agent.coder.context import bounded_output
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.coder.tooling import (
     CODER_TOOLS,
@@ -488,6 +489,7 @@ async def _save_progress(task_id: uuid.UUID, state: RunState) -> None:
         record.worklog = state.worklog
         record.files_changed = state.files_changed
         record.tests_run = state.tests_run
+        record.context_state = state.memory.checkpoint()
         await db.commit()
 
 
@@ -619,6 +621,50 @@ class CoderAgent(BaseTool):
             preferences = coder_settings.effective()
             thinking_started = None
 
+            async def compact_recovery_context(current, model, **kwargs):
+                # Text-tool recovery adds its schema protocol to the real request.
+                # Apply the same coder handoff and persist the resulting working
+                # history, instead of falling back to the general chat summary.
+                kwargs.pop("max_output_tokens", None)
+                without_state = [
+                    item
+                    for item in current
+                    if not (
+                        (item.get("metadata") or {}).get("agent_coder_state")
+                        and not (item.get("metadata") or {}).get("historical_state")
+                    )
+                ]
+                snapshot = state.memory.working_context(
+                    without_state,
+                    model,
+                    kwargs.get("tools"),
+                    False,
+                    state.context,
+                )
+                current = [
+                    (
+                        snapshot
+                        if (item.get("metadata") or {}).get("agent_coder_state")
+                        and not (item.get("metadata") or {}).get("historical_state")
+                        else item
+                    )
+                    for item in current
+                ]
+                compacted, changed = await state.memory.compact(
+                    current,
+                    model,
+                    compactor=compact_conversation,
+                    **kwargs,
+                )
+                if changed:
+                    messages[:] = [
+                        item
+                        for item in compacted
+                        if not (item.get("metadata") or {}).get("coder_protocol")
+                    ]
+                    await _save_progress(task_id, state)
+                return compacted, changed
+
             def on_thinking(token):
                 nonlocal thinking_started
                 if _event_queue is None:
@@ -680,19 +726,27 @@ class CoderAgent(BaseTool):
                     metadata = item.get("metadata") or {}
                     if metadata.get("agent_coder_state"):
                         metadata.update(agent_context=False, historical_state=True)
-                messages.append(state.context())
                 native_tools = (
                     model not in transient_text_models
                     and tool_capabilities.should_try_native(model)
                 )
-                await _check_cancellation(task_id)
-                async for activity in activity_events(
-                    lambda on_start: compact_conversation(
+                messages.append(
+                    state.memory.working_context(
                         messages,
                         model,
+                        CODER_TOOLS if native_tools else None,
+                        native_tools,
+                        state.context,
+                    )
+                )
+                await _check_cancellation(task_id)
+                async for activity in activity_events(
+                    lambda on_start: state.memory.compact(
+                        messages,
+                        model,
+                        compactor=compact_conversation,
                         tools=CODER_TOOLS if native_tools else None,
                         native_tools=native_tools,
-                        max_output_tokens=preferences.generation_limit,
                         on_start=on_start,
                     ),
                     "context_compaction",
@@ -701,7 +755,10 @@ class CoderAgent(BaseTool):
                         if _event_queue is not None:
                             _event_queue.put_nowait(activity)
                     else:
-                        messages, _ = activity["result"]
+                        messages, compacted = activity["result"]
+                        if compacted:
+                            # Save the accepted handoff before the next inference.
+                            await _save_progress(task_id, state)
                 observe(
                     "begin_round",
                     _round + 1,
@@ -719,6 +776,7 @@ class CoderAgent(BaseTool):
                 response = await chat_with_tool_recovery(
                     model,
                     messages,
+                    compact_context=compact_recovery_context,
                     transient_text_models=transient_text_models,
                     **(
                         {
@@ -897,20 +955,32 @@ class CoderAgent(BaseTool):
                         event_queue=_event_queue,
                     )
                     abort_reason = _track_step(state, name, args, output, event)
-                    messages.append(
-                        tool_result_message(
-                            item,
-                            (
-                                output
-                                if name in {"load_skill", "read_file"}
-                                else compact_output(output)
-                            ),
-                            skill_guidance=name == "load_skill" and not event,
-                            application_feedback=bool(
-                                event and event.get("corrective")
-                            ),
-                        )
+                    result_message = tool_result_message(
+                        item,
+                        (
+                            output
+                            if name in {"load_skill", "read_file"}
+                            else bounded_output(
+                                output,
+                                state.memory.budgets(model)["output"],
+                            )
+                        ),
+                        skill_guidance=name == "load_skill" and not event,
+                        application_feedback=bool(event and event.get("corrective")),
                     )
+                    result_message.setdefault("metadata", {})["coder_result"] = {
+                        "tool": name,
+                        "success": not bool(
+                            event
+                            and (
+                                event.get("exit_code") not in (None, 0)
+                                or event.get("corrective")
+                            )
+                        ),
+                        "path": ((event or {}).get("read") or {}).get("path"),
+                        "sha256": ((event or {}).get("read") or {}).get("sha256"),
+                    }
+                    messages.append(result_message)
                     if abort_reason:
                         break
                 if abort_reason:
@@ -1063,6 +1133,7 @@ class CoderAgent(BaseTool):
             record.worklog = state.worklog
             record.files_changed = state.files_changed
             record.tests_run = state.tests_run
+            record.context_state = state.memory.checkpoint()
             await db.commit()
 
     @staticmethod

@@ -61,6 +61,7 @@ async def _chat_attempt(
     recovery=False,
     on_activity=None,
     on_thinking=None,
+    compact_context=None,
     **kwargs,
 ):
     options = dict(kwargs.get("options") or {})
@@ -81,11 +82,15 @@ async def _chat_attempt(
             {
                 "role": "user",
                 "content": protocol,
-                "metadata": {"agent_context": True, "trusted": True},
+                "metadata": {
+                    "agent_context": True,
+                    "trusted": True,
+                    "coder_protocol": True,
+                },
             }
         )
         async for activity in activity_events(
-            lambda on_start: compact_conversation(
+            lambda on_start: (compact_context or compact_conversation)(
                 messages,
                 model,
                 tools=tools,
@@ -177,6 +182,7 @@ async def chat_with_tool_recovery(
     on_activity=None,
     on_thinking=None,
     transient_text_models=None,
+    compact_context=None,
 ) -> dict:
     preferences = coder_settings.effective()
 
@@ -186,6 +192,7 @@ async def chat_with_tool_recovery(
             messages,
             tools=None,
             recovery=True,
+            compact_context=compact_context,
             on_activity=on_activity,
             on_thinking=on_thinking,
             timeout=1200,
