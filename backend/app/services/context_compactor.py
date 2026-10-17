@@ -154,7 +154,13 @@ def estimate_request_tokens(messages, tools=None):
 # ── Compaction prompt ────────────────────────────────────────────
 
 
-async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Optional[str]:
+async def _llm_summarize(
+    model: str,
+    text: str,
+    max_tokens: int = 512,
+    *,
+    prompt_name="context_compactor_system",
+) -> Optional[str]:
     """Call the LLM to produce a summary. Returns None on failure."""
     try:
         if providers.is_groq_model(model):
@@ -163,7 +169,7 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                 [
                     {
                         "role": "system",
-                        "content": get_prompt("context_compactor_system"),
+                        "content": get_prompt(prompt_name),
                     },
                     {"role": "user", "content": text},
                 ],
@@ -187,7 +193,7 @@ async def _llm_summarize(model: str, text: str, max_tokens: int = 512) -> Option
                     "messages": [
                         {
                             "role": "system",
-                            "content": get_prompt("context_compactor_system"),
+                            "content": get_prompt(prompt_name),
                         },
                         {"role": "user", "content": text},
                     ],
@@ -331,26 +337,38 @@ def _protected(message):
     )
 
 
-async def _summarize_bounded(model, text, max_tokens=None):
+async def _summarize_bounded(
+    model, text, max_tokens=None, *, prompt_name="context_compactor_system"
+):
     """Summarize bounded source batches, then their summaries if necessary."""
     summary_tokens = (
         settings.CONTEXT_COMPACT_SUMMARY_TOKENS if max_tokens is None else max_tokens
     )
     limit = (
         context_budget(model, summary_tokens).input_limit
-        - _estimate_tokens(get_prompt("context_compactor_system"))
+        - _estimate_tokens(get_prompt(prompt_name))
         - 8
     )
     if limit < 128:
         return None
+    prompt_kwargs = (
+        {}
+        if prompt_name == "context_compactor_system"
+        else {"prompt_name": prompt_name}
+    )
     for _ in range(3):
         if _estimate_tokens(text) <= limit:
-            return await _llm_summarize(model, text, max_tokens=summary_tokens)
+            return await _llm_summarize(
+                model, text, max_tokens=summary_tokens, **prompt_kwargs
+            )
         # A conservative character batch is shorter than the token budget.
         summaries = []
         for offset in range(0, len(text), limit):
             part = await _llm_summarize(
-                model, text[offset : offset + limit], max_tokens=summary_tokens
+                model,
+                text[offset : offset + limit],
+                max_tokens=summary_tokens,
+                **prompt_kwargs,
             )
             if not part:
                 return None
@@ -370,6 +388,8 @@ async def compact_conversation(
     max_output_tokens=None,
     native_tools=True,
     on_start=None,
+    summarize=None,
+    recent_tokens=None,
 ) -> Tuple[List[Dict], bool]:
     """Budget the actual request and summarize whole exchanges, never partial pairs.
 
@@ -499,6 +519,26 @@ async def compact_conversation(
     # Prefer the configured recent suffix; shorten it only to satisfy the budget.
     preserve = preferences.recent_turns - (1 if latest_user is not None else 0)
     remove_count = max(1, len(candidates) - max(0, preserve))
+    if recent_tokens is not None:
+        # A token budget retains useful recent exchanges even when many small
+        # tool rounds would exceed a message-count setting. Never split pairs.
+        kept = (
+            estimate_request_tokens(
+                model_messages([messages[i] for i in latest_exchange], native_tools)
+            )
+            if latest_exchange
+            else 0
+        )
+        remove_count = len(candidates)
+        for group in reversed(candidates):
+            group_tokens = estimate_request_tokens(
+                model_messages([messages[i] for i in group], native_tools)
+            )
+            if kept + group_tokens > recent_tokens:
+                break
+            kept += group_tokens
+            remove_count -= 1
+        remove_count = max(1, remove_count)
     # A soft budget crossing is not a reason to summarize a greeting or
     # repeatedly rewrite a tiny summary. Require useful historical material.
     if (
@@ -528,8 +568,11 @@ async def compact_conversation(
             start = index
             while index in removed:
                 index += 1
-            summary = await _summarize_bounded(
-                model, _build_compaction_text(messages[start:index])
+            text = _build_compaction_text(messages[start:index])
+            summary = (
+                await summarize(text)
+                if summarize is not None
+                else await _summarize_bounded(model, text)
             )
             if not summary:
                 if total <= budget.input_limit:
