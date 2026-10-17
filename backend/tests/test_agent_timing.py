@@ -17,3 +17,20 @@ def test_tool_sse_timestamps_are_epoch_milliseconds():
     assert initial["startedAt"] == 1_700_000_000_125
     assert initial["completedAt"] == 1_700_000_001_375
     assert update["completedAt"] == initial["completedAt"]
+
+
+def test_skill_sse_preserves_exact_loaded_resource():
+    call = ToolCall(
+        id="skill-1",
+        type=ToolType.SKILL,
+        name="load_skill",
+        skill_name="full-stack-app-builder",
+        skill_resource="references/testing.md",
+    )
+
+    assert _tool_call_to_dict(call)["skillResource"] == "references/testing.md"
+    assert _tool_call_to_update_dict(call) == {
+        "status": "running",
+        "skillName": "full-stack-app-builder",
+        "skillResource": "references/testing.md",
+    }

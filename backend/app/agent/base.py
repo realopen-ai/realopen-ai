@@ -59,6 +59,8 @@ class ToolCall:
     exit_code: Optional[int] = None  # code exec
     file_path: Optional[str] = None  # file ops
     file_content: Optional[str] = None  # file ops
+    skill_name: Optional[str] = None  # skill loader
+    skill_resource: Optional[str] = None  # SKILL.md or bundled resource path
     image_description: Optional[str] = None  # vision
     error: Optional[str] = None  # any tool
     progress: Optional[Dict] = None  # live artifact summary stage and batch counts

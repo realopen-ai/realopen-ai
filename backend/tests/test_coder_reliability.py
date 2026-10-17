@@ -28,6 +28,42 @@ def sha(content):
     return hashlib.sha256(content.encode()).hexdigest()
 
 
+def test_coder_step_events_include_stable_display_identity():
+    event = agent._event_for_step(
+        "run_checks",
+        {"commands": ["uv run pytest", "bun test"]},
+        "step-1",
+        "delegate-1",
+        "sandbox-1",
+    )
+
+    assert event["agent"] == "coder"
+    assert event["toolName"] == "run_checks"
+    assert event["code"] == "uv run pytest\nbun test"
+
+
+def test_skill_events_identify_main_instructions_and_references():
+    main = agent._event_for_step(
+        "load_skill", {"name": "full-stack-app-builder"}, "main", None
+    )
+    reference = agent._event_for_step(
+        "load_skill",
+        {
+            "name": "full-stack-app-builder",
+            "resource": "references/fastapi.md",
+        },
+        "reference",
+        None,
+    )
+
+    assert main["skillName"] == "full-stack-app-builder"
+    assert main["skillResource"] == "SKILL.md"
+    assert main["title"].endswith("· SKILL.md")
+    assert reference["skillName"] == "full-stack-app-builder"
+    assert reference["skillResource"] == "references/fastapi.md"
+    assert reference["title"].endswith("· references/fastapi.md")
+
+
 @pytest.fixture
 def workspace(monkeypatch):
     files = {}
@@ -329,6 +365,11 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
     assert 'types="vite/client"' in files["/workspace/frontend/src/vite-env.d.ts"]
     assert '"/api"' in files["/workspace/frontend/vite.config.ts"]
     assert "6969" in files["/workspace/frontend/vite.config.ts"]
+    manifest = json.loads(files["/workspace/.realopen-project.json"])
+    assert manifest["starter"]["schema_version"] == 1
+    assert "/workspace/backend/app.py" in manifest["starter"]["source_hashes"]
+    assert "/workspace/frontend/src/api.test.ts" in manifest["starter"]["test_hashes"]
+    assert event["starter_test_hashes"] == manifest["starter"]["test_hashes"]
     assert not any("cdn." in value for value in files.values())
     assert {payload["command"] for action, payload in calls if action == "exec"} == {
         "uv sync --all-groups",
@@ -365,11 +406,6 @@ async def test_scaffold_publishes_tree_refresh_before_dependency_setup_finishes(
     queue = asyncio.Queue()
     running = asyncio.create_task(
         agent._run_step(
-    manifest = json.loads(files["/workspace/.realopen-project.json"])
-    assert manifest["starter"]["schema_version"] == 1
-    assert "/workspace/backend/app.py" in manifest["starter"]["source_hashes"]
-    assert "/workspace/frontend/src/api.test.ts" in manifest["starter"]["test_hashes"]
-    assert event["starter_test_hashes"] == manifest["starter"]["test_hashes"]
             sandbox=sandbox,
             conversation=SimpleNamespace(id="conversation"),
             task_id="task",
@@ -573,6 +609,10 @@ def test_full_stack_validation_requires_latest_build_tests_and_proxy_request():
     state.record(
         "run_command", {}, "built", {"command": "bun run build", "exit_code": 0}
     )
+    state.record("run_tests", {}, "passed", {"command": "vitest run", "exit_code": 0})
+    state.record(
+        "run_command", {}, "passed", {"command": "tsc --noEmit", "exit_code": 0}
+    )
     for port in [6767, 6969]:
         state.record(
             "start_preview", {}, "started", {"preview_url": "local", "port": port}
@@ -621,10 +661,6 @@ def test_compact_outputs_are_bounded_and_retain_command_errors():
     assert len(compact) < 6000
     data = json.loads(compact)
     assert data["exit_code"] == 1
-    state.record("run_tests", {}, "passed", {"command": "vitest run", "exit_code": 0})
-    state.record(
-        "run_command", {}, "passed", {"command": "tsc --noEmit", "exit_code": 0}
-    )
     assert "first error" in data["stderr"] and "last error" in data["stderr"]
     assert len(compact_output(json.dumps({"items": list(range(20000))}))) < 6100
 

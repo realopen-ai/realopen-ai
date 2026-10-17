@@ -37,12 +37,15 @@ class LoadSkillTool(BaseTool):
                 "Provide a skill id from the available skills."
             )
         started = time.time()
+        loaded_resource = resource or "SKILL.md"
         call = ToolCall(
             id=f"tc-skill-{int(started * 1000)}",
             type=self.tool_type,
             name=self.name,
-            title=f"Loading skill {name}",
+            title=f"Loading skill {name} · {loaded_resource}",
             started_at=started,
+            skill_name=name,
+            skill_resource=loaded_resource,
         )
         try:
             output = skills.load_for_agent(name, _skill_role, resource)

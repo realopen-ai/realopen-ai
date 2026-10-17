@@ -374,6 +374,10 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["output"] = tc.output
     if tc.exit_code is not None:
         d["exitCode"] = tc.exit_code
+    if tc.skill_name:
+        d["skillName"] = tc.skill_name
+    if tc.skill_resource:
+        d["skillResource"] = tc.skill_resource
     if tc.image_description:
         d["imageDescription"] = tc.image_description
     if tc.error:
@@ -395,6 +399,10 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["output"] = tc.output
     if tc.exit_code is not None:
         d["exitCode"] = tc.exit_code
+    if tc.skill_name:
+        d["skillName"] = tc.skill_name
+    if tc.skill_resource:
+        d["skillResource"] = tc.skill_resource
     if tc.image_description:
         d["imageDescription"] = tc.image_description
     if tc.error:
@@ -1810,6 +1818,15 @@ async def run_agent_stream(
             tc_id = f"tc-{tool.tool_type.value}-{tool_started_at_ms}"
             observe("tool_identity", tc_id)
 
+            ui_args = dict(tool_args)
+            if tool_name == "load_skill":
+                ui_args.update(
+                    {
+                        "skillName": str(tool_args.get("name", "")),
+                        "skillResource": str(tool_args.get("resource") or "SKILL.md"),
+                    }
+                )
+
             # Notify frontend that tool is starting
             if on_tool_call_start:
                 on_tool_call_start(
@@ -1819,7 +1836,7 @@ async def run_agent_stream(
                         "status": "running",
                         "title": tool.name,
                         "startedAt": tool_started_at_ms,
-                        **tool_args,
+                        **ui_args,
                     }
                 )
 
@@ -1832,7 +1849,7 @@ async def run_agent_stream(
                         "status": "running",
                         "title": f"Calling {tool_name}",
                         "startedAt": tool_started_at_ms,
-                        **tool_args,
+                        **ui_args,
                     }
                 },
             )

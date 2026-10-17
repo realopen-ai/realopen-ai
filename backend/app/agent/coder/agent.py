@@ -196,6 +196,7 @@ def _event_for_step(
             )
         )
     )
+    skill_resource = str(args.get("resource") or "SKILL.md")
     title = {
         "list_files": "Listing workspace files",
         "read_file": f"Reading {args.get('path', 'file')}",
@@ -205,34 +206,33 @@ def _event_for_step(
         "check_preview": "Checking frontend/API connection",
         "search_files": f"Searching for {args.get('query', '')}",
         "run_tests": "Running tests",
-        "install_dependencies": "Installing dependencies",
         "run_checks": "Running verification checks",
         "run_browser_tests": "Running optional browser tests",
+        "install_dependencies": "Installing dependencies",
         "run_command": "Running command",
         "setup_python_project": "Setting up Python project",
         "start_preview": "Starting app preview",
-        "load_skill": f"Loading skill {args.get('name', '')}",
+        "load_skill": (f"Loading skill {args.get('name', '')} · {skill_resource}"),
     }.get(name, name)
     event = {
         "id": step_id,
         "parentId": parent_id,
-        "type": event_type,
         "agent": "coder",
         "toolName": name,
+        "type": event_type,
         "status": "running",
         "title": title,
         "startedAt": _now_ms(),
     }
     if sandbox_id is not None:
         event["sandboxId"] = str(sandbox_id)
-    if name in COMMAND_TOOLS | {"start_preview"}:
-        command = (
-            "uv sync --all-groups"
-            if name == "setup_python_project"
-            else args.get("command", "")
+    if name == "load_skill":
+        event.update(
+            {
+                "skillName": str(args.get("name", "")),
+                "skillResource": skill_resource,
+            }
         )
-        event.update({"language": "shell", "code": command})
-    else:
     if name in COMMAND_TOOLS | {"start_preview"}:
         if name == "setup_python_project":
             command = "uv sync --all-groups"
@@ -250,6 +250,8 @@ def _event_for_step(
                 command = "roai-browser-test " + command
         else:
             command = args.get("command", "")
+        event.update({"language": "shell", "code": command})
+    else:
         event["filePath"] = (
             "/workspace/pyproject.toml"
             if name == "setup_python_project"
@@ -305,8 +307,6 @@ async def _run_step(
         nonlocal command_started
         if event_queue is None:
             return
-        if update.get("stage") in {"files_written", "project_written"}:
-            event_queue.put_nowait(
         if update.get("stage") == "check_completed":
             check = update["check"]
             event_queue.put_nowait(
@@ -322,6 +322,8 @@ async def _run_step(
                     )[:20_000],
                 }
             )
+        if update.get("stage") in {"files_written", "project_written"}:
+            event_queue.put_nowait(
                 {
                     "id": start_event["id"],
                     "sandboxId": str(sandbox.id),
@@ -355,14 +357,14 @@ async def _run_step(
                 else None
             ),
         )
-        if name in COMMAND_TOOLS:
-            await _record_command(
         if event is not None and (
             name in {"scaffold_project", "setup_python_project"}
             or configuration_changed(event)
             and "project_facts" not in event
         ):
             event["project_facts"] = await project_snapshot(sandbox)
+        if name in COMMAND_TOOLS:
+            await _record_command(
                 sandbox=sandbox,
                 conversation_id=conversation.id,
                 task_id=task_id,
@@ -608,9 +610,9 @@ class CoderAgent(BaseTool):
             except Exception:
                 # Existing non-starter repositories remain supported.
                 pass
+            state.project_facts = await project_snapshot(sandbox)
             transient_text_models = set()
             final = ""
-            state.project_facts = await project_snapshot(sandbox)
             failed = False
             premature_finals = 0
             incomplete_generations = 0
@@ -977,10 +979,10 @@ class CoderAgent(BaseTool):
                 not failed,
                 json.dumps(
                     {
-                        "task_id": str(task_id),
-                        "summary": final,
                                 "agent": "coder",
                                 "toolName": "start_preview",
+                        "task_id": str(task_id),
+                        "summary": final,
                         "files_changed": state.files_changed,
                         "commands": state.tests_run,
                     }
@@ -991,11 +993,11 @@ class CoderAgent(BaseTool):
             observe("finish", "cancelled", "coder execution cancelled")
             try:
                 if state is not None:
+            final = final + "\n\n" + state.verification_summary()
                     await _save_progress(task_id, state)
                 await self._fail_task(task_id, RuntimeError("Coding task cancelled"))
             except Exception:
                 logger.warning("Could not save cancelled coder task", exc_info=False)
-            final = final + "\n\n" + state.verification_summary()
             raise
         except Exception as exc:
             if state is not None:
@@ -1010,10 +1012,10 @@ class CoderAgent(BaseTool):
                 "cancelled" if str(exc) == "Coding task cancelled" else "failed",
                 str(exc),
             )
+                        "verification": state.verification_report(),
             try:
                 await self._fail_task(task_id, exc)
             except Exception:
-                        "verification": state.verification_report(),
                 logger.warning("Could not persist failed coder task", exc_info=False)
             call.status, call.completed_at, call.error = "error", time.time(), str(exc)
             return ToolResult(
