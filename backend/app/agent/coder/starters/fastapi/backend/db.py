@@ -1,8 +1,11 @@
 from contextlib import contextmanager
 from pathlib import Path
+import os
 import sqlite3
 
-DATABASE = Path(__file__).resolve().parent / "app.sqlite3"
+DATABASE = Path(
+    os.environ.get("DATABASE_PATH", Path(__file__).resolve().parent / "app.sqlite3")
+)
 
 
 @contextmanager
