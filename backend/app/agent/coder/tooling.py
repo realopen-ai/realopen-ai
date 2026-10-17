@@ -14,11 +14,13 @@ from app.services import sandbox_host
 from app.services import skills as skill_store
 from app.services.sandbox_manager import remember_preview_command
 from app.agent.coder.starters import scaffold, BACKENDS, FRONTENDS
+from app.agent.coder.project import configuration_changed, project_snapshot
 
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
 MAX_READ_CHARS = 16000
 MAX_READ_LINES = 400
+MAX_INLINE_WRITE_RECEIPT_CHARS = 4000
 
 # Only application source/configuration participates in progress. Dependency
 # trees, generated builds, test caches and runtime databases do not invalidate
@@ -191,6 +193,34 @@ CODER_TOOLS = [
         "Install dependencies with the repository package manager.",
         COMMAND_PROPERTIES,
         ("command",),
+    ),
+    _function(
+        "run_checks",
+        "Run a small batch of independent test/typecheck/build commands sequentially. Each exit code is retained, even when another check fails. Reuse passing evidence until source changes; do not use watch mode.",
+        {
+            "commands": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+                "maxItems": 8,
+            },
+            "timeout": {"type": "integer", "minimum": 1, "maximum": 600},
+        },
+        ("commands",),
+    ),
+    _function(
+        "run_browser_tests",
+        "Optional real-browser verification, only when requested or appropriate for existing browser tests. Requires the opt-in browser sandbox image; never installs anything. Runs .mjs Playwright scripts sequentially, closing Chromium afterward. Not required for default DOM/API verification.",
+        {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 10,
+            },
+            "port": {"type": "integer", "enum": [FRONTEND_PORT, BACKEND_PORT]},
+        },
+        ("paths",),
     ),
     _function(
         "start_preview",
@@ -378,7 +408,72 @@ async def dispatch_tool(
         )
         return json.dumps(result)[:80_000], None
     if name in {"run_command", "run_tests", "install_dependencies"}:
-        return await _run_command(sandbox, args)
+        return await _run_command(
+            sandbox, args, refresh_project=name == "install_dependencies"
+        )
+    if name == "run_checks":
+        checks = []
+        for index, command in enumerate(args["commands"]):
+            try:
+                output, event = await _run_command(
+                    sandbox, {"command": command, "timeout": args.get("timeout", 120)}
+                )
+            except Exception as error:
+                output, event = f"Check could not complete: {error}", {
+                    "command": command,
+                    "exit_code": 1,
+                    "changes_unknown": True,
+                }
+            checks.append({**event, "output": output})
+            if progress:
+                progress(
+                    {"stage": "check_completed", "index": index, "check": checks[-1]}
+                )
+        return json.dumps({"checks": checks}), {
+            "checks": checks,
+            "command": "\n".join(args["commands"]),
+            "exit_code": (
+                0 if all(check.get("exit_code") == 0 for check in checks) else 1
+            ),
+            "files": sorted(
+                {path for check in checks for path in check.get("files", [])}
+            ),
+            "changed": any(check.get("changed") for check in checks),
+            "changes_unknown": any(check.get("changes_unknown") for check in checks),
+            **next(
+                (
+                    {"project_facts": check["project_facts"]}
+                    for check in reversed(checks)
+                    if "project_facts" in check
+                ),
+                {},
+            ),
+        }
+    if name == "run_browser_tests":
+        paths = [workspace_path(path) for path in args["paths"]]
+        command = (
+            "roai-browser-test --port "
+            + str(args.get("port", FRONTEND_PORT))
+            + " "
+            + " ".join(shlex.quote(path) for path in paths)
+        )
+        output, event = await _run_command(
+            sandbox, {"command": command, "timeout": 600}
+        )
+        # A successful runner must actually complete at least one script. A
+        # missing optional installation is a failure, never browser evidence.
+        try:
+            stdout = json.loads(output).get("stdout", "")
+            receipt = json.loads(
+                stdout.rsplit("ROAI_BROWSER_RESULT=", 1)[1].splitlines()[0]
+            )
+            if receipt.get("results") and all(
+                item.get("status") == "passed" for item in receipt["results"]
+            ):
+                event["browser_result"] = receipt
+        except (ValueError, IndexError, TypeError, AttributeError):
+            pass
+        return output, event
     if name == "start_preview":
         port = int(args["port"])
         result = await sandbox_host.call(
@@ -390,6 +485,8 @@ async def dispatch_tool(
                 "timeout": 30,
             },
         )
+        await remember_preview_command(sandbox, port, args["command"])
+        result["persistent"] = True
         return json.dumps(result), {
             "command": args["command"],
             "preview_url": f"/api/sandboxes/{sandbox.id}/preview/{port}/",
@@ -485,8 +582,6 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
             "for a new project or `uv add`/`uv remove` for an existing project.",
             {"exit_code": 1, "corrective": True},
         )
-        await remember_preview_command(sandbox, port, args["command"])
-        result["persistent"] = True
     content = str(args.get("content", ""))
     if str(args.get("path", "")).endswith(".py"):
         try:
@@ -554,20 +649,38 @@ async def _write_file(sandbox, args: dict) -> tuple[str, dict | None]:
         lineterm="",
         n=1,
     )
-    return f"Wrote {len(written_content.encode())} bytes to {args['path']}", {
+    sha256 = hashlib.sha256(written_content.encode()).hexdigest()
+    receipt = {
+        "status": f"Wrote {len(written_content.encode())} bytes to {args['path']}",
+        "path": args["path"],
+        "bytes": len(written_content.encode()),
+        "sha256": sha256,
+        "host_formatting_changed_content": written_content != content,
+        "message": (
+            "The snapshot below is the exact persisted file after host formatting."
+            if len(written_content) <= MAX_INLINE_WRITE_RECEIPT_CHARS
+            else "The exact persisted snapshot is recorded internally; use read_file for source text."
+        ),
+    }
+    if len(written_content) <= MAX_INLINE_WRITE_RECEIPT_CHARS:
+        receipt["persisted_content"] = written_content
+    return json.dumps(receipt, ensure_ascii=False), {
         "file": args["path"],
         "diff": "\n".join(list(diff)[:5]),
         "file_content": written_content,
-        "sha256": hashlib.sha256(written_content.encode()).hexdigest(),
+        "sha256": sha256,
         "changed": previous != written_content,
     }
 
 
-async def _run_command(sandbox, args: dict) -> tuple[str, dict | None]:
+async def _run_command(
+    sandbox, args: dict, *, refresh_project=False
+) -> tuple[str, dict | None]:
     command = str(args["command"])
     server_launch = re.search(
         r"(?:^|[;&|]\s*|\s)(?:uvicorn|fastapi\s+(?:dev|run)|"
-        r"(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?dev|vite|next\s+dev)\b",
+        r"(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?dev|"
+        r"vite(?:\s+(?:dev|preview)\b|(?=\s*(?:--|$|[;&|])))|next\s+dev)\b",
         command,
         re.IGNORECASE,
     )
@@ -626,13 +739,16 @@ async def _run_command(sandbox, args: dict) -> tuple[str, dict | None]:
             "changed": bool(changed_files),
             "changes_unknown": not known,
         }
-    return json.dumps(result)[:80_000], {
+    event = {
         "command": command,
         "exit_code": result.get("exit_code"),
         "files": changed_files,
         "changed": bool(changed_files),
         "changes_unknown": not known,
     }
+    if refresh_project or not known or configuration_changed(event):
+        event["project_facts"] = await project_snapshot(sandbox)
+    return json.dumps(result)[:80_000], event
 
 
 async def infer_preview(sandbox) -> tuple[str, int] | None:
