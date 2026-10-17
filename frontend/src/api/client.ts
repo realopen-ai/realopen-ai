@@ -351,6 +351,9 @@ export interface BackendToolCall {
   type?: string;
   status?: string;
   title?: string;
+  agent?: "coder";
+  toolName?: string;
+  parentId?: string;
   query?: string;
   language?: string;
   code?: string;

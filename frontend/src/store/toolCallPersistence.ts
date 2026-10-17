@@ -1,6 +1,13 @@
+import type { Sandbox } from "@/store/sandboxStore";
+
 const DETAIL_FIELDS = [
+  "agent",
+  "toolName",
+  "parentId",
   "filePath",
   "fileContent",
+  "skillName",
+  "skillResource",
   "diff",
   "previewUrl",
   "previewPort",
@@ -9,8 +16,13 @@ const DETAIL_FIELDS = [
 ] as const;
 
 type PersistedToolCall = {
+  agent?: "coder";
+  toolName?: string;
+  parentId?: string;
   filePath?: string;
   fileContent?: string;
+  skillName?: string;
+  skillResource?: string;
   diff?: string;
   previewUrl?: string;
   previewPort?: number;
@@ -29,4 +41,3 @@ export function persistedToolCallDetails(
     ),
   ) as PersistedToolCall;
 }
-import type { Sandbox } from "@/store/sandboxStore";

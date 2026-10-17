@@ -596,11 +596,13 @@ function ToolCallBlockView({
     ? access.requested.join(", ")
     : outputPage
       ? outputPage.sourceTitle || outputPage.sourceTool || outputPage.resultRef
-      : tc.filePath && tc.filePath !== "/workspace"
-        ? tc.filePath
-        : tc.type === "websearch" || tc.type === "deepsearch"
-          ? tc.query
-          : undefined;
+      : tc.type === "skill" && tc.skillName
+        ? `${tc.skillName} · ${tc.skillResource || "SKILL.md"}`
+        : tc.filePath && tc.filePath !== "/workspace"
+          ? tc.filePath
+          : tc.type === "websearch" || tc.type === "deepsearch"
+            ? tc.query
+            : undefined;
 
   const resultCount = tc.webResults?.length || tc.genResults?.length;
   const elapsed =
@@ -762,6 +764,7 @@ function ToolCallDetail({
     const titleLower = (tc.title || "").toLowerCase();
     const isReportOrPptx =
       hasDeliverable ||
+  if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
       (tc.status === "running" &&
         (titleLower.includes("report") ||
           titleLower.includes("pptx") ||
@@ -798,6 +801,36 @@ function ToolOutputDetail({ tc }: { tc: ToolCallResult }) {
       </p>
     );
   return (
+function SkillToolDetail({ tc }: { tc: ToolCallResult }) {
+  const translate = useT();
+  const resource = tc.skillResource || "SKILL.md";
+  return (
+    <div className="space-y-2 text-[12.5px]">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
+        <dt className="text-muted-foreground">
+          {translate("tool.skill.name")}
+        </dt>
+        <dd dir="ltr" className="min-w-0 break-words font-mono text-left">
+          {tc.skillName || tc.title}
+        </dd>
+        <dt className="text-muted-foreground">
+          {translate("tool.skill.resource")}
+        </dt>
+        <dd dir="ltr" className="min-w-0 break-all font-mono text-left">
+          {resource}
+        </dd>
+      </dl>
+      <p className="text-muted-foreground">
+        {translate(
+          resource === "SKILL.md"
+            ? "tool.skill.instructionsInfo"
+            : "tool.skill.referenceInfo",
+        )}
+      </p>
+    </div>
+  );
+}
+
     <div className="space-y-3 text-[12.5px]">
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
         {(page.sourceTitle || page.sourceTool) && (

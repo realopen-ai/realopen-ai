@@ -42,6 +42,9 @@ export interface ToolCallResult {
     | "preview";
   status: "running" | "completed" | "warning" | "error";
   title: string;
+  agent?: "coder";
+  toolName?: string;
+  parentId?: string;
   startedAt: number;
   completedAt?: number;
   durationMs?: number;
@@ -82,6 +85,8 @@ export interface ToolCallResult {
   // Files
   filePath?: string;
   fileContent?: string;
+  skillName?: string;
+  skillResource?: string;
   diff?: string;
   previewUrl?: string;
   previewPort?: number;
