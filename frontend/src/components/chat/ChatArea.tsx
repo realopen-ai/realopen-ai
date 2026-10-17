@@ -69,9 +69,8 @@ export function ChatArea({
   const t = useT();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // When a new conversation is created from the home page, we keep the
-  // conversation ID here so we can display messages before the URL changes.
-  // After the stream finishes, we navigate to /{convId} seamlessly.
+  // Keep a newly-created ID available during the route transition. The URL is
+  // updated immediately so a reload can reconnect to long-running work.
   const [pendingConvId, setPendingConvId] = useState<string | null>(null);
 
   // Loading state for when fetching a conversation from the backend by URL
@@ -620,8 +619,8 @@ export function ChatArea({
         convId = await store.createConversation();
         log(`Created conversation: ${convId}`);
 
-        // Track this as a pending conversation (created from home page)
-        // We'll redirect after streaming completes
+        // Make the durable conversation addressable before starting any
+        // potentially long-running title generation or agent work.
         if (isFromHomePage) {
           setPendingConvId(convId);
         }
@@ -641,6 +640,7 @@ export function ChatArea({
       const allMessages = [
         ...(convBeforeSend?.messages ?? []).map((m) => ({
           role: m.role,
+          navigate(`/${convId}`, { replace: true });
           content: m.content,
         })),
         { role: "user" as const, content },
@@ -767,7 +767,10 @@ export function ChatArea({
   const voiceSession = useVoiceSession({
     conversationId: effectiveConvId,
     buildStreamCallbacks,
-    onConversationCreated: (convId) => setPendingConvId(convId),
+    onConversationCreated: (convId) => {
+      setPendingConvId(convId);
+      navigate(`/${convId}`, { replace: true });
+    },
   });
 
   // The backend owns active agent turns, so a browser reload only detaches
