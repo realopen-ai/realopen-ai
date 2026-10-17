@@ -1,12 +1,10 @@
 import "@picocss/pico/css/pico.min.css";
 import "./style.css";
 import { request } from "./api";
+import { showStatus } from "./status";
 
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
-request<{ status: string }>("/api/health")
-  .then((data) => {
-    status.textContent = `API: ${data.status}`;
-  })
-  .catch((error: Error) => {
-    status.textContent = error.message;
-  });
+void showStatus(status, async () => {
+  const data = await request<{ status: string }>("/api/health");
+  return `API: ${data.status}`;
+});
