@@ -31,6 +31,10 @@ class CoderPreferences(BaseModel):
     temperature: float = Field(
         default=DEFAULT_TEMPERATURE, ge=0, le=2, strict=True, allow_inf_nan=False
     )
+    handoff_tokens: int = Field(default=2048, ge=128, le=8192, strict=True)
+    source_context_tokens: int = Field(default=4096, ge=0, le=65536, strict=True)
+    recent_context_tokens: int = Field(default=4096, ge=0, le=65536, strict=True)
+    tool_output_tokens: int = Field(default=1536, ge=128, le=16384, strict=True)
 
     @model_validator(mode="after")
     def check_budget(self):
@@ -50,6 +54,10 @@ def defaults():
         "max_rounds": min(96, max(4, settings.AGENT_MAX_ROUNDS * 2)),
         "thinking": DEFAULT_THINKING,
         "temperature": DEFAULT_TEMPERATURE,
+        "handoff_tokens": 2048,
+        "source_context_tokens": 4096,
+        "recent_context_tokens": 4096,
+        "tool_output_tokens": 1536,
     }
 
 

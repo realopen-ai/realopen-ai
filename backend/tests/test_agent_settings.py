@@ -280,6 +280,10 @@ def test_coder_preferences_persist_reset_and_do_not_change_general_settings(
         {"temperature": "NaN"},
         {"temperature": -0.1},
         {"temperature": 2.1},
+        {"handoff_tokens": 127},
+        {"source_context_tokens": -1},
+        {"recent_context_tokens": 65537},
+        {"tool_output_tokens": True},
         {"unknown": 1},
     ],
 )
@@ -337,10 +341,24 @@ def test_legacy_coder_settings_keep_budgets_and_gain_inference_defaults(
         )
         session.commit()
     assert client.get("/api/coder/settings").json()["settings"] == {
+        **coder_settings.defaults(),
         **legacy,
         "thinking": True,
         "temperature": 0.6,
     }
+
+
+def test_coder_compaction_budgets_survive_database_reload(client, monkeypatch):
+    values = {
+        **coder_settings.defaults(),
+        "handoff_tokens": 3000,
+        "source_context_tokens": 7000,
+        "recent_context_tokens": 6000,
+        "tool_output_tokens": 1200,
+    }
+    assert client.put("/api/coder/settings", json=values).status_code == 200
+    monkeypatch.setattr(coder_settings, "_overrides", {})
+    assert client.get("/api/coder/settings").json()["settings"] == values
 
 
 @pytest.mark.parametrize("temperature", [0, 2])
