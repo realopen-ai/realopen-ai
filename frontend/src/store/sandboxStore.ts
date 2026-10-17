@@ -1,5 +1,8 @@
 import { create } from "zustand";
-import { generalCodeExecCommand } from "../lib/codeExecOutput.ts";
+import {
+  formatCodeExecOutput,
+  generalCodeExecCommand,
+} from "../lib/codeExecOutput.ts";
 
 export interface FileNode {
   name: string;
@@ -75,9 +78,25 @@ export function commandHistoryLines(commands: SandboxCommand[]): string[] {
         ? generalCodeExecCommand(item.id)
         : `$ ${item.command}`;
     const lines = [command];
-    if (item.stdout) lines.push(item.stdout);
+    if (item.stdout)
+      lines.push(
+        formatCodeExecOutput(item.stdout, {
+          coder: item.source === "coder_agent",
+          toolName: item.tool_name,
+          exitCode: item.exit_code ?? undefined,
+        }),
+      );
     if (item.stderr)
-      lines.push(`Error (exit ${item.exit_code ?? "?"}):\n${item.stderr}`);
+      lines.push(
+        `Error (exit ${item.exit_code ?? "?"}):\n${formatCodeExecOutput(
+          item.stderr,
+          {
+            coder: item.source === "coder_agent",
+            toolName: item.tool_name,
+            exitCode: item.exit_code ?? undefined,
+          },
+        )}`,
+      );
     if (item.output_truncated) lines.push("  [output truncated]");
     return lines;
   });
