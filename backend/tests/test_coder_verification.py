@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agent.coder import agent, tooling
+from app.agent.coder.tools import start_preview, workspace as tool_workspace
 from app.agent.coder.project import PROJECT_SNAPSHOT, project_snapshot
 from app.agent.coder.starters import ASSETS, BACKENDS, FRONTENDS
 from app.agent.coder.working_state import RunState, validation_categories
@@ -138,7 +139,9 @@ async def test_batched_checks_keep_all_exit_codes_and_do_not_abort_siblings(
     monkeypatch,
 ):
     events = []
-    monkeypatch.setattr(tooling, "source_fingerprint", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        tool_workspace, "source_fingerprint", AsyncMock(return_value={})
+    )
 
     async def host(action, sandbox, payload=None, **kwargs):
         if action == "usage":
@@ -259,7 +262,7 @@ async def test_start_preview_is_persisted_for_future_sandbox_restarts(monkeypatc
         AsyncMock(return_value={"command_id": "preview-6767", "started": True}),
     )
     remember = AsyncMock()
-    monkeypatch.setattr(tooling, "remember_preview_command", remember)
+    monkeypatch.setattr(start_preview, "remember_preview_command", remember)
 
     output, event = await tooling.dispatch_tool(
         sandbox,
@@ -292,7 +295,9 @@ def test_general_agent_receives_verification_even_when_coder_logs_are_compacted(
 @pytest.mark.asyncio
 async def test_browser_evidence_requires_actual_successful_receipt(monkeypatch):
     result = {"exit_code": 1, "stdout": "", "stderr": "not installed"}
-    monkeypatch.setattr(tooling, "source_fingerprint", AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        tool_workspace, "source_fingerprint", AsyncMock(return_value={})
+    )
 
     async def host(action, sandbox, payload=None, **kwargs):
         return {"usage_bytes": 0} if action == "usage" else result

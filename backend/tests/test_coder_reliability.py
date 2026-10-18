@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agent.coder import agent, starters, tooling
+from app.agent.coder.tools import workspace as tool_workspace
 from app.config import load_profiles
 from app.agent.coder.working_state import RunState, compact_output, validation_kind
 from app.services import skills
@@ -226,7 +227,7 @@ async def test_write_fail_test_targeted_fix_and_rerun_without_redundant_reads(
     original_call = tooling.sandbox_host.call
 
     monkeypatch.setattr(
-        tooling,
+        tool_workspace,
         "source_fingerprint",
         AsyncMock(side_effect=lambda _: {path: sha(files[path])}),
     )
@@ -532,7 +533,9 @@ async def test_shell_source_changes_invalidate_prior_checks(workspace, monkeypat
     files[path] = "value = 1\n"
     snapshots = iter([{path: sha(files[path])}, {path: sha("value = 2\n")}])
     monkeypatch.setattr(
-        tooling, "source_fingerprint", AsyncMock(side_effect=lambda _: next(snapshots))
+        tool_workspace,
+        "source_fingerprint",
+        AsyncMock(side_effect=lambda _: next(snapshots)),
     )
     state = RunState(validations={"tests": {"revision": 0}}, successful_validation=True)
     output, event = await tooling.dispatch_tool(
@@ -548,7 +551,9 @@ async def test_shell_with_unknown_file_changes_cannot_claim_verified_tests(
     workspace, monkeypatch
 ):
     sandbox, _, _ = workspace
-    monkeypatch.setattr(tooling, "source_fingerprint", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        tool_workspace, "source_fingerprint", AsyncMock(return_value=None)
+    )
     state = RunState()
     output, event = await tooling.dispatch_tool(
         sandbox, "run_tests", {"command": "pytest"}
