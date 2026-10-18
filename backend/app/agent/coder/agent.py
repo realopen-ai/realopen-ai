@@ -17,6 +17,12 @@ from app.agent.coder.working_state import RunState
 from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.coder.context import bounded_output, tokens
 from app.agent.coder.handoff import agent_scaffold_result, bounded_contract
+from app.agent.coder.execution_policy import (
+    explicit_choices,
+    scaffold_constraint_error,
+    verification_allowed,
+    baseline_commands,
+)
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.coder.tooling import (
     CODER_TOOLS,
@@ -274,6 +280,7 @@ async def _run_step(
     state: RunState,
     parent_id: str | None,
     event_queue,
+    origin=None,
 ) -> tuple[str, dict | None]:
     state.step_index += 1
     args = normalize_tool_args(name, args)
@@ -287,6 +294,8 @@ async def _run_step(
         parent_id,
         sandbox.id,
     )
+    if origin:
+        start_event["origin"] = origin
     project_event = None
     observe("tool_identity", start_event["id"])
     command_started = name != "setup_python_project"
@@ -509,6 +518,52 @@ async def _check_cancellation(task_id):
             raise RuntimeError("Coding task cancelled")
 
 
+async def _baseline_verification(
+    *,
+    generated,
+    allowed,
+    sandbox,
+    conversation,
+    task_id,
+    state,
+    parent_id,
+    event_queue,
+    messages,
+):
+    commands = baseline_commands(generated) if allowed else []
+    if not commands:
+        return ""
+    args = {"commands": commands, "timeout": 300}
+    item = {"id": "baseline-" + uuid.uuid4().hex, "tool": "run_checks", "args": args}
+    # All preceding model-requested calls have matching results before this
+    # separate application-owned exchange is appended (native and fallback).
+    messages.append(
+        assistant_call_message(get_prompt("coder_baseline_verification"), [item])
+    )
+    observe("begin_tool", "run_checks", args, origin="application")
+    await _check_cancellation(task_id)
+    output, event = await _run_step(
+        sandbox=sandbox,
+        conversation=conversation,
+        task_id=task_id,
+        name="run_checks",
+        args=args,
+        state=state,
+        parent_id=parent_id,
+        event_queue=event_queue,
+        origin="application",
+    )
+    reason = _track_step(state, "run_checks", args, output, event)
+    messages.append(
+        tool_result_message(
+            item,
+            bounded_output(output, state.memory.budgets()["output"]),
+            application_feedback=bool(event and event.get("corrective")),
+        )
+    )
+    return reason
+
+
 class CoderAgent(BaseTool):
     name = "delegate_to_coder"
     display_name = "Workspace coding agent"
@@ -595,7 +650,11 @@ class CoderAgent(BaseTool):
                     "metadata": {"agent_request": True},
                 },
             ]
-            state = RunState()
+            authoritative_request = _user_request or task
+            state = RunState(
+                explicit_constraints=explicit_choices(authoritative_request)
+            )
+            automatic_verification = verification_allowed(authoritative_request)
             try:
                 manifest = await sandbox_host.call(
                     "files/read", sandbox, {"path": "/workspace/.realopen-project.json"}
@@ -735,6 +794,7 @@ class CoderAgent(BaseTool):
                 if last_round:
                     checkpoint_round(last_round)
                 last_round = _round + 1
+                generated_event = None
                 # Keep earlier request bytes intact for prefix-cache reuse.
                 # Superseded snapshots are application-owned, not user data;
                 # the compactor may prune them when the budget fills up.
@@ -959,6 +1019,34 @@ class CoderAgent(BaseTool):
                             break
                         continue
                     args = normalize_structured_arguments(args, schema)
+                    constraint_error = scaffold_constraint_error(
+                        name, args, state.explicit_constraints
+                    )
+                    if constraint_error:
+                        observe(
+                            "end_tool",
+                            "failed",
+                            error=constraint_error,
+                            validation_error=True,
+                        )
+                        messages.append(
+                            tool_result_message(
+                                item, constraint_error, application_feedback=True
+                            )
+                        )
+                        abort_reason = _rejected_step(
+                            state,
+                            name,
+                            args,
+                            constraint_error,
+                            _event_queue,
+                            _parent_tool_call_id,
+                            task_id,
+                            sandbox.id,
+                        )
+                        if abort_reason:
+                            break
+                        continue
                     await _check_cancellation(task_id)
                     output, event = await _run_step(
                         sandbox=sandbox,
@@ -971,6 +1059,8 @@ class CoderAgent(BaseTool):
                         event_queue=_event_queue,
                     )
                     abort_reason = _track_step(state, name, args, output, event)
+                    if name == "scaffold_crud_app" and baseline_commands(event):
+                        generated_event = event
                     agent_output = (
                         json.dumps(
                             bounded_contract(
@@ -1036,6 +1126,18 @@ class CoderAgent(BaseTool):
                                 "Skipped because the coder no-progress budget was exhausted.",
                             )
                         )
+                if not abort_reason:
+                    abort_reason = await _baseline_verification(
+                        generated=generated_event,
+                        allowed=automatic_verification,
+                        sandbox=sandbox,
+                        conversation=conversation,
+                        task_id=task_id,
+                        state=state,
+                        parent_id=_parent_tool_call_id,
+                        event_queue=_event_queue,
+                        messages=messages,
+                    )
                 await _save_progress(task_id, state)
                 if abort_reason:
                     failed, final = True, abort_reason
