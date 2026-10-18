@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 
 from app.services import sandbox_host
+from app.agent.coder.styling import DEFAULT_STYLING, apply_styling, validate_styling
+from app.agent.coder.handoff import project_handoff
 
 ASSETS = Path(__file__).with_name("starters")
 BACKENDS = {
     "fastapi": {
+        "request_names": ["FastAPI"],
         "assets": "fastapi",
         "setup": "python",
         "dependencies": ["fastapi", "uvicorn"],
@@ -18,19 +21,61 @@ BACKENDS = {
     }
 }
 FRONTENDS = {
-    "vite": {
+    "react-vite": {
+        "request_names": ["React", "React.js", "ReactJS"],
         "assets": "vite",
+        "overlay": "react",
+        "omit": [
+            "frontend/src/main.ts",
+            "frontend/src/status.ts",
+            "frontend/src/status.test.ts",
+        ],
+        "entrypoint": "src/main.tsx",
+        "framework": "react",
         "install": "bun install --cwd frontend",
         "test": "bun run --cwd frontend test",
         "typecheck": "bun run --cwd frontend typecheck",
         "build": "bun run --cwd frontend build",
         "preview": "bun run --cwd frontend dev -- --host 0.0.0.0 --port 6767",
-    }
+    },
+    "vite": {
+        "request_names": ["vanilla TypeScript", "vanilla JavaScript"],
+        "assets": "vite",
+        "entrypoint": "src/main.ts",
+        "framework": "vanilla",
+        "install": "bun install --cwd frontend",
+        "test": "bun run --cwd frontend test",
+        "typecheck": "bun run --cwd frontend typecheck",
+        "build": "bun run --cwd frontend build",
+        "preview": "bun run --cwd frontend dev -- --host 0.0.0.0 --port 6767",
+    },
 }
 
 
-async def scaffold(sandbox, args, setup_python, progress=None):
-    backend, frontend = args["backend"], args["frontend"]
+def read_assets(name):
+    root = ASSETS / name
+    return {
+        path.relative_to(root).as_posix(): path.read_text()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+
+
+def frontend_assets(name):
+    entry = FRONTENDS[name]
+    files = read_assets(entry["assets"])
+    if entry.get("overlay"):
+        files.update(read_assets(entry["overlay"]))
+    for path in entry.get("omit", []):
+        files.pop(path, None)
+    return files
+
+
+async def scaffold(
+    sandbox, args, setup_python, progress=None, *, generated=None, composition=None
+):
+    backend, frontend = args["backend"], args.get("frontend", "react-vite")
+    styling = validate_styling(args.get("styling", DEFAULT_STYLING))
     if (
         backend not in {"none", *BACKENDS}
         or frontend not in {"none", *FRONTENDS}
@@ -38,23 +83,55 @@ async def scaffold(sandbox, args, setup_python, progress=None):
     ):
         raise ValueError("Choose supported backend/frontend starters, not both none")
     files = {}
-    for registry, selected in [(BACKENDS, backend), (FRONTENDS, frontend)]:
-        if selected != "none":
-            root = ASSETS / registry[selected]["assets"]
-            for path in sorted(root.rglob("*")):
-                if (
-                    path.is_file()
-                    and "__pycache__" not in path.parts
-                    and path.suffix != ".pyc"
-                ):
-                    files["/workspace/" + path.relative_to(root).as_posix()] = (
-                        path.read_text()
-                    )
-    if frontend != "none" and backend == "none":
-        files["/workspace/frontend/src/main.ts"] = (
-            'import "@picocss/pico/css/pico.min.css";\nimport "./style.css";\ndocument.querySelector<HTMLParagraphElement>("#status")!.textContent = "Ready";\n'
+    if backend != "none":
+        files.update(
+            {
+                "/workspace/" + path: content
+                for path, content in read_assets(BACKENDS[backend]["assets"]).items()
+            }
         )
-    project = {"backend": BACKENDS.get(backend), "frontend": FRONTENDS.get(frontend)}
+    if frontend != "none":
+        files.update(
+            {
+                "/workspace/" + path: content
+                for path, content in frontend_assets(frontend).items()
+            }
+        )
+    if frontend != "none" and backend == "none":
+        if FRONTENDS[frontend]["framework"] == "react":
+            files["/workspace/frontend/src/main.tsx"] = files[
+                "/workspace/frontend/src/main.tsx"
+            ].replace("connected={true}", "connected={false}")
+        else:
+            files["/workspace/frontend/src/main.ts"] = (
+                'import "./style.css";\ndocument.querySelector<HTMLParagraphElement>("#status")!.textContent = "Ready";\n'
+            )
+    if generated:
+        files.update(
+            {"/workspace/" + path: content for path, content in generated.items()}
+        )
+    if frontend != "none" and not composition:
+        apply_styling(files, styling, prefix="/workspace/")
+    project = {
+        "backend": dict(BACKENDS[backend]) if backend != "none" else None,
+        "frontend": dict(FRONTENDS[frontend]) if frontend != "none" else None,
+    }
+    if project["frontend"]:
+        project["frontend"]["styling"] = styling
+    if composition:
+        for role in ("backend", "frontend"):
+            if project[role]:
+                for key in ("dependencies", "dev_dependencies"):
+                    if key in project[role] or composition.get(role, {}).get(key):
+                        project[role][key] = list(
+                            dict.fromkeys(
+                                [
+                                    *project[role].get(key, []),
+                                    *composition.get(role, {}).get(key, []),
+                                ]
+                            )
+                        )
+    handoff = project_handoff(project, (composition or {}).get("metadata"))
     starter_test_hashes = {
         path: hashlib.sha256(content.encode()).hexdigest()
         for path, content in files.items()
@@ -77,15 +154,20 @@ async def scaffold(sandbox, args, setup_python, progress=None):
     files["/workspace/.realopen-project.json"] = json.dumps(
         {
             **project,
+            "handoff": handoff,
             "starter": {
                 "schema_version": 1,
                 "source_hashes": starter_source_hashes,
                 "test_hashes": starter_test_hashes,
+                **({"application_generated": True} if composition else {}),
             },
+            **({"scaffold": composition["metadata"]} if composition else {}),
         },
         indent=2,
     )
     python_backend = backend != "none" and BACKENDS[backend].get("setup") == "python"
+    # Check every destination before publishing; checked writes independently
+    # protect against files appearing between this preflight and publication.
     targets = [*files, *(["/workspace/pyproject.toml"] if python_backend else [])]
     for target in targets:
         if (await sandbox_host.call("files/stat", sandbox, {"path": target})).get(
@@ -132,7 +214,7 @@ async def scaffold(sandbox, args, setup_python, progress=None):
                 {
                     "name": args.get("name", "workspace-app"),
                     **{
-                        key: BACKENDS[backend][key]
+                        key: project["backend"][key]
                         for key in ["dependencies", "dev_dependencies"]
                     },
                 },
@@ -186,11 +268,18 @@ async def scaffold(sandbox, args, setup_python, progress=None):
             }
         )
     return json.dumps(
-        {"created_files": created, "project": project, "setup": checks},
+        {
+            "created_files": created,
+            "project": project,
+            "setup": checks,
+            "handoff": handoff,
+            **({"scaffold": composition["metadata"]} if composition else {}),
+        },
         ensure_ascii=False,
     ), {
         "files": created,
         "project": project,
+        "project_handoff": handoff,
         "starter_source_hashes": starter_source_hashes,
         "starter_test_hashes": starter_test_hashes,
         "changed": True,
