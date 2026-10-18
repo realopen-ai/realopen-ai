@@ -1,5 +1,7 @@
 # Focused verification
 
+For React scaffolds, use .test.tsx with React Testing Library's render/screen/fireEvent/waitFor and cleanup afterEach. Import App/components, not main.tsx (which mounts a root). Follow the generated App.test.tsx for the actual props and API response shape. Test controlled inputs, mutation bodies, retry behavior, loading cleanup, and persistence where applicable. StrictMode may run effects twice: create a fresh Response for every mocked fetch, abort/ignore stale reads and never hide duplicate writes. The manual mountApp example below is only for explicitly selected vanilla projects.
+
 Use the existing project's test setup. The Vite starter has Vitest + happy-dom, one worker, no watch mode or browser download. Its API-helper and status tests only validate reusable starter infrastructure. After implementing an app, add or change tests that cover the user's flows; an untouched starter suite is not application evidence. Keep UI mounting/behavior importable without starting a server. A DOM test should call the same mount/render implementation used by main.ts, not reimplement its behavior in the test.
 
 ```typescript
