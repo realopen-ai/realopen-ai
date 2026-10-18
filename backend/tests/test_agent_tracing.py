@@ -19,6 +19,170 @@ from app.services import coder_settings
 
 
 @pytest.mark.asyncio
+async def test_original_react_request_rejects_vanilla_before_dispatch_and_checks_correct_scaffold(
+    coder_setup, monkeypatch
+):
+    wrong = {
+        "name": "Publishing",
+        "backend": "fastapi",
+        "frontend": "vite",
+        "entities": [
+            {"name": "posts", "fields": [{"name": "title", "type": "string"}]}
+        ],
+    }
+    correct = {**wrong, "frontend": "react-vite"}
+    commands = ["pytest", "vitest run", "tsc --noEmit", "vite build"]
+    dispatched = []
+
+    async def dispatch(sandbox, name, args, *rest):
+        dispatched.append((name, args))
+        if name == "scaffold_crud_app":
+            assert args["frontend"] == "react-vite"
+            project = {
+                "backend": {"test": "pytest"},
+                "frontend": {
+                    "test": "vitest run",
+                    "typecheck": "tsc --noEmit",
+                    "build": "vite build",
+                },
+            }
+            return json.dumps({"created_files": ["app.py"], "setup": []}), {
+                "changed": True,
+                "exit_code": 0,
+                "files": [
+                    "/workspace/backend/app.py",
+                    "/workspace/backend/tests/test_posts.py",
+                    "/workspace/frontend/src/App.tsx",
+                    "/workspace/frontend/src/App.test.tsx",
+                ],
+                "project": project,
+                "project_handoff": {"application_generated": True},
+            }
+        if name == "run_checks":
+            assert args["commands"] == commands
+            checks = [
+                {"command": command, "exit_code": 0, "output": "passed"}
+                for command in commands
+            ]
+            return json.dumps({"checks": checks}), {"exit_code": 0, "checks": checks}
+        if name == "start_preview":
+            return "started", {"preview_url": "local", "port": args["port"]}
+        if name == "check_preview":
+            return "OK", {"exit_code": 0}
+        raise AssertionError(name)
+
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    coder_responses(
+        monkeypatch,
+        [
+            {"tool_calls": [native(wrong, "scaffold_crud_app")]},
+            {"tool_calls": [native(correct, "scaffold_crud_app")]},
+            {
+                "tool_calls": [
+                    native({"port": 6969, "command": "backend"}, "start_preview"),
+                    native({"port": 6767, "command": "frontend"}, "start_preview"),
+                    native({"port": 6767, "path": "/api/health"}, "check_preview"),
+                ]
+            },
+            {"content": "Done"},
+        ],
+    )
+    result = await coder_agent.CoderAgent().execute(
+        task="Use a vanilla frontend (assistant mistake)",
+        _user_request="Build a publishing app with FastAPI and a Vite React frontend.",
+        conversation_id="conversation-1",
+    )
+    assert result.success, result.output
+    assert [name for name, _ in dispatched][:2] == ["scaffold_crud_app", "run_checks"]
+    row = (await saved(coder_setup / "coder"))[0]
+    failed = row["rounds"][0]["tool_calls"][0]
+    assert failed["execution_status"] == "failed" and "react-vite" in failed["error"]
+    checks = row["rounds"][1]["tool_calls"][1]
+    assert checks["name"] == "run_checks" and checks["origin"] == "application"
+
+
+@pytest.mark.asyncio
+async def test_completed_coder_thinking_stays_in_trace_but_not_next_model_request(
+    coder_setup, monkeypatch
+):
+    requests = []
+    responses = iter(
+        [
+            {
+                "thinking": "RAW_CODER_REASONING",
+                "content": "Inspect the relevant source.",
+                "tool_calls": [native({"path": "/workspace"}, "list_files")],
+            },
+            {"content": "Done"},
+        ]
+    )
+
+    async def chat(model, messages, **kwargs):
+        requests.append(messages)
+        return {"message": next(responses)}
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    await coder_agent.CoderAgent().execute(
+        task="Inspect the project", conversation_id="conversation-1"
+    )
+    assert "RAW_CODER_REASONING" not in json.dumps(requests[1])
+    row = (await saved(coder_setup / "coder"))[0]
+    assert row["rounds"][0]["model_response"]["thinking"] == "RAW_CODER_REASONING"
+
+
+@pytest.mark.asyncio
+async def test_read_loop_receives_trusted_actionable_recovery_before_further_inference(
+    coder_setup, monkeypatch
+):
+    requests = []
+    responses = iter(
+        [
+            {
+                "tool_calls": [
+                    native(
+                        {"path": "/workspace/source.py", "content": "pass"},
+                        "write_file",
+                    )
+                ]
+            },
+            {"tool_calls": [native({"path": "/workspace/a.py"}, "read_file")]},
+            {"tool_calls": [native({"path": "/workspace/b.py"}, "read_file")]},
+            {"tool_calls": [native({"command": "pytest"}, "run_tests")]},
+            {"content": "Done"},
+        ]
+    )
+
+    async def chat(model, messages, **kwargs):
+        requests.append(messages)
+        return {"message": next(responses)}
+
+    async def dispatch(sandbox, name, args, *rest):
+        if name == "write_file":
+            return "written", {"file": args["path"], "changed": True}
+        if name == "run_tests":
+            return "passed", {"command": "pytest", "exit_code": 0}
+        return "source", {
+            "read": {
+                "path": args["path"],
+                "content": "source",
+                "sha256": "hash",
+                "offset": 0,
+                "total_chars": 6,
+                "start_line": 1,
+            }
+        }
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    result = await coder_agent.CoderAgent().execute(
+        task="Implement a library", conversation_id="conversation-1"
+    )
+    assert result.success, result.output
+    assert "Application recovery:" in json.dumps(requests[3])
+    await saved(coder_setup / "coder")
+
+
+@pytest.mark.asyncio
 async def test_parser_retry_keeps_failed_attempts_separate_from_selected_response(
     trace_setup, monkeypatch
 ):
