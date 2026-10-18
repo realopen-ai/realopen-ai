@@ -30,3 +30,30 @@ test("unrelated JSON is not claimed by the coder presenter", () => {
   assert.equal(presentCoderToolOutput('{"answer":42}'), null);
   assert.equal(formatCoderToolOutput('{"answer":42}'), '{"answer":42}');
 });
+
+test("CRUD scaffolds show generated resources and stack in chat and terminal", () => {
+  const output = JSON.stringify({
+    created_files: ["/workspace/backend/app.py"],
+    project: {
+      backend: { assets: "fastapi" },
+      frontend: { assets: "vite", framework: "react", styling: "tailwind" },
+    },
+    scaffold: {
+      generator: "crud",
+      features: { crud: 1 },
+      resources: ["products", "contacts"],
+    },
+  });
+  const options = { toolName: "scaffold_crud_app" };
+  assert.equal(
+    presentCoderToolOutput(output, options)?.summary,
+    "Created 1 file",
+  );
+  const terminal = formatCoderToolOutput(output, options);
+  assert.match(terminal, /fastapi/);
+  assert.match(terminal, /vite/);
+  assert.match(terminal, /tailwind/);
+  assert.match(terminal, /react/);
+  assert.match(terminal, /products, contacts/);
+  assert.doesNotMatch(terminal, /\{"/);
+});

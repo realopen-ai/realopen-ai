@@ -155,9 +155,32 @@ export function presentCoderToolOutput(
   );
 
   if (project) {
-    addFact(facts, "Backend", project.backend);
-    addFact(facts, "Frontend", project.frontend);
+    addFact(
+      facts,
+      "Backend",
+      stringValue(project.backend) ?? record(project.backend)?.assets,
+    );
+    addFact(
+      facts,
+      "Frontend",
+      stringValue(project.frontend) ?? record(project.frontend)?.assets,
+    );
     addFact(facts, "Project", project.name);
+    addFact(facts, "Styling", record(project.frontend)?.styling);
+    addFact(facts, "Framework", record(project.frontend)?.framework);
+  }
+  const scaffold = record(data.scaffold);
+  if (scaffold) {
+    addFact(facts, "Scaffold", scaffold.generator);
+    const features = record(scaffold.features);
+    if (features)
+      addFact(
+        facts,
+        "Features",
+        Object.keys(features).map(humanize).join(", "),
+      );
+    const resources = stringArray(scaffold.resources);
+    if (resources.length) addFact(facts, "Resources", resources.join(", "));
   }
   addFact(facts, "Path", data.path);
   addFact(facts, "Bytes written", data.bytes);
@@ -170,7 +193,9 @@ export function presentCoderToolOutput(
 
   let summary = options.title || "Coder tool completed";
   if (files.length) {
-    const verb = toolName === "scaffold_project" ? "Created" : "Changed";
+    const verb = ["scaffold_project", "scaffold_crud_app"].includes(toolName)
+      ? "Created"
+      : "Changed";
     summary = `${verb} ${files.length} file${files.length === 1 ? "" : "s"}`;
   } else if (checks.length) {
     const passed = checks.filter((check) => check.status === "passed").length;
