@@ -1,11 +1,9 @@
 """Compile and exercise generated applications, not just template text snapshots."""
 
 import ast
-import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import socket
@@ -411,7 +409,8 @@ def test_generated_backend_behavior_and_database_isolation(tmp_path):
 
 def test_generated_partial_updates_search_pagination_and_validation(tmp_path):
     write_project(tmp_path, {**SPEC, "frontend": "none"})
-    (tmp_path / "backend/tests/test_edge_cases.py").write_text("""
+    (tmp_path / "backend/tests/test_edge_cases.py").write_text(
+        """
 from backend.app import create_app
 from fastapi.testclient import TestClient
 
@@ -441,7 +440,8 @@ def test_literal_search_bound_values_and_sort(client):
     page = client.get("/api/products", params={"offset": 1, "limit": 1}).json()
     assert page["total"] == 3 and len(page["items"]) == 1 and page["items"][0]["id"] == 2
     assert client.get("/api/contacts").json()["total"] == 0
-""")
+"""
+    )
     result = run_generated_tests(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -484,7 +484,8 @@ def install(app, services):
     plan = build(spec, features=("crud", "access", "events"), registry=registry)
     write_project(tmp_path, spec.model_dump(), plan)
     # Replace generated contract suite, which intentionally assumes anonymous access.
-    (tmp_path / "backend/tests/test_crud.py").write_text("""
+    (tmp_path / "backend/tests/test_crud.py").write_text(
+        """
 def test_access_and_events(client):
     from backend.app import app
     assert client.post("/api/products", json={"title": "Denied"}).status_code == 401
@@ -495,7 +496,8 @@ def test_access_and_events(client):
     assert client.delete("/api/products/1", headers=headers).status_code == 204
     assert [event["action"] for event in app.state.observed] == ["created", "updated", "deleted"]
     assert client.get("/api/products", headers=headers).json()["total"] == 0
-""")
+"""
+    )
     result = run_generated_tests(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
 

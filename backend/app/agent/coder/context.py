@@ -342,9 +342,12 @@ class CoderMemory:
         budgets = self.budgets(model)
         limit = context_compactor.context_budget(model).input_limit
         soft_limit = int(limit * agent_settings.effective().compaction_threshold)
-        size = lambda items: context_compactor.estimate_request_tokens(
-            context_compactor.model_messages(items, native_tools), tools
-        )
+
+        def size(items):
+            return context_compactor.estimate_request_tokens(
+                context_compactor.model_messages(items, native_tools), tools
+            )
+
         pruned = messages
         if (
             agent_settings.effective().history_compaction

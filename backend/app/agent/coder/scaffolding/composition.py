@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-from app.agent.coder.scaffolding.contracts import Contribution, Feature
+from app.agent.coder.scaffolding.contracts import Feature
 from app.agent.coder.scaffolding.crud import render_crud, asset
 from app.agent.coder.starters import FRONTENDS, frontend_assets
 from app.agent.coder.styling import apply_styling
