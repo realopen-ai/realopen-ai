@@ -238,6 +238,22 @@ class CoderMemory:
             boundary = i
         boundary = min(boundary, last_exchange)
         result = []
+        # An exact later read is also a safe replacement for an older duplicate,
+        # even when its file was evicted from the bounded active-source cache.
+        latest_reads = {}
+        for index, message in enumerate(messages):
+            receipt = (message.get("metadata") or {}).get("coder_result") or {}
+            if (
+                receipt.get("tool") == "read_file"
+                and receipt.get("success")
+                and receipt.get("path")
+                and receipt.get("sha256")
+                and receipt.get("range") is not None
+                and not receipt.get("archived")
+            ):
+                latest_reads[
+                    (receipt["path"], receipt["sha256"], tuple(receipt["range"]))
+                ] = index
         retained = {
             source["path"]: source
             for source in (
@@ -260,6 +276,13 @@ class CoderMemory:
                 continue
             content = str(item.get("content") or "")
             cached = retained.get(receipt.get("path"))
+            duplicate = latest_reads.get(
+                (
+                    receipt.get("path"),
+                    receipt.get("sha256"),
+                    tuple(receipt.get("range") or []),
+                )
+            )
             repeated_read = (
                 receipt.get("tool") == "read_file"
                 and cached
@@ -267,7 +290,18 @@ class CoderMemory:
                     cached["sha256"] == receipt.get("sha256") and not cached["partial"]
                 )
             )
-            if repeated_read:
+            if duplicate is not None and duplicate > i:
+                reference = json.dumps(
+                    {
+                        "path": receipt["path"],
+                        "sha256": receipt["sha256"],
+                        "source": "Identical exact range is in the later read result: "
+                        + str(messages[duplicate].get("tool_call_id")),
+                    }
+                )
+                if tokens(reference) < tokens(content):
+                    content = reference
+            elif repeated_read:
                 reference = untrusted_context_message(
                     "archived coder read",
                     json.dumps(
@@ -288,8 +322,19 @@ class CoderMemory:
                     )["content"]
                     if tokens(archived) < tokens(content):
                         content = archived
-            result.append({**item, "content": content})
+            replacement = {**item, "content": content}
+            if receipt.get("tool") == "read_file" and content != item.get("content"):
+                replacement["metadata"] = {
+                    **meta,
+                    "coder_result": {**receipt, "archived": True},
+                }
+            result.append(replacement)
         return result
+
+    def discard_redundant(self, messages, model=None):
+        """Deterministic cleanup before a paid summary during exploration recovery."""
+        budgets = self.budgets(model)
+        return self.prune(messages, budgets["recent"], budgets["output"])
 
     async def compact(
         self, messages, model, *, compactor, tools, native_tools, on_start=None

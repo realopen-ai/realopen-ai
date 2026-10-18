@@ -208,3 +208,65 @@ def inspect(state, path, digest="unchanged"):
             }
         },
     )
+
+
+def test_read_only_recovery_does_not_limit_new_evidence_or_changed_files():
+    state = RunState()
+    for index in range(12):
+        marker = state.round_marker()
+        inspect(state, f"/workspace/source{index}.py")
+        assert not state.finish_round(marker)
+    assert state.read_only_rounds == 12 and state.repeated_read_rounds == 0
+    state.recovery_sent = True
+    marker = state.round_marker()
+    inspect(state, "/workspace/source0.py", "changed-on-disk")
+    assert not state.finish_round(marker)
+    marker = state.round_marker()
+    state.record("run_tests", {}, "failed test", {"command": "pytest", "exit_code": 1})
+    assert not state.finish_round(marker) and state.read_only_rounds == 0
+
+
+def test_repeated_read_only_rounds_stop_only_after_recovery_and_no_new_evidence():
+    state = RunState()
+    for name in ("a.py", "b.py", "c.py", "d.py"):
+        inspect(state, "/workspace/" + name)
+    state.recovery_sent = True
+    for names in (("a.py", "b.py"), ("c.py", "d.py")):
+        marker = state.round_marker()
+        for name in names:
+            inspect(state, "/workspace/" + name)
+        reason = state.finish_round(marker)
+    assert "unchanged evidence" in reason
+
+
+def test_deduplication_keeps_later_exact_range_and_never_merges_distinct_ranges():
+    def exchange(identity, offset):
+        call = {
+            "id": identity,
+            "tool": "read_file",
+            "args": {"path": "/workspace/app.py"},
+        }
+        message = tool_result_message(call, "exact source " * 500)
+        message["metadata"] = {
+            "coder_result": {
+                "tool": "read_file",
+                "success": True,
+                "path": "/workspace/app.py",
+                "sha256": "hash",
+                "range": [offset, 1000],
+            }
+        }
+        return [assistant_call_message("", [call]), message]
+
+    messages = [
+        *exchange("first", 0),
+        *exchange("different", 1000),
+        *exchange("latest", 0),
+    ]
+    original = copy.deepcopy(messages)
+    pruned = CoderMemory().prune(messages, 0, 1000)
+    assert "latest" in pruned[1]["content"] and len(pruned[1]["content"]) < len(
+        messages[1]["content"]
+    )
+    assert pruned[3] == messages[3] and pruned[-2:] == messages[-2:]
+    assert messages == original

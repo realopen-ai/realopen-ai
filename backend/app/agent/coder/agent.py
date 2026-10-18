@@ -43,7 +43,7 @@ from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
 from app.prompts import get_prompt, format_prompt
 from app.core.prompt_security import untrusted_context_message
-from app.services import sandbox_host, tool_capabilities, coder_settings
+from app.services import sandbox_host, tool_capabilities, coder_settings, agent_settings
 from app.services import skills as skill_store
 from app.services.model_prefs import resolve_task_model
 from app.services.sandbox_commands import persist_command, split_command_output
@@ -800,6 +800,7 @@ class CoderAgent(BaseTool):
                 if last_round:
                     checkpoint_round(last_round)
                 last_round = _round + 1
+                round_marker = state.round_marker()
                 generated_event = None
                 # Keep earlier request bytes intact for prefix-cache reuse.
                 # Superseded snapshots are application-owned, not user data;
@@ -821,6 +822,38 @@ class CoderAgent(BaseTool):
                         state.context,
                     )
                 )
+                if state.read_only_rounds >= 2 and (
+                    state.files_changed or state.project
+                ):
+                    # Recovery is a trusted application instruction, not an
+                    # instruction hidden inside an untrusted source envelope.
+                    messages = [
+                        message
+                        for message in messages
+                        if not (message.get("metadata") or {}).get(
+                            "coder_exploration_recovery"
+                        )
+                    ]
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": format_prompt(
+                                "coder_exploration_recovery",
+                                missing=", ".join(state.completion_missing())
+                                or "Review remaining explicit requirements",
+                                files=", ".join(list(state.reads)[-8:])
+                                or "See project map",
+                            ),
+                            "metadata": {
+                                "trusted": True,
+                                "agent_context": True,
+                                "coder_exploration_recovery": True,
+                            },
+                        }
+                    )
+                    state.recovery_sent = True
+                    if agent_settings.effective().history_compaction:
+                        messages = state.memory.discard_redundant(messages, model)
                 await _check_cancellation(task_id)
                 async for activity in activity_events(
                     lambda on_start: state.memory.compact(
@@ -893,7 +926,6 @@ class CoderAgent(BaseTool):
                             assistant_call_message(
                                 message.get("content", ""),
                                 rejected,
-                                message.get("thinking", ""),
                             )
                         )
                         for item in rejected:
@@ -958,7 +990,6 @@ class CoderAgent(BaseTool):
                     assistant_call_message(
                         message.get("content", ""),
                         normalized_calls,
-                        message.get("thinking", ""),
                     )
                 )
                 abort_reason = ""
@@ -1107,6 +1138,11 @@ class CoderAgent(BaseTool):
                         ),
                         "path": ((event or {}).get("read") or {}).get("path"),
                         "sha256": ((event or {}).get("read") or {}).get("sha256"),
+                        "range": (
+                            [event["read"]["offset"], len(event["read"]["content"])]
+                            if event and event.get("read")
+                            else None
+                        ),
                     }
                     messages.append(result_message)
                     if abort_reason:
@@ -1144,6 +1180,7 @@ class CoderAgent(BaseTool):
                         event_queue=_event_queue,
                         messages=messages,
                     )
+                abort_reason = abort_reason or state.finish_round(round_marker)
                 await _save_progress(task_id, state)
                 if abort_reason:
                     failed, final = True, abort_reason

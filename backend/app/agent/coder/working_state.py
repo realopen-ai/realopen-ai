@@ -222,6 +222,35 @@ class RunState:
     application_test_roles_changed: set = field(default_factory=set)
     exploration_steps: int = 0
     explicit_constraints: dict = field(default_factory=dict)
+    verification_attempts: int = 0
+    observation_keys: set = field(default_factory=set)
+    read_only_rounds: int = 0
+    repeated_read_rounds: int = 0
+    recovery_sent: bool = False
+
+    def round_marker(self):
+        return (
+            self.revision,
+            self.verification_attempts,
+            len(self.observation_keys),
+            self.exploration_steps,
+        )
+
+    def finish_round(self, marker):
+        if (self.revision, self.verification_attempts) != marker[:2]:
+            self.read_only_rounds = self.repeated_read_rounds = 0
+            self.recovery_sent = False
+        elif self.exploration_steps > marker[3]:
+            self.read_only_rounds += 1
+            self.repeated_read_rounds = (
+                self.repeated_read_rounds + 1
+                if len(self.observation_keys) == marker[2]
+                else 0
+            )
+        if self.recovery_sent and self.repeated_read_rounds >= 2:
+            return "Coder stopped after repeated read-only rounds revisited unchanged evidence despite recovery. No additional implementation or verification was performed; preserved files and outstanding checks are reported below."
+        return ""
+
     def invalidate_checks(self, paths, unknown=False):
         """Local layer edits do not erase verified evidence for the other layer."""
         roles = {_workspace_relative(path).split("/", 1)[0] for path in paths}
@@ -361,6 +390,15 @@ class RunState:
                 )
             receipt["ranges"].append(
                 (page["offset"], page["offset"] + len(page["content"]))
+            )
+            self.observation_keys.add(
+                (page["path"], page["sha256"], page["offset"], len(page["content"]))
+            )
+        elif inspection_step(name, args) and event.get("exit_code") in (None, 0):
+            self.observation_keys.add(
+                hashlib.sha256(
+                    json.dumps([name, args, output], sort_keys=True).encode()
+                ).hexdigest()
             )
         if name in {"scaffold_project", "scaffold_crud_app"} and event.get("project"):
             self.memory.project_handoff = event.get("project_handoff")
@@ -513,6 +551,7 @@ class RunState:
             or name in {"check_preview", "run_browser_tests"}
         ):
             self.exploration_steps = 0
+            self.verification_attempts += 1
         elif inspection_step(name, args):
             self.exploration_steps += 1
         # Repeating the same action/output against unchanged files is no
