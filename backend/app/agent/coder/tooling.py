@@ -15,6 +15,10 @@ from app.services import skills as skill_store
 from app.services.sandbox_manager import remember_preview_command
 from app.agent.coder.starters import scaffold, BACKENDS, FRONTENDS
 from app.agent.coder.project import configuration_changed, project_snapshot
+from app.agent.coder.scaffolding import scaffold_crud
+from app.agent.coder.scaffolding.composition import FEATURES as SCAFFOLD_FEATURES
+from app.agent.coder.styling import DEFAULT_STYLING, STYLING
+from app.agent.coder.handoff import openapi_contract
 
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
@@ -106,24 +110,109 @@ COMMAND_PROPERTIES = {
     "command": {"type": "string"},
     "timeout": {"type": "integer"},
 }
+STYLING_PROPERTY = {
+    "type": "string",
+    "enum": list(STYLING),
+    "default": DEFAULT_STYLING,
+    "description": "Local Tailwind CSS styling for new scaffolds. Preserve existing projects' styling frameworks.",
+}
+FRONTEND_PROPERTY = {
+    "type": "string",
+    "enum": [*FRONTENDS, "none"],
+    "default": "react-vite",
+    "description": "react-vite (default React + TypeScript), vite (vanilla TypeScript only when requested), or none.",
+}
 
 CODER_TOOLS = [
     _function(
+        "scaffold_crud_app",
+        "Create a new working CRUD app from entities/fields: FastAPI+SQLite and/or React+Vite+TypeScript with local styling and behavior tests. Vanilla TypeScript is optional. For independent resources only; preserve explicit requirements and extend the generated source. Never overwrites existing work. Frontend-only uses browser storage. Auth/relationships/WebSockets are not generated.",
+        {
+            "name": {"type": "string", "minLength": 1, "maxLength": 100},
+            "backend": {"type": "string", "enum": ["none", *BACKENDS]},
+            "frontend": FRONTEND_PROPERTY,
+            "styling": STYLING_PROPERTY,
+            "features": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "Optional; defaults to CRUD. Only registered features are supported.",
+                "items": {"type": "string", "enum": list(SCAFFOLD_FEATURES)},
+            },
+            "entities": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["name", "fields"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Plural snake_case resource, e.g. products; id is automatic.",
+                        },
+                        "label": {"type": "string"},
+                        "fields": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 16,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["name", "type"],
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "description": "snake_case field, not id.",
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "string",
+                                            "integer",
+                                            "number",
+                                            "boolean",
+                                        ],
+                                    },
+                                    "label": {"type": "string"},
+                                    "required": {
+                                        "type": "boolean",
+                                        "description": "Default true; false permits null.",
+                                    },
+                                    "default": {
+                                        "type": ["string", "number", "boolean", "null"]
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        ("name", "backend", "frontend", "entities"),
+    ),
+    _function(
         "scaffold_project",
-        "Create a new FastAPI/SQLite and/or Vite/TypeScript starter with local Pico CSS. Never overwrites existing files. Implement the requested app and rerun validation.",
+        "Create a new FastAPI/SQLite and/or React+Vite+TypeScript starter with local Tailwind CSS. Vanilla TypeScript is optional. Never overwrites existing files. Implement the requested app and rerun validation.",
         {
             "name": {"type": "string"},
             "backend": {"type": "string", "enum": ["none", *BACKENDS]},
-            "frontend": {"type": "string", "enum": ["none", *FRONTENDS]},
+            "frontend": FRONTEND_PROPERTY,
+            "styling": STYLING_PROPERTY,
         },
         ("name", "backend", "frontend"),
     ),
     _function(
         "check_preview",
-        "Smoke-test a running preview with a real HTTP request. For a full-stack app, request an /api path through frontend port 6767 after starting both services.",
+        "Smoke-test a running preview. Read /openapi.json on backend port 6969 for the current API contract, optionally filtering by api_path. For full-stack integration, also request an /api path through frontend port 6767 after starting both services.",
         {
             "port": {"type": "integer", "enum": [FRONTEND_PORT, BACKEND_PORT]},
             "path": {"type": "string"},
+            "api_path": {
+                "type": "string",
+                "description": "Optional API path prefix to select relevant OpenAPI operations, e.g. /api/posts. Only for /openapi.json.",
+            },
         },
         ("port", "path"),
     ),
@@ -315,8 +404,19 @@ async def dispatch_tool(
 ) -> tuple[str, dict | None]:
     if name == "scaffold_project":
         return await scaffold(sandbox, args, _setup_python_project, progress)
+    if name == "scaffold_crud_app":
+        return await scaffold_crud(sandbox, args, _setup_python_project, progress)
     if name == "check_preview":
         path, port = args["path"], args["port"]
+        api_path = args.get("api_path")
+        if api_path is not None and (
+            path != "/openapi.json"
+            or not isinstance(api_path, str)
+            or not api_path.startswith("/")
+        ):
+            raise ValueError(
+                "api_path selects an absolute API path prefix when reading /openapi.json"
+            )
         if (
             not isinstance(path, str)
             or not path.startswith("/")
@@ -331,11 +431,26 @@ async def dispatch_tool(
         result = await sandbox_host.call(
             "exec", sandbox, {"command": command, "timeout": 20}, timeout=40
         )
-        return json.dumps(result), {
+        event = {
             "command": command,
             "exit_code": result.get("exit_code"),
             "port": port,
         }
+        if path == "/openapi.json" and result.get("exit_code") == 0:
+            try:
+                contract = openapi_contract(
+                    json.loads(result.get("stdout", "")), args.get("api_path")
+                )
+            except (ValueError, TypeError) as error:
+                return json.dumps({**result, "exit_code": 1, "error": str(error)}), {
+                    **event,
+                    "exit_code": 1,
+                }
+            return json.dumps({**result, "api_contract": contract}), {
+                **event,
+                "api_contract": contract,
+            }
+        return json.dumps(result), event
     if name == "load_skill":
         return (
             skill_store.load_for_agent(

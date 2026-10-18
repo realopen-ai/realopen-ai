@@ -57,6 +57,7 @@ COMMAND_TOOLS = {
     "install_dependencies",
     "setup_python_project",
     "scaffold_project",
+    "scaffold_crud_app",
     "check_preview",
     "run_checks",
     "run_browser_tests",
@@ -204,6 +205,7 @@ def _event_for_step(
         "write_file": f"Writing {args.get('path', 'file')}",
         "edit_file": f"Editing {args.get('path', 'file')}",
         "scaffold_project": "Creating project starter",
+        "scaffold_crud_app": "Creating CRUD application",
         "check_preview": "Checking frontend/API connection",
         "search_files": f"Searching for {args.get('query', '')}",
         "run_tests": "Running tests",
@@ -354,12 +356,18 @@ async def _run_step(
             args,
             (
                 setup_progress
-                if name in {"setup_python_project", "scaffold_project", "run_checks"}
+                if name
+                in {
+                    "setup_python_project",
+                    "scaffold_project",
+                    "scaffold_crud_app",
+                    "run_checks",
+                }
                 else None
             ),
         )
         if event is not None and (
-            name in {"scaffold_project", "setup_python_project"}
+            name in {"scaffold_project", "scaffold_crud_app", "setup_python_project"}
             or configuration_changed(event)
             and "project_facts" not in event
         ):
@@ -388,7 +396,7 @@ async def _run_step(
         if event and event.get("command"):
             completed["code"] = event["command"]
         if (
-            name in {"setup_python_project", "scaffold_project"}
+            name in {"setup_python_project", "scaffold_project", "scaffold_crud_app"}
             or event
             and event.get("changed")
         ):
