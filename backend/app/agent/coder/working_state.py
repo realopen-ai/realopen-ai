@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.core.prompt_security import untrusted_context_message
-from app.agent.coder.context import CoderMemory
+from app.agent.coder.context import CoderMemory, tokens
+from app.agent.coder.handoff import bounded_contract
 
 
 def validation_kind(name, command):
@@ -167,6 +168,35 @@ def _application_role(path: object) -> str | None:
     return None
 
 
+def inspection_step(name, args):
+    if name in {"read_file", "list_files", "search_files", "load_skill"}:
+        return True
+    if name != "run_command":
+        return False
+    try:
+        words = shlex.split(args.get("command", ""))
+    except ValueError:
+        return False
+    # Advisory only; actual mutation receipts always take precedence.
+    return bool(words) and (
+        words[0]
+        in {
+            "cat",
+            "head",
+            "tail",
+            "rg",
+            "grep",
+            "ls",
+            "find",
+            "wc",
+            "pwd",
+            "roai-project-info",
+        }
+        or words[:2] in (["git", "diff"], ["git", "status"], ["git", "show"])
+        or words[:2] == ["sed", "-n"]
+    )
+
+
 @dataclass
 class RunState:
     memory: CoderMemory = field(default_factory=CoderMemory)
@@ -190,6 +220,67 @@ class RunState:
     starter_test_hashes: dict = field(default_factory=dict)
     application_roles_changed: set = field(default_factory=set)
     application_test_roles_changed: set = field(default_factory=set)
+    exploration_steps: int = 0
+    explicit_constraints: dict = field(default_factory=dict)
+    def invalidate_checks(self, paths, unknown=False):
+        """Local layer edits do not erase verified evidence for the other layer."""
+        roles = {_workspace_relative(path).split("/", 1)[0] for path in paths}
+        if unknown or not roles or not roles <= {"backend", "frontend"}:
+            self.validations.clear()
+            self.memory.api_contract = None
+        else:
+            invalid = {"integration", "browser", "tests", "syntax"}
+            if "backend" in roles:
+                invalid.update({"backend_tests", "backend_behavior_tests"})
+                self.memory.api_contract = None
+            if "frontend" in roles:
+                invalid.update(
+                    {"frontend_tests", "frontend_behavior_tests", "typecheck", "build"}
+                )
+            for category in invalid:
+                self.validations.pop(category, None)
+        self.successful_validation = bool(self.validations)
+
+    def workflow_context(self, model=None):
+        checks = self.completion_missing()
+        generated = bool(
+            (self.memory.project_handoff or {}).get("application_generated")
+        )
+        return {
+            "project_map": self.memory.project_handoff,
+            "explicit_stack_constraints": self.explicit_constraints,
+            "observed_api_contract": (
+                bounded_contract(
+                    self.memory.api_contract,
+                    self.memory.budgets(model)["handoff"],
+                    tokens,
+                )
+                if self.memory.api_contract
+                else None
+            ),
+            "outstanding_verification": checks,
+            "next_focus": (
+                "Review remaining explicit requirements, then report verified completion if satisfied; do not repeat exploration or checks without a reason."
+                if not checks and self.validations
+                else (
+                    "Verify generated CRUD before exploring source; implement only remaining explicit requirements."
+                    if generated and not self.validations
+                    else (
+                        "Backend tested: use its observed API contract for frontend work; reopen backend only for a concrete failure or requirement."
+                        if "backend_tests" in self.validations
+                        and self.project
+                        and self.project.get("frontend")
+                        else "Work on the next requirement with targeted inspection, then verify the affected layer and integration."
+                    )
+                )
+            ),
+            "exploration_steps": self.exploration_steps,
+            "exploration_reminder": (
+                "Several inspection calls without an edit or check. Use the project map/API contract and choose a focused change or verification next. Continue reading if a concrete unresolved question requires it; no read is blocked."
+                if self.exploration_steps >= 6
+                else None
+            ),
+        }
 
     def restore_scaffold_metadata(self, starter: dict, current_hashes: dict) -> None:
         """Rebuild generated-app evidence after a later coder execution starts."""
@@ -206,6 +297,11 @@ class RunState:
         }
         self.starter_source_hashes = dict(source_hashes)
         self.starter_test_hashes = dict(test_hashes)
+        if starter.get("application_generated"):
+            # These are spec-specific resource/UI behavior tests, not only the
+            # empty starter's health/helper tests. Passing them is still required.
+            self.application_roles_changed.update(self.scaffolded_roles)
+            self.application_test_roles_changed.update(self.scaffolded_roles)
         current_hashes = current_hashes or {}
         for path in self.starter_source_hashes.keys() | current_hashes.keys():
             role = _application_role(path)
@@ -266,7 +362,8 @@ class RunState:
             receipt["ranges"].append(
                 (page["offset"], page["offset"] + len(page["content"]))
             )
-        if name == "scaffold_project" and event.get("project"):
+        if name in {"scaffold_project", "scaffold_crud_app"} and event.get("project"):
+            self.memory.project_handoff = event.get("project_handoff")
             self.scaffolded_roles = {
                 role for role in ("backend", "frontend") if event["project"].get(role)
             }
@@ -278,14 +375,13 @@ class RunState:
         if changed or event.get("changes_unknown"):
             if changed:
                 self.revision += 1
-            self.validations.clear()
-            self.successful_validation = False
-            if event.get("changes_unknown"):
-                self.unverified_changes = True
-                self.reads.clear()
             changed_paths = event.get("files", []) + (
                 [event["file"]] if event.get("file") else []
             )
+            self.invalidate_checks(changed_paths, event.get("changes_unknown", False))
+            if event.get("changes_unknown"):
+                self.unverified_changes = True
+                self.reads.clear()
             for path in changed_paths:
                 if path not in self.files_changed:
                     self.files_changed.append(path)
@@ -315,6 +411,14 @@ class RunState:
             self.project = event["project"]
         if "project_facts" in event:
             self.project_facts = event["project_facts"]
+        if event.get("api_contract") and event.get("exit_code") == 0:
+            self.memory.api_contract = event["api_contract"]
+        elif (
+            name == "check_preview"
+            and args.get("path") == "/openapi.json"
+            and event.get("exit_code") != 0
+        ):
+            self.memory.api_contract = None
         if event.get("preview_url"):
             self.preview_started = True
             self.previews.add(event.get("port"))
@@ -384,10 +488,13 @@ class RunState:
                 and self.project.get("frontend")
             )
             path = args.get("path", "")
-            if not full_stack or (
-                args.get("port") == 6767
-                and path.startswith("/api/")
-                and {6767, 6969} <= self.previews
+            if path != "/openapi.json" and (
+                not full_stack
+                or (
+                    args.get("port") == 6767
+                    and path.startswith("/api/")
+                    and {6767, 6969} <= self.previews
+                )
             ):
                 self.validations["integration"] = {
                     "revision": self.revision,
@@ -399,6 +506,15 @@ class RunState:
                     "status": "passed",
                 }
         self.successful_validation = bool(self.validations)
+        if (
+            changed
+            or event.get("changes_unknown")
+            or validation_categories(event.get("command", ""), self.project_facts)
+            or name in {"check_preview", "run_browser_tests"}
+        ):
+            self.exploration_steps = 0
+        elif inspection_step(name, args):
+            self.exploration_steps += 1
         # Repeating the same action/output against unchanged files is no
         # progress. Different corrections and failures get their own budget.
         signature = hashlib.sha256(
@@ -526,6 +642,7 @@ class RunState:
             json.dumps(
                 {
                     "revision": self.revision,
+                    "workflow": self.workflow_context(model),
                     "continuation": {
                         "compactions": self.memory.compactions,
                         "loaded_resources": self.memory.resources,

@@ -66,6 +66,8 @@ class CoderMemory:
     handoff: str = ""
     compactions: int = 0
     active_sources: list | None = None
+    project_handoff: dict | None = None
+    api_contract: dict | None = None
 
     def budgets(self, model=None):
         preferences = coder_settings.effective()
@@ -199,6 +201,8 @@ class CoderMemory:
             "compactions": self.compactions,
             "sources": list(self.sources.values()),
             "loaded_resources": self.resources,
+            "project_handoff": self.project_handoff,
+            "api_contract": self.api_contract,
         }
 
     def prune(self, messages, recent_tokens, output_tokens):

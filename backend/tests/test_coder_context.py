@@ -11,6 +11,8 @@ import pytest
 
 from app.agent.coder import agent, provider
 from app.agent.coder.context import CoderMemory, bounded_output, tokens
+from app.agent.coder.handoff import project_handoff
+from app.agent.coder.starters import BACKENDS, FRONTENDS
 from app.agent.coder.working_state import RunState
 from app.agent.protocol import assistant_call_message, tool_result_message
 from app.config import settings
@@ -324,6 +326,16 @@ async def test_real_compaction_keeps_app_source_pending_fix_and_structured_notes
     monkeypatch,
 ):
     state = RunState()
+    state.memory.project_handoff = project_handoff(
+        {"backend": BACKENDS["fastapi"], "frontend": FRONTENDS["react-vite"]},
+        {"generator": "crud", "resources": ["contacts"]},
+    )
+    state.memory.api_contract = {
+        "source": "Runtime OpenAPI",
+        "operations": [{"method": "PATCH", "path": "/api/items/{id}"}],
+        "definitions": {},
+    }
+    state.record("run_tests", {}, "passed", {"command": "pytest", "exit_code": 0})
     read(
         state,
         "/workspace/server.py",
@@ -367,6 +379,11 @@ async def test_real_compaction_keeps_app_source_pending_fix_and_structured_notes
     serialized = json.dumps(result)
     assert "PATCH /api/items/{id}" in serialized and "export const update" in serialized
     assert state.memory.handoff == handoff and state.memory.compactions == 1
+    assert "frontend_entrypoint" in serialized and "Runtime OpenAPI" in serialized
+    assert "backend_tests" in state.validations
+    checkpoint = state.memory.checkpoint()
+    assert checkpoint["project_handoff"]["resources"] == ["contacts"]
+    assert checkpoint["api_contract"]["operations"][0]["method"] == "PATCH"
     assert cc.estimate_request_tokens(result) <= cc.context_budget("coder").input_limit
     # A second compaction sees the first handoff and retains its relevant decisions.
     followup = [

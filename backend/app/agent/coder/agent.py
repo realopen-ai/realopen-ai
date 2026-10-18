@@ -15,7 +15,8 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState
 from app.agent.coder.project import configuration_changed, project_snapshot
-from app.agent.coder.context import bounded_output
+from app.agent.coder.context import bounded_output, tokens
+from app.agent.coder.handoff import agent_scaffold_result, bounded_contract
 from app.agent.validation import argument_errors, normalize_structured_arguments
 from app.agent.coder.tooling import (
     CODER_TOOLS,
@@ -613,6 +614,13 @@ class CoderAgent(BaseTool):
                         "backend": project.get("backend"),
                         "frontend": project.get("frontend"),
                     }
+                    saved_handoff = project.get("handoff")
+                    state.memory.project_handoff = (
+                        saved_handoff
+                        if isinstance(saved_handoff, dict)
+                        and saved_handoff.get("schema_version") == 1
+                        else None
+                    )
                     state.restore_scaffold_metadata(
                         project.get("starter") or {},
                         await source_fingerprint(sandbox) or {},
@@ -963,13 +971,29 @@ class CoderAgent(BaseTool):
                         event_queue=_event_queue,
                     )
                     abort_reason = _track_step(state, name, args, output, event)
+                    agent_output = (
+                        json.dumps(
+                            bounded_contract(
+                                event["api_contract"],
+                                state.memory.budgets(model)["output"],
+                                tokens,
+                            ),
+                            ensure_ascii=False,
+                        )
+                        if event and event.get("api_contract")
+                        else (
+                            agent_scaffold_result(output, event)
+                            if name in {"scaffold_project", "scaffold_crud_app"}
+                            else output
+                        )
+                    )
                     result_message = tool_result_message(
                         item,
                         (
-                            output
+                            agent_output
                             if name in {"load_skill", "read_file"}
                             else bounded_output(
-                                output,
+                                agent_output,
                                 state.memory.budgets(model)["output"],
                             )
                         ),

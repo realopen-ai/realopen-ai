@@ -651,7 +651,6 @@ def test_full_stack_validation_requires_latest_build_tests_and_proxy_request():
         {"file": "/workspace/frontend/src/app.ts", "changed": True},
     )
     assert set(state.completion_missing()) == {
-        "backend tests",
         "frontend test runner",
         "frontend typecheck",
         "frontend build",
