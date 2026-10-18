@@ -361,7 +361,7 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
     assert "TestClient" in files["/workspace/backend/tests/conftest.py"]
     assert "tmp_path" in files["/workspace/backend/tests/conftest.py"]
     assert "test_health(client)" in files["/workspace/backend/tests/test_api.py"]
-    assert "@picocss/pico" in files["/workspace/frontend/package.json"]
+    assert "tailwindcss" in files["/workspace/frontend/package.json"]
     assert 'types="vite/client"' in files["/workspace/frontend/src/vite-env.d.ts"]
     assert '"/api"' in files["/workspace/frontend/vite.config.ts"]
     assert "6969" in files["/workspace/frontend/vite.config.ts"]
@@ -386,8 +386,9 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["scaffold_project", "scaffold_crud_app"])
 async def test_scaffold_publishes_tree_refresh_before_dependency_setup_finishes(
-    workspace, monkeypatch
+    workspace, monkeypatch, tool_name
 ):
     sandbox, files, _ = workspace
     sandbox.id = "scaffold-workspace"
@@ -409,8 +410,24 @@ async def test_scaffold_publishes_tree_refresh_before_dependency_setup_finishes(
             sandbox=sandbox,
             conversation=SimpleNamespace(id="conversation"),
             task_id="task",
-            name="scaffold_project",
-            args={"name": "app", "backend": "fastapi", "frontend": "none"},
+            name=tool_name,
+            args={
+                "name": "app",
+                "backend": "fastapi",
+                "frontend": "none",
+                **(
+                    {
+                        "entities": [
+                            {
+                                "name": "products",
+                                "fields": [{"name": "title", "type": "string"}],
+                            }
+                        ]
+                    }
+                    if tool_name == "scaffold_crud_app"
+                    else {}
+                ),
+            },
             state=RunState(),
             parent_id="delegate",
             event_queue=queue,
