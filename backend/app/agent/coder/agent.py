@@ -629,6 +629,12 @@ class CoderAgent(BaseTool):
             model = await resolve_task_model("coder")
             observe("resolved_model", model)
             coder_prompt = CODER_SYSTEM_PROMPT
+            # Refresh unchanged bundled defaults before taking the skill catalog.
+            # A failed update is diagnostic, not a reason to lose the task.
+            try:
+                await asyncio.to_thread(skill_store.install_builtin_skills)
+            except (OSError, ValueError) as error:
+                logger.warning("Could not refresh bundled skills: %s", error)
             skill_catalog = skill_store.routing_catalog("coder")
             if skill_catalog:
                 skill_context = untrusted_context_message(

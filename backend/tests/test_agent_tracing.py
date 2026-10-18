@@ -231,6 +231,7 @@ def coder_setup(trace_setup, monkeypatch):
         coder_agent, "resolve_task_model", AsyncMock(return_value="coder:test")
     )
     monkeypatch.setattr(coder_agent.skill_store, "routing_catalog", lambda _: "")
+    monkeypatch.setattr(coder_agent.skill_store, "install_builtin_skills", lambda: None)
     monkeypatch.setattr(coder_agent, "_save_progress", AsyncMock())
     monkeypatch.setattr(coder_agent, "_record_command", AsyncMock())
     monkeypatch.setattr(coder_agent.CoderAgent, "_finish_task", AsyncMock())
