@@ -1,4 +1,3 @@
-import "@picocss/pico/css/pico.min.css";
 import "./style.css";
 import { request } from "./api";
 import { showStatus } from "./status";

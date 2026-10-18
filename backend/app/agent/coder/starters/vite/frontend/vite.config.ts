@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
+// STYLING_IMPORTS
 
 export default defineConfig({
+  plugins: [...[] /* STYLING_PLUGINS */],
   server: {
     host: "0.0.0.0",
     port: 6767,

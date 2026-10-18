@@ -9,9 +9,7 @@
     "test": "vitest run",
     "build": "tsc --noEmit && vite build"
   },
-  "dependencies": {
-    "@picocss/pico": "2.1.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "typescript": "~7.0.2",
     "vite": "^8.3.3",
