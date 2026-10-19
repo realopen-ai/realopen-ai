@@ -31,12 +31,17 @@ from fastapi import (  # noqa: E402
 )
 from fastapi.responses import StreamingResponse  # noqa: E402
 import httpx  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.voice.asr import create_asr_engine  # noqa: E402
 from app.voice.tts import create_tts_engine  # noqa: E402
-from sandbox_runtime import SandboxRuntime, SandboxSpec  # noqa: E402
+from sandbox_runtime import (  # noqa: E402
+    PREVIEW_PORTS,
+    FileConflictError,
+    SandboxRuntime,
+    SandboxSpec,
+)
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -104,6 +109,7 @@ class SandboxPayload(BaseModel):
     image: str = "realopenai-sandbox:latest"
     cpu_limit: float = 2.0
     memory_limit_mb: int = 2048
+    preview_commands: dict[str, str] = Field(default_factory=dict)
 
     def spec(self) -> SandboxSpec:
         return SandboxSpec(
@@ -113,6 +119,14 @@ class SandboxPayload(BaseModel):
             image=self.image,
             cpu_limit=self.cpu_limit,
             memory_limit_mb=self.memory_limit_mb,
+            preview_commands={
+                int(port): command
+                for port, command in self.preview_commands.items()
+                if str(port).isdigit()
+                and int(port) in PREVIEW_PORTS
+                and isinstance(command, str)
+                and 0 < len(command) <= 32_000
+            },
         )
 
 
@@ -126,6 +140,7 @@ class SandboxFilePayload(SandboxPayload):
     path: str
     content: str | None = None
     content_base64: str | None = None
+    expected_sha256: str | None = None
 
 
 def _custom_voices() -> list[dict]:
@@ -341,9 +356,7 @@ async def sandbox_file_read(payload: SandboxFilePayload) -> dict:
 
 @app.post("/v1/sandboxes/files/stat")
 async def sandbox_file_stat(payload: SandboxFilePayload) -> dict:
-    size = await asyncio.to_thread(
-        _sandboxes().file_size, payload.spec(), payload.path
-    )
+    size = await asyncio.to_thread(_sandboxes().file_size, payload.spec(), payload.path)
     return {"exists": size is not None, "size": size or 0}
 
 
@@ -354,8 +367,24 @@ async def sandbox_file_write(payload: SandboxFilePayload) -> dict:
         if payload.content_base64 is not None
         else (payload.content or "").encode()
     )
-    await asyncio.to_thread(_sandboxes().write_file, payload.spec(), payload.path, data)
-    return {"written": len(data)}
+    try:
+        result = await asyncio.to_thread(
+            _sandboxes().write_file,
+            payload.spec(),
+            payload.path,
+            data,
+            payload.expected_sha256,
+        )
+    except FileConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return result or {"written": len(data)}
+
+
+@app.post("/v1/sandboxes/files/write-checked")
+async def sandbox_file_write_checked(payload: SandboxFilePayload) -> dict:
+    if payload.expected_sha256 is None:
+        raise HTTPException(422, "Checked writes require an expected hash or missing")
+    return await sandbox_file_write(payload)
 
 
 @app.websocket("/v1/sandboxes/{sandbox_id}/terminal")

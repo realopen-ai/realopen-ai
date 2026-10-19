@@ -128,6 +128,7 @@ class FakeActiveStream:
     """Stand-in for chat_streams.ActiveChatStream (replays drained events)."""
 
     def __init__(self, events, persisted_through=0, done=False):
+        self.stream_id = "test-stream"
         self.events = events
         self.persisted_through = persisted_through
         self.done = done
@@ -207,7 +208,8 @@ def client():
 @pytest.fixture
 def db_override():
     session = MagicMock(name="request-scoped-db")
-    app.dependency_overrides[get_db] = lambda: SessionCtx(session)
+    session.commit = AsyncMock()
+    app.dependency_overrides[get_db] = lambda: session
     yield session
     app.dependency_overrides.clear()
 
@@ -216,6 +218,7 @@ def db_override():
 def env(monkeypatch, db_override):
     """Install recording fakes for every external of app.api.chat."""
     e = SimpleNamespace(
+        request_db=db_override,
         # agent
         agent_events=default_agent_events(),
         agent_error=None,
@@ -597,6 +600,7 @@ async def test_chat_happy_path_with_conversation(client, env):
     assert roles == ["user", "assistant"]
     assert env.add_message_calls[0]["content"] == "ping"
     assert env.add_message_calls[1]["model"] == "qwen3:4b"
+    assert env.request_db.commit.await_count == 1
 
     # auto-title invoked with the last user message
     assert env.title_calls == [{"conv_id": CONV_ID, "user_message": "ping"}]
@@ -762,9 +766,10 @@ async def test_stream_with_conversation_full_lifecycle(client, env):
     assert env.summarize_calls == [{"conv_id": CONV_ID, "model": "qwen3:4b"}]
     assert env.summ_sessions[0].commit.await_count == 1
 
-    # auto-title emitted as SSE
+    # Auto-title is the first streamed pipeline event, before the agent loop.
     title_events = [ev for ev in events if ev.get("event") == "conversation_title"]
     assert title_events and title_events[0]["title"] == "Auto Title"
+    assert events[0] == title_events[0]
 
     # stream markers + buffered stream started
     assert ("active", str(CONV_ID)) in env.marks
@@ -775,6 +780,84 @@ async def test_stream_with_conversation_full_lifecycle(client, env):
     for chunk_event in env.agent_events:
         assert json.dumps(chunk_event) in body
     assert body.rstrip().endswith("data: [DONE]")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_stream_persists_delegated_coder_round_before_reconnect_cursor(
+    client, env, multipart
+):
+    env.agent_events = [
+        {"event": "thinking_start"},
+        {"event": "thinking", "thinking": "Delegate this task."},
+        {"event": "thinking_done", "thinkingDuration": 0.1},
+        {"event": "generation_done", "generationDuration": 0.2},
+        {
+            "event": "tool_call",
+            "tool_call": {
+                "id": "delegate-1",
+                "type": "sandbox",
+                "status": "running",
+                "title": "Workspace coding agent",
+            },
+        },
+        {
+            "event": "thinking_start",
+            "agent": "coder",
+            "round": 1,
+            "parentId": "delegate-1",
+        },
+        {"event": "thinking", "thinking": "Inspect the project."},
+        {"event": "thinking_done", "thinkingDuration": 0.3},
+        {
+            "event": "tool_call",
+            "tool_call": {
+                "id": "coder-read-1",
+                "type": "file_read",
+                "status": "completed",
+                "title": "Read app.py",
+                "agent": "coder",
+                "toolName": "read_file",
+            },
+        },
+        {
+            "event": "persistence_checkpoint",
+            "agent": "coder",
+            "round": 1,
+            "parentId": "delegate-1",
+        },
+        {"event": "done"},
+    ]
+
+    payload = {
+        "messages": [{"role": "user", "content": "build it"}],
+        "conversation_id": str(CONV_ID),
+    }
+    if multipart:
+        response = await client.post(
+            "/api/chat/stream/multipart",
+            data={**payload, "messages": json.dumps(payload["messages"])},
+        )
+    else:
+        response = await client.post("/api/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    assert [update["completion_status"] for update in env.updates] == [
+        "streaming",
+        "completed",
+    ]
+    checkpoint = env.updates[0]
+    assert any(
+        block.get("type") == "thinking"
+        and block.get("agent") == "coder"
+        and block.get("round") == 1
+        for block in checkpoint["blocks"]
+    )
+    assert any(
+        block.get("type") == "tool_call"
+        and block["tool_call"].get("toolName") == "read_file"
+        for block in checkpoint["blocks"]
+    )
 
 
 @pytest.mark.asyncio
@@ -950,9 +1033,9 @@ async def test_stream_summarization_failure_is_non_fatal(client, env):
     assert env.summarize_calls  # attempted …
     assert env.memory_calls  # … after memory extraction ran
     events = sse_events(r.text)
-    # the auto-title SSE event is still the last parsed event of the turn
-    assert events[-1]["event"] == "conversation_title"
-    assert events[-2]["event"] == "response_duration"
+    # Titling happens before the agent; post-turn work still finishes normally.
+    assert events[0]["event"] == "conversation_title"
+    assert events[-1]["event"] == "response_duration"
     assert r.text.rstrip().endswith("data: [DONE]")
 
 
@@ -1347,6 +1430,23 @@ async def test_resume_stream_finished_404(client, env):
     env.resume_stream = SimpleNamespace(done=True)
     r = await client.get(f"/api/chat/stream/{CONV_ID}/events")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_finished_stream_by_exact_cursor_returns_remaining_events(
+    client, env
+):
+    env.resume_stream = FakeActiveStream(
+        events=[
+            'data: {"event":"message","message":{"content":"already seen"}}\n\n',
+            'data: {"event":"message","message":{"content":"last round"}}\n\n',
+            "data: [DONE]\n\n",
+        ],
+        done=True,
+    )
+    response = await client.get(f"/api/chat/stream/{CONV_ID}/events?after=1")
+    assert response.status_code == 200 and response.headers["x-stream-cursor"] == "1"
+    assert "last round" in response.text and "already seen" not in response.text
 
 
 @pytest.mark.asyncio

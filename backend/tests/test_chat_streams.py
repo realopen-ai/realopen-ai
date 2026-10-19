@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from app.services.chat_streams import ActiveChatStream, start_stream, stop_stream
+from app.services import chat_streams
 
 
 @pytest.mark.asyncio
@@ -54,15 +55,73 @@ async def test_explicit_stop_cancels_the_backend_owned_task():
 async def test_generation_done_tracks_persisted_reconnect_checkpoint():
     stream = ActiveChatStream(conversation_id="checkpoint")
     await stream.publish('data: {"event":"message","message":{"content":"# Hi"}}\n\n')
-    await stream.publish(
-        'data: {"event":"generation_done","generationDuration":1}\n\n'
-    )
-    await stream.publish(
-        'data: {"event":"tool_call","tool_call":{"id":"1"}}\n\n'
-    )
+    await stream.publish('data: {"event":"generation_done","generationDuration":1}\n\n')
+    await stream.publish('data: {"event":"tool_call","tool_call":{"id":"1"}}\n\n')
     await stream.finish()
 
     assert stream.persisted_through == 2
     resumed = [event async for event in stream.subscribe(stream.persisted_through)]
     assert len(resumed) == 1
     assert '"event":"tool_call"' in resumed[0]
+
+
+@pytest.mark.asyncio
+async def test_coder_round_checkpoint_advances_the_durable_reconnect_cursor():
+    stream = ActiveChatStream(conversation_id="coder-checkpoint")
+    await stream.publish('data: {"event":"thinking","thinking":"coder round"}\n\n')
+    await stream.publish(
+        'data: {"event":"persistence_checkpoint","agent":"coder","round":1}\n\n'
+    )
+    await stream.publish(
+        'data: {"event":"thinking_start","agent":"coder","round":2}\n\n'
+    )
+    await stream.finish()
+
+    assert stream.persisted_through == 2
+    resumed = [event async for event in stream.subscribe(stream.persisted_through)]
+    assert len(resumed) == 1
+    assert '"round":2' in resumed[0]
+
+
+@pytest.mark.asyncio
+async def test_idle_heartbeats_do_not_finish_or_pollute_the_buffer_and_later_rounds_arrive(
+    monkeypatch,
+):
+    monkeypatch.setattr(chat_streams, "HEARTBEAT_SECONDS", 0.01)
+    stream = ActiveChatStream(conversation_id="slow-summary")
+    subscriber = stream.subscribe()
+    assert await asyncio.wait_for(anext(subscriber), 1) == ": keep-alive\n\n"
+    assert await asyncio.wait_for(anext(subscriber), 1) == ": keep-alive\n\n"
+    assert not stream.done and stream.events == []
+    await stream.publish(
+        'data: {"event":"thinking","thinking":"Continue after summary timeout"}\n\n'
+    )
+    assert (await anext(subscriber)).startswith("id: 1\n")
+    await stream.publish("data: [DONE]\n\n")
+    await stream.finish()
+    assert (await anext(subscriber)).endswith("data: [DONE]\n\n")
+    with pytest.raises(StopAsyncIteration):
+        await anext(subscriber)
+
+
+@pytest.mark.asyncio
+async def test_subscriber_cancel_during_idle_wait_does_not_cancel_agent_task(
+    monkeypatch,
+):
+    release = asyncio.Event()
+
+    async def source():
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    stream = await start_stream("idle-disconnect", source())
+    subscriber = stream.subscribe()
+    pending = asyncio.create_task(anext(subscriber))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert not stream.task.done()
+    release.set()
+    await stream.task
+    assert stream.done

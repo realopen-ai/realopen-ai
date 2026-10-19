@@ -157,7 +157,19 @@ async def chat(
         if conv_id:
             user_content = request.messages[-1].content if request.messages else ""
             await conv_service.add_message(db, conv_id, "user", user_content)
+            # The title service uses its own short-lived session, and the user
+            # turn must also survive a disconnect during model inference.
+            await db.commit()
             dbg("   ✅  saved user message to DB (conv_id=%s)", conv_id)
+
+            # Title the durable conversation before starting model inference.
+            # A failure remains non-fatal and never blocks the assistant call.
+            try:
+                new_title = await maybe_generate_and_save_title(conv_id, user_content)
+                if new_title:
+                    dbg("   🏷️  conversation auto-titled: %r", new_title)
+            except Exception as e:
+                dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
 
         try:
             dbg(
@@ -185,19 +197,6 @@ async def chat(
                     db, conv_id, "assistant", content, model=resolved_model
                 )
                 dbg("   saved assistant message to DB (conv_id=%s)", conv_id)
-
-                # Auto-title the conversation from the first user
-                # message (LLM via default_utility; no-op on later turns
-                # and when the title is no longer the default).
-                try:
-                    new_title = await maybe_generate_and_save_title(
-                        conv_id,
-                        request.messages[-1].content if request.messages else "",
-                    )
-                    if new_title:
-                        dbg("   🏷️  conversation auto-titled: %r", new_title)
-                except Exception as e:
-                    dbg("   ⚠️  auto-title failed (non-fatal): %s", e)
 
             return ChatResponse(
                 model=resolved_model,
@@ -384,18 +383,36 @@ async def chat_stream(request: ChatRequest):
     _user_msg_for_title = messages[-1]["content"] if messages else ""
 
     async def generate():
-        _log("   🔄 generate() started — entering agent loop")
+        _log("   🔄 generate() started — preparing conversation")
         # Mark this conversation's stream as active so the background
         # extraction queue knows to wait before running (KV-cache protection).
         if _conv_id:
             await mark_stream_active(str(_conv_id))
         chunk_count = 0
-        request_start = None
+        request_start = time.monotonic()
         builder = _BlockBuilder()
         assistant_message_id: uuid.UUID | None = None
         completion_status = "completed"
+
+        # Title the conversation before the agent loop. This generator is
+        # already owned by the buffered server-side stream, so the work keeps
+        # running and remains reconnectable if the browser reloads here.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled: %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
+
+        _log("   🤖 entering agent loop")
         try:
-            request_start = time.monotonic()
             async for chunk in run_agent_stream(
                 messages=messages,
                 model=_resolved_model,
@@ -417,7 +434,7 @@ async def chat_stream(request: ChatRequest):
                         event_type = parsed.get("event")
 
                         if event_type == "thinking_start":
-                            builder.on_thinking_start()
+                            builder.on_thinking_start(parsed)
 
                         if event_type == "thinking" and parsed.get("thinking"):
                             builder.on_thinking_token(parsed["thinking"])
@@ -431,6 +448,18 @@ async def chat_stream(request: ChatRequest):
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
                                 builder.on_generation_done(parsed["generationDuration"])
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
+
+                        if event_type == "persistence_checkpoint":
                             if _conv_id and builder.blocks:
                                 assistant_message_id = (
                                     await _persist_assistant_snapshot(
@@ -565,25 +594,6 @@ async def chat_stream(request: ChatRequest):
         if _conv_id:
             await mark_stream_idle(str(_conv_id))
 
-        # ── Auto-title from the first user message (LLM via ──
-        # default_utility). Runs at most once per conversation: the service
-        # skips unless the title is still the default and this is the first
-        # turn. The SSE event updates the sidebar live; the DB write inside
-        # the service makes the title survive reloads.
-        if _conv_id and _user_msg_for_title:
-            try:
-                new_title = await maybe_generate_and_save_title(
-                    _conv_id,
-                    _user_msg_for_title,
-                )
-                if new_title:
-                    _log("   🏷️  conversation auto-titled: %r", new_title)
-                    yield "data: " + json.dumps(
-                        {"event": "conversation_title", "title": new_title}
-                    ) + "\n\n"
-            except Exception as e:
-                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
-
         # ── Record metrics for the chat request ──
         if request_start:
             elapsed = time.monotonic() - request_start
@@ -619,6 +629,7 @@ async def chat_stream(request: ChatRequest):
         active_stream.subscribe(),
         media_type="text/event-stream",
         headers={
+            "X-Stream-ID": active_stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -747,12 +758,12 @@ async def chat_stream_multipart(
     _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
 
     async def generate():
-        dbg("   🔄 generate() started (multipart) — entering agent loop")
+        dbg("   🔄 generate() started (multipart) — preparing conversation")
         # Mark this conversation's stream as active (KV-cache protection).
         if _conv_id:
             await mark_stream_active(str(_conv_id))
         chunk_count = 0
-        request_start = None
+        request_start = time.monotonic()
         builder = _BlockBuilder()
         assistant_message_id: uuid.UUID | None = None
         completion_status = "completed"
@@ -762,6 +773,22 @@ async def chat_stream_multipart(
         # searchable via rag_search. Without this hint the LLM doesn't
         # know it has fresh documents to look up.
         digested_doc_filenames: List[str] = []
+
+        # Keep the first-message lifecycle consistent with the JSON stream:
+        # persist user → title conversation → process inputs → run agent.
+        if _conv_id and _user_msg_for_title:
+            try:
+                new_title = await maybe_generate_and_save_title(
+                    _conv_id,
+                    _user_msg_for_title,
+                )
+                if new_title:
+                    _log("   🏷️  conversation auto-titled (multipart): %r", new_title)
+                    yield "data: " + json.dumps(
+                        {"event": "conversation_title", "title": new_title}
+                    ) + "\n\n"
+            except Exception as e:
+                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
 
         # ── Digest uploaded documents BEFORE running the agent loop.
         # This way the agent's rag_search tool can find the docs on the
@@ -892,7 +919,6 @@ async def chat_stream_multipart(
             parsed_messages.append({"role": "user", "content": hint})
 
         try:
-            request_start = time.monotonic()
             async for chunk in run_agent_stream(
                 messages=parsed_messages,
                 model=_resolved_model,
@@ -915,7 +941,7 @@ async def chat_stream_multipart(
                         event_type = parsed.get("event")
 
                         if event_type == "thinking_start":
-                            builder.on_thinking_start()
+                            builder.on_thinking_start(parsed)
 
                         if event_type == "thinking" and parsed.get("thinking"):
                             builder.on_thinking_token(parsed["thinking"])
@@ -929,6 +955,18 @@ async def chat_stream_multipart(
                         if event_type == "generation_done":
                             if parsed.get("generationDuration") is not None:
                                 builder.on_generation_done(parsed["generationDuration"])
+                            if _conv_id and builder.blocks:
+                                assistant_message_id = (
+                                    await _persist_assistant_snapshot(
+                                        _conv_id,
+                                        _resolved_model,
+                                        builder,
+                                        assistant_message_id,
+                                        "streaming",
+                                    )
+                                )
+
+                        if event_type == "persistence_checkpoint":
                             if _conv_id and builder.blocks:
                                 assistant_message_id = (
                                     await _persist_assistant_snapshot(
@@ -1055,22 +1093,6 @@ async def chat_stream_multipart(
         if _conv_id:
             await mark_stream_idle(str(_conv_id))
 
-        # ── Auto-title from the first user message (LLM via ──
-        # default_utility). Same guard + SSE event as /chat/stream.
-        if _conv_id and _user_msg_for_title:
-            try:
-                new_title = await maybe_generate_and_save_title(
-                    _conv_id,
-                    _user_msg_for_title,
-                )
-                if new_title:
-                    _log("   🏷️  conversation auto-titled (multipart): %r", new_title)
-                    yield "data: " + json.dumps(
-                        {"event": "conversation_title", "title": new_title}
-                    ) + "\n\n"
-            except Exception as e:
-                _log("   ⚠️  auto-title failed (non-fatal): %s", e)
-
         # ── Record metrics for the multipart chat request ──
         if request_start:
             elapsed = time.monotonic() - request_start
@@ -1106,6 +1128,7 @@ async def chat_stream_multipart(
         active_stream.subscribe(),
         media_type="text/event-stream",
         headers={
+            "X-Stream-ID": active_stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -1133,7 +1156,7 @@ async def resume_chat_stream(conversation_id: str, after: int | None = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid conversation ID") from exc
     stream = get_stream(normalized)
-    if stream is None or stream.done:
+    if stream is None or (stream.done and after is None):
         raise HTTPException(status_code=404, detail="No resumable stream")
     # Preserve DB-rendered blocks and deliver only the unpersisted live tail.
     cursor = stream.persisted_through if after is None else after
@@ -1141,6 +1164,8 @@ async def resume_chat_stream(conversation_id: str, after: int | None = None):
         stream.subscribe(after=cursor),
         media_type="text/event-stream",
         headers={
+            "X-Stream-Cursor": str(max(0, cursor)),
+            "X-Stream-ID": stream.stream_id,
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",

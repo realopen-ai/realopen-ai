@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
+from app.services import coder_settings
 
 try:
     import fcntl
@@ -880,7 +881,11 @@ def traced_coder_execution(function):
                     {
                         "conversation_id": request.get("conversation_id"),
                         "messages": [
-                            {"role": "user", "content": request.get("task", "")}
+                            {
+                                "role": "user",
+                                "content": request.get("_user_request")
+                                or request.get("task", ""),
+                            }
                         ],
                         "model": "coder",
                     }
@@ -890,7 +895,10 @@ def traced_coder_execution(function):
                     agent="coder",
                     parent_trace_id=parent.data["trace_id"] if parent else None,
                     parent_tool_call_id=request.get("_parent_tool_call_id"),
-                    max_rounds=24,
+                    max_rounds=coder_settings.effective().max_rounds,
+                )
+                trace.data["request"]["delegated_task"] = trace.safe(
+                    request.get("task", "")
                 )
                 token = current_trace.set(trace)
                 _active.add(trace)

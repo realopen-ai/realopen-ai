@@ -41,7 +41,8 @@ from app.api.skills import router as skills_router  # noqa: E402
 from app.api.voice import router as voice_router  # noqa: E402
 from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa: E402
 from app.core.logger import is_debug  # noqa: E402
-from app.services import agent_settings  # noqa: E402
+from app.services import agent_settings, coder_settings  # noqa: E402
+from app.services import skills as skill_store  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
 from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
 
@@ -298,10 +299,16 @@ async def lifespan(app: FastAPI):
     try:
         async with async_session_factory() as db:
             await agent_settings.load(db)
+            await coder_settings.load(db)
     except Exception as e:
         logger.warning("Could not load agent preferences; using server defaults: %s", e)
 
     # Seed default templates into the DB if the templates table is empty
+    try:
+        await asyncio.to_thread(skill_store.install_builtin_skills)
+    except Exception as e:
+        logger.warning("Could not install built-in skills: %s", e)
+
     try:
         await _seed_default_templates()
     except Exception as e:

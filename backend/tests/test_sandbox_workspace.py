@@ -1,8 +1,11 @@
 import asyncio
 import importlib.machinery
 import importlib.util
+import hashlib
 import json
 import sys
+import subprocess
+import shlex
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +30,91 @@ TREE_MODULE = importlib.util.module_from_spec(TREE_SPEC)
 TREE_LOADER.exec_module(TREE_MODULE)
 
 
+def test_runtime_shell_preserves_pipeline_failures():
+    captured = []
+
+    class Container:
+        status = "running"
+
+        def exec_run(self, command, **kwargs):
+            captured.append(command)
+            return SimpleNamespace(exit_code=1, output=(b"", b""))
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: Container()
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+    runtime.exec(spec, "false | tail -20")
+    assert "bash -o pipefail -lc" in captured[0][-1]
+    # Exercise the generated wrapper, not just a textual flag assertion.
+    wrapper = shlex.split(captured[0][-1])
+    inner_shell = wrapper[wrapper.index("bash") :]
+    result = subprocess.run(inner_shell, capture_output=True)
+    assert result.returncode == 1
+
+
+def test_checked_write_publishes_only_matching_hash_and_valid_python(tmp_path):
+    target, staged = tmp_path / "app.py", tmp_path / "staged.py"
+    target.write_text("value = 1\n")
+    initial = hashlib.sha256(target.read_bytes()).hexdigest()
+    staged.write_text("value = 2\n")
+
+    def publish(expected):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                MODULE.CHECKED_REPLACE,
+                str(target),
+                str(staged),
+                expected,
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    stale = publish("0" * 64)
+    assert stale.returncode == 3 and target.read_text() == "value = 1\n"
+    invalid = "def broken(:\n"
+    staged.write_text(invalid)
+    assert publish(initial).returncode != 0
+    assert target.read_text() == "value = 1\n"
+    staged.write_text("value = 2\n")
+    result = publish(initial)
+    assert result.returncode == 0, result.stderr
+    assert target.read_text() == "value = 2\n" and not staged.exists()
+    staged.write_text("value = 3\n")
+    assert publish("missing").returncode == 3
+    assert target.read_text() == "value = 2\n"
+
+
+def test_concurrent_checked_writes_cannot_overwrite_each_other(tmp_path):
+    target = tmp_path / "app.txt"
+    target.write_text("original")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    processes = []
+    for index in range(2):
+        staged = tmp_path / f"stage-{index}.txt"
+        staged.write_text(f"version-{index}")
+        processes.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    MODULE.CHECKED_REPLACE,
+                    str(target),
+                    str(staged),
+                    digest,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+    for process in processes:
+        process.communicate(timeout=10)
+    assert sorted(process.returncode for process in processes) == [0, 3]
+    assert target.read_text() in {"version-0", "version-1"}
+
+
 @pytest.mark.parametrize(
     "path", ["/workspace", "/workspace/main.py", "workspace/src/app.ts"]
 )
@@ -48,13 +136,11 @@ def test_safe_path_rejects_escape(path):
 
 def test_python_indentation_repair_fixes_off_by_one_block():
     malformed = (
-        b"def client():\n"
-        b'     \"\"\"Create a test client.\"\"\"\n'
-        b"    return 1\n"
+        b"def client():\n" b'     """Create a test client."""\n' b"    return 1\n"
     )
     repaired = MODULE.repair_python_indentation(malformed)
     compile(repaired.decode(), "<test>", "exec")
-    assert b'    \"\"\"Create a test client.\"\"\"' in repaired
+    assert b'    """Create a test client."""' in repaired
 
 
 def test_python_indentation_repair_leaves_valid_source_unchanged():
@@ -126,9 +212,7 @@ class _BoundedReadContainer:
     def exec_run(self, command, demux=False):
         self.commands.append(command)
         if command[:3] == ["realpath", "-m", "--"]:
-            return SimpleNamespace(
-                exit_code=0, output=(b"/workspace/file.bin\n", b"")
-            )
+            return SimpleNamespace(exit_code=0, output=(b"/workspace/file.bin\n", b""))
         assert command[:2] == ["head", "-c"]
         assert demux is True
         return SimpleNamespace(
@@ -150,6 +234,24 @@ def test_runtime_file_read_is_bounded_and_binary_safe():
         "--",
         "/workspace/file.bin",
     ]
+
+
+def test_runtime_file_read_accepts_empty_demultiplexed_stdout():
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    container = _BoundedReadContainer(b"")
+    original_exec_run = container.exec_run
+
+    def exec_run(command, demux=False):
+        result = original_exec_run(command, demux=demux)
+        if command[:2] == ["head", "-c"]:
+            result.output = (None, None)
+        return result
+
+    container.exec_run = exec_run
+    runtime._container = lambda _name: container
+    spec = SimpleNamespace(container_name="sandbox")
+
+    assert runtime.read_file(spec, "/workspace/file.bin") == b""
 
 
 def test_runtime_file_read_rejects_content_over_limit():
@@ -253,7 +355,125 @@ def test_host_payload_contains_only_runtime_fields():
         "image": "image",
         "cpu_limit": 1.5,
         "memory_limit_mb": 768,
+        "preview_commands": {},
     }
+
+
+def test_host_payload_includes_persistent_preview_commands():
+    from app.services.sandbox_host import payload
+
+    sandbox = SimpleNamespace(
+        id="abc",
+        volume_name="volume",
+        container_name="container",
+        image="image",
+        cpu_limit=1.5,
+        memory_limit_mb=768,
+        preview_commands={"6767": "bun run dev", "6969": "uv run uvicorn app:app"},
+    )
+    assert payload(sandbox)["preview_commands"] == sandbox.preview_commands
+
+
+def test_detached_previews_are_supervised_and_replace_the_same_port():
+    captured = []
+
+    class Container:
+        status = "running"
+
+        def exec_run(self, command, **kwargs):
+            captured.append((command, kwargs))
+            return SimpleNamespace(exit_code=0, output=b"")
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _name: Container()
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+
+    result = runtime.exec_detached(spec, "bun run dev", "preview-6767")
+
+    script = captured[0][0][-1]
+    assert result["supervised"] is True
+    assert "while true" in script and "setsid" in script
+    assert 'kill -TERM -- "-$old_pid"' in script
+    assert "/tmp/realopen-preview/preview-6767.pid" in script
+
+
+def test_start_restores_previews_only_when_container_transitions_to_running():
+    class Container:
+        status = "exited"
+        attrs = {
+            "HostConfig": {"PortBindings": {"6767/tcp": [{}], "6969/tcp": [{}]}},
+            "Image": "image-id",
+        }
+
+        def reload(self):
+            return None
+
+        def start(self):
+            self.status = "running"
+
+    container = Container()
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime.client = SimpleNamespace(
+        volumes=SimpleNamespace(get=lambda _name: object()),
+        images=SimpleNamespace(get=lambda _name: SimpleNamespace(id="image-id")),
+    )
+    runtime._container = lambda _name: container
+    runtime._ensure_workspace_owner = lambda _spec: None
+    runtime.status = lambda _spec: {"status": "running", "running": True}
+    restored = []
+    runtime.exec_detached = lambda _spec, command, command_id: restored.append(
+        (command_id, command)
+    )
+    spec = MODULE.SandboxSpec(
+        "id",
+        "volume",
+        "container",
+        "image",
+        1,
+        256,
+        {6767: "bun run dev", 6969: "uv run uvicorn backend.app:app"},
+    )
+
+    runtime.start(spec)
+    runtime.start(spec)
+
+    assert restored == [
+        ("preview-6767", "bun run dev"),
+        ("preview-6969", "uv run uvicorn backend.app:app"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_command_is_saved_per_port(monkeypatch):
+    from app.services import sandbox_manager
+
+    record = SimpleNamespace(id="sandbox-id", preview_commands={"6969": "old backend"})
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def scalar(self, _statement):
+            return record
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(sandbox_manager, "async_session_factory", Session)
+    detached = SimpleNamespace(id="sandbox-id", preview_commands={})
+
+    await sandbox_manager.remember_preview_command(
+        detached, 6767, "bun run --cwd frontend dev"
+    )
+
+    assert record.preview_commands == {
+        "6767": "bun run --cwd frontend dev",
+        "6969": "old backend",
+    }
+    assert detached.preview_commands == record.preview_commands
 
 
 @pytest.mark.asyncio
@@ -273,9 +493,7 @@ async def test_preview_query_cannot_override_sandbox_identity(monkeypatch):
             captured.update(params)
             return SimpleNamespace()
 
-    monkeypatch.setattr(
-        sandbox_host.httpx, "AsyncClient", lambda **_kwargs: Client()
-    )
+    monkeypatch.setattr(sandbox_host.httpx, "AsyncClient", lambda **_kwargs: Client())
     sandbox = SimpleNamespace(
         id="trusted-id",
         volume_name="trusted-volume",
@@ -394,8 +612,11 @@ def test_coder_contract_includes_toolchains_and_preview():
     assert "setup_python_project" in names
     prompt = get_prompt("coder_system")
     assert "uv sync" in prompt
-    assert "never try pip" in prompt
-    assert "written at most twice" in prompt
+    assert "Never install uv/Bun globally, use pip" in prompt
+    assert "edit_file" in prompt
+    assert "identical writes or commands without progress" in prompt
+    assert "scaffold_project" in names
+    assert "check_preview" in names
     assert "0.0.0.0:6767" in prompt
     assert "0.0.0.0:6969" in prompt
     preview_tool = next(
@@ -497,11 +718,18 @@ async def test_python_project_setup_writes_valid_pep621_and_syncs(monkeypatch):
         },
         progress.append,
     )
-    written = calls[0][1]["content"]
+    written = next(
+        payload["content"]
+        for action, payload in calls
+        if action == "files/write-checked"
+    )
     assert 'dependencies = ["fastapi", "uvicorn"]' in written
     assert 'dev = ["pytest", "httpx", "httpx2"]' in written
     assert "[project.dependencies]" not in written
-    assert calls[1][1]["command"] == "uv sync --all-groups"
+    assert (
+        next(payload["command"] for action, payload in calls if action == "exec")
+        == "uv sync --all-groups"
+    )
     assert event["exit_code"] == 0
     assert [item["stage"] for item in progress] == [
         "project_written",
@@ -549,9 +777,7 @@ async def test_coder_refuses_web_server_outside_preview_tool(monkeypatch):
 def test_python_project_setup_starts_as_visible_terminal_command():
     from app.agent.coder.agent import _event_for_step
 
-    event = _event_for_step(
-        "setup_python_project", {"name": "notes-api"}, "step", None
-    )
+    event = _event_for_step("setup_python_project", {"name": "notes-api"}, "step", None)
     assert event["type"] == "code_exec"
     assert event["language"] == "shell"
     assert event["code"] == "uv sync --all-groups"
@@ -608,6 +834,11 @@ async def test_python_setup_streams_file_write_before_sync_and_refreshes(monkeyp
     while not queue.empty():
         events.append(queue.get_nowait())
 
+    refreshes = [
+        event for event in events if event.get("refreshFiles") and "type" not in event
+    ]
+    assert refreshes and all(event["sandboxId"] == "sandbox-id" for event in refreshes)
+    events = [event for event in events if "type" in event]
     assert [(event["type"], event["status"]) for event in events] == [
         ("file_write", "running"),
         ("file_write", "completed"),
@@ -662,9 +893,7 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
             read_count += 1
             return {
                 "content": (
-                    "old\nvalue\n"
-                    if read_count == 1
-                    else "new\nvalue\nextra\n"
+                    "old\nvalue\n" if read_count == 1 else "new\nvalue\nextra\n"
                 )
             }
         if action == "usage":
@@ -680,90 +909,43 @@ async def test_write_tool_returns_five_line_diff(monkeypatch):
     _, event = await tooling.dispatch_tool(
         sandbox,
         "write_file",
-        {"path": "main.py", "content": "new\nvalue\nextra\n"},
+        {
+            "path": "main.py",
+            "content": "new\nvalue\nextra\n",
+            "_expected_sha256": hashlib.sha256(b"old\nvalue\n").hexdigest(),
+            "_full_read": True,
+        },
     )
-    assert any(action == "files/write" for action, _payload in calls)
+    assert any(action == "files/write-checked" for action, _payload in calls)
     assert len(event["diff"].splitlines()) <= 5
     assert event["file_content"] == "new\nvalue\nextra\n"
 
 
 @pytest.mark.asyncio
-async def test_write_tool_repairs_python_indentation_before_upload(monkeypatch):
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        'def client():\n     """Client."""\n    return 1\n',
+        'def initialize():\n      """Initialize."""\n     global engine\n      engine = object()\n',
+    ],
+)
+async def test_write_tool_rejects_ambiguous_indentation_before_upload(
+    monkeypatch, malformed
+):
     from app.agent.coder import tooling
 
-    written = None
-    reads = 0
+    async def unexpected_call(*args, **kwargs):
+        raise AssertionError("Invalid Python must never reach file publication")
 
-    async def fake_call(action, _sandbox, payload=None, **_kwargs):
-        nonlocal written, reads
-        if action == "usage":
-            return {"usage_bytes": 0}
-        if action == "files/stat":
-            return {"exists": False, "size": 0}
-        if action == "files/write":
-            written = payload["content"]
-            return {"written": len(written)}
-        if action == "files/read":
-            reads += 1
-            if reads == 1:
-                raise FileNotFoundError
-            return {"content": written}
-        if action == "exec":
-            return {"exit_code": 0, "stdout": "", "stderr": ""}
-        raise AssertionError(action)
-
-    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
-    malformed = 'def client():\n     """Client."""\n    return 1\n'
-    await tooling.dispatch_tool(
-        SimpleNamespace(workspace_quota_bytes=1024),
-        "write_file",
-        {"path": "/workspace/test_app.py", "content": malformed},
-    )
-    assert '    """Client."""' in written
-    compile(written, "<test>", "exec")
-
-
-@pytest.mark.asyncio
-async def test_write_tool_repairs_multiple_off_grid_indent_widths(monkeypatch):
-    from app.agent.coder import tooling
-
-    written = None
-    reads = 0
-
-    async def fake_call(action, _sandbox, payload=None, **_kwargs):
-        nonlocal written, reads
-        if action == "usage":
-            return {"usage_bytes": 0}
-        if action == "files/stat":
-            return {"exists": False, "size": 0}
-        if action == "files/write":
-            written = payload["content"]
-            return {"written": len(written)}
-        if action == "files/read":
-            reads += 1
-            if reads == 1:
-                raise FileNotFoundError
-            return {"content": written}
-        if action == "exec":
-            return {"exit_code": 0, "stdout": "", "stderr": ""}
-        raise AssertionError(action)
-
-    monkeypatch.setattr(tooling.sandbox_host, "call", fake_call)
-    malformed = (
-        'def initialize():\n'
-        '      """Initialize."""\n'
-        "     global engine\n"
-        "      # Build the engine.\n"
-        "     engine = object()\n"
-    )
-    await tooling.dispatch_tool(
+    monkeypatch.setattr(tooling.sandbox_host, "call", unexpected_call)
+    output, event = await tooling.dispatch_tool(
         SimpleNamespace(workspace_quota_bytes=1024),
         "write_file",
         {"path": "/workspace/main.py", "content": malformed},
     )
-    compile(written, "<test>", "exec")
-    assert '    """Initialize."""' in written
-    assert "    global engine" in written
+    assert "rejected before replacing" in output
+    assert event["exit_code"] == 1
+    assert event["corrective"] is True
 
 
 @pytest.mark.asyncio
@@ -867,7 +1049,40 @@ def test_workspace_owner_repair_uses_short_lived_root_helper():
     args, kwargs = calls[0]
     assert args[1] == ["chown", "-R", "1000:1000", "/workspace"]
     assert kwargs["remove"] is True
+    assert kwargs["user"] == "0:0"
+    assert kwargs["network_mode"] == "none"
     assert kwargs["volumes"]["volume"]["bind"] == "/workspace"
+
+
+def test_workspace_ownership_is_repaired_after_first_main_mount():
+    events = []
+
+    class Container:
+        status = "created"
+
+        def start(self):
+            events.append("start")
+            self.status = "running"
+
+        def reload(self):
+            events.append("reload")
+
+    def create(_image, **kwargs):
+        events.append("mount")
+        assert kwargs["user"] == "1000:1000"
+        return Container()
+
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime._container = lambda _: None
+    runtime._ensure_workspace_owner = lambda _: events.append("ownership")
+    runtime.status = lambda _: {"status": "running"}
+    runtime.client = SimpleNamespace(
+        volumes=SimpleNamespace(get=lambda _: object()),
+        containers=SimpleNamespace(create=create),
+    )
+    spec = MODULE.SandboxSpec("id", "volume", "container", "image", 1, 256)
+    assert runtime.start(spec) == {"status": "running"}
+    assert events == ["mount", "start", "reload", "ownership"]
 
 
 def test_exec_route_is_not_shadowed_by_generic_lifecycle_action():

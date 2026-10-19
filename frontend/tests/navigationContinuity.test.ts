@@ -10,6 +10,10 @@ const voiceSession = readFileSync(
   new URL("../src/voice/useVoiceSession.ts", import.meta.url),
   "utf8",
 );
+const chatArea = readFileSync(
+  new URL("../src/components/chat/ChatArea.tsx", import.meta.url),
+  "utf8",
+);
 
 test("routed application pages keep the chat runtime mounted", () => {
   const desktopRuntime = appLayout.indexOf("<ChatArea");
@@ -37,6 +41,25 @@ test("voice sessions are ended explicitly, not by conversation navigation", () =
   );
   assert.match(voiceSession, /clientRef\.current\?\.stop\(\)/);
   assert.match(voiceSession, /clientRef\.current\?\.destroy\(\)/);
+});
+
+test("new text and voice conversations become addressable before streaming", () => {
+  const creation = chatArea.indexOf(
+    "convId = await store.createConversation()",
+  );
+  const route = chatArea.indexOf(
+    "navigate(`/${convId}`, { replace: true })",
+    creation,
+  );
+  const stream = chatArea.indexOf("await streamChat(", creation);
+
+  assert.ok(creation >= 0);
+  assert.ok(route > creation);
+  assert.ok(stream > route);
+  assert.match(
+    chatArea,
+    /onConversationCreated: \(convId\) => \{\s*setPendingConvId\(convId\);\s*navigate\(`\/\$\{convId\}`/,
+  );
 });
 
 test("notebooks collapse ordinary workspace panes and use tabs below wide desktop widths", () => {

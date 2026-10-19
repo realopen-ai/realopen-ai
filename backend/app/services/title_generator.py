@@ -9,11 +9,10 @@ via profiles.yml) reads the message and produces a short 2-3 word title:
      photos by EXIF date?"              →  "Photo Rename Script"
 
 Trigger:
-- Called from the chat endpoints (chat.py) right after the assistant message
-  is persisted, BEFORE the [DONE] sentinel is yielded. The result is streamed
-  to the frontend as a `conversation_title` SSE event so the sidebar updates
-  live without a refresh. The DB write happens inside this service, so the
-  title survives page reloads even if the client disconnects first.
+- Called from the chat endpoints (chat.py) after the first user message is
+  persisted and before the agent/model loop begins. Streaming requests run it
+  inside the buffered server-side stream, then emit a `conversation_title`
+  event. The title and active stream therefore survive page reloads.
 
 Guards (all inside maybe_generate_and_save_title):
 - Only fires when the conversation still carries the default title AND has

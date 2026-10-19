@@ -1,0 +1,1 @@
+The application is running the registered baseline checks for the newly generated CRUD app. These checks establish baseline evidence only, not satisfaction of every user requirement. Inspect any failures and implement remaining explicit requirements before reporting completion.

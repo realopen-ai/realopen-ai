@@ -1,3 +1,5 @@
+import { formatCoderToolOutput } from "./coderToolPresentation.ts";
+
 type CommandResult = {
   stdout?: unknown;
   stderr?: unknown;
@@ -8,8 +10,20 @@ function asText(value: unknown): string {
 }
 
 /** Turn sandbox command envelopes into the terminal text users care about. */
-export function formatCodeExecOutput(output: unknown): string {
+export function formatCodeExecOutput(
+  output: unknown,
+  options: {
+    coder?: boolean;
+    toolName?: string;
+    title?: string;
+    exitCode?: number;
+  } = {},
+): string {
   if (typeof output !== "string") return "";
+
+  if (options.coder) {
+    return formatCoderToolOutput(output, options);
+  }
 
   const trimmed = output.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return output;
