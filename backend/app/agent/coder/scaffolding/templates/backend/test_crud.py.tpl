@@ -7,8 +7,22 @@ from backend.app import create_app
 CASES = ENTITY_CASES
 
 
+@pytest.fixture
+def resource_client(client):
+    if client.app.state.services.authenticated_user is not None:
+        client.headers["X-App-Request"] = "1"
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "resource_tester", "password": "isolated-test-password"},
+        )
+        assert response.status_code == 201, response.text
+        client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
+    return client
+
+
 @pytest.mark.parametrize("name,payload,changes,required", CASES)
-def test_resource_lifecycle(client, name, payload, changes, required):
+def test_resource_lifecycle(resource_client, name, payload, changes, required):
+    client = resource_client
     path = "/api/" + name
     response = client.post(path, json=payload)
     assert response.status_code == 201, response.text
@@ -22,6 +36,8 @@ def test_resource_lifecycle(client, name, payload, changes, required):
     assert updated.json() == {**record, **changes}
     # A fresh app/connection sees persistent changes, not in-memory test state.
     with TestClient(create_app()) as reopened:
+        reopened.cookies.update(client.cookies)
+        reopened.headers.update(client.headers)
         assert reopened.get(f"{path}/{record['id']}").json() == {**record, **changes}
     assert client.delete(f"{path}/{record['id']}").status_code == 204
     assert client.get(f"{path}/{record['id']}").status_code == 404
@@ -30,7 +46,8 @@ def test_resource_lifecycle(client, name, payload, changes, required):
 
 
 @pytest.mark.parametrize("name,payload,changes,required", CASES)
-def test_validation_and_listing(client, name, payload, changes, required):
+def test_validation_and_listing(resource_client, name, payload, changes, required):
+    client = resource_client
     path = "/api/" + name
     assert (
         client.post(path, json={**payload, "unknown_field": "value"}).status_code == 422

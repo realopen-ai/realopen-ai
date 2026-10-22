@@ -1,6 +1,6 @@
 """Editable schemas and endpoints for this resource."""
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -32,7 +32,7 @@ class Page(BaseModel):
 
 
 def build_router(services):
-    repository = Repository(NAME, FIELDS)
+    repository = Repository(NAME, FIELDS, services.scope_columns)
     services.initializers.append(repository.initialize)
     router = APIRouter(
         prefix="/api/" + NAME, tags=[NAME], dependencies=services.route_dependencies
@@ -45,41 +45,46 @@ def build_router(services):
         descending: bool = False,
         limit: int = Query(25, ge=1, le=100),
         offset: int = Query(0, ge=0),
+        scope: dict = Depends(services.record_scope),
     ):
         if sort not in repository.columns:
             raise HTTPException(422, "Unknown sort field")
         return await run_in_threadpool(
-            repository.list, search, sort, descending, limit, offset
+            repository.list, search, sort, descending, limit, offset, scope
         )
 
     @router.get("/{record_id}", response_model=Record)
-    async def get_record(record_id: int):
-        record = await run_in_threadpool(repository.get, record_id)
+    async def get_record(record_id: int, scope: dict = Depends(services.record_scope)):
+        record = await run_in_threadpool(repository.get, record_id, scope)
         if record is None:
             raise HTTPException(404, "Record not found")
         return record
 
     @router.post("", response_model=Record, status_code=201)
-    async def create_record(data: Create):
-        record = await run_in_threadpool(repository.create, data.model_dump())
-        await services.changed(NAME, "created", record["id"])
+    async def create_record(data: Create, scope: dict = Depends(services.record_scope)):
+        record = await run_in_threadpool(repository.create, data.model_dump(), scope)
+        await services.changed(NAME, "created", record["id"], scope)
         return record
 
     @router.patch("/{record_id}", response_model=Record)
-    async def update_record(record_id: int, data: Patch):
+    async def update_record(
+        record_id: int, data: Patch, scope: dict = Depends(services.record_scope)
+    ):
         changes = data.model_dump(exclude_unset=True)
-        record = await run_in_threadpool(repository.update, record_id, changes)
+        record = await run_in_threadpool(repository.update, record_id, changes, scope)
         if record is None:
             raise HTTPException(404, "Record not found")
         if changes:
-            await services.changed(NAME, "updated", record_id)
+            await services.changed(NAME, "updated", record_id, scope)
         return record
 
     @router.delete("/{record_id}", status_code=204)
-    async def delete_record(record_id: int):
-        if not await run_in_threadpool(repository.delete, record_id):
+    async def delete_record(
+        record_id: int, scope: dict = Depends(services.record_scope)
+    ):
+        if not await run_in_threadpool(repository.delete, record_id, scope):
             raise HTTPException(404, "Record not found")
-        await services.changed(NAME, "deleted", record_id)
+        await services.changed(NAME, "deleted", record_id, scope)
         return Response(status_code=204)
 
     return router

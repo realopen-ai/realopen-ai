@@ -12,6 +12,7 @@ DATABASE = Path(
 def connection():
     db = sqlite3.connect(DATABASE)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
     try:
         with db:
             yield db
