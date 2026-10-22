@@ -11,11 +11,16 @@ from pathlib import PurePosixPath
 
 from app.agent.coder.scaffolding.contracts import Feature
 from app.agent.coder.scaffolding.crud import render_crud, asset
+from app.agent.coder.scaffolding.auth import render_auth, render_ownership
 from app.agent.coder.starters import FRONTENDS, frontend_assets
 from app.agent.coder.styling import apply_styling
 
 
-FEATURES = {"crud": Feature("crud", render_crud)}
+FEATURES = {
+    "crud": Feature("crud", render_crud),
+    "auth": Feature("auth", render_auth),
+    "ownership": Feature("ownership", render_ownership, requires=("auth", "crud")),
+}
 RESERVED_OUTPUTS = {
     "backend/app.py",
     "backend/services.py",
@@ -44,6 +49,8 @@ class BuildPlan:
     installers: list = field(default_factory=list)
     routers: list = field(default_factory=list)
     plugins: list = field(default_factory=list)
+    boundaries: list = field(default_factory=list)
+    mounts: list = field(default_factory=list)
     resources: list = field(default_factory=list)
 
     def add(self, feature, contribution):
@@ -75,6 +82,8 @@ class BuildPlan:
         self.installers.extend(contribution.backend_installers)
         self.routers.extend(contribution.backend_routers)
         self.plugins.extend(contribution.frontend_plugins)
+        self.boundaries.extend(contribution.frontend_boundaries)
+        self.mounts.extend(contribution.frontend_mounts)
         self.features[feature.name] = feature.version
 
     def manifest(self):
@@ -180,6 +189,17 @@ def vite_shell(spec, plan):
         for i, module in enumerate(plan.plugins)
     ]
     plugins = ", ".join(f"plugin{i}" for i in range(len(plan.plugins)))
+    component = "<App config={config} context={context} />"
+    react = FRONTENDS[spec.frontend]["framework"] == "react"
+    for i, module in reversed(list(enumerate(plan.boundaries if react else []))):
+        imports.append(
+            f"import {{ Boundary as Boundary{i} }} from {json.dumps(module)};"
+        )
+        component = f"<Boundary{i} context={{context}}>{component}</Boundary{i}>"
+    mount = "mountApp"
+    for i, module in reversed(list(enumerate(plan.mounts if not react else []))):
+        imports.append(f"import {{ mount as mount{i} }} from {json.dumps(module)};")
+        mount = f"((target: HTMLElement) => mount{i}(target, context, {mount}))"
     entrypoint = FRONTENDS[spec.frontend]["entrypoint"]
     template = (
         "frontend/react/main.tsx.tpl"
@@ -190,6 +210,8 @@ def vite_shell(spec, plan):
         asset(template)
         .replace("// FEATURE_IMPORTS", "\n".join(imports))
         .replace("/* FEATURE_PLUGINS */", plugins)
+        .replace("/* FEATURE_ROOT */", component)
+        .replace("/* FEATURE_MOUNT */", mount + "(root)")
     )
     apply_styling(plan.files, spec.styling)
 

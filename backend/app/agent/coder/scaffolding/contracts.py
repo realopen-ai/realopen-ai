@@ -14,6 +14,8 @@ class Contribution:
     backend_installers: tuple[str, ...] = ()
     backend_routers: tuple[str, ...] = ()
     frontend_plugins: tuple[str, ...] = ()
+    frontend_boundaries: tuple[str, ...] = ()
+    frontend_mounts: tuple[str, ...] = ()
     frontend_dependencies: dict[str, str] = field(default_factory=dict)
     frontend_dev_dependencies: dict[str, str] = field(default_factory=dict)
 

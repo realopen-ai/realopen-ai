@@ -10,7 +10,7 @@ from app.agent.coder.tools.schema import STYLING_PROPERTY
 
 SCHEMA = _function(
     "scaffold_crud_app",
-    "Create a new working CRUD app from entities/fields: FastAPI+SQLite and/or React+Vite+TypeScript with local styling and behavior tests. Vanilla TypeScript is optional. For independent resources only; preserve explicit requirements and extend the generated source. Never overwrites existing work. Frontend-only uses browser storage. Auth/relationships/WebSockets are not generated.",
+    "Create a new CRUD app: FastAPI+SQLite and/or React+Vite+TypeScript, local styling and behavior tests. Optional features: auth for local accounts; ownership for private per-user records (includes auth). Vanilla TypeScript is optional. Preserve explicit requirements. Never overwrites existing work. Frontend-only uses browser storage and cannot provide auth. Relationships/WebSockets are not generated.",
     {
         "name": {"type": "string", "minLength": 1, "maxLength": 100},
         "backend": {"type": "string", "enum": ["none", *BACKENDS]},
@@ -20,7 +20,7 @@ SCHEMA = _function(
             "type": "array",
             "minItems": 1,
             "maxItems": 8,
-            "description": "Optional; defaults to CRUD. Only registered features are supported.",
+            "description": "Defaults to [crud]. Add auth for login with shared records, or ownership for login and private per-user records. Keep crud in the list. Auth/ownership require a backend.",
             "items": {"type": "string", "enum": list(SCAFFOLD_FEATURES)},
         },
         "entities": {

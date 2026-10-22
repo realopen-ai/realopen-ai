@@ -7,11 +7,9 @@ import { installPlugins } from "./extensions";
 const context = createCrudContext(config);
 document.title = config.name;
 const closePlugins = installPlugins(context, [/* FEATURE_PLUGINS */]);
-const closeApp = mountCrud(
-  document.querySelector<HTMLElement>("#app")!,
-  config,
-  context,
-);
+const root = document.querySelector<HTMLElement>("#app")!;
+const mountApp = (root: HTMLElement) => mountCrud(root, config, context);
+const closeApp = /* FEATURE_MOUNT */;
 if (import.meta.hot)
   import.meta.hot.dispose(() => {
     closeApp();
