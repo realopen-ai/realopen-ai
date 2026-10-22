@@ -10,6 +10,23 @@ export type AppContext = {
   request: typeof request;
   invalidate: () => Promise<void>;
   mutations: Array<(event: Mutation) => void | Promise<void>>;
+  session?: SessionController;
+};
+export type SessionSnapshot = {
+  status: "loading" | "anonymous" | "authenticated" | "error";
+  user: { id: number; username: string } | null;
+  error: string;
+};
+export type SessionController = {
+  getSnapshot: () => SessionSnapshot;
+  subscribe: (listener: () => void) => () => void;
+  refresh: () => Promise<void>;
+  authenticate: (
+    action: "login" | "register",
+    username: string,
+    password: string,
+  ) => Promise<void>;
+  logout: () => Promise<void>;
 };
 export type Plugin = (context: AppContext) => void | (() => void);
 

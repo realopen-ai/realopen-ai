@@ -1,0 +1,11 @@
+# Local authentication and record ownership
+
+Use features=["crud", "ownership"] for private user records. Ownership depends on auth; do not create owner_id fields yourself. Use ["crud", "auth"] only when authenticated users should share records. Neither feature supports backend="none". Authentication is local and has no seeded accounts or cloud dependency.
+
+The API provides POST /api/auth/register, POST /api/auth/login, GET /api/auth/session and POST /api/auth/logout. Registration/login accept {username,password}. Usernames use 3–48 letters/numbers/._- and are case-insensitive; passwords use 12–128 characters. The HttpOnly session cookie is not a browser-storage token. Session responses contain {user:{id,username},csrf_token}. All writes require X-App-Request:1; signed-in writes additionally require the session's X-CSRF-Token. The generated transport/UI manages these headers, session restoration and logout. Do not bypass it or implement fake auth in localStorage.
+
+backend/auth.py manages scrypt password hashes, database-backed eight-hour sessions, logout revocation, CSRF and bounded authentication attempts. backend/ownership.py adds a trusted server scope. backend/repository.py applies it to all list/count/search/read/update/delete operations and assigns ownership on create. Other users' record IDs return 404. Auth-only deliberately keeps signed-in records shared. Mutation notifications include the trusted scope for future extensions.
+
+Frontend authentication is in frontend/src/auth/. React uses an authentication boundary around the app; vanilla uses a mount boundary. Unauthorized/expired sessions remove protected content. Validation/network errors must not erase form state or retry mutations. Keep every CRUD request on context.request so auth and future features compose.
+
+Run the generated backend authentication/ownership suites and frontend session/UI tests as well as typecheck/build. Tests use isolated databases. Local HTTP previews work; set AUTH_COOKIE_SECURE=1 and use HTTPS for deployment. The preview proxy must preserve Set-Cookie responses. Public registration is enabled: add application-specific signup policy before exposing a private deployment. Password reset, email verification, SSO, roles and invitations are not generated.

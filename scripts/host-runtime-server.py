@@ -316,9 +316,12 @@ def _direct_preview_app(port: int) -> FastAPI:
             if key.lower()
             in {"content-type", "cache-control", "etag", "last-modified", "location"}
         }
-        return StreamingResponse(
+        forwarded = StreamingResponse(
             iter([response.content]), response.status_code, forwarded_headers
         )
+        for cookie in response.headers.get_list("set-cookie"):
+            forwarded.raw_headers.append((b"set-cookie", cookie.encode("latin-1")))
+        return forwarded
 
     return direct
 

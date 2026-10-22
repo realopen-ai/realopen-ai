@@ -9,10 +9,12 @@ def project_handoff(project, metadata=None):
     metadata = metadata or {}
     backend, frontend = project.get("backend"), project.get("frontend")
     generated = metadata.get("generator") == "crud"
+    features = metadata.get("features", {})
     result = {
         "schema_version": 1,
         "scope": "Initial generated architecture, not proof of current source or correctness.",
         "application_generated": generated,
+        "features": features,
         "implemented": (
             [
                 (
@@ -108,9 +110,34 @@ def project_handoff(project, metadata=None):
                 else {}
             ),
         }
+        if "auth" in features:
+            result["implemented"].append(
+                "Local registration/login/logout, revocable cookie sessions and CSRF protection"
+            )
+            targets["authentication"] = ["backend/auth.py"]
+            if frontend:
+                targets["authentication"].append("frontend/src/auth/")
+            result["session_configuration"] = (
+                "AUTH_COOKIE_SECURE=1 for HTTPS deployment; preview HTTP is supported. Accounts are local; there are no seeded credentials."
+            )
+            result["data_access"] = (
+                "private per-user records"
+                if "ownership" in features
+                else "records shared by signed-in accounts"
+            )
+        if "ownership" in features:
+            result["implemented"].append(
+                "Server-assigned row ownership enforced on every CRUD operation"
+            )
+            targets["ownership"] = ["backend/ownership.py", "backend/repository.py"]
         result["not_generated"] = [
             "Relationships",
-            "Auth",
+            *([] if "auth" in features else ["Auth"]),
+            *(
+                ["Password reset, email verification, SSO and role-based permissions"]
+                if "auth" in features
+                else []
+            ),
             "WebSockets",
             "Additional business rules",
         ]

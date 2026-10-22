@@ -13,7 +13,7 @@ const closePlugins = installPlugins(context, [/* FEATURE_PLUGINS */]);
 const root = createRoot(document.getElementById("root")!);
 root.render(
   <StrictMode>
-    <App config={config} context={context} />
+    {/* FEATURE_ROOT */}
   </StrictMode>,
 );
 if (import.meta.hot)

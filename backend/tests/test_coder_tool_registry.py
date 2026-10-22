@@ -47,7 +47,7 @@ def test_model_facing_schemas_and_order_are_unchanged_by_refactor():
     # Pre-refactor schema snapshot: update deliberately for a protocol change,
     # not for moving Python handlers between files.
     assert hashlib.sha256(serialized.encode()).hexdigest() == (
-        "66b1d34736b6086182c8fb1d84ef08d8a3ccbeceb25281b0037acea8abbdad9f"
+        "e0f1010abd2313efe782a8f773d3daba01e7aa22233d99bd85984a0af8421988"
     )
 
 
