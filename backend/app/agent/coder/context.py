@@ -1,10 +1,11 @@
-"""Bounded coder continuity: exact source excerpts and semantic task handoffs."""
+"""Bounded coder continuity using tool receipts and deterministic checkpoints."""
 
 import json
 from dataclasses import dataclass, field
 
 from app.services import agent_settings, coder_settings, context_compactor
 from app.core.prompt_security import untrusted_context_message
+from app.prompts import get_prompt
 
 
 def tokens(value):
@@ -68,6 +69,10 @@ class CoderMemory:
     active_sources: list | None = None
     project_handoff: dict | None = None
     api_contract: dict | None = None
+    api_contract_status: dict | None = None
+    plan: dict | None = None
+    observations: dict = field(default_factory=dict)
+    execution: dict = field(default_factory=dict)
 
     def budgets(self, model=None):
         preferences = coder_settings.effective()
@@ -90,9 +95,11 @@ class CoderMemory:
         self.active_sources = None
         if event.get("changes_unknown"):
             self.sources.clear()
+            self.observations.clear()
         if event.get("changed"):
             for path in [*event.get("files", []), event.get("file")]:
                 self.sources.pop(path, None)
+                self.observations.pop(path, None)
         if event.get("exit_code") not in (None, 0):
             return
         if name == "load_skill":
@@ -108,6 +115,21 @@ class CoderMemory:
         digest = page.get("sha256") or event.get("sha256")
         if not path or not digest or not isinstance(content, str):
             return
+        self.observations.pop(path, None)
+        self.observations[path] = {
+            "path": path,
+            "sha256": digest,
+            "start_line": page.get("start_line", 1),
+            "end_line": page.get("end_line"),
+            "next_line": page.get("next_line"),
+        }
+        # This inventory survives source-cache eviction, but is not an unbounded
+        # second copy of the project. Omitted source remains in tool history.
+        while (
+            self.observations
+            and tokens(list(self.observations.values())) > self.budgets()["handoff"]
+        ):
+            self.observations.pop(next(iter(self.observations)))
         ceiling = self.budgets()["sources"]
         self.sources.pop(path, None)
         if not ceiling:
@@ -189,7 +211,7 @@ class CoderMemory:
         available = (
             context_compactor.context_budget(model).input_limit
             - cost
-            - self.budgets(model)["handoff"]
+            - tokens(get_prompt("coder_compaction"))
             - 128
         )
         return build_state(model, source_limit=max(0, available))
@@ -197,15 +219,36 @@ class CoderMemory:
     def checkpoint(self):
         return {
             "schema_version": 1,
+            "compaction_mode": "deterministic",
             "handoff": self.handoff,
             "compactions": self.compactions,
             "sources": list(self.sources.values()),
             "loaded_resources": self.resources,
             "project_handoff": self.project_handoff,
             "api_contract": self.api_contract,
+            "api_contract_status": self.api_contract_status,
+            "plan": self.plan,
+            "observations": list(self.observations.values()),
+            "execution": self.execution,
         }
 
-    def prune(self, messages, recent_tokens, output_tokens):
+    def refresh_context(self, messages, model, tools, native_tools, build_state):
+        """Keep one current snapshot, not a growing history of large snapshots.
+
+        Static instructions, requests and assistant/tool exchanges stay ordered.
+        Only application-owned derived state is replaced at the changing tail.
+        """
+        current = [
+            item
+            for item in messages
+            if not (item.get("metadata") or {}).get("agent_coder_state")
+        ]
+        current.append(
+            self.working_context(current, model, tools, native_tools, build_state)
+        )
+        return current
+
+    def prune(self, messages, recent_tokens, output_tokens, *, source_pressure=False):
         """Prune expendable data without removing calls or their matching results."""
         current = any(
             (item.get("metadata") or {}).get("agent_coder_state")
@@ -237,6 +280,20 @@ class CoderMemory:
                 break
             boundary = i
         boundary = min(boundary, last_exchange)
+        newest_read = next(
+            (
+                i
+                for i in range(len(messages) - 1, -1, -1)
+                if ((messages[i].get("metadata") or {}).get("coder_result") or {}).get(
+                    "tool"
+                )
+                == "read_file"
+                and ((messages[i].get("metadata") or {}).get("coder_result") or {}).get(
+                    "success"
+                )
+            ),
+            None,
+        )
         result = []
         # An exact later read is also a safe replacement for an older duplicate,
         # even when its file was evicted from the bounded active-source cache.
@@ -268,7 +325,14 @@ class CoderMemory:
             meta = item.get("metadata") or {}
             receipt = meta.get("coder_result") or {}
             if (
-                i >= boundary
+                (
+                    i >= boundary
+                    and not (
+                        source_pressure
+                        and receipt.get("tool") == "read_file"
+                        and i != newest_read
+                    )
+                )
                 or item.get("role") != "tool"
                 or not receipt.get("success")
             ):
@@ -291,14 +355,17 @@ class CoderMemory:
                 )
             )
             if duplicate is not None and duplicate > i:
-                reference = json.dumps(
-                    {
-                        "path": receipt["path"],
-                        "sha256": receipt["sha256"],
-                        "source": "Identical exact range is in the later read result: "
-                        + str(messages[duplicate].get("tool_call_id")),
-                    }
-                )
+                reference = untrusted_context_message(
+                    "archived coder read",
+                    json.dumps(
+                        {
+                            "path": receipt["path"],
+                            "sha256": receipt["sha256"],
+                            "source": "Identical exact range is in the later read result: "
+                            + str(messages[duplicate].get("tool_call_id")),
+                        }
+                    ),
+                )["content"]
                 if tokens(reference) < tokens(content):
                     content = reference
             elif repeated_read:
@@ -309,6 +376,24 @@ class CoderMemory:
                             "path": cached["path"],
                             "sha256": cached["sha256"],
                             "source": "Exact content is in retained active_sources.",
+                        }
+                    ),
+                )["content"]
+                if tokens(reference) < tokens(content):
+                    content = reference
+            elif (
+                receipt.get("tool") == "read_file"
+                and receipt.get("path")
+                and receipt.get("sha256")
+            ):
+                reference = untrusted_context_message(
+                    "archived coder read",
+                    json.dumps(
+                        {
+                            "path": receipt["path"],
+                            "sha256": receipt["sha256"],
+                            "range": receipt.get("range"),
+                            "source": "Previously inspected range archived from working context. Full result remains in history; use read_file for a specific missing region, not a project-wide reread.",
                         }
                     ),
                 )["content"]
@@ -354,19 +439,22 @@ class CoderMemory:
             and size(messages) > soft_limit
         ):
             pruned = self.prune(messages, budgets["recent"], budgets["output"])
+            if size(pruned) > limit:
+                # A single parallel read batch can exceed the whole input
+                # window. Preserve call/result pairing and all failed feedback,
+                # but archive older successful read bodies within that batch.
+                # The newest successful read remains exact; full outputs remain
+                # in worklog/UI/traces and archived ranges can be read on demand.
+                pruned = self.prune(
+                    pruned, budgets["recent"], budgets["output"], source_pressure=True
+                )
 
-        summaries = []
+        checkpoint = get_prompt("coder_compaction")
 
-        async def summarize(text):
-            summary = await context_compactor._summarize_bounded(
-                model,
-                text,
-                max_tokens=budgets["handoff"],
-                prompt_name="coder_compaction",
-            )
-            if summary:
-                summaries.append(summary)
-            return summary
+        async def archive_history(_text):
+            # Current structured state and exact recent exchanges stay protected;
+            # never substitute a model-generated account of execution history.
+            return checkpoint
 
         compacted, changed = await compactor(
             pruned,
@@ -375,23 +463,16 @@ class CoderMemory:
             native_tools=native_tools,
             max_output_tokens=coder_settings.effective().generation_limit,
             on_start=on_start,
-            summarize=summarize,
+            summarize=archive_history,
             recent_tokens=budgets["recent"],
         )
-        if changed and summaries:
-            # Only install notes from the accepted context, never a rejected sizing attempt.
-            accepted = [
-                summary
-                for summary in summaries
-                if any(
-                    (item.get("metadata") or {}).get("compaction")
-                    and summary in str(item.get("content", ""))
-                    for item in compacted
-                )
-            ]
-            if accepted:
-                self.handoff = "\n\n".join(dict.fromkeys(accepted))
-                self.compactions += 1
+        if changed and any(
+            (item.get("metadata") or {}).get("compaction")
+            and checkpoint in str(item.get("content", ""))
+            for item in compacted
+        ):
+            self.handoff = checkpoint
+            self.compactions += 1
         pruned_changed = pruned != messages
         if pruned_changed and not changed and on_start:
             on_start()

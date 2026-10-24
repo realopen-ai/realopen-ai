@@ -268,5 +268,7 @@ def test_deduplication_keeps_later_exact_range_and_never_merges_distinct_ranges(
     assert "latest" in pruned[1]["content"] and len(pruned[1]["content"]) < len(
         messages[1]["content"]
     )
-    assert pruned[3] == messages[3] and pruned[-2:] == messages[-2:]
+    assert '"range": [1000, 1000]' in pruned[3]["content"]
+    assert "later read result" not in pruned[3]["content"]
+    assert pruned[-2:] == messages[-2:]
     assert messages == original
