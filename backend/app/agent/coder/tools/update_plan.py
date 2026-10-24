@@ -4,6 +4,7 @@ import json
 
 from app.agent.coder.tools.schema import _function
 from app.agent.validation import argument_errors
+from app.services import coder_settings, context_compactor
 
 SCHEMA = _function(
     "update_plan",
@@ -12,7 +13,7 @@ SCHEMA = _function(
         "steps": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 6,
+            "maxItems": 12,
             "items": {
                 "type": "object",
                 "properties": {
@@ -27,7 +28,7 @@ SCHEMA = _function(
             },
         },
         "next_action": {"type": "string", "minLength": 1, "maxLength": 300},
-        "notes": {"type": "string", "maxLength": 600},
+        "notes": {"type": "string", "maxLength": 1200},
     },
     ("steps", "next_action"),
 )
@@ -46,4 +47,11 @@ async def execute(sandbox, args, progress=None):
         "next_action": args["next_action"],
         **({"notes": args["notes"]} if isinstance(args.get("notes"), str) else {}),
     }
+    if (
+        context_compactor._estimate_tokens(json.dumps(plan, ensure_ascii=False))
+        > coder_settings.effective().handoff_tokens
+    ):
+        raise ValueError(
+            "Continuation plan exceeds the configured token budget; group related work into fewer phases and keep decisions concise. The previous plan is unchanged."
+        )
     return json.dumps({"saved_plan": plan}), {"working_plan": plan}

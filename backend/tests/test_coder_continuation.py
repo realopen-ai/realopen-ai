@@ -87,7 +87,7 @@ async def test_plan_is_saved_without_claiming_file_or_verification_progress():
     assert state.verification_attempts == 0 and state.revision == 0
     assert "model_authored_plan_not_verification" in state.context()["content"]
     with pytest.raises(ValueError, match="Invalid continuation plan"):
-        await dispatch_tool(None, "update_plan", {**plan, "notes": "x" * 601})
+        await dispatch_tool(None, "update_plan", {**plan, "notes": "x" * 1201})
     noisy = {**plan, "steps": [{**plan["steps"][0], "source": "x" * 100000}]}
     _, event = await dispatch_tool(None, "update_plan", noisy)
     assert event["working_plan"] == plan
