@@ -16,6 +16,12 @@ from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState
 from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.coder.context import bounded_output, tokens
+from app.agent.coder.checkpoints import (
+    PlanCheckpoints,
+    PlanCheckpointRequired,
+    PLAN_TOOLS,
+    fit_checkpoint,
+)
 from app.agent.coder.handoff import agent_scaffold_result, bounded_contract
 from app.agent.coder.execution_policy import (
     explicit_choices,
@@ -70,6 +76,52 @@ COMMAND_TOOLS = {
     "run_browser_tests",
 }
 READ_TOOLS = {"list_files", "read_file", "search_files"}
+
+
+async def _apply_plan_checkpoint(
+    response, calls, *, state, sandbox, conversation, task_id, parent_id, event_queue
+):
+    """Validate one restricted turn; never execute siblings or repair in a loop."""
+    normalized = normalize_native_calls(calls)
+    truncated = response.get("done_reason", response.get("finish_reason")) in {
+        "length",
+        "max_tokens",
+    }
+    if not normalized:
+        normalized = [{"tool": "update_plan", "args": {}, "raw_arguments": {}}]
+    for item in normalized:
+        name, args = item["tool"], item["args"]
+        observe("begin_tool", name, item["raw_arguments"])
+        if len(normalized) != 1 or name != "update_plan":
+            errors = [
+                "Only one update_plan call is allowed in this checkpoint; no implementation tool was executed."
+            ]
+        elif truncated:
+            errors = [
+                "Checkpoint response was truncated; the previous plan is unchanged."
+            ]
+        elif item.get("parse_error"):
+            errors = [item["parse_error"]]
+        else:
+            errors = argument_errors(args, PLAN_TOOLS[0]["function"]["parameters"])
+        if errors:
+            error = "Plan checkpoint not saved: " + "; ".join(errors)
+            observe("end_tool", "failed", error=error, validation_error=True)
+            _rejected_step(
+                state, name, args, error, event_queue, parent_id, task_id, sandbox.id
+            )
+            continue
+        output, event = await _run_step(
+            sandbox=sandbox,
+            conversation=conversation,
+            task_id=task_id,
+            name=name,
+            args=args,
+            state=state,
+            parent_id=parent_id,
+            event_queue=event_queue,
+        )
+        _track_step(state, name, args, output, event)
 
 
 async def _record_command(
@@ -701,6 +753,7 @@ class CoderAgent(BaseTool):
             premature_finals = 0
             incomplete_generations = 0
             preferences = coder_settings.effective()
+            plan_checkpoints = PlanCheckpoints()
             thinking_started = None
 
             async def compact_recovery_context(current, model, **kwargs):
@@ -715,6 +768,18 @@ class CoderAgent(BaseTool):
                     False,
                     state.context,
                 )
+                if await plan_checkpoints.phase(
+                    state.memory,
+                    current,
+                    model,
+                    kwargs.get("tools"),
+                    False,
+                    compact_conversation,
+                ):
+                    # Text fallback adds schema instructions that can cause new
+                    # budget pressure. Pause recovery rather than archive first.
+                    plan_checkpoints.requested = True
+                    raise PlanCheckpointRequired()
                 compacted, changed = await state.memory.compact(
                     current,
                     model,
@@ -830,15 +895,54 @@ class CoderAgent(BaseTool):
                     if agent_settings.effective().history_compaction:
                         messages = state.memory.discard_redundant(messages, model)
                 await _check_cancellation(task_id)
-                async for activity in activity_events(
-                    lambda on_start: state.memory.compact(
+                checkpoint_phase = await plan_checkpoints.phase(
+                    state.memory,
+                    messages,
+                    model,
+                    CODER_TOOLS if native_tools else None,
+                    native_tools,
+                    compact_conversation,
+                )
+                active_tools = PLAN_TOOLS if checkpoint_phase else CODER_TOOLS
+                output_limit = (
+                    min(
+                        preferences.generation_limit,
+                        state.memory.budgets(model)["handoff"],
+                    )
+                    if checkpoint_phase
+                    else preferences.generation_limit
+                )
+                inference_messages = messages
+                if checkpoint_phase:
+                    inference_messages = [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": get_prompt("coder_plan_checkpoint")
+                            + "\nCheckpoint phase: "
+                            + checkpoint_phase,
+                            "metadata": {
+                                "trusted": True,
+                                "agent_context": True,
+                                "coder_plan_checkpoint": checkpoint_phase,
+                            },
+                        },
+                    ]
+
+                async def compact_round(on_start):
+                    if checkpoint_phase:
+                        return messages, False
+                    return await state.memory.compact(
                         messages,
                         model,
                         compactor=compact_conversation,
                         tools=CODER_TOOLS if native_tools else None,
                         native_tools=native_tools,
                         on_start=on_start,
-                    ),
+                    )
+
+                async for activity in activity_events(
+                    compact_round,
                     "context_compaction",
                 ):
                     if activity.get("event"):
@@ -853,30 +957,76 @@ class CoderAgent(BaseTool):
                     "begin_round",
                     _round + 1,
                     model,
-                    messages,
-                    CODER_TOOLS if native_tools else None,
-                    {t["function"]["name"] for t in CODER_TOOLS},
+                    inference_messages if checkpoint_phase else messages,
+                    active_tools if native_tools else None,
+                    {t["function"]["name"] for t in active_tools},
                     [],
                     {
-                        "think": preferences.thinking,
+                        "think": False if checkpoint_phase else preferences.thinking,
                         "temperature": preferences.temperature,
-                        "max_output_tokens": preferences.generation_limit,
+                        "max_output_tokens": output_limit,
                     },
                 )
-                response = await chat_with_tool_recovery(
-                    model,
-                    messages,
-                    compact_context=compact_recovery_context,
-                    transient_text_models=transient_text_models,
-                    **(
-                        {
-                            "on_activity": _event_queue.put_nowait,
-                            "on_thinking": on_thinking,
-                        }
-                        if _event_queue is not None
-                        else {}
-                    ),
-                )
+                try:
+                    if checkpoint_phase:
+                        await fit_checkpoint(
+                            inference_messages,
+                            model,
+                            tools=active_tools if native_tools else None,
+                            native_tools=native_tools,
+                            max_output_tokens=output_limit,
+                        )
+                    response = await chat_with_tool_recovery(
+                        model,
+                        inference_messages if checkpoint_phase else messages,
+                        compact_context=(
+                            fit_checkpoint
+                            if checkpoint_phase
+                            else compact_recovery_context
+                        ),
+                        transient_text_models=transient_text_models,
+                        **(
+                            {
+                                "tools": active_tools,
+                                "output_limit": output_limit,
+                                "thinking": False,
+                            }
+                            if checkpoint_phase
+                            else {}
+                        ),
+                        **(
+                            {
+                                "on_activity": _event_queue.put_nowait,
+                                "on_thinking": on_thinking,
+                            }
+                            if _event_queue is not None
+                            else {}
+                        ),
+                    )
+                except Exception as error:
+                    if isinstance(error, PlanCheckpointRequired):
+                        # No fallback inference or implementation tool ran.
+                        # The next bounded turn saves the plan before retrying.
+                        continue
+                    if not checkpoint_phase:
+                        raise
+                    await _check_cancellation(task_id)
+                    plan_checkpoints.attempted()
+                    observe("begin_tool", "update_plan", {}, origin="application")
+                    observe("end_tool", "failed", error=str(error))
+                    _rejected_step(
+                        state,
+                        "update_plan",
+                        {},
+                        "Plan checkpoint unavailable; keeping the last valid plan and execution facts. "
+                        + str(error),
+                        _event_queue,
+                        _parent_tool_call_id,
+                        task_id,
+                        sandbox.id,
+                    )
+                    await _save_progress(task_id, state)
+                    continue
                 message = response.get("message", {})
                 await _check_cancellation(task_id)
                 observe(
@@ -889,6 +1039,24 @@ class CoderAgent(BaseTool):
                 )
                 calls = parse_calls(message)
                 observe("parsed", calls, calls, message.get("content", ""))
+                if checkpoint_phase:
+                    plan_checkpoints.attempted()
+                    await _apply_plan_checkpoint(
+                        response,
+                        calls,
+                        state=state,
+                        sandbox=sandbox,
+                        conversation=conversation,
+                        task_id=task_id,
+                        parent_id=_parent_tool_call_id,
+                        event_queue=_event_queue,
+                    )
+                    await _save_progress(task_id, state)
+                    # The temporary checkpoint request/transcript is in the
+                    # trace/UI. Only its validated plan enters working state;
+                    # it must not displace the latest implementation feedback.
+                    continue
+                plan_checkpoints.compacted()
                 if response.get("done_reason", response.get("finish_reason")) in {
                     "length",
                     "max_tokens",
