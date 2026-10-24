@@ -13,9 +13,14 @@ import httpx
 
 from app.agent import service, tracing
 from app.agent.coder import agent as coder_agent, provider as coder_provider
+from app.agent.coder.checkpoints import PlanCheckpoints, PLAN_TOOLS
+from app.agent.coder.tools.update_plan import execute as save_plan
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, ToolRegistry
 from app.config import settings
 from app.services import coder_settings
+from app.services import agent_settings, context_compactor
+from app.prompts import get_prompt
+from app.core.prompt_security import untrusted_context_message
 
 
 @pytest.mark.asyncio
@@ -99,6 +104,245 @@ async def test_original_react_request_rejects_vanilla_before_dispatch_and_checks
     assert failed["execution_status"] == "failed" and "react-vite" in failed["error"]
     checks = row["rounds"][1]["tool_calls"][1]
     assert checks["name"] == "run_checks" and checks["origin"] == "application"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "checkpoint_result",
+    ["saved", "refused", "wrong_tool", "provider_error", "truncated"],
+)
+async def test_coder_checkpoint_is_a_traced_bounded_turn_then_normal_work_continues(
+    coder_setup, monkeypatch, checkpoint_result
+):
+    monkeypatch.setattr(coder_agent, "PlanCheckpoints", PlanCheckpoints)
+    requests = []
+    plan = {
+        "steps": [{"task": "Implement explicit requirements", "status": "pending"}],
+        "next_action": "Inspect the project map",
+        "notes": "Keep the requested stack",
+    }
+
+    async def chat(model, messages, tools=None, **kwargs):
+        requests.append((messages, tools, kwargs))
+        if len(requests) == 1:
+            assert tools == PLAN_TOOLS
+            assert kwargs["think"] is False
+            assert kwargs["options"]["num_predict"] < 4096
+            if checkpoint_result == "provider_error":
+                raise RuntimeError("Checkpoint provider unavailable")
+            if checkpoint_result == "refused":
+                return {"message": {"content": "I will think about it"}}
+            if checkpoint_result == "wrong_tool":
+                return {
+                    "message": {
+                        "tool_calls": [
+                            native({"command": "touch unwanted"}, "run_command")
+                        ]
+                    }
+                }
+            return {
+                "message": {"tool_calls": [native(plan, "update_plan")]},
+                "done_reason": "length" if checkpoint_result == "truncated" else "stop",
+            }
+        assert tools == coder_agent.CODER_TOOLS
+        assert kwargs["think"] is True
+        assert "Checkpoint phase:" not in json.dumps(messages)
+        return {"message": {"content": "Done"}}
+
+    async def dispatch(sandbox, name, args, *rest):
+        assert (
+            name == "update_plan"
+        ), "No implementation tool may execute in checkpoint phase"
+        return await save_plan(sandbox, args)
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    queue = asyncio.Queue()
+    result = await coder_agent.CoderAgent().execute(
+        task="Build the explicitly requested app",
+        conversation_id="conversation-1",
+        _event_queue=queue,
+    )
+    assert result.success and len(requests) == 2
+    (trace,) = await saved(coder_setup / "coder")
+    assert len(trace["rounds"]) == 2
+    first, second = trace["rounds"]
+    assert first["available_tools"] == ["update_plan"]
+    assert first["tool_calls"][0]["execution_status"] == (
+        "completed" if checkpoint_result == "saved" else "failed"
+    )
+    context = next(
+        m
+        for m in second["input_messages"]
+        if (m.get("metadata") or {}).get("agent_coder_state")
+    )
+    assert ("Keep the requested stack" in context["content"]) == (
+        checkpoint_result == "saved"
+    )
+    persisted = [
+        event
+        for event in queue._queue
+        if event.get("event") == "persistence_checkpoint"
+    ]
+    assert [event["round"] for event in persisted] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_coder_saves_plan_before_archival_without_displacing_latest_failure(
+    coder_setup, monkeypatch
+):
+    monkeypatch.setattr(coder_agent, "PlanCheckpoints", PlanCheckpoints)
+    monkeypatch.setattr(
+        coder_agent, "compact_conversation", context_compactor.compact_conversation
+    )
+    monkeypatch.setitem(agent_settings._overrides, "compaction_threshold", 0.45)
+    phases = []
+    latest_feedback = "SECOND_FAILURE_EXACT: " + "specific failure details " * 160
+    initial = {
+        "steps": [{"task": "Investigate the failure", "status": "in_progress"}],
+        "next_action": "Run diagnostics",
+    }
+    updated = {
+        **initial,
+        "next_action": "Repair the second failure",
+        "notes": "Preserve existing interfaces; two diagnostics failed, nothing was implemented.",
+    }
+    normal_calls = 0
+
+    async def chat(model, messages, tools=None, **kwargs):
+        nonlocal normal_calls
+        if tools == PLAN_TOOLS:
+            phase = "before_compaction" if phases else "initial"
+            phases.append(phase)
+            if phase == "before_compaction":
+                assert any(
+                    "SECOND_FAILURE_EXACT" in m.get("content", "") for m in messages
+                )
+            return {
+                "message": {
+                    "tool_calls": [
+                        native(updated if len(phases) > 1 else initial, "update_plan")
+                    ]
+                }
+            }
+        normal_calls += 1
+        if normal_calls <= 2:
+            return {
+                "message": {
+                    "tool_calls": [
+                        native(
+                            {"command": f"python diagnostic{normal_calls}.py"},
+                            "run_command",
+                        )
+                    ]
+                }
+            }
+        assert "Repair the second failure" in json.dumps(messages)
+        assert any(latest_feedback in m.get("content", "") for m in messages)
+        assert "archived deterministically" in json.dumps(messages)
+        return {
+            "message": {
+                "content": "Diagnostics failed; no implementation was performed."
+            }
+        }
+
+    async def dispatch(sandbox, name, args, *rest):
+        if name == "update_plan":
+            return await save_plan(sandbox, args)
+        output = (
+            latest_feedback
+            if "2.py" in args["command"]
+            else "FIRST_FAILURE: " + "first failure details " * 170
+        )
+        return output, {"exit_code": 1, "command": args["command"]}
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    result = await coder_agent.CoderAgent().execute(
+        task="Investigate this existing project", conversation_id="conversation-1"
+    )
+    assert result.success, result.output
+    assert phases == ["initial", "before_compaction"]
+    (trace,) = await saved(coder_setup / "coder")
+    assert [r["available_tools"] == ["update_plan"] for r in trace["rounds"]] == [
+        True,
+        False,
+        False,
+        True,
+        False,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_text_recovery_pauses_for_checkpoint_before_new_protocol_pressure(
+    coder_setup, monkeypatch
+):
+    monkeypatch.setattr(coder_agent, "PlanCheckpoints", PlanCheckpoints)
+
+    async def archive_only_text_protocol(messages, model, **kwargs):
+        if any((m.get("metadata") or {}).get("coder_protocol") for m in messages):
+            marker = untrusted_context_message(
+                "compacted conversation", get_prompt("coder_compaction")
+            )
+            marker["metadata"]["compaction"] = True
+            return [*messages, marker], True
+        return messages, False
+
+    monkeypatch.setattr(coder_agent, "compact_conversation", archive_only_text_protocol)
+    plans = 0
+    ordinary_native = 0
+
+    async def chat(model, messages, tools=None, **kwargs):
+        nonlocal plans, ordinary_native
+        if tools == PLAN_TOOLS:
+            plans += 1
+            return {
+                "message": {
+                    "tool_calls": [
+                        native(
+                            {
+                                "steps": [
+                                    {
+                                        "task": "Inspect the project",
+                                        "status": "in_progress",
+                                    }
+                                ],
+                                "next_action": "Report the inspection",
+                            },
+                            "update_plan",
+                        )
+                    ]
+                }
+            }
+        if tools is None:
+            assert plans == 2
+            return {"message": {"content": '{"final":"Done"}'}}
+        ordinary_native += 1
+        if ordinary_native == 1:
+            return {"message": {"tool_calls": [native({}, "list_files")]}}
+        raise httpx.HTTPStatusError(
+            "Server error",
+            request=httpx.Request("POST", "http://local"),
+            response=httpx.Response(500, text="temporary server failure"),
+        )
+
+    async def dispatch(sandbox, name, args, *rest):
+        if name == "update_plan":
+            return await save_plan(sandbox, args)
+        assert name == "list_files"
+        return "Inspected project map", None
+
+    monkeypatch.setattr(coder_provider.providers, "chat_once", chat)
+    monkeypatch.setattr(coder_agent, "dispatch_tool", dispatch)
+    result = await coder_agent.CoderAgent().execute(
+        task="Inspect this project", conversation_id="conversation-1"
+    )
+    assert result.success, result.output
+    assert plans == 2 and ordinary_native == 3
+    (trace,) = await saved(coder_setup / "coder")
+    assert len(trace["rounds"]) == 5
+    assert trace["rounds"][2]["tool_calls"] == []
+    assert trace["rounds"][3]["available_tools"] == ["update_plan"]
 
 
 @pytest.mark.asyncio
@@ -359,6 +603,13 @@ async def saved(path):
 
 @pytest.fixture
 def coder_setup(trace_setup, monkeypatch):
+    # These protocol/lifecycle tests start after initial planning so their round
+    # fixtures stay focused on implementation. Checkpoint integration tests
+    # below restore the real initial phase explicitly.
+    checkpoints = coder_agent.PlanCheckpoints
+    monkeypatch.setattr(
+        coder_agent, "PlanCheckpoints", lambda: checkpoints(initial_attempted=True)
+    )
     monkeypatch.setattr(
         coder_settings,
         "_overrides",
