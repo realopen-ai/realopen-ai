@@ -30,6 +30,28 @@ def project(backend="fastapi", frontend="react-vite"):
     }
 
 
+@pytest.mark.parametrize(
+    "backend,frontend,port,path",
+    [
+        ("fastapi", "react-vite", 6767, "/api/health"),
+        ("fastapi", "none", 6969, "/api/health"),
+        ("none", "vite", 6767, "/"),
+    ],
+)
+def test_registered_readiness_targets_are_available_without_reading_source(
+    backend, frontend, port, path
+):
+    probe = project_handoff(project(backend, frontend))["integration_probe"]
+    assert (probe["port"], probe["path"]) == (port, path)
+    assert "not authorization or UI behavior coverage" in probe["scope"]
+
+
+def test_readiness_paths_are_adapter_metadata_not_an_assumed_global_endpoint():
+    custom = {"backend": {"readiness_path": "/ready"}, "frontend": None}
+    assert project_handoff(custom)["integration_probe"]["path"] == "/ready"
+    assert "integration_probe" not in project_handoff({"backend": {}, "frontend": None})
+
+
 def document():
     return {
         "openapi": "3.1.0",

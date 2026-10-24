@@ -46,6 +46,13 @@ def project_handoff(project, metadata=None):
         ),
     }
     targets = result["edit_targets"]
+    probe = (backend or frontend or {}).get("readiness_path")
+    if probe:
+        result["integration_probe"] = {
+            "port": 6767 if frontend else 6969,
+            "path": probe,
+            "scope": "Readiness and transport only, not authorization or UI behavior coverage. For full-stack apps this requests the backend through the frontend proxy.",
+        }
     if backend:
         targets["api"] = [
             "backend/resources/<resource>.py" if generated else "backend/app.py"

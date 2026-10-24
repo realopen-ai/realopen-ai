@@ -18,6 +18,7 @@ BACKENDS = {
         "dev_dependencies": ["pytest", "httpx2"],
         "test": "uv run python -m pytest backend/tests -q",
         "preview": "uv run uvicorn backend.app:app --host 0.0.0.0 --port 6969",
+        "readiness_path": "/api/health",
     }
 }
 FRONTENDS = {
@@ -32,6 +33,7 @@ FRONTENDS = {
         ],
         "entrypoint": "src/main.tsx",
         "framework": "react",
+        "readiness_path": "/",
         "install": "bun install --cwd frontend",
         "test": "bun run --cwd frontend test",
         "typecheck": "bun run --cwd frontend typecheck",
@@ -43,6 +45,7 @@ FRONTENDS = {
         "assets": "vite",
         "entrypoint": "src/main.ts",
         "framework": "vanilla",
+        "readiness_path": "/",
         "install": "bun install --cwd frontend",
         "test": "bun run --cwd frontend test",
         "typecheck": "bun run --cwd frontend typecheck",
