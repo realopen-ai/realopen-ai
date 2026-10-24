@@ -613,7 +613,7 @@ async def test_coder_parser_fallback_stays_local_to_one_execution(
 
 
 @pytest.mark.asyncio
-async def test_coder_rounds_extend_identical_prefix_without_rewriting_working_context(
+async def test_coder_rounds_keep_static_prefix_and_one_current_working_snapshot(
     coder_setup, monkeypatch
 ):
     requests = []
@@ -635,8 +635,24 @@ async def test_coder_rounds_extend_identical_prefix_without_rewriting_working_co
             task="Inspect files", conversation_id="conversation-1"
         )
     ).success
-    assert requests[1][: len(requests[0])] == requests[0]
-    assert requests[2][: len(requests[1])] == requests[1]
+
+    # Derived state changes at the tail; keeping every old snapshot was filling
+    # the context. Instructions/request and actual tool history remain stable.
+    def snapshots(request):
+        return [
+            m
+            for m in request
+            if "application coder working state" in str(m.get("content", ""))
+        ]
+
+    history = []
+    for request in requests:
+        state_messages = snapshots(request)
+        assert len(state_messages) == 1
+        assert request[:2] == requests[0][:2]
+        current = [m for m in request if m not in state_messages]
+        assert current[: len(history)] == history
+        history = current
     await saved(coder_setup / "coder")
 
 

@@ -218,6 +218,7 @@ def _event_for_step(
         "run_tests": "Running tests",
         "run_checks": "Running verification checks",
         "run_browser_tests": "Running optional browser tests",
+        "update_plan": "Saving coding continuation plan",
         "install_dependencies": "Installing dependencies",
         "run_command": "Running command",
         "setup_python_project": "Setting up Python project",
@@ -507,7 +508,7 @@ async def _save_progress(task_id: uuid.UUID, state: RunState) -> None:
         record.worklog = state.worklog
         record.files_changed = state.files_changed
         record.tests_run = state.tests_run
-        record.context_state = state.memory.checkpoint()
+        record.context_state = state.checkpoint()
         await db.commit()
 
 
@@ -707,30 +708,13 @@ class CoderAgent(BaseTool):
                 # Apply the same coder handoff and persist the resulting working
                 # history, instead of falling back to the general chat summary.
                 kwargs.pop("max_output_tokens", None)
-                without_state = [
-                    item
-                    for item in current
-                    if not (
-                        (item.get("metadata") or {}).get("agent_coder_state")
-                        and not (item.get("metadata") or {}).get("historical_state")
-                    )
-                ]
-                snapshot = state.memory.working_context(
-                    without_state,
+                current = state.memory.refresh_context(
+                    current,
                     model,
                     kwargs.get("tools"),
                     False,
                     state.context,
                 )
-                current = [
-                    (
-                        snapshot
-                        if (item.get("metadata") or {}).get("agent_coder_state")
-                        and not (item.get("metadata") or {}).get("historical_state")
-                        else item
-                    )
-                    for item in current
-                ]
                 compacted, changed = await state.memory.compact(
                     current,
                     model,
@@ -802,25 +786,16 @@ class CoderAgent(BaseTool):
                 last_round = _round + 1
                 round_marker = state.round_marker()
                 generated_event = None
-                # Keep earlier request bytes intact for prefix-cache reuse.
-                # Superseded snapshots are application-owned, not user data;
-                # the compactor may prune them when the budget fills up.
-                for item in messages:
-                    metadata = item.get("metadata") or {}
-                    if metadata.get("agent_coder_state"):
-                        metadata.update(agent_context=False, historical_state=True)
                 native_tools = (
                     model not in transient_text_models
                     and tool_capabilities.should_try_native(model)
                 )
-                messages.append(
-                    state.memory.working_context(
-                        messages,
-                        model,
-                        CODER_TOOLS if native_tools else None,
-                        native_tools,
-                        state.context,
-                    )
+                messages = state.memory.refresh_context(
+                    messages,
+                    model,
+                    CODER_TOOLS if native_tools else None,
+                    native_tools,
+                    state.context,
                 )
                 if state.read_only_rounds >= 2 and (
                     state.files_changed or state.project
@@ -1310,7 +1285,7 @@ class CoderAgent(BaseTool):
             record.worklog = state.worklog
             record.files_changed = state.files_changed
             record.tests_run = state.tests_run
-            record.context_state = state.memory.checkpoint()
+            record.context_state = state.checkpoint()
             await db.commit()
 
     @staticmethod
