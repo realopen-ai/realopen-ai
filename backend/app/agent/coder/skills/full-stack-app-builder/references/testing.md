@@ -1,0 +1,49 @@
+# Focused verification
+
+For React scaffolds, use .test.tsx with React Testing Library's render/screen/fireEvent/waitFor and cleanup afterEach. Import App/components, not main.tsx (which mounts a root). Follow the generated App.test.tsx for the actual props and API response shape. Test controlled inputs, mutation bodies, retry behavior, loading cleanup, and persistence where applicable. StrictMode may run effects twice: create a fresh Response for every mocked fetch, abort/ignore stale reads and never hide duplicate writes. The manual mountApp example below is only for explicitly selected vanilla projects.
+
+Use the existing project's test setup. The Vite starter has Vitest + happy-dom, one worker, no watch mode or browser download. Its API-helper and status tests only validate reusable starter infrastructure. After implementing an app, add or change tests that cover the user's flows; an untouched starter suite is not application evidence. Keep UI mounting/behavior importable without starting a server. A DOM test should call the same mount/render implementation used by main.ts, not reimplement its behavior in the test.
+
+```typescript
+import { afterEach, expect, test, vi } from "vitest";
+// Adapt this import and selectors to the actual application.
+import { mountApp } from "./app";
+afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+test("a user action sends the update and refreshes the UI", async () => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, title: "Example", done: false }])))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ id: 1, title: "Example", done: true })));
+  vi.stubGlobal("fetch", fetch);
+  const root = document.createElement("main"); document.body.append(root);
+  await mountApp(root);
+  const control = root.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  control.click();
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    "/api/items/1", expect.objectContaining({ method: "PATCH" }),
+  ));
+  // Also assert the JSON body, resulting UI state and loading/error cleanup.
+});
+```
+
+Choose tests from the user's requested flows, not just this example. For CRUD, cover create plus each implemented mutation (for example update/toggle and delete), verify method/body, await completion, and refresh or update visible state. Include pending-request and failed-request cases and always clear loading state in success and failure paths. Event delegation must handle the actual event target (including clicks on child elements). Backend integration tests should exercise actual routes/database using the supplied temporary-database fixture. Verify persistence with a subsequent read/new connection. Do not run tests that erase the live database.
+
+Batch independent checks with run_checks, e.g. commands for backend pytest, frontend tests, typecheck and build. Each command gets its own exit code. Fix the failed suite without rerunning unrelated passing suites unless files change. Shell pipelines use pipefail; do not suppress failures. Observe installed versions before changing dependencies; summaries can be outdated.
+
+## Optional real browser
+
+Only when requested or appropriate for an existing browser suite. The sandbox image must have been built with INSTALL_BROWSER_TESTS=true; a missing browser is not a failed application test. Never install/download it during a coding task. Use run_browser_tests with .mjs scripts. The runner uses Playwright Chromium headless shell, one browser, sequential contexts and closes it on success/failure. No Cypress or @playwright/test project dependency is needed for this runner.
+
+Each script exports a default async function; use Node's built-in assertions and Playwright page/locator methods:
+
+```javascript
+import assert from "node:assert/strict";
+export default async function ({ page, baseURL }) {
+  await page.goto(baseURL);
+  await page.getByRole("heading", { name: "Workspace app" }).waitFor();
+  assert.equal(await page.getByRole("status").getAttribute("aria-busy"), null);
+  // Adapt to requested behavior: act on real controls, wait for the relevant
+  // API response, assert updated UI, reload and verify persistence.
+}
+```
+
+Start test services separately with start_preview. For a new FastAPI/SQLite project, point the test backend at a temporary DATABASE_PATH, not the user's app.sqlite3; stop the test server and restore the normal preview afterward. For existing projects use their isolated test-server/database setup; do not guess a safe configuration. Browser scripts can mutate real data: if safe isolation is unavailable, report that blocker instead of running destructive tests. Browser verification covers only the scripts actually executed, not all UI behavior. If not run, say "DOM/build/API tested; browser tests not run".

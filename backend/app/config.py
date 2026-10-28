@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Literal
 
 import yaml
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -648,6 +648,9 @@ class Settings(BaseSettings):
     CONTEXT_COMPACT_PRESERVE_TURNS: int = 6
     # Maximum tokens for the compaction summary response.
     CONTEXT_COMPACT_SUMMARY_TOKENS: int = 512
+    # Shared by working-context compaction and conversation-memory summaries.
+    # Local model loading/prefill can take minutes; cancellation remains immediate.
+    CONTEXT_SUMMARY_TIMEOUT_SECONDS: float = Field(default=600.0, gt=0)
     # Effective agent window: also sent as num_ctx to the local runtime.
     AGENT_CONTEXT_WINDOW: int = 8192
     AGENT_CONTEXT_WINDOWS: Dict[str, int] = {}  # Exact model-id overrides.

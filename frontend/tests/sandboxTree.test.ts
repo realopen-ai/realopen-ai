@@ -117,3 +117,45 @@ test("sandbox command history marks stderr and truncation", () => {
     "  [output truncated]",
   ]);
 });
+
+test("restored coder commands retain the live terminal presentation", () => {
+  const lines = commandHistoryLines([
+    {
+      id: "scaffold-1",
+      source: "coder_agent",
+      tool_name: "scaffold_project",
+      command: "scaffold_project",
+      stdout: JSON.stringify({
+        created_files: ["/workspace/backend/app.py"],
+        checks: [{ action: "backend_tests", command: "pytest", exit_code: 0 }],
+      }),
+      stderr: "",
+      exit_code: 0,
+      output_truncated: false,
+    },
+  ]);
+  assert.match(lines[1], /Created 1 file/);
+  assert.match(lines[1], /\+ \/workspace\/backend\/app\.py/);
+  assert.match(lines[1], /✓ pytest/);
+  assert.doesNotMatch(lines[1], /"created_files"/);
+});
+
+test("restored failed coder checks are also formatted", () => {
+  const lines = commandHistoryLines([
+    {
+      id: "checks-1",
+      source: "coder_agent",
+      tool_name: "run_checks",
+      command: "run_checks",
+      stdout: "",
+      stderr: JSON.stringify({
+        checks: [{ action: "build", command: "npm run build", exit_code: 1 }],
+      }),
+      exit_code: 1,
+      output_truncated: false,
+    },
+  ]);
+  assert.match(lines[1], /Error \(exit 1\)/);
+  assert.match(lines[1], /✗ npm run build/);
+  assert.doesNotMatch(lines[1], /"checks"/);
+});

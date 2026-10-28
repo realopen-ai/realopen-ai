@@ -1,5 +1,8 @@
 import { create } from "zustand";
-import { generalCodeExecCommand } from "../lib/codeExecOutput.ts";
+import {
+  formatCodeExecOutput,
+  generalCodeExecCommand,
+} from "../lib/codeExecOutput.ts";
 
 export interface FileNode {
   name: string;
@@ -75,9 +78,25 @@ export function commandHistoryLines(commands: SandboxCommand[]): string[] {
         ? generalCodeExecCommand(item.id)
         : `$ ${item.command}`;
     const lines = [command];
-    if (item.stdout) lines.push(item.stdout);
+    if (item.stdout)
+      lines.push(
+        formatCodeExecOutput(item.stdout, {
+          coder: item.source === "coder_agent",
+          toolName: item.tool_name,
+          exitCode: item.exit_code ?? undefined,
+        }),
+      );
     if (item.stderr)
-      lines.push(`Error (exit ${item.exit_code ?? "?"}):\n${item.stderr}`);
+      lines.push(
+        `Error (exit ${item.exit_code ?? "?"}):\n${formatCodeExecOutput(
+          item.stderr,
+          {
+            coder: item.source === "coder_agent",
+            toolName: item.tool_name,
+            exitCode: item.exit_code ?? undefined,
+          },
+        )}`,
+      );
     if (item.output_truncated) lines.push("  [output truncated]");
     return lines;
   });
@@ -122,6 +141,7 @@ interface SandboxState {
 }
 
 let conversationLoadRevision = 0;
+let fileTreeRevision = 0;
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -372,6 +392,7 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
     }));
   },
   fetchFileTree: async () => {
+    const revision = ++fileTreeRevision;
     const id = get().sandboxId;
     if (!id) {
       set({ fileTree: [] });
@@ -382,11 +403,14 @@ export const useSandboxStore = create<SandboxState>((set, get) => ({
       const d = await request<{ tree: FileNode[] }>(
         `/api/sandboxes/${id}/files`,
       );
-      set({ fileTree: visibleWorkspaceTree(d.tree) });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ fileTree: visibleWorkspaceTree(d.tree) });
     } catch (e) {
-      set({ error: String(e) });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ error: String(e) });
     } finally {
-      set({ isLoadingTree: false });
+      if (revision === fileTreeRevision && get().sandboxId === id)
+        set({ isLoadingTree: false });
     }
   },
   fetchFileContent: async (path) => {

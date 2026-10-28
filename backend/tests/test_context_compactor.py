@@ -29,6 +29,9 @@ What is mocked:
     compact_conversation / summarize_conversation orchestration tests.
 """
 
+from types import SimpleNamespace
+import asyncio
+import httpx
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -174,9 +177,10 @@ class _FakeResponse:
 class _FakeAsyncClient:
     response = None
     calls = []
+    timeouts = []
 
     def __init__(self, timeout=None):
-        pass
+        self.timeouts.append(timeout)
 
     async def __aenter__(self):
         return self
@@ -232,6 +236,30 @@ async def test_llm_summarize_invalid_json_returns_none(fake_llm):
 async def test_llm_summarize_network_error_returns_none(fake_llm):
     fake_llm.response = RuntimeError("connection refused")
     assert await _llm_summarize("m", "text") is None
+
+
+@pytest.mark.asyncio
+async def test_summarization_timeout_is_configurable_and_cancellation_propagates(
+    fake_llm, monkeypatch
+):
+    monkeypatch.setattr(settings, "CONTEXT_SUMMARY_TIMEOUT_SECONDS", 720)
+    assert await _llm_summarize("local", "text")
+    assert fake_llm.timeouts[-1] == 720
+    fake_llm.response = httpx.ReadTimeout("summary took too long")
+    assert await _llm_summarize("local", "text") is None
+    fake_llm.response = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await _llm_summarize("local", "text")
+
+
+@pytest.mark.asyncio
+async def test_remote_summary_uses_the_same_configurable_timeout(monkeypatch):
+    monkeypatch.setattr(settings, "CONTEXT_SUMMARY_TIMEOUT_SECONDS", 900)
+    monkeypatch.setattr(cc.providers, "is_groq_model", lambda _: True)
+    chat = AsyncMock(return_value={"message": {"content": "summary"}})
+    monkeypatch.setattr(cc.providers, "chat_once", chat)
+    assert await _llm_summarize("remote", "text") == "summary"
+    assert chat.call_args.kwargs["timeout"] == 900
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -426,6 +454,35 @@ async def test_compact_skips_below_threshold():
     out, compacted = await compact_conversation(msgs, "m-128k")  # huge window
     assert out is msgs
     assert compacted is False
+
+
+@pytest.mark.asyncio
+async def test_soft_limit_does_not_repeatedly_rewrite_tiny_summary(monkeypatch):
+    monkeypatch.setattr(
+        cc, "context_budget", lambda *args: SimpleNamespace(input_limit=3000)
+    )
+    monkeypatch.setattr(
+        cc.agent_settings,
+        "effective",
+        lambda: SimpleNamespace(
+            history_compaction=True, compaction_threshold=0.8, recent_turns=6
+        ),
+    )
+    messages = [
+        {"role": "system", "content": "Instructions"},
+        {"role": "user", "content": "Task", "metadata": {"agent_request": True}},
+        {
+            "role": "user",
+            "content": "[Compacted conversation] Earlier files inspected.",
+            "metadata": {"compaction": True},
+        },
+        {"role": "assistant", "content": "x" * 4500},
+        {"role": "assistant", "content": "y" * 4500},
+    ]
+    with patch.object(cc, "_llm_summarize", new=AsyncMock()) as summary:
+        result, compacted = await compact_conversation(messages, "test")
+    assert result is messages and not compacted
+    summary.assert_not_awaited()
 
 
 @pytest.mark.asyncio

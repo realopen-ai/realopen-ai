@@ -69,9 +69,8 @@ export function ChatArea({
   const t = useT();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // When a new conversation is created from the home page, we keep the
-  // conversation ID here so we can display messages before the URL changes.
-  // After the stream finishes, we navigate to /{convId} seamlessly.
+  // Keep a newly-created ID available during the route transition. The URL is
+  // updated immediately so a reload can reconnect to long-running work.
   const [pendingConvId, setPendingConvId] = useState<string | null>(null);
 
   // Loading state for when fetching a conversation from the backend by URL
@@ -226,6 +225,10 @@ export function ChatArea({
       const capturedGeneration = ++streamGenerationRef.current;
       const terminalToolIds = new Set<string>();
       const streamedToolTypes = new Map<string, ToolCallResult["type"]>();
+      const streamedToolCalls = new Map<
+        string,
+        Pick<ToolCallResult, "agent" | "toolName" | "title" | "exitCode">
+      >();
       let thinkingStartedAt: number | null = null;
 
       const finishInterruptedThinking = () => {
@@ -245,11 +248,11 @@ export function ChatArea({
           useChatStore
             .getState()
             .appendTextToken(capturedConvId, assistantMsgId, token),
-        onThinkingStart: () => {
+        onThinkingStart: (context) => {
           thinkingStartedAt = Date.now();
           useChatStore
             .getState()
-            .startThinkingBlock(capturedConvId, assistantMsgId);
+            .startThinkingBlock(capturedConvId, assistantMsgId, context);
         },
         onThinkingToken: (token: string) => {
           useChatStore
@@ -441,6 +444,12 @@ export function ChatArea({
           const s = useChatStore.getState();
           s.startToolCallBlock(capturedConvId, assistantMsgId, toolCall);
           streamedToolTypes.set(toolCall.id, toolCall.type);
+          streamedToolCalls.set(toolCall.id, {
+            agent: toolCall.agent,
+            toolName: toolCall.toolName,
+            title: toolCall.title,
+            exitCode: toolCall.exitCode,
+          });
 
           // A rejected attempt is visible, but never ran in the workspace.
           if (toolCall.status !== "running") return;
@@ -497,7 +506,13 @@ export function ChatArea({
               .activateSandbox(updates.sandboxId, updates.sandbox);
           }
           if (terminalToolIds.has(toolCallId) && updates.output) {
-            const output = formatCodeExecOutput(updates.output);
+            const context = streamedToolCalls.get(toolCallId);
+            const output = formatCodeExecOutput(updates.output, {
+              coder: context?.agent === "coder" || Boolean(context?.toolName),
+              toolName: context?.toolName,
+              title: updates.title ?? context?.title,
+              exitCode: updates.exitCode ?? context?.exitCode,
+            });
             if (output) addTerminalLine(output);
           }
           if (updates.previewUrl) {
@@ -506,15 +521,16 @@ export function ChatArea({
             setRightPanelTab("preview");
           }
           if (
-            updates.status === "completed" &&
-            (streamedToolTypes.get(toolCallId) === "file_write" ||
-              updates.refreshFiles)
+            updates.refreshFiles ||
+            (updates.status === "completed" &&
+              streamedToolTypes.get(toolCallId) === "file_write")
           ) {
             void useSandboxStore.getState().fetchFileTree();
           }
           if (updates.status === "completed" || updates.status === "error") {
             terminalToolIds.delete(toolCallId);
             streamedToolTypes.delete(toolCallId);
+            streamedToolCalls.delete(toolCallId);
           }
         },
         onDone: () => {
@@ -620,10 +636,11 @@ export function ChatArea({
         convId = await store.createConversation();
         log(`Created conversation: ${convId}`);
 
-        // Track this as a pending conversation (created from home page)
-        // We'll redirect after streaming completes
+        // Make the durable conversation addressable before starting any
+        // potentially long-running title generation or agent work.
         if (isFromHomePage) {
           setPendingConvId(convId);
+          navigate(`/${convId}`, { replace: true });
         }
       }
 
@@ -767,7 +784,10 @@ export function ChatArea({
   const voiceSession = useVoiceSession({
     conversationId: effectiveConvId,
     buildStreamCallbacks,
-    onConversationCreated: (convId) => setPendingConvId(convId),
+    onConversationCreated: (convId) => {
+      setPendingConvId(convId);
+      navigate(`/${convId}`, { replace: true });
+    },
   });
 
   // The backend owns active agent turns, so a browser reload only detaches

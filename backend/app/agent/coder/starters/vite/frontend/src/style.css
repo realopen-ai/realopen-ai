@@ -1,0 +1,9 @@
+:root {
+  font-size: 100%;
+}
+main {
+  padding-block: 2rem;
+}
+section {
+  margin-block: 1.5rem;
+}

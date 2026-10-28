@@ -7,14 +7,19 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
+from uuid import uuid4
+
+HEARTBEAT_SECONDS = 15.0
 
 
 @dataclass
 class ActiveChatStream:
     conversation_id: str
+    stream_id: str = field(default_factory=lambda: str(uuid4()))
     events: list[str] = field(default_factory=list)
-    # Sequence number of the latest generation_done event. chat.py persists
-    # the assistant snapshot before yielding that event.
+    # Sequence number of the latest durable snapshot boundary. chat.py
+    # persists the assistant blocks before yielding generation_done or a
+    # delegated coder's persistence_checkpoint event.
     persisted_through: int = 0
     done: bool = False
     cancel_requested: bool = False
@@ -30,7 +35,10 @@ class ActiveChatStream:
             if chunk.startswith("data: "):
                 payload = chunk.split("\n", 1)[0][6:]
                 try:
-                    if json.loads(payload).get("event") == "generation_done":
+                    if json.loads(payload).get("event") in {
+                        "generation_done",
+                        "persistence_checkpoint",
+                    }:
                         self.persisted_through = sequence
                 except (json.JSONDecodeError, AttributeError):
                     pass
@@ -45,11 +53,19 @@ class ActiveChatStream:
     async def subscribe(self, after: int = 0) -> AsyncIterator[str]:
         cursor = max(0, after)
         while True:
+            heartbeat = False
             async with self.condition:
                 while cursor >= len(self.events) and not self.done:
-                    await self.condition.wait()
+                    try:
+                        await asyncio.wait_for(self.condition.wait(), HEARTBEAT_SECONDS)
+                    except TimeoutError:
+                        heartbeat = True
+                        break
                 batch = self.events[cursor:]
                 finished = self.done
+            if heartbeat and not batch and not finished:
+                # Transport-only: never buffer, number or persist heartbeats.
+                yield ": keep-alive\n\n"
             for event in batch:
                 cursor += 1
                 yield event

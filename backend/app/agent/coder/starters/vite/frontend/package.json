@@ -1,0 +1,19 @@
+{
+  "name": "workspace-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "~7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "5.0.5",
+    "happy-dom": "21.0.1"
+  }
+}

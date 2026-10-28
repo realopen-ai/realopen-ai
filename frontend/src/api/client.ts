@@ -351,6 +351,9 @@ export interface BackendToolCall {
   type?: string;
   status?: string;
   title?: string;
+  agent?: "coder";
+  toolName?: string;
+  parentId?: string;
   query?: string;
   language?: string;
   code?: string;
@@ -397,8 +400,16 @@ export interface BackendToolCall {
   sources?: RetrievedSourceDTO[];
 }
 
+/** Optional identity for thinking emitted by a delegated coder. */
+export interface ThinkingContext {
+  agent?: "coder";
+  model?: string;
+  round?: number;
+  parentId?: string;
+}
+
 /** A rendering block as stored in the messages.blocks JSONB column. */
-export interface BackendBlock {
+export interface BackendBlock extends ThinkingContext {
   type: "thinking" | "text" | "tool_call" | "error";
   content?: string;
   duration?: number | null;

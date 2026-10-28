@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from app.services.safe_paths import bounded_text, confined_path
+from app.services import builtin_skill_sync
 
 SKILL_FILE = "SKILL.md"
 VALID_ROLES = {"general", "coder", "voice"}
@@ -148,19 +149,21 @@ def save_skill(
         name,
     )
     slug = skill_id or slugify(name)
-    directory = _directory(slug)
-    directory.mkdir(parents=True, exist_ok=True)
-    confined_path(directory, SKILL_FILE).write_text(
-        _render(meta, content), encoding="utf-8"
-    )
+    with builtin_skill_sync.locked(skills_root()):
+        directory = _directory(slug)
+        directory.mkdir(parents=True, exist_ok=True)
+        builtin_skill_sync.atomic_write(
+            confined_path(directory, SKILL_FILE), _render(meta, content).encode("utf-8")
+        )
     return get_skill(slug)
 
 
 def delete_skill(slug: str) -> None:
-    directory = _directory(slug)
-    if not directory.exists():
-        raise FileNotFoundError(slug)
-    shutil.rmtree(directory)
+    with builtin_skill_sync.locked(skills_root()):
+        directory = _directory(slug)
+        if not directory.exists():
+            raise FileNotFoundError(slug)
+        shutil.rmtree(directory)
 
 
 def import_zip(data: bytes) -> dict:
@@ -233,6 +236,15 @@ def routing_catalog(role: str) -> str:
     lines.extend(f"- {item['id']}: {item['description']}" for item in items)
     lines.append("Use load_skill with the skill id before following its instructions.")
     return "\n".join(lines)
+
+
+def install_builtin_skills():
+    """Refresh known unchanged defaults, preserving every customized skill tree."""
+    coder = Path(__file__).resolve().parent.parent / "agent" / "coder"
+    bundled = coder / "skills"
+    if not bundled.exists():
+        return
+    return builtin_skill_sync.sync(skills_root(), bundled)
 
 
 def read_resource(slug: str, resource: str) -> str:

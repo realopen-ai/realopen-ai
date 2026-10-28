@@ -3,12 +3,13 @@ import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
 import { epochMilliseconds } from "@/lib/timing";
+import type { ThinkingContext } from "@/api/client";
 
 const log = createDebugLogger("stream");
 
 export interface StreamCallbacks {
   onToken: (token: string) => void;
-  onThinkingStart: () => void;
+  onThinkingStart: (context?: ThinkingContext) => void;
   onThinkingToken: (token: string) => void;
   onThinkingDone: (durationSeconds: number) => void;
   onGenerationDone: (data: {
@@ -80,15 +81,6 @@ export interface StreamCallbacks {
  */
 const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * Absolute maximum duration for a streaming request (safety net).
- *
- * No matter what, the request will be aborted after this duration.
- * Set to 30 minutes — more than enough for even the most complex
- * multi-round agent conversations with long thinking phases.
- */
-const STREAM_MAX_TIMEOUT_MS = 30 * 60 * 1000;
-
 const activeControllers = new Set<AbortController>();
 
 /** Stop user-visible text generation without treating it as a timeout. */
@@ -125,11 +117,7 @@ export async function streamChat(
 ): Promise<void> {
   const controller = new AbortController();
   activeControllers.add(controller);
-  // Safety net: absolute maximum time for the entire request
-  const maxTimeoutId = setTimeout(
-    () => controller.abort(),
-    STREAM_MAX_TIMEOUT_MS,
-  );
+  // An active task may legitimately run for hours. Only dead transports time out.
   // Idle timeout: abort if no data received for this long
   let idleTimeoutId = setTimeout(
     () => controller.abort(),
@@ -183,7 +171,13 @@ export async function streamChat(
     }
 
     log("✅ streamChat response OK — starting SSE parse");
-    await parseSSEStream(response, callbacks, resetIdleTimeout);
+    await consumeChatStream(
+      response,
+      callbacks,
+      resetIdleTimeout,
+      controller,
+      options?.conversationId,
+    );
     log("✅ streamChat complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
@@ -199,7 +193,6 @@ export async function streamChat(
       callbacks.onError(errorMsg);
     }
   } finally {
-    clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
     activeControllers.delete(controller);
   }
@@ -224,10 +217,6 @@ export async function streamChatWithFiles(
 ): Promise<void> {
   const controller = new AbortController();
   activeControllers.add(controller);
-  const maxTimeoutId = setTimeout(
-    () => controller.abort(),
-    STREAM_MAX_TIMEOUT_MS,
-  );
   let idleTimeoutId = setTimeout(
     () => controller.abort(),
     STREAM_IDLE_TIMEOUT_MS,
@@ -287,7 +276,13 @@ export async function streamChatWithFiles(
     }
 
     log("✅ streamChatWithFiles response OK — starting SSE parse");
-    await parseSSEStream(response, callbacks, resetIdleTimeout);
+    await consumeChatStream(
+      response,
+      callbacks,
+      resetIdleTimeout,
+      controller,
+      options?.conversationId,
+    );
     log("✅ streamChatWithFiles complete");
   } catch (err) {
     if (controller.signal.reason === "user_stop") {
@@ -303,9 +298,92 @@ export async function streamChatWithFiles(
       callbacks.onError(errorMsg);
     }
   } finally {
-    clearTimeout(maxTimeoutId);
     clearTimeout(idleTimeoutId);
     activeControllers.delete(controller);
+  }
+}
+
+class StreamDisconnected extends Error {}
+
+function reconnectDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stop = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", stop);
+      reject(new DOMException("Stream interrupted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+  });
+}
+
+/** Recover the transport, never resend the user request or recreate UI blocks. */
+async function consumeChatStream(
+  initial: Response,
+  callbacks: StreamCallbacks,
+  resetIdleTimeout: () => void,
+  controller: AbortController,
+  conversationId?: string,
+): Promise<void> {
+  const checkpoint = Number(initial.headers.get("X-Stream-Cursor") ?? 0);
+  const executionId = initial.headers.get("X-Stream-ID");
+  const cursor = {
+    after: Number.isSafeInteger(checkpoint) && checkpoint >= 0 ? checkpoint : 0,
+  };
+  let response = initial;
+  let reconnect = false;
+  let failures = 0;
+  let previous = cursor.after;
+  while (true) {
+    try {
+      if (controller.signal.aborted)
+        throw new DOMException("Stream interrupted", "AbortError");
+      if (reconnect) {
+        await reconnectDelay(250 * 2 ** (failures - 1), controller.signal);
+        try {
+          response = await fetch(
+            `/api/chat/stream/${encodeURIComponent(conversationId!)}/events?after=${cursor.after}`,
+            { signal: controller.signal },
+          );
+        } catch (error) {
+          throw new StreamDisconnected(
+            error instanceof Error ? error.message : "Connection lost",
+          );
+        }
+        if (!response.ok) {
+          const message = `Cannot resume chat stream: HTTP ${response.status}`;
+          if (response.status >= 500 || response.status === 429)
+            throw new StreamDisconnected(message);
+          throw new Error(message);
+        }
+        if (
+          executionId &&
+          response.headers.get("X-Stream-ID") !== executionId
+        ) {
+          throw new Error(
+            "The original chat execution is no longer available; refusing to mix responses from another request.",
+          );
+        }
+        resetIdleTimeout();
+      }
+      await parseSSEStream(response, callbacks, resetIdleTimeout, cursor);
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof StreamDisconnected) ||
+        !conversationId ||
+        controller.signal.aborted
+      )
+        throw error;
+      if (cursor.after > previous) failures = 0;
+      previous = cursor.after;
+      if (++failures > 3) throw error;
+      reconnect = true;
+    }
   }
 }
 
@@ -320,6 +398,7 @@ async function parseSSEStream(
   response: Response,
   callbacks: StreamCallbacks,
   resetIdleTimeout: () => void,
+  cursor: { after: number },
 ): Promise<void> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("No response body");
@@ -327,47 +406,66 @@ async function parseSSEStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let eventCount = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      log(`   SSE reader done signal (after ${eventCount} events)`);
-      break;
-    }
-
-    // We received data from the server — reset the idle timeout
-    resetIdleTimeout();
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const data = line.slice(6).trim();
-      if (data === "[DONE]") {
-        log("   SSE [DONE] received");
-        callbacks.onDone();
-        return;
+  let eventId: number | undefined;
+  try {
+    while (true) {
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        throw new StreamDisconnected(
+          error instanceof Error ? error.message : "Connection lost",
+        );
+      }
+      const { done, value } = next;
+      if (done) {
+        log(`   SSE reader done signal (after ${eventCount} events)`);
+        break;
       }
 
-      try {
-        const parsed = JSON.parse(data);
+      // We received data from the server — reset the idle timeout
+      resetIdleTimeout();
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("id: ")) {
+          const value = Number(line.slice(4));
+          eventId =
+            Number.isSafeInteger(value) && value > 0 ? value : undefined;
+        }
+        if (!line.startsWith("data: ")) continue;
+        if (eventId !== undefined && eventId <= cursor.after) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") {
+          log("   SSE [DONE] received");
+          callbacks.onDone();
+          return;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue; /* skip malformed JSON, never swallow callback errors */
+        }
         eventCount++;
 
         // Dispatch the parsed event to the callbacks. Returns true when
         // the event terminates the stream ("done").
         const terminated = dispatchAgentEvent(parsed, callbacks);
+        if (eventId !== undefined) cursor.after = eventId;
+        eventId = undefined;
         if (terminated) return;
-      } catch {
-        /* skip malformed JSON */
       }
     }
+    // EOF is not completion: the connection-independent task can still be running.
+    throw new StreamDisconnected("Chat connection closed before completion");
+  } finally {
+    reader.releaseLock();
   }
-
-  // If we reach here, stream ended without [DONE]
-  log("   SSE stream ended without [DONE] — calling onDone() manually");
-  callbacks.onDone();
 }
 
 /** Reattach to a backend-owned agent turn after a page reload. */
@@ -393,6 +491,18 @@ async function reconnectChatStream(
   onConnected: () => StreamCallbacks | Promise<StreamCallbacks>,
 ): Promise<boolean> {
   const controller = new AbortController();
+  activeControllers.add(controller);
+  let idleTimeoutId = setTimeout(
+    () => controller.abort(),
+    STREAM_IDLE_TIMEOUT_MS,
+  );
+  const resetIdleTimeout = () => {
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = setTimeout(
+      () => controller.abort(),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
+  };
   try {
     const response = await fetch(
       `/api/chat/stream/${encodeURIComponent(conversationId)}/events`,
@@ -401,13 +511,20 @@ async function reconnectChatStream(
     if (response.status === 404) return false;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const callbacks = await onConnected();
-    activeControllers.add(controller);
-    await parseSSEStream(response, callbacks, () => undefined);
+    resetIdleTimeout();
+    await consumeChatStream(
+      response,
+      callbacks,
+      resetIdleTimeout,
+      controller,
+      conversationId,
+    );
     return true;
   } catch (error) {
     if (controller.signal.reason === "user_stop") return true;
     throw error;
   } finally {
+    clearTimeout(idleTimeoutId);
     activeControllers.delete(controller);
   }
 }
@@ -444,7 +561,16 @@ export function dispatchAgentEvent(
   // ── Thinking start ──
   if (eventType === "thinking_start") {
     log("   🧠 thinking_start event received");
-    callbacks.onThinkingStart();
+    callbacks.onThinkingStart(
+      p.agent === "coder"
+        ? {
+            agent: "coder",
+            model: p.model,
+            round: p.round,
+            parentId: p.parentId,
+          }
+        : undefined,
+    );
   }
 
   // ── Thinking token ──
@@ -586,6 +712,12 @@ export function dispatchAgentEvent(
     if (tc.progress && tc.id) {
       callbacks.onToolCallUpdate(tcId, { progress: tc.progress });
     }
+    if (tc.refreshFiles === true && tc.id && !tc.status) {
+      callbacks.onToolCallUpdate(tcId, {
+        refreshFiles: true,
+        sandboxId: tc.sandboxId,
+      });
+    }
 
     if (tc.status === "running") {
       log(`   🔧 tool_call running: type=${tc.type} title=${tc.title}`);
@@ -662,6 +794,7 @@ export function dispatchAgentEvent(
       if (tc.genResults) updates.genResults = tc.genResults;
       if (tc.output) updates.output = tc.output;
       if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
+      if (tc.refreshFiles === true) updates.refreshFiles = true;
       if (tc.imageDescription) updates.imageDescription = tc.imageDescription;
       Object.assign(updates, persistedToolCallDetails(tc));
       if (tc.error) updates.error = tc.error;

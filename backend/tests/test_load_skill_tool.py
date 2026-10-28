@@ -82,7 +82,9 @@ class TestLoadSkillExecute:
         assert call.status == "completed"
         assert call.error is None
         assert call.output == result.output
-        assert call.title == "Loading skill fastapi-helper"
+        assert call.title == "Loading skill fastapi-helper · SKILL.md"
+        assert call.skill_name == "fastapi-helper"
+        assert call.skill_resource == "SKILL.md"
 
     @pytest.mark.asyncio
     async def test_loads_bundled_resource(self):
@@ -105,6 +107,8 @@ class TestLoadSkillExecute:
 
         assert result.success is True
         assert result.output == "Guide contents"
+        assert result.tool_call.skill_name == "packed"
+        assert result.tool_call.skill_resource == "references/guide.md"
 
     @pytest.mark.asyncio
     async def test_missing_skill_returns_failure(self):
@@ -121,7 +125,9 @@ class TestLoadSkillExecute:
     async def test_role_restricted_skill_returns_failure(self):
         _make_skill(name="Coders only", roles=["coder"])
 
-        result = await LoadSkillTool().execute(name="coders-only", _skill_role="general")
+        result = await LoadSkillTool().execute(
+            name="coders-only", _skill_role="general"
+        )
 
         assert result.success is False
         assert "Could not load skill:" in result.output
