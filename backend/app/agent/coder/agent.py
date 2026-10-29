@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState
+from app.agent.coder.outcome import execution_outcome
 from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.coder.context import bounded_output, tokens
 from app.agent.coder.checkpoints import (
@@ -619,6 +620,7 @@ async def _baseline_verification(
 
 class CoderAgent(BaseTool):
     name = "delegate_to_coder"
+    guidance_prompt = "coder_outcome_guidance"
     display_name = "Workspace coding agent"
     description = (
         "Delegate a substantial coding or file task to a focused agent in "
@@ -1351,6 +1353,7 @@ class CoderAgent(BaseTool):
                     failed, final = True, abort_reason
                     break
             else:
+                state.stop_reason = "max_rounds"
                 failed, final = (
                     True,
                     f"Coder stopped after reaching its {preferences.max_rounds}-round safety limit.",
@@ -1426,6 +1429,9 @@ class CoderAgent(BaseTool):
                         "files_changed": state.files_changed,
                         "commands": state.tests_run,
                         "verification": state.verification_report(),
+                        "execution_outcome": execution_outcome(
+                            state, sandbox.id, failed=failed
+                        ),
                     }
                 ),
                 call,
@@ -1459,8 +1465,24 @@ class CoderAgent(BaseTool):
             call.status, call.completed_at, call.error = "error", time.time(), str(exc)
             return ToolResult(
                 False,
-                f"Coding task failed: {exc}. Do not call delegate_to_coder again "
-                f"in this turn; report the failure and task id {task_id}.",
+                json.dumps(
+                    {
+                        "task_id": str(task_id),
+                        "summary": f"Coding task failed: {exc}. Do not call delegate_to_coder again in this turn; report the failure and task id {task_id}.",
+                        **(
+                            {
+                                "execution_outcome": execution_outcome(
+                                    state,
+                                    sandbox.id,
+                                    failed=True,
+                                    reason="execution_error",
+                                )
+                            }
+                            if state is not None
+                            else {}
+                        ),
+                    }
+                ),
                 call,
             )
 
