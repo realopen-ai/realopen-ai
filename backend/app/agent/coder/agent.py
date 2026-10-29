@@ -1058,6 +1058,8 @@ class CoderAgent(BaseTool):
                     },
                 )
                 calls = parse_calls(message)
+                if not checkpoint_phase:
+                    state.prepare_round(messages)
                 observe("parsed", calls, calls, message.get("content", ""))
                 if checkpoint_phase:
                     plan_checkpoints.attempted()

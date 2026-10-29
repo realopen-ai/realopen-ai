@@ -242,6 +242,42 @@ class RunState:
     read_only_rounds: int = 0
     repeated_read_rounds: int = 0
     recovery_sent: bool = False
+    available_reads: list | None = None
+    recovered_source_reads: int = 0
+    stop_reason: str | None = None
+
+    def source_available(self, path, digest, start, end):
+        for a, b in sorted(
+            (a, b)
+            for p, h, a, b in (self.available_reads or [])
+            if p == path and h == digest
+        ):
+            if a > start:
+                break
+            start = max(start, b)
+            if start >= end:
+                return True
+        return False
+
+    def prepare_round(self, messages):
+        """Track exact source actually supplied, not just historical read receipts."""
+        self.available_reads = [
+            (s["path"], s["sha256"], s["offset"], s["offset"] + len(s["content"]))
+            for s in (self.memory.active_sources or [])
+        ]
+        for message in messages:
+            receipt = (message.get("metadata") or {}).get("coder_result") or {}
+            span = receipt.get("range")
+            if (
+                receipt.get("tool") == "read_file"
+                and receipt.get("success")
+                and not receipt.get("archived")
+                and span
+                and receipt.get("path")
+            ):
+                self.available_reads.append(
+                    (receipt["path"], receipt["sha256"], span[0], span[0] + span[1])
+                )
 
     def round_marker(self):
         return (
@@ -249,6 +285,7 @@ class RunState:
             self.verification_attempts,
             len(self.observation_keys),
             self.exploration_steps,
+            self.recovered_source_reads,
         )
 
     def finish_round(self, marker):
@@ -260,15 +297,18 @@ class RunState:
             self.repeated_read_rounds = (
                 self.repeated_read_rounds + 1
                 if len(self.observation_keys) == marker[2]
+                and self.recovered_source_reads == marker[4]
                 else 0
             )
         if self.recovery_sent and self.repeated_read_rounds >= 2:
+            self.stop_reason = "repeated_available_evidence"
             return "Coder stopped after repeated read-only rounds revisited unchanged evidence despite recovery. No additional implementation or verification was performed; preserved files and outstanding checks are reported below."
         if (
             self.recovery_sent
             and self.read_only_rounds >= 6
             and (self.project or self.files_changed)
         ):
+            self.stop_reason = "sustained_exploration"
             return "Coder stopped after sustained source exploration without implementation or verification despite recovery. Reading new files is not implementation progress. Files are preserved; continue from the saved plan, project map and outstanding checks rather than restarting discovery."
         return ""
 
@@ -396,6 +436,23 @@ class RunState:
 
     def record(self, name, args, output, event):
         event = event or {}
+        read = event.get("read")
+        restored = False
+        if read and self.available_reads is not None:
+            path, digest = read["path"], read["sha256"]
+            start, end = read["offset"], read["offset"] + len(read["content"])
+            historical = (
+                path,
+                digest,
+                start,
+                len(read["content"]),
+            ) in self.observation_keys
+            restored = historical and not self.source_available(
+                path, digest, start, end
+            )
+            if restored:
+                self.recovered_source_reads += 1
+            self.available_reads.append((path, digest, start, end))
         self.memory.record(name, args, event)
         if event.get("working_plan"):
             self.memory.plan = event["working_plan"]
@@ -634,13 +691,16 @@ class RunState:
                 [self.revision, name, args, output], sort_keys=True, default=str
             ).encode()
         ).hexdigest()
-        self.repeat_counts[signature] = self.repeat_counts.get(signature, 0) + 1
+        self.repeat_counts[signature] = (
+            1 if restored else self.repeat_counts.get(signature, 0) + 1
+        )
         if attempt_key in self.failures:
             self.failures[attempt_key]["observed_revision"] = self.revision
         # Application-owned facts survive deterministic history archival. Plan
         # assertions are deliberately separate from executed check receipts.
         self.checkpoint()
         if self.repeat_counts[signature] >= 3:
+            self.stop_reason = "repeated_action_without_progress"
             return "Coder stopped after repeating the same action/result three times without file progress. Inspect a different source of evidence or report the concrete blocker."
         return ""
 
