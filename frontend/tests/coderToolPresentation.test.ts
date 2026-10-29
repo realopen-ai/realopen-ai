@@ -31,6 +31,58 @@ test("unrelated JSON is not claimed by the coder presenter", () => {
   assert.equal(formatCoderToolOutput('{"answer":42}'), '{"answer":42}');
 });
 
+test("saved plans are readable in chat and terminal without becoming verification", () => {
+  const output = JSON.stringify({
+    saved_plan: {
+      steps: [
+        { task: "Scaffold the project", status: "completed" },
+        { task: "Implement filtering", status: "in_progress" },
+        { task: "Run checks", status: "pending" },
+      ],
+      next_action: "Edit the filter handler",
+      notes: "Keep the existing API.\nUse isolated test data.",
+      files: ["/workspace/ui.tsx"],
+    },
+  });
+  for (const options of [{ toolName: "update_plan" }, {}]) {
+    const view = presentCoderToolOutput(output, options);
+    assert.equal(view?.plan?.steps.length, 3);
+    assert.equal(view?.plan?.nextAction, "Edit the filter handler");
+    assert.deepEqual(view?.checks, []);
+    assert.deepEqual(view?.files, []);
+    const terminal = formatCoderToolOutput(output, options);
+    assert.match(terminal, /\[Completed\] Scaffold the project/);
+    assert.match(terminal, /\[In progress\] Implement filtering/);
+    assert.match(terminal, /\[Pending\] Run checks/);
+    assert.match(terminal, /not execution verification/);
+    assert.match(terminal, /Next action:\n  Edit the filter handler/);
+    assert.match(terminal, /Working files:\n  \/workspace\/ui.tsx/);
+    assert.doesNotMatch(terminal, /saved_plan|"steps"/);
+  }
+  assert.equal(JSON.parse(output).saved_plan.steps[0].status, "completed");
+});
+
+test("malformed plans fall back safely and optional plan details may be absent", () => {
+  const minimal = {
+    saved_plan: {
+      steps: [{ task: "Inspect source", status: "pending" }],
+      next_action: "Read the target file",
+    },
+  };
+  assert.equal(
+    presentCoderToolOutput(JSON.stringify(minimal))?.plan?.steps.length,
+    1,
+  );
+  for (const steps of [[], [null], [{ task: "Work", status: "invented" }]]) {
+    assert.equal(
+      presentCoderToolOutput(
+        JSON.stringify({ saved_plan: { ...minimal.saved_plan, steps } }),
+      ),
+      null,
+    );
+  }
+});
+
 test("CRUD scaffolds show generated resources and stack in chat and terminal", () => {
   const output = JSON.stringify({
     created_files: ["/workspace/backend/app.py"],
