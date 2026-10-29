@@ -29,6 +29,11 @@ SCHEMA = _function(
         },
         "next_action": {"type": "string", "minLength": 1, "maxLength": 300},
         "notes": {"type": "string", "maxLength": 1200},
+        "files": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {"type": "string", "minLength": 1, "maxLength": 300},
+        },
     },
     ("steps", "next_action"),
 )
@@ -46,6 +51,7 @@ async def execute(sandbox, args, progress=None):
         ],
         "next_action": args["next_action"],
         **({"notes": args["notes"]} if isinstance(args.get("notes"), str) else {}),
+        **({"files": args["files"]} if isinstance(args.get("files"), list) else {}),
     }
     if (
         context_compactor._estimate_tokens(json.dumps(plan, ensure_ascii=False))

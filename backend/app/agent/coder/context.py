@@ -158,26 +158,38 @@ class CoderMemory:
                 start or len(excerpt) < len(content) or page.get("next_line") or offset
             ),
         }
-        fitted = fit_source(self.sources[path], max(128, ceiling // 2))
-        if fitted is None:
-            self.sources.pop(path)
-        else:
-            self.sources[path] = fitted
-        while self.sources and tokens(list(self.sources.values())) > ceiling:
-            self.sources.pop(next(iter(self.sources)))
+        selected = self._select_sources(ceiling)
+        self.sources = {item["path"]: item for item in reversed(selected)}
+
+    def _select_sources(self, ceiling):
+        focus = [
+            path if path.startswith("/workspace/") else "/workspace/" + path.lstrip("/")
+            for path in (self.plan or {}).get("files", [])
+        ]
+        ordered = list(
+            dict.fromkeys(
+                [
+                    *[p for p in focus if p in self.sources],
+                    *reversed(self.sources),
+                ]
+            )
+        )[:6]
+        selected = []
+        # Share the configured budget across the edit working set: a large
+        # repository file must not evict every small component needed next.
+        for index, path in enumerate(ordered):
+            remaining = max(0, ceiling - tokens(selected) - 3)
+            share = remaining // (len(ordered) - index)
+            fitted = fit_source(self.sources[path], share)
+            if fitted is not None and tokens([*selected, fitted]) <= ceiling:
+                selected.append(fitted)
+        return selected
 
     def source_context(self, model=None, limit=None):
         ceiling = self.budgets(model)["sources"]
         if limit is not None:
             ceiling = min(ceiling, limit)
-        selected = []
-        for item in reversed(list(self.sources.values())):
-            if tokens([*selected, item]) <= ceiling:
-                selected.append(item)
-            elif not selected and ceiling > 128:
-                shortened = fit_source(item, ceiling)
-                if shortened is not None:
-                    selected.append(shortened)
+        selected = self._select_sources(ceiling)
         self.active_sources = selected
         return selected
 
