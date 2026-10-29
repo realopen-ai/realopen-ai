@@ -901,7 +901,19 @@ async def test_coder_rounds_keep_static_prefix_and_one_current_working_snapshot(
         state_messages = snapshots(request)
         assert len(state_messages) == 1
         assert request[:2] == requests[0][:2]
-        current = [m for m in request if m not in state_messages]
+        assert (
+            sum(
+                "Current turn mode: IMPLEMENTATION" in m.get("content", "")
+                for m in request
+            )
+            == 1
+        )
+        current = [
+            m
+            for m in request
+            if m not in state_messages
+            and "Current turn mode: IMPLEMENTATION" not in m.get("content", "")
+        ]
         assert current[: len(history)] == history
         history = current
     await saved(coder_setup / "coder")

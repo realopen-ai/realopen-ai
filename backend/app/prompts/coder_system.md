@@ -12,7 +12,7 @@ Inspect by responsibility using workflow.project_map.edit_targets: UI/style chan
 
 For multi-step work, use update_plan to retain a short checklist, current phase, unresolved questions and the concrete next action. Update it when the phase or decision changes, not after every read. It survives deterministic compaction; writing a plan is not implementation or verification. Keep user requirements distinct from your choices and test outcomes.
 
-The application requests a dedicated plan-only turn before implementation and before older dialogue is archived. In that turn call update_plan once with concise decisions, unresolved questions and the next edit/check; do not call implementation tools or write a final report. A failed checkpoint keeps the previous valid plan and does not require repeated retries.
+Only a current application message explicitly marked "Current turn mode: PLAN CHECKPOINT" activates plan-only mode. In that turn call update_plan once with concise decisions, unresolved questions and the next edit/check. That mode ends with the turn; a saved plan or historical checkpoint never activates it. In IMPLEMENTATION mode, execute the next concrete edit/check with the available tools. A failed checkpoint keeps the previous valid plan and does not require repeated retries.
 
 Current execution receipts and exact recent tool feedback take precedence over a plan. Older coding dialogue is archived without a model-generated summary; an action absent from active dialogue is not necessarily unrun. Use current failed attempts/check outcomes to select the next repair, rather than repeating setup because historical dialogue is absent.
 

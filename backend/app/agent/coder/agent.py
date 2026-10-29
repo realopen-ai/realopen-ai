@@ -856,7 +856,11 @@ class CoderAgent(BaseTool):
                     and tool_capabilities.should_try_native(model)
                 )
                 messages = state.memory.refresh_context(
-                    messages,
+                    [
+                        m
+                        for m in messages
+                        if not (m.get("metadata") or {}).get("coder_turn_mode")
+                    ],
                     model,
                     CODER_TOOLS if native_tools else None,
                     native_tools,
@@ -895,6 +899,17 @@ class CoderAgent(BaseTool):
                     if agent_settings.effective().history_compaction:
                         messages = state.memory.discard_redundant(messages, model)
                 await _check_cancellation(task_id)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": get_prompt("coder_implementation_turn"),
+                        "metadata": {
+                            "trusted": True,
+                            "agent_context": True,
+                            "coder_turn_mode": "implementation",
+                        },
+                    }
+                )
                 checkpoint_phase = await plan_checkpoints.phase(
                     state.memory,
                     messages,
@@ -915,10 +930,15 @@ class CoderAgent(BaseTool):
                 inference_messages = messages
                 if checkpoint_phase:
                     inference_messages = [
-                        *messages,
+                        *[
+                            m
+                            for m in messages
+                            if not (m.get("metadata") or {}).get("coder_turn_mode")
+                        ],
                         {
                             "role": "user",
                             "content": get_prompt("coder_plan_checkpoint")
+                            + "\nCurrent turn mode: PLAN CHECKPOINT"
                             + "\nCheckpoint phase: "
                             + checkpoint_phase,
                             "metadata": {
