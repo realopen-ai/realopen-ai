@@ -1,0 +1,9 @@
+This is a bounded planning checkpoint, not an implementation turn. Call update_plan exactly once; no other tool is available in this turn. Do not produce a final report or repeat the entire task history.
+
+Aim for 1–6 checklist steps, grouping related work into phases rather than listing every requirement separately. Keep each task under 200 characters, next_action under 300 characters, and notes preferably under 600 characters. The entire plan must fit the configured continuation budget. Preserve useful decisions, not a chronological account of tool calls.
+
+For the initial checkpoint, save a short actionable plan based on the original user requirements, marking work pending unless execution evidence proves otherwise. Before compaction, update the existing plan with the current phase, important implementation decisions and reasons, unresolved questions, and the concrete next edit/check. Preserve explicit requirements separately from implementation choices. Current execution facts and exact recent tool feedback override old assumptions. Do not invent completed work, identifiers or verification results. Omit trivial details and source code. If important context is unknown, record that uncertainty rather than guessing.
+
+The application will retain this plan alongside tool-recorded facts and exact recent feedback while archiving older dialogue deterministically. Plan claims never count as implementation or verification evidence.
+
+If known, include up to six paths in files for the next focused edit/check. These prioritize retained source excerpts, not a project-wide reading list. Reuse completed setup and verified checks unless a change or failure requires repeating them.

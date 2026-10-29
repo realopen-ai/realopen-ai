@@ -37,6 +37,7 @@ TOOL_NAMES = (
     "run_checks",
     "run_browser_tests",
     "start_preview",
+    "update_plan",
 )
 
 
@@ -47,7 +48,7 @@ def test_model_facing_schemas_and_order_are_unchanged_by_refactor():
     # Pre-refactor schema snapshot: update deliberately for a protocol change,
     # not for moving Python handlers between files.
     assert hashlib.sha256(serialized.encode()).hexdigest() == (
-        "e0f1010abd2313efe782a8f773d3daba01e7aa22233d99bd85984a0af8421988"
+        "7ac0575393b4bcedfd884119104812e90b50ef5598c94de56cc7d1eb326af74a"
     )
 
 

@@ -19,6 +19,7 @@ from app.agent.coder.tools import (
     run_checks,
     run_browser_tests,
     start_preview,
+    update_plan,
 )
 
 TOOL_MODULES = (
@@ -38,6 +39,7 @@ TOOL_MODULES = (
     run_checks,
     run_browser_tests,
     start_preview,
+    update_plan,
 )
 CODER_TOOLS = [module.SCHEMA for module in TOOL_MODULES]
 TOOL_REGISTRY = {module.SCHEMA["function"]["name"]: module for module in TOOL_MODULES}

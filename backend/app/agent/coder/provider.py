@@ -9,6 +9,7 @@ import time
 import httpx
 
 from app.agent.coder.tooling import CODER_TOOLS
+from app.agent.coder.checkpoints import PlanCheckpointRequired
 from app.agent.protocol import model_messages
 from app.agent.tracing import observe, timestamp
 from app.prompts import format_prompt
@@ -62,6 +63,7 @@ async def _chat_attempt(
     on_activity=None,
     on_thinking=None,
     compact_context=None,
+    recovery_tools=None,
     **kwargs,
 ):
     options = dict(kwargs.get("options") or {})
@@ -74,7 +76,10 @@ async def _chat_attempt(
         messages = [dict(message) for message in messages]
         protocol = format_prompt(
             "coder_text_tools",
-            tool_schemas=json.dumps(CODER_TOOLS, separators=(",", ":")),
+            tool_schemas=json.dumps(
+                CODER_TOOLS if recovery_tools is None else recovery_tools,
+                separators=(",", ":"),
+            ),
         )
         # Keep core prefix/history byte-identical; protocol context is a
         # separate application-owned message, frozen for this attempt.
@@ -183,8 +188,16 @@ async def chat_with_tool_recovery(
     on_thinking=None,
     transient_text_models=None,
     compact_context=None,
+    tools=None,
+    output_limit=None,
+    thinking=None,
 ) -> dict:
     preferences = coder_settings.effective()
+    selected_tools = CODER_TOOLS if tools is None else tools
+    generation_limit = min(
+        preferences.generation_limit, output_limit or preferences.generation_limit
+    )
+    think = preferences.thinking if thinking is None else thinking
 
     async def text_attempt():
         fallback = await _chat_attempt(
@@ -193,13 +206,14 @@ async def chat_with_tool_recovery(
             tools=None,
             recovery=True,
             compact_context=compact_context,
+            recovery_tools=selected_tools,
             on_activity=on_activity,
             on_thinking=on_thinking,
             timeout=1200,
             format="json",
-            think=preferences.thinking,
+            think=think,
             options={
-                "num_predict": coder_settings.effective().generation_limit,
+                "num_predict": generation_limit,
                 "temperature": preferences.temperature,
             },
         )
@@ -225,12 +239,12 @@ async def chat_with_tool_recovery(
             return await _chat_attempt(
                 model,
                 messages,
-                tools=CODER_TOOLS,
+                tools=selected_tools,
                 on_thinking=on_thinking,
                 timeout=1200,
-                think=preferences.thinking,
+                think=think,
                 options={
-                    "num_predict": coder_settings.effective().generation_limit,
+                    "num_predict": generation_limit,
                     "temperature": preferences.temperature,
                 },
             )
@@ -257,6 +271,8 @@ async def chat_with_tool_recovery(
             break
     try:
         return await text_attempt()
+    except PlanCheckpointRequired:
+        raise
     except Exception as recovery_error:
         raise RuntimeError(
             "The coder model emitted an invalid tool call and JSON recovery "

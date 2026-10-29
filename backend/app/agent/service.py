@@ -2081,7 +2081,7 @@ async def run_agent_stream(
                 result_ref=result_ref if can_page else None,
                 limit=settings.AGENT_TOOL_RESULT_MAX_CHARS,
             )
-            if view.shortened and "read_tool_result" not in selected_tools:
+            if view.shortened and can_page and "read_tool_result" not in selected_tools:
                 await load_tools(["read_tool_result"])
             observe("result_view", result_ref, view.content, view.shortened)
             if result.tool_call:
