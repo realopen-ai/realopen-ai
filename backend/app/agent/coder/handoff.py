@@ -10,6 +10,57 @@ def project_handoff(project, metadata=None):
     backend, frontend = project.get("backend"), project.get("frontend")
     generated = metadata.get("generator") == "crud"
     features = metadata.get("features", {})
+    if not generated and any(
+        (part or {}).get("scaffold") == "minimal" for part in project.values()
+    ):
+        result = {
+            "schema_version": 1,
+            "application_generated": False,
+            "scope": "Minimal runnable starter only; no requested application behavior has been implemented.",
+            "implemented": [
+                (
+                    "Packaging, local styling and API proxy"
+                    if frontend
+                    else "Packaging and health endpoint"
+                )
+            ],
+            "persistence": "Not implemented; add it only when required by the user.",
+            "checks": {
+                role: {
+                    key: config[key]
+                    for key in ("test", "typecheck", "build")
+                    if key in config
+                }
+                for role, config in project.items()
+                if config
+            },
+            "edit_targets": {
+                **({"api": ["backend/app.py"]} if backend else {}),
+                **(
+                    {
+                        "ui": [
+                            "frontend/"
+                            + frontend["entrypoint"].replace("main.tsx", "App.tsx")
+                        ],
+                        "styling": ["frontend/src/style.css"],
+                        "connection": ["frontend/vite.config.ts"],
+                    }
+                    if frontend
+                    else {}
+                ),
+            },
+            "next_step": "Implement the requested application and its isolated behavior tests. No tests are generated; health/build checks only verify starter setup.",
+        }
+        if frontend:
+            result["frontend_entrypoint"] = "frontend/" + frontend["entrypoint"]
+        probe = (backend or frontend or {}).get("readiness_path")
+        if probe:
+            result["integration_probe"] = {
+                "port": 6767 if frontend else 6969,
+                "path": probe,
+                "scope": "Readiness/transport only, not application behavior.",
+            }
+        return result
     result = {
         "schema_version": 1,
         "scope": "Initial generated architecture, not proof of current source or correctness.",
