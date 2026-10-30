@@ -27,6 +27,7 @@ from app.core.prompt_security import untrusted_context_message
 async def test_original_react_request_rejects_vanilla_before_dispatch_and_checks_correct_scaffold(
     coder_setup, monkeypatch
 ):
+    monkeypatch.setitem(coder_settings._overrides, "context_window", 100_000)
     wrong = {
         "name": "Publishing",
         "backend": "fastapi",
@@ -144,7 +145,9 @@ async def test_coder_checkpoint_is_a_traced_bounded_turn_then_normal_work_contin
                 "message": {"tool_calls": [native(plan, "update_plan")]},
                 "done_reason": "length" if checkpoint_result == "truncated" else "stop",
             }
-        assert tools == coder_agent.CODER_TOOLS
+        assert tools == coder_agent.scaffold_tools(
+            "coder:test", coder_agent.CODER_TOOLS
+        )
         assert kwargs["think"] is True
         assert "Checkpoint phase:" not in json.dumps(messages)
         return {"message": {"content": "Done"}}
