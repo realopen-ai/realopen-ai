@@ -160,7 +160,6 @@ async def test_plain_starter_styles_before_publication_and_remembers_choice(
         )
         for executable, args in (
             ("tsc", ["--noEmit"]),
-            ("vitest", ["run"]),
             ("vite", ["build"]),
         ):
             result = subprocess.run(

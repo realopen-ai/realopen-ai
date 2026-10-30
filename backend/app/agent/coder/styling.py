@@ -26,7 +26,7 @@ def validate_styling(name):
     return name
 
 
-def apply_styling(files, name=DEFAULT_STYLING, *, prefix=""):
+def apply_styling(files, name=DEFAULT_STYLING, *, prefix="", minimal=False):
     """Configure a new Vite project, preserving shared CRUD/UI source and proxy."""
     style = STYLING[validate_styling(name)]
     root = prefix + "frontend/"
@@ -43,10 +43,13 @@ def apply_styling(files, name=DEFAULT_STYLING, *, prefix=""):
                 raise ValueError(f"Styling conflicts with dependency {dependency}")
             package[target][dependency] = version
     files[root + "package.json"] = json.dumps(package, indent=2) + "\n"
-    files[root + "src/theme.css"] = (THEMES / style["theme"]).read_text()
-    entrypoint = "src/main.tsx" if root + "src/main.tsx" in files else "src/main.ts"
-    main = files[root + entrypoint]
-    files[root + entrypoint] = 'import "./theme.css";\n' + main
+    if minimal:
+        files[root + "src/style.css"] = '@import "tailwindcss";\n'
+    else:
+        files[root + "src/theme.css"] = (THEMES / style["theme"]).read_text()
+        entrypoint = "src/main.tsx" if root + "src/main.tsx" in files else "src/main.ts"
+        main = files[root + entrypoint]
+        files[root + entrypoint] = 'import "./theme.css";\n' + main
     config = files.get(root + "vite.config.ts", (ASSETS / "vite.config.ts").read_text())
     if (
         "// STYLING_IMPORTS" not in config
