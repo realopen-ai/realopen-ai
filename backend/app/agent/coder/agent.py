@@ -15,6 +15,7 @@ from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType
 from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState
 from app.agent.coder.outcome import execution_outcome
+from app.agent.coder.scaffold_selection import scaffold_tools
 from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.coder.context import bounded_output, tokens
 from app.agent.coder.checkpoints import (
@@ -755,6 +756,7 @@ class CoderAgent(BaseTool):
             premature_finals = 0
             incomplete_generations = 0
             preferences = coder_settings.effective()
+            coder_tools = scaffold_tools(model, CODER_TOOLS)
             plan_checkpoints = PlanCheckpoints()
             thinking_started = None
 
@@ -864,7 +866,7 @@ class CoderAgent(BaseTool):
                         if not (m.get("metadata") or {}).get("coder_turn_mode")
                     ],
                     model,
-                    CODER_TOOLS if native_tools else None,
+                    coder_tools if native_tools else None,
                     native_tools,
                     state.context,
                 )
@@ -916,11 +918,11 @@ class CoderAgent(BaseTool):
                     state.memory,
                     messages,
                     model,
-                    CODER_TOOLS if native_tools else None,
+                    coder_tools if native_tools else None,
                     native_tools,
                     compact_conversation,
                 )
-                active_tools = PLAN_TOOLS if checkpoint_phase else CODER_TOOLS
+                active_tools = PLAN_TOOLS if checkpoint_phase else coder_tools
                 output_limit = (
                     min(
                         preferences.generation_limit,
@@ -958,7 +960,7 @@ class CoderAgent(BaseTool):
                         messages,
                         model,
                         compactor=compact_conversation,
-                        tools=CODER_TOOLS if native_tools else None,
+                        tools=coder_tools if native_tools else None,
                         native_tools=native_tools,
                         on_start=on_start,
                     )
@@ -1014,7 +1016,7 @@ class CoderAgent(BaseTool):
                                 "thinking": False,
                             }
                             if checkpoint_phase
-                            else {}
+                            else {"tools": active_tools}
                         ),
                         **(
                             {
@@ -1186,13 +1188,19 @@ class CoderAgent(BaseTool):
                     schema = next(
                         (
                             tool["function"]["parameters"]
-                            for tool in CODER_TOOLS
+                            for tool in coder_tools
                             if tool["function"]["name"] == name
                         ),
                         None,
                     )
                     errors = (
-                        ["Unknown coder tool"]
+                        [
+                            (
+                                "Advanced scaffolding is not exposed in this session. Use scaffold_project for a minimal starter, then implement the requested app. Do not retry scaffold_crud_app."
+                                if name == "scaffold_crud_app"
+                                else "Unknown coder tool"
+                            )
+                        ]
                         if schema is None
                         else argument_errors(
                             normalize_structured_arguments(args, schema), schema
