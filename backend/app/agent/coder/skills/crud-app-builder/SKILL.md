@@ -1,12 +1,14 @@
 ---
 name: crud-app-builder
-description: Scaffold CRUD apps with FastAPI/SQLite and React/Vite/TypeScript, or either alone. Optional local accounts and per-user ownership, with real API/UI tests; vanilla TypeScript is optional.
+description: Advanced generated CRUD scaffolds. Use only when scaffold_crud_app is exposed; otherwise use the minimal full-stack-app-builder starter and implement the app directly.
 roles:
   - coder
 enabled: true
 ---
 
 # CRUD App Builder
+
+This skill is only for the advanced scaffold_crud_app tool. If that tool is not exposed, use full-stack-app-builder and scaffold_project instead; do not read the generation references below.
 
 Use frontend="react-vite" by default: editable React TSX components and hooks, not imperative HTML/DOM construction. frontend="vite" is optional vanilla TypeScript only when requested; frontend="none" is backend-only. Both tools use local Tailwind CSS. Keep existing projects' frameworks and styling unchanged unless the user requests a migration.
 
