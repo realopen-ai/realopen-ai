@@ -304,6 +304,17 @@ async def search_searxng(
                 "snippet": item.get("content", ""),
             }
         )
+    if not results and data.get("unresponsive_engines"):
+        failures = []
+        for failure in data["unresponsive_engines"]:
+            if isinstance(failure, (list, tuple)) and len(failure) >= 2:
+                failures.append(f"{failure[0]}: {failure[1]}")
+        detail = "; ".join(failures) or "upstream engines unavailable"
+        raise RuntimeError(
+            f"SearXNG returned no results with engine failures ({detail}). "
+            "Check engine diagnostics or enable another search provider. "
+            "This does not establish that no matching information exists."
+        )
     return ("searxng", results)
 
 

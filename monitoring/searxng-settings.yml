@@ -26,11 +26,15 @@ ui:
 outgoing:
   request_timeout: 10
   max_request_timeout: 15
-  engines:
-    - name: google
-      engine: google
-      shortcut: go
-      use_mobile_ui: true
+
+# Engine overrides belong at the top level, not under outgoing.
+# Keep independent alternatives when the usual engines challenge/block requests.
+engines:
+  - name: bing
+    disabled: false
+  - name: mwmbl
+    disabled: false
+    weight: 0.3
 
 valkey:
   url: valkey://redis:6379/0
