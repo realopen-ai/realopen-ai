@@ -7,6 +7,7 @@
  * describes/configures it:
  *
  *   SearxNG   — enabled, base URL (empty = default), max results, timeout
+ *   Degoog    — optional, base URL, max results, timeout
  *   ArXiv     — enabled, subject (arXiv category, e.g. cs.AI), sort
  *               order, max results. arXiv's API is subject-based —
  *               searches are built from the category + keywords, never
@@ -299,6 +300,7 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
   };
 
   const searxng = providers.searxng as ProviderCfg;
+  const degoog = providers.degoog as ProviderCfg;
   const arxiv = providers.arxiv as ProviderCfg;
   const wikipedia = providers.wikipedia as ProviderCfg;
   const google = providers.google as ProviderCfg;
@@ -309,6 +311,47 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
     <section>
       <SectionHeader title={t("brain.tools.websearch.providers")} />
       <div className="space-y-3">
+        <ProviderCard
+          icon={<Search className="h-4 w-4" />}
+          title="Degoog"
+          subtitle={t("brain.tools.websearch.degoogSubtitle")}
+          enabled={degoog?.enabled === true}
+          canToggle={true}
+          onToggle={(v) => patchProvider("degoog", { enabled: v })}
+        >
+          <p className="py-2.5 text-xs leading-relaxed text-muted-foreground">
+            {t("brain.tools.websearch.degoogSetup")}
+          </p>
+          <CardField label={t("brain.tools.websearch.baseUrl")}>
+            <input
+              type="text"
+              defaultValue={(degoog?.base_url as string) || ""}
+              key={String(degoog?.base_url)}
+              placeholder="http://degoog:4444"
+              onBlur={(e) =>
+                patchProvider("degoog", {
+                  base_url: e.target.value.trim() || null,
+                })
+              }
+              className={`${inputClass} w-48`}
+            />
+          </CardField>
+          <NumberField
+            label={t("brain.tools.websearch.maxResults")}
+            value={Number(degoog?.max_results ?? 5)}
+            min={1}
+            max={20}
+            onCommit={(v) => patchProvider("degoog", { max_results: v })}
+          />
+          <NumberField
+            label={t("brain.tools.websearch.timeout")}
+            value={Number(degoog?.timeout_s ?? 20)}
+            min={1}
+            max={60}
+            onCommit={(v) => patchProvider("degoog", { timeout_s: v })}
+          />
+        </ProviderCard>
+
         {/* SearXNG */}
         <ProviderCard
           icon={<Search className="h-4 w-4" />}

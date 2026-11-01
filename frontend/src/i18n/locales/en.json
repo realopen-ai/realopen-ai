@@ -566,6 +566,8 @@
   "brain.tools.showRawConfig": "Show raw configuration",
   "brain.tools.websearch.providers": "Providers",
   "brain.tools.websearch.searxngSubtitle": "Self-hosted metasearch — your default search backend",
+  "brain.tools.websearch.degoogSubtitle": "Optional self-hosted search aggregator",
+  "brain.tools.websearch.degoogSetup": "Start the optional Degoog service, then install and enable web engines in its setup wizard at localhost:4444. The base URL must be reachable from the backend.",
   "brain.tools.websearch.arxivSubtitle": "Scientific preprints (arxiv.org) — searched by subject + keywords",
   "brain.tools.websearch.wikipediaSubtitle": "The free encyclopedia",
   "brain.tools.websearch.googleSubtitle": "Programmable Search Engine (needs API key + CSE id)",

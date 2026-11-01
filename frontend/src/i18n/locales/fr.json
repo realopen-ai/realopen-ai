@@ -566,6 +566,8 @@
   "brain.tools.showRawConfig": "Afficher la configuration brute",
   "brain.tools.websearch.providers": "Fournisseurs",
   "brain.tools.websearch.searxngSubtitle": "Métamoteur auto-hébergé — votre backend de recherche par défaut",
+  "brain.tools.websearch.degoogSubtitle": "Agrégateur de recherche auto-hébergé optionnel",
+  "brain.tools.websearch.degoogSetup": "Démarrez le service Degoog optionnel, puis installez et activez des moteurs web via son assistant sur localhost:4444. L’URL doit être accessible depuis le backend.",
   "brain.tools.websearch.arxivSubtitle": "Prépublications scientifiques (arxiv.org) — recherche par sujet + mots-clés",
   "brain.tools.websearch.wikipediaSubtitle": "L'encyclopédie libre",
   "brain.tools.websearch.googleSubtitle": "Programmable Search Engine (clé API + id CSE requis)",

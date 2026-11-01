@@ -588,6 +588,8 @@
   "brain.documents.comingSoon": "المستندات قريباً",
   "brain.documents.description": "ستظهر هنا المستندات المرفوعة وقاعدة المعرفة",
   "brain.tools.websearch.searxngSubtitle": "محرك بحث تجميعي مستضاف ذاتياً — محرك البحث الافتراضي",
+  "brain.tools.websearch.degoogSubtitle": "مجمّع بحث اختياري مستضاف ذاتياً",
+  "brain.tools.websearch.degoogSetup": "شغّل خدمة Degoog الاختيارية، ثم ثبّت محركات بحث الويب وفعّلها عبر معالج الإعداد على localhost:4444. يجب أن يتمكن الخادم من الوصول إلى عنوان الخدمة.",
   "brain.tools.websearch.arxivSubtitle": "مسودات أبحاث علمية (arxiv.org) — بحث حسب الموضوع والكلمات المفتاحية",
   "brain.tools.websearch.wikipediaSubtitle": "الموسوعة الحرة",
   "brain.tools.websearch.googleSubtitle": "محرك بحث قابل للبرمجة (يتطلب مفتاح API ومعرّف CSE)",
