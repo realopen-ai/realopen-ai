@@ -535,6 +535,7 @@ class Settings(BaseSettings):
 
     # SearxNG
     SEARXNG_BASE_URL: str = "http://searxng:8080"
+    DEGOOG_BASE_URL: str = "http://degoog:4444"
 
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"

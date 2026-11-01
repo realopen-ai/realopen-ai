@@ -1,6 +1,6 @@
 """Web search tool (use_websearch) — thin execution wrapper.
 
-The provider IMPLEMENTATIONS (SearXNG / ArXiv / Wikipedia / Google)
+The provider IMPLEMENTATIONS (SearXNG / Degoog / ArXiv / Wikipedia / Google)
 live in app/services/web_search.py, like the other services; this
 module holds the tool itself and its CONFIGURATION definition
 (Brain ▸ Tools), which follows the standard layering:
@@ -158,7 +158,7 @@ def _validate_web_search_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(providers_cfg, dict):
             raise ValueError("'custom.providers' must be an object")
 
-        known = ("searxng", "arxiv", "wikipedia", "google")
+        known = ("searxng", "degoog", "arxiv", "wikipedia", "google")
         for key, value in providers_cfg.items():
             if key not in known:
                 raise ValueError(
@@ -181,17 +181,17 @@ def _validate_web_search_custom(custom: Dict[str, Any]) -> Dict[str, Any]:
                         raise ValueError(
                             f"Provider {key!r} '{numeric}' must be between " "1 and 60"
                         )
-            if key == "searxng" and "base_url" in value:
+            if key in {"searxng", "degoog"} and "base_url" in value:
                 base = value["base_url"]
                 if base is not None:
                     if not isinstance(base, str) or not base.strip():
                         raise ValueError(
-                            "SearXNG 'base_url' must be a non-empty URL "
+                            f"{key} 'base_url' must be a non-empty URL "
                             "(or empty to use the default)"
                         )
                     if not base.strip().startswith(("http://", "https://")):
                         raise ValueError(
-                            "SearXNG 'base_url' must start with http:// or " "https://"
+                            f"{key} 'base_url' must start with http:// or https://"
                         )
             if key == "arxiv" and "subject" in value:
                 subject = value["subject"]
@@ -324,6 +324,12 @@ WEB_SEARCH_CONFIG = ToolConfigDefinition(
     model_task_slot="chat",
     custom_defaults={
         "providers": {
+            "degoog": {
+                "enabled": False,
+                "base_url": None,
+                "max_results": 5,
+                "timeout_s": 20,
+            },
             "searxng": {
                 "enabled": True,
                 "base_url": None,  # None → settings.SEARXNG_BASE_URL
@@ -393,6 +399,18 @@ WEB_SEARCH_CONFIG = ToolConfigDefinition(
 # ("providers.arxiv.subject") so the generic renderer nests them at
 # exactly the location the service reads.
 WEB_SEARCH_PROVIDER_SCHEMAS: Dict[str, List[ConfigField]] = {
+    "degoog": [
+        ConfigField("providers.degoog.enabled", "Enabled", "bool", default=False),
+        ConfigField(
+            "providers.degoog.base_url",
+            "Base URL",
+            "string",
+            help="Degoog instance with web engines installed (empty = default)",
+            placeholder="http://degoog:4444",
+        ),
+        ConfigField("providers.degoog.max_results", "Max results", "int", default=5),
+        ConfigField("providers.degoog.timeout_s", "Timeout (s)", "int", default=20),
+    ],
     "searxng": [
         ConfigField("providers.searxng.enabled", "Enabled", "bool"),
         ConfigField(
