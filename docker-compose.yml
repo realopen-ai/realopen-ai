@@ -63,6 +63,25 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Optional search provider: docker compose --profile degoog up -d degoog
+  # Open localhost:4444 and install web engines using the setup wizard.
+  degoog:
+    image: ghcr.io/degoog-org/degoog:latest
+    container_name: realopen-degoog
+    profiles: [degoog]
+    volumes:
+      - ./data/degoog:/app/data
+    ports:
+      - "127.0.0.1:4444:4444"
+    restart: unless-stopped
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # FastAPI Backend
   backend:
     build:
