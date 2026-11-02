@@ -13,6 +13,7 @@ the persisted tool configuration):
 
 - SearXNG   — self-hosted metasearch (JSON API); base URL defaults to
               settings.SEARXNG_BASE_URL
+- Degoog    — optional self-hosted aggregator (native JSON API), off by default
 - ArXiv     — scientific preprints, queried through the official
               ``arxiv`` Python package (https://pypi.org/project/arxiv/).
               arXiv's API is a FIELD-SUBJECT search, not a whole-
@@ -37,6 +38,7 @@ import asyncio
 import logging
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -302,7 +304,92 @@ async def search_searxng(
                 "snippet": item.get("content", ""),
             }
         )
+    if not results and data.get("unresponsive_engines"):
+        failures = []
+        for failure in data["unresponsive_engines"]:
+            if isinstance(failure, (list, tuple)) and len(failure) >= 2:
+                failures.append(f"{failure[0]}: {failure[1]}")
+        detail = "; ".join(failures) or "upstream engines unavailable"
+        raise RuntimeError(
+            f"SearXNG returned no results with engine failures ({detail}). "
+            "Check engine diagnostics or enable another search provider. "
+            "This does not establish that no matching information exists."
+        )
     return ("searxng", results)
+
+
+# ── Provider: Degoog ──────────────────────────────────────────────
+
+
+async def search_degoog(
+    query: str,
+    base_url: Optional[str] = None,
+    max_results: int = 5,
+    timeout_s: float = 20.0,
+) -> tuple:
+    """Use Degoog's native JSON API; engines are managed by the instance."""
+    url = f"{(base_url or settings.DEGOOG_BASE_URL).rstrip('/')}/api/search"
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        response = await client.get(
+            url,
+            params={"q": query, "type": "web"},
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"Degoog search failed: {data['error']}")
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        raise RuntimeError("Degoog returned an invalid search response")
+
+    results = []
+    for item in data["results"]:
+        if not isinstance(item, dict):
+            continue
+        title, link = item.get("title"), item.get("url")
+        if not isinstance(title, str) or not title.strip() or not isinstance(link, str):
+            continue
+        try:
+            parsed = urlsplit(link)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                continue
+        except ValueError:
+            continue
+        snippet = item.get("snippet")
+        result = {
+            "provider": "Degoog",
+            "title": title.strip(),
+            "url": link,
+            "snippet": snippet if isinstance(snippet, str) else "",
+        }
+        sources = item.get("sources")
+        if isinstance(sources, list):
+            result["engines"] = [s for s in sources if isinstance(s, str)]
+        results.append(result)
+        if len(results) >= max(1, int(max_results)):
+            break
+
+    if not results:
+        timings = data.get("engineTimings")
+        if timings == []:
+            raise RuntimeError(
+                "Degoog has no active web engines. Install and enable engines "
+                "in the Degoog setup wizard."
+            )
+        if (
+            isinstance(timings, list)
+            and timings
+            and all(
+                isinstance(t, dict)
+                and (t.get("errorReason") or t.get("status") not in {None, "ok"})
+                for t in timings
+            )
+        ):
+            raise RuntimeError(
+                "Degoog web engines failed; check its engine diagnostics"
+            )
+    return ("degoog", results)
 
 
 # ── Provider: Wikipedia ────────────────────────────────────────────
@@ -471,6 +558,17 @@ async def search(
     max_total = _max_total_results()
 
     search_tasks = []
+
+    degoog = providers_cfg.get("degoog", {})
+    if degoog.get("enabled", False):
+        search_tasks.append(
+            search_degoog(
+                query,
+                base_url=degoog.get("base_url"),
+                max_results=degoog.get("max_results", 5),
+                timeout_s=degoog.get("timeout_s", 20),
+            )
+        )
 
     searxng = providers_cfg.get("searxng", {})
     if searxng.get("enabled", True):
