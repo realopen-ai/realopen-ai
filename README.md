@@ -113,6 +113,16 @@ make up
 
 Open **http://localhost** (or the port configured with `NGINX_PORT`). Production serves the frontend through Nginx; development uses Vite's API/WebSocket proxy.
 
+### Web search providers
+
+Setup recommends SearXNG, but you can choose any combination of providers or disable all for offline use. Change your choices later in **Brain → Tools → Web Search**. Preferences are saved in PostgreSQL; enabled providers search in parallel.
+
+`make startup` prepares both bundled Docker images without starting their containers. After backend startup, the host runtime starts or stops SearXNG and Degoog according to the saved choices. Disabling Web Search stops both bundled services while preserving individual provider preferences. Runtime status appears in Brain → Tools; unavailable Docker or host runtime is retried automatically. Explicit custom/external URLs are queried when enabled but their containers are never managed.
+
+The bundled interfaces are available only on localhost: **http://localhost:8080** for SearXNG and **http://localhost:4444** for Degoog. A fresh Degoog instance has no engines: unlock settings using the temporary password from `docker compose logs degoog`, then install web engines through its setup wizard. Engine configuration persists in `data/degoog/`. A ready container does not mean its upstream search engines are unblocked or configured.
+
+For manual Docker-only operation, use `docker compose --profile search up -d searxng degoog`. While the backend is running, saved preferences take precedence over manual starts/stops. Bundled service restart policies are disabled so Docker cannot independently start a disabled provider. Google requires an API key and search engine ID; configure these in Brain → Tools. arXiv and Wikipedia use online APIs without local containers.
+
 ### Voice setup
 
 Speech models are configured in the top-level `voice:` section of [profiles.yml](profiles.yml). The current defaults are **Qwen3-ASR 0.6B** and **Pocket TTS**, with English speech configuration.

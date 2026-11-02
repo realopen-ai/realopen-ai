@@ -120,7 +120,9 @@ def migrate_routing_default(row, definition):
 # ── Startup seeding ────────────────────────────────────────────────
 
 
-async def seed_and_load(force: bool = False) -> Dict[str, int]:
+async def seed_and_load(
+    force: bool = False, *, require_database: bool = False
+) -> Dict[str, int]:
     """Discover tools, seed missing DB rows, load the cache.
 
     Called from the app lifespan after Alembic migrations. Safe to call
@@ -176,6 +178,8 @@ async def seed_and_load(force: bool = False) -> Dict[str, int]:
             if seeded or migrated:
                 await db.commit()
     except Exception as e:  # DB unavailable at startup
+        if require_database:
+            raise
         db_ok = False
         logger.error("Tool config seeding failed: %s", e)
 

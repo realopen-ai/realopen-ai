@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from app.agent.base import get_tool_registry
 from app.agent.tools import config_store
+from app.services import search_services
 from app.agent.tools.config_base import config_registry
 from app.services import secrets as secret_store
 
@@ -137,6 +138,11 @@ async def list_tools():
     return {"tools": await config_store.all_tools_api_view()}
 
 
+@router.get("/tools/use_websearch/runtime")
+async def search_runtime_status():
+    return search_services.status()
+
+
 @router.get("/tools/{tool_name}")
 async def get_tool(tool_name: str):
     """One tool's configuration view."""
@@ -162,6 +168,8 @@ async def update_tool(tool_name: str, request: ToolConfigUpdateRequest):
 
     try:
         await config_store.update_tool_config(tool_name, request.config)
+        if tool_name == "use_websearch":
+            search_services.request_reconcile()
     except config_store.ConfigUpdateError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # pragma: no cover - defensive
