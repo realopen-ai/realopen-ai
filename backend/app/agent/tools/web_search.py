@@ -337,7 +337,7 @@ WEB_SEARCH_CONFIG = ToolConfigDefinition(
                 "timeout_s": 15,
             },
             "arxiv": {
-                # Off by default (SearXNG remains the default backend):
+                # Off in the recommended setup (users choose providers):
                 # every enabled provider joins EVERY search, and arXiv
                 # adds latency — users opt in per subject in the UI.
                 "enabled": False,

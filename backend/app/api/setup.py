@@ -41,11 +41,13 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from app.agent.base import get_tool_registry
 from app.config import settings, VALID_PROFILES
 from app.services import voice_model_installer
+from app.services import search_services
+from app.agent.tools import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,7 @@ class ApplySetupRequest(BaseModel):
 
     profile: str
     enabled_modules: List[str]  # List of module names to enable
+    search_providers: dict[str, StrictBool] | None = None
 
 
 class InstallSetupModelsRequest(BaseModel):
@@ -412,6 +415,11 @@ async def get_setup_modules():
     return {"modules": result}
 
 
+@router.get("/setup/search-providers")
+async def get_search_providers():
+    return search_services.provider_choices()
+
+
 @router.post("/setup/apply")
 async def apply_setup(request: ApplySetupRequest):
     """Apply the setup configuration chosen by the user.
@@ -422,6 +430,11 @@ async def apply_setup(request: ApplySetupRequest):
     3. Persists changes to .env and state files
     4. Does NOT pull models (that's a separate endpoint)
     """
+    if request.search_providers is not None:
+        known = {provider["id"] for provider in search_services.provider_choices()}
+        if set(request.search_providers) - known:
+            raise HTTPException(400, "Unknown search provider")
+
     # Validate profile
     if request.profile not in VALID_PROFILES:
         format_profiles = ", ".join(sorted(VALID_PROFILES))
@@ -458,6 +471,25 @@ async def apply_setup(request: ApplySetupRequest):
 
     # Apply module tools
     _apply_module_tools_for_setup(request.enabled_modules)
+
+    if request.search_providers is not None:
+        try:
+            await config_store.update_tool_config(
+                "use_websearch",
+                {
+                    "custom": {
+                        "providers": {
+                            name: {"enabled": enabled}
+                            for name, enabled in request.search_providers.items()
+                        }
+                    }
+                },
+            )
+        except config_store.ConfigUpdateError as exc:
+            raise HTTPException(
+                503, "Could not save search provider preferences"
+            ) from exc
+        search_services.request_reconcile()
 
     # Get models to pull for confirmation
     models_to_pull = _get_models_to_pull(request.profile, request.enabled_modules)
