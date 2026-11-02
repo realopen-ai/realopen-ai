@@ -31,6 +31,7 @@ import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
 import { elapsedMilliseconds } from "@/lib/timing";
 import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { toolOutputDetails } from "@/lib/toolOutputDetails";
+import { WebFetchDetail } from "@/components/chat/WebFetchDetail";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -493,6 +494,10 @@ function ToolCallBlockView({
       label: translate("tool.websearch.done"),
       runningLabel: translate("tool.websearch.running"),
     },
+    webfetch: {
+      label: translate("tool.webfetch.done"),
+      runningLabel: translate("tool.webfetch.running"),
+    },
     vision: {
       label: translate("tool.vision.done"),
       runningLabel: translate("tool.vision.running"),
@@ -605,7 +610,9 @@ function ToolCallBlockView({
         ? `${tc.skillName} · ${tc.skillResource || "SKILL.md"}`
         : tc.filePath && tc.filePath !== "/workspace"
           ? tc.filePath
-          : tc.type === "websearch" || tc.type === "deepsearch"
+          : tc.type === "websearch" ||
+              tc.type === "webfetch" ||
+              tc.type === "deepsearch"
             ? tc.query
             : undefined;
 
@@ -767,6 +774,7 @@ function ToolCallDetail({
   if (tc.type === "tool_output") return <ToolOutputDetail tc={tc} />;
   if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
+  if (tc.type === "webfetch") return <WebFetchDetail tc={tc} />;
   if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "file_read" || tc.type === "file_write")

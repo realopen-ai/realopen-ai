@@ -25,6 +25,7 @@ export interface ToolCallResult {
   id: string;
   type:
     | "websearch"
+    | "webfetch"
     | "vision"
     | "code_exec"
     | "skill"
