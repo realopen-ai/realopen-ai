@@ -2079,7 +2079,10 @@ async def run_agent_stream(
                 result.tool_call,
                 success=result.success,
                 result_ref=result_ref if can_page else None,
-                limit=settings.AGENT_TOOL_RESULT_MAX_CHARS,
+                limit=min(
+                    settings.AGENT_TOOL_RESULT_MAX_CHARS,
+                    result.model_output_limit or settings.AGENT_TOOL_RESULT_MAX_CHARS,
+                ),
             )
             if view.shortened and can_page and "read_tool_result" not in selected_tools:
                 await load_tools(["read_tool_result"])

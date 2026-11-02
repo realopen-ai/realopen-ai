@@ -75,6 +75,9 @@ class ToolResult:
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
     failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
     validation_issues: Optional[List[Dict]] = None  # exact field paths, never guessed
+    model_output_limit: Optional[int] = (
+        None  # initial view only; retain full output for paging
+    )
 
     def __post_init__(self):
         # Unknown failures are operational, never automatically argument repairs.
