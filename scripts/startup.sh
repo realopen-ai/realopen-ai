@@ -134,9 +134,17 @@ ensure_sandbox_image() {
     fi
 }
 
+prepare_search_images() {
+    info "Preparing search provider images (containers stay stopped until enabled)..."
+    if ! python3 "${PROJECT_ROOT}/scripts/search_runtime.py"; then
+        warn "Search images could not be prepared. Check Docker/network access and rerun make startup."
+    fi
+}
+
 main() {
     create_env_file
     start_ollama
+    prepare_search_images
     ensure_sandbox_image
     start_host_runtime
 }
