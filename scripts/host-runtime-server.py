@@ -42,6 +42,7 @@ from sandbox_runtime import (  # noqa: E402
     SandboxRuntime,
     SandboxSpec,
 )
+from search_runtime import SearchRuntime  # noqa: E402
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -80,6 +81,7 @@ def online_hub():
 
 app = FastAPI(title="RealOpen Host Runtime")
 sandbox_runtime = None
+search_runtime = SearchRuntime()
 direct_preview_specs: dict[int, SandboxSpec] = {}
 
 
@@ -96,6 +98,17 @@ def _sandboxes() -> SandboxRuntime:
 class SpeechRequest(BaseModel):
     text: str
     voice: str | None = None
+
+
+class SearchServicesPayload(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    searxng: bool
+    degoog: bool
+
+
+@app.post("/v1/search-services/reconcile")
+async def reconcile_search_services(payload: SearchServicesPayload) -> dict:
+    return await asyncio.to_thread(search_runtime.reconcile, payload.model_dump())
 
 
 class VoiceRequest(BaseModel):
