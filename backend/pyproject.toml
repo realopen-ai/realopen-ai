@@ -34,6 +34,8 @@ markdown = "^3.10.2"
 python-pptx = "^1.0.2"
 pymupdf = ">=1.28.2,<3.0.0"
 arxiv = "^4.0.1"
+trafilatura = ">=2.3,<3"
+markdownify = ">=1.2,<2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.3,<10.0"
