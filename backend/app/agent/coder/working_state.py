@@ -215,6 +215,7 @@ def inspection_step(name, args):
 class RunState:
     memory: CoderMemory = field(default_factory=CoderMemory)
     worklog: list = field(default_factory=list)
+    web_sources: list = field(default_factory=list)
     files_changed: list = field(default_factory=list)
     tests_run: list = field(default_factory=list)
     reads: dict = field(default_factory=dict)
@@ -454,6 +455,8 @@ class RunState:
                 self.recovered_source_reads += 1
             self.available_reads.append((path, digest, start, end))
         self.memory.record(name, args, event)
+        if event.get("web_source"):
+            self.web_sources = [*self.web_sources, event["web_source"]][-6:]
         if event.get("working_plan"):
             self.memory.plan = event["working_plan"]
         if "checks" in event:
@@ -834,6 +837,7 @@ class RunState:
                     "continuation": {
                         "compaction_mode": "deterministic",
                         "compactions": self.memory.compactions,
+                        "web_sources_untrusted_request_local": self.web_sources,
                         "loaded_resources": self.memory.resources,
                         "model_authored_plan_not_verification": self.memory.plan,
                         "previously_inspected": list(self.memory.observations.values()),

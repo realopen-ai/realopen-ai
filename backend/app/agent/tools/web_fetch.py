@@ -1,25 +1,14 @@
-"""
-Web fetch tool using BeautifulSoup.
+"""Fetch readable Markdown, retaining full output for result storage and paging."""
 
-The agent can call this tool to fetch and extract readable text content
-from a webpage URL. This is useful for getting full context after a web search,
-allowing the agent to read and understand the content of relevant pages.
-
-The fetch timeout and the context cap (how much extracted text is kept
-for the model) are configurable in Brain ▸ Tools ▸ Web Fetch.
-
-TODO: This is a naive but effective first version. Future improvements could include:
-- Smarter content extraction (e.g. readability algorithms)
-- Caching results to avoid repeated fetches
-"""
-
+import time
+import uuid
 from typing import Any, Dict, List
 from urllib.parse import urlsplit
 
 import httpx
-from bs4 import BeautifulSoup
 
-from app.agent.base import BaseTool, ToolResult, ToolType, tool_registry
+from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.services import web_fetch
 from app.agent.tools.config_base import (
     ConfigField,
     ToolConfigDefinition,
@@ -71,29 +60,25 @@ class WebFetchTool(BaseTool):
         if parsed.scheme not in {"http", "https"} or not parsed.host:
             return self.invalid_arguments("Provide a valid absolute HTTP or HTTPS URL.")
         timeout_s, max_chars = _configured_limits()
-        async with httpx.AsyncClient(
-            timeout=float(timeout_s), follow_redirects=True
-        ) as client:
-            r = await client.get(url)
-            r.raise_for_status()
-
-        html = r.text
-
-        text = self._extract_text(html)
-
-        return ToolResult(
-            success=True,
-            output=text[:max_chars],  # IMPORTANT: cap context
+        call = ToolCall(
+            id=f"tc-{uuid.uuid4().hex}",
+            type=self.tool_type,
+            name=self.name,
+            title="Fetching page",
+            query=url,
+            started_at=time.time(),
         )
-
-    def _extract_text(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
-
-        # remove junk
-        for tag in soup(["script", "style", "noscript", "nav", "footer", "header"]):
-            tag.decompose()
-
-        return soup.get_text(separator="\n", strip=True)
+        try:
+            page = await web_fetch.fetch(url, timeout_s)
+            call.status = "completed"
+            call.completed_at = time.time()
+            call.title = f"Read page: {page.title}"
+            call.output = page.render()
+            return ToolResult(True, call.output, call, model_output_limit=max_chars)
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+            return ToolResult(
+                False, f"Web Fetch failed: {str(exc) or type(exc).__name__}", call
+            )
 
 
 # ── Configuration definition (Brain ▸ Tools ▸ Web Fetch) ──────────
@@ -168,12 +153,13 @@ WEB_FETCH_CONFIG = ToolConfigDefinition(
                 ).to_dict(),
                 ConfigField(
                     "max_chars",
-                    "Max characters",
+                    "Initial model view (characters)",
                     "int",
                     default=DEFAULT_MAX_CHARS,
                     help=(
-                        "How much extracted text is kept for the model — "
-                        "smaller values save context window"
+                        "Limit the initial model view; the full extracted page remains "
+                        "available through read_tool_result when paging is enabled. "
+                        "The agent's global tool-result limit also applies."
                     ),
                 ).to_dict(),
             ],
