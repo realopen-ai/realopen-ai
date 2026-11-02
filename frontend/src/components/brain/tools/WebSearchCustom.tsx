@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import type { ToolInfo } from "@/api/toolsClient";
 import { Button } from "@/components/ui/button";
 import { SectionHeader } from "@/components/ui/primitives";
+import { SearchServiceStatus } from "./SearchServiceStatus";
 import { SettingToggle } from "@/components/brain/ToolsTab";
 
 // ─── Shared input styling ──────────────────────────────────────────
@@ -292,8 +293,7 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
     updateConfig(tool.tool, {
       custom: {
         providers: {
-          ...providers,
-          [name]: { ...providers[name], ...patch },
+          [name]: patch,
         },
       },
     });
@@ -310,6 +310,7 @@ export function WebSearchCustom({ tool }: { tool: ToolInfo }) {
   return (
     <section>
       <SectionHeader title={t("brain.tools.websearch.providers")} />
+      <SearchServiceStatus />
       <div className="space-y-3">
         <ProviderCard
           icon={<Search className="h-4 w-4" />}
