@@ -11,6 +11,8 @@ import {
   type SetupProfile,
   type SetupModule,
   type PullModelEvent,
+  fetchSearchProviders,
+  type SearchProviderChoice,
 } from "@/api/setupClient";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -88,6 +90,8 @@ interface SetupState {
   modules: SetupModule[];
   isLoadingModules: boolean;
   enabledModules: string[];
+  searchProviders: SearchProviderChoice[];
+  searchProvidersLoaded: boolean;
 
   // Model pulling
   isApplying: boolean;
@@ -104,6 +108,8 @@ interface SetupState {
   loadModules: () => Promise<void>;
   setSelectedProfile: (profile: string) => void;
   toggleModule: (name: string) => void;
+  loadSearchProviders: () => Promise<void>;
+  toggleSearchProvider: (id: string) => void;
   setStep: (step: SetupStep) => void;
   applySetup: () => Promise<boolean>;
   pullModels: () => Promise<boolean>;
@@ -151,6 +157,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   modules: [],
   isLoadingModules: false,
   enabledModules: ["assistant"],
+  searchProviders: [],
+  searchProvidersLoaded: false,
   isApplying: false,
   isPulling: false,
   pullProgress: { ...initialPullProgress },
@@ -218,6 +226,31 @@ export const useSetupStore = create<SetupState>((set, get) => ({
 
   setSelectedProfile: (profile) => set({ selectedProfile: profile }),
 
+  loadSearchProviders: async () => {
+    if (get().searchProvidersLoaded) return;
+    try {
+      const providers = await fetchSearchProviders();
+      // A StrictMode remount must not overwrite a user's choices.
+      if (!get().searchProvidersLoaded)
+        set({
+          searchProviders: providers,
+          searchProvidersLoaded: true,
+          error: null,
+        });
+    } catch {
+      set({ error: "Could not load search providers. Please retry." });
+    }
+  },
+
+  toggleSearchProvider: (id) =>
+    set((state) => ({
+      searchProviders: state.searchProviders.map((provider) =>
+        provider.id === id
+          ? { ...provider, enabled: !provider.enabled }
+          : provider,
+      ),
+    })),
+
   toggleModule: (name) => {
     const state = get();
     const module = state.modules.find((m) => m.name === name);
@@ -242,6 +275,11 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       const result = await apiApplySetup(
         state.selectedProfile,
         state.enabledModules,
+        state.searchProvidersLoaded
+          ? Object.fromEntries(
+              state.searchProviders.map((p) => [p.id, p.enabled]),
+            )
+          : undefined,
       );
       if (result) {
         set({ isApplying: false });
@@ -403,6 +441,8 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     set({
       step: "welcome",
       error: null,
+      searchProviders: [],
+      searchProvidersLoaded: false,
       pullProgress: { ...initialPullProgress },
     }),
 }));

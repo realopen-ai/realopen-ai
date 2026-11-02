@@ -200,13 +200,18 @@ export async function fetchSetupModules(): Promise<SetupModule[] | null> {
 export async function applySetup(
   profile: string,
   enabledModules: string[],
+  searchProviders?: Record<string, boolean>,
 ): Promise<ApplySetupResponse | null> {
   log(`➡️  applySetup  profile=${profile}  modules=${enabledModules}`);
   try {
     const res = await fetch("/api/setup/apply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile, enabled_modules: enabledModules }),
+      body: JSON.stringify({
+        profile,
+        enabled_modules: enabledModules,
+        search_providers: searchProviders,
+      }),
     });
     log(`   response  status=${res.status}  ok=${res.ok}`);
     if (res.ok) return await res.json();
@@ -216,6 +221,20 @@ export async function applySetup(
     dbgError(`   ❌ applySetup error: ${err}`);
   }
   return null;
+}
+
+export interface SearchProviderChoice {
+  id: string;
+  name: string;
+  enabled: boolean;
+  recommended: boolean;
+  local: boolean;
+}
+
+export async function fetchSearchProviders(): Promise<SearchProviderChoice[]> {
+  const response = await fetch("/api/setup/search-providers");
+  if (!response.ok) throw new Error("Could not load search providers");
+  return response.json();
 }
 
 export async function pullSetupModels(

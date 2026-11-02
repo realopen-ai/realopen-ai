@@ -485,6 +485,15 @@ function ModulesStep() {
   const enabledModules = useSetupStore((s) => s.enabledModules);
   const selectedProfile = useSetupStore((s) => s.selectedProfile);
   const toggleModule = useSetupStore((s) => s.toggleModule);
+  const searchProviders = useSetupStore((s) => s.searchProviders);
+  const searchProvidersLoaded = useSetupStore((s) => s.searchProvidersLoaded);
+  const loadSearchProviders = useSetupStore((s) => s.loadSearchProviders);
+  const toggleSearchProvider = useSetupStore((s) => s.toggleSearchProvider);
+  const searchError = useSetupStore((s) => s.error);
+
+  useEffect(() => {
+    void loadSearchProviders();
+  }, [loadSearchProviders]);
 
   return (
     <div className="py-4">
@@ -515,6 +524,75 @@ function ModulesStep() {
         })}
       </div>
 
+      <div className="mt-6 space-y-3">
+        <h3 className="text-[16px] font-semibold">{t("setup.search.title")}</h3>
+        <p className="text-[13px] text-muted-foreground">
+          {t("setup.search.description")}
+        </p>
+        {searchProviders.map((provider) => (
+          <label
+            key={provider.id}
+            className={cn(
+              "flex items-start gap-2 rounded-xl border p-3 cursor-pointer transition-all",
+              provider.enabled
+                ? provider.recommended
+                  ? "border-emerald-500/40 bg-emerald-500/5 ring-1 ring-emerald-500/20"
+                  : "border-primary/30 bg-primary/5 ring-1 ring-primary/20"
+                : "border-border bg-card hover:bg-accent",
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={provider.enabled}
+              onChange={() => toggleSearchProvider(provider.id)}
+              className="peer sr-only"
+            />
+            <span
+              aria-hidden="true"
+              className={cn(
+                "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border-2 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background",
+                provider.enabled
+                  ? provider.recommended
+                    ? "border-emerald-500 bg-emerald-500 text-white"
+                    : "border-primary bg-primary text-primary-foreground"
+                  : "border-muted-foreground/30",
+              )}
+            >
+              {provider.enabled && (
+                <Check className="h-3 w-3" strokeWidth={3} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[13px] font-medium text-foreground">
+                  {provider.name}
+                </span>
+                {provider.recommended && (
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-500">
+                    {t("setup.search.recommended")}
+                  </span>
+                )}
+              </span>
+              <span className="mt-1 block text-[12px] text-muted-foreground">
+                {t(
+                  provider.local ? "setup.search.local" : "setup.search.remote",
+                )}
+                {provider.id === "degoog" && ` · ${t("setup.search.degoog")}`}
+                {provider.id === "google" && ` · ${t("setup.search.google")}`}
+              </span>
+            </span>
+          </label>
+        ))}
+        {!searchProvidersLoaded && (
+          <button
+            onClick={() => void loadSearchProviders()}
+            className="text-sm text-primary"
+          >
+            {searchError || t("setup.search.loading")}
+          </button>
+        )}
+      </div>
+
       <div className="flex items-center justify-between mt-6">
         <button
           onClick={() => setStep("hardware")}
@@ -525,6 +603,7 @@ function ModulesStep() {
         </button>
         <button
           onClick={() => setStep("review")}
+          disabled={!searchProvidersLoaded}
           className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground font-medium text-[13px] hover:bg-primary/90 transition-colors"
         >
           Continue
@@ -665,6 +744,7 @@ function ReviewStep() {
   const profiles = useSetupStore((s) => s.profiles);
   const modules = useSetupStore((s) => s.modules);
   const enabledModules = useSetupStore((s) => s.enabledModules);
+  const searchProviders = useSetupStore((s) => s.searchProviders);
   const applySetup = useSetupStore((s) => s.applySetup);
   const isApplying = useSetupStore((s) => s.isApplying);
   const error = useSetupStore((s) => s.error);
@@ -758,6 +838,16 @@ function ReviewStep() {
               </div>
             ))}
         </div>
+      </div>
+
+      <div className="my-4 text-[13px]">
+        <span className="text-muted-foreground">
+          {t("setup.search.title")}:{" "}
+        </span>
+        {searchProviders
+          .filter((p) => p.enabled)
+          .map((p) => p.name)
+          .join(", ") || t("setup.search.none")}
       </div>
 
       {error && (
