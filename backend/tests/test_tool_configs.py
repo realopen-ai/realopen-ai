@@ -984,7 +984,14 @@ class TestWebSearchProviders:
         result = await websearch_tool.execute(query="NumPy")
         assert result.success
         assert result.tool_call.web_results[0]["provider"] == "Degoog"
-        assert "https://numpy.org" in result.output
+        assert result.tool_call.web_results[0]["url"] == "https://numpy.org"
+        assert result.output.splitlines() == [
+            'Web search results for "NumPy":',
+            "",
+            "1. NumPy (Degoog)",
+            "   URL: https://numpy.org",
+            "   Arrays",
+        ]
 
     @pytest.fixture
     def websearch_tool(self):
