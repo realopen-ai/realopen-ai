@@ -841,6 +841,82 @@ class TestModelOverride:
 
 
 class TestWebSearchProviders:
+    def test_setup_choices_save_to_existing_provider_configuration(
+        self, client, monkeypatch
+    ):
+        from app.api import setup as setup_api
+        from app.services import search_services
+
+        client.app.include_router(setup_api.router, prefix="/api")
+        monkeypatch.setattr(setup_api, "_apply_profile_and_modules", lambda *args: None)
+        monkeypatch.setattr(
+            setup_api, "_apply_module_tools_for_setup", lambda *args: None
+        )
+        monkeypatch.setattr(setup_api, "_get_models_to_pull", lambda *args: [])
+        wakes = []
+        monkeypatch.setattr(
+            search_services, "request_reconcile", lambda: wakes.append(True)
+        )
+        choices = client.get("/api/setup/search-providers").json()
+        assert {p["id"] for p in choices} == {
+            "searxng",
+            "degoog",
+            "arxiv",
+            "wikipedia",
+            "google",
+        }
+        assert [p["id"] for p in choices if p["recommended"]] == ["searxng"]
+        response = client.post(
+            "/api/setup/apply",
+            json={
+                "profile": "cpu_small",
+                "enabled_modules": ["assistant"],
+                "search_providers": {
+                    "searxng": False,
+                    "degoog": True,
+                    "wikipedia": True,
+                },
+            },
+        )
+        assert response.status_code == 200
+        saved = client.get("/api/tools/use_websearch").json()["config"]["custom"][
+            "providers"
+        ]
+        assert saved["degoog"]["enabled"] and not saved["searxng"]["enabled"]
+        assert saved["degoog"]["timeout_s"] == 20
+        assert wakes
+        response = client.put(
+            "/api/tools/use_websearch", json={"config": {"enabled": False}}
+        )
+        assert response.status_code == 200
+        states = client.get("/api/tools/use_websearch/runtime").json()
+        assert not any(p["enabled"] for p in states.values())
+        assert len(wakes) == 2
+
+    @pytest.mark.parametrize(
+        "providers, code", [({"postgres": True}, 400), ({"degoog": "yes"}, 422)]
+    )
+    def test_setup_rejects_invalid_provider_choices_before_changes(
+        self, client, monkeypatch, providers, code
+    ):
+        from app.api import setup as setup_api
+
+        client.app.include_router(setup_api.router, prefix="/api")
+
+        def must_not_apply(*args):
+            pytest.fail("Invalid choices changed settings")
+
+        monkeypatch.setattr(setup_api, "_apply_profile_and_modules", must_not_apply)
+        response = client.post(
+            "/api/setup/apply",
+            json={
+                "profile": "cpu_small",
+                "enabled_modules": [],
+                "search_providers": providers,
+            },
+        )
+        assert response.status_code == code
+
     @pytest.mark.parametrize(
         "patch",
         [
