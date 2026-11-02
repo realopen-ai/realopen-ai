@@ -68,7 +68,7 @@ up: startup detect-hardware
 # ── Stop all services ──
 .PHONY: down
 down:
-	@$(COMPOSE_DEV) down 2>/dev/null || $(COMPOSE) down
+	@$(COMPOSE_DEV) --profile search down 2>/dev/null || $(COMPOSE) --profile search down
 
 # ── Stop monitoring stack only ──
 .PHONY: down-mon
@@ -83,8 +83,8 @@ re: down all
 .PHONY: clean
 clean:
 	@echo "Removing all containers, volumes, and images..."
-	@$(COMPOSE) down -v --rmi local 2>/dev/null || true
-	@$(COMPOSE_DEV) down -v --rmi local 2>/dev/null || true
+	@$(COMPOSE) --profile search down -v --rmi local 2>/dev/null || true
+	@$(COMPOSE_DEV) --profile search down -v --rmi local 2>/dev/null || true
 
 # ── Monitoring stack ──
 .PHONY: monitor

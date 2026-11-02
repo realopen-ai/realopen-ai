@@ -841,6 +841,158 @@ class TestModelOverride:
 
 
 class TestWebSearchProviders:
+    def test_setup_choices_save_to_existing_provider_configuration(
+        self, client, monkeypatch
+    ):
+        from app.api import setup as setup_api
+        from app.services import search_services
+
+        client.app.include_router(setup_api.router, prefix="/api")
+        monkeypatch.setattr(setup_api, "_apply_profile_and_modules", lambda *args: None)
+        monkeypatch.setattr(
+            setup_api, "_apply_module_tools_for_setup", lambda *args: None
+        )
+        monkeypatch.setattr(setup_api, "_get_models_to_pull", lambda *args: [])
+        wakes = []
+        monkeypatch.setattr(
+            search_services, "request_reconcile", lambda: wakes.append(True)
+        )
+        choices = client.get("/api/setup/search-providers").json()
+        assert {p["id"] for p in choices} == {
+            "searxng",
+            "degoog",
+            "arxiv",
+            "wikipedia",
+            "google",
+        }
+        assert [p["id"] for p in choices if p["recommended"]] == ["searxng"]
+        response = client.post(
+            "/api/setup/apply",
+            json={
+                "profile": "cpu_small",
+                "enabled_modules": ["assistant"],
+                "search_providers": {
+                    "searxng": False,
+                    "degoog": True,
+                    "wikipedia": True,
+                },
+            },
+        )
+        assert response.status_code == 200
+        saved = client.get("/api/tools/use_websearch").json()["config"]["custom"][
+            "providers"
+        ]
+        assert saved["degoog"]["enabled"] and not saved["searxng"]["enabled"]
+        assert saved["degoog"]["timeout_s"] == 20
+        assert wakes
+        response = client.put(
+            "/api/tools/use_websearch", json={"config": {"enabled": False}}
+        )
+        assert response.status_code == 200
+        states = client.get("/api/tools/use_websearch/runtime").json()
+        assert not any(p["enabled"] for p in states.values())
+        assert len(wakes) == 2
+
+    @pytest.mark.parametrize(
+        "providers, code", [({"postgres": True}, 400), ({"degoog": "yes"}, 422)]
+    )
+    def test_setup_rejects_invalid_provider_choices_before_changes(
+        self, client, monkeypatch, providers, code
+    ):
+        from app.api import setup as setup_api
+
+        client.app.include_router(setup_api.router, prefix="/api")
+
+        def must_not_apply(*args):
+            pytest.fail("Invalid choices changed settings")
+
+        monkeypatch.setattr(setup_api, "_apply_profile_and_modules", must_not_apply)
+        response = client.post(
+            "/api/setup/apply",
+            json={
+                "profile": "cpu_small",
+                "enabled_modules": [],
+                "search_providers": providers,
+            },
+        )
+        assert response.status_code == code
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"enabled": "yes"},
+            {"base_url": "not-a-url"},
+            {"timeout_s": 61},
+            {"max_results": 0},
+        ],
+    )
+    def test_degoog_rejects_invalid_configuration(self, client, patch):
+        response = client.put(
+            "/api/tools/use_websearch",
+            json={"config": {"custom": {"providers": {"degoog": patch}}}},
+        )
+        assert response.status_code == 400
+
+    def test_degoog_defaults_and_saved_configuration(self, client):
+        initial = client.get("/api/tools/use_websearch").json()
+        # Existing installations gain the optional provider through default merging.
+        assert initial["config"]["custom"]["providers"]["degoog"]["enabled"] is False
+        response = client.put(
+            "/api/tools/use_websearch",
+            json={
+                "config": {
+                    "custom": {
+                        "providers": {
+                            "degoog": {
+                                "enabled": True,
+                                "base_url": "http://degoog:4444",
+                                "max_results": 3,
+                                "timeout_s": 12,
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        assert response.status_code == 200
+        saved = client.get("/api/tools/use_websearch").json()["config"]["custom"][
+            "providers"
+        ]
+        assert saved["degoog"]["enabled"] is True
+        assert saved["degoog"]["max_results"] == 3
+        assert saved["searxng"]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_degoog_toggle_routes_tool_results(
+        self, client, websearch_tool, monkeypatch
+    ):
+        self._set_providers(
+            client, {"searxng": {"enabled": False}, "degoog": {"enabled": True}}
+        )
+
+        async def degoog(query, **kwargs):
+            return "degoog", [
+                {
+                    "provider": "Degoog",
+                    "title": query,
+                    "url": "https://numpy.org",
+                    "snippet": "Arrays",
+                }
+            ]
+
+        monkeypatch.setattr(web_search_service, "search_degoog", degoog)
+        result = await websearch_tool.execute(query="NumPy")
+        assert result.success
+        assert result.tool_call.web_results[0]["provider"] == "Degoog"
+        assert result.tool_call.web_results[0]["url"] == "https://numpy.org"
+        assert result.output.splitlines() == [
+            'Web search results for "NumPy":',
+            "",
+            "1. NumPy (Degoog)",
+            "   URL: https://numpy.org",
+            "   Arrays",
+        ]
+
     @pytest.fixture
     def websearch_tool(self):
         return get_tool_registry().get("use_websearch")
