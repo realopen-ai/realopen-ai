@@ -16,6 +16,7 @@ from app.agent.coder.provider import chat_with_tool_recovery, parse_calls
 from app.agent.coder.working_state import RunState
 from app.agent.coder.outcome import execution_outcome
 from app.agent.coder.scaffold_selection import scaffold_tools
+from app.agent.coder.web_tools import CoderWebTools, WEB_TYPES
 from app.agent.coder.project import configuration_changed, project_snapshot
 from app.agent.coder.context import bounded_output, tokens
 from app.agent.coder.checkpoints import (
@@ -259,6 +260,7 @@ def _event_for_step(
             )
         )
     )
+    event_type = WEB_TYPES.get(name, event_type)
     skill_resource = str(args.get("resource") or "SKILL.md")
     title = {
         "list_files": "Listing workspace files",
@@ -291,6 +293,9 @@ def _event_for_step(
     }
     if sandbox_id is not None:
         event["sandboxId"] = str(sandbox_id)
+    if name in WEB_TYPES:
+        event["query"] = args.get("url") or args.get("query")
+        return event
     if name == "load_skill":
         event.update(
             {
@@ -336,6 +341,7 @@ async def _run_step(
     parent_id: str | None,
     event_queue,
     origin=None,
+    web_tools=None,
 ) -> tuple[str, dict | None]:
     state.step_index += 1
     args = normalize_tool_args(name, args)
@@ -415,22 +421,27 @@ async def _run_step(
             command_started = True
 
     try:
-        output, event = await dispatch_tool(
-            sandbox,
-            name,
-            args,
-            (
-                setup_progress
-                if name
-                in {
-                    "setup_python_project",
-                    "scaffold_project",
-                    "scaffold_crud_app",
-                    "run_checks",
-                }
-                else None
-            ),
-        )
+        if name in WEB_TYPES and web_tools is not None:
+            output, event = await web_tools.execute(
+                name, args, state.memory.budgets()["output"]
+            )
+        else:
+            output, event = await dispatch_tool(
+                sandbox,
+                name,
+                args,
+                (
+                    setup_progress
+                    if name
+                    in {
+                        "setup_python_project",
+                        "scaffold_project",
+                        "scaffold_crud_app",
+                        "run_checks",
+                    }
+                    else None
+                ),
+            )
         if event is not None and (
             name in {"scaffold_project", "scaffold_crud_app", "setup_python_project"}
             or configuration_changed(event)
@@ -456,8 +467,10 @@ async def _run_step(
             "status": "completed",
             "completedAt": _now_ms(),
             "durationMs": round((time.monotonic() - started_monotonic) * 1000, 1),
-            "output": output[:20_000],
+            "output": output if name in WEB_TYPES else output[:20_000],
         }
+        if event and event.get("web_results") is not None:
+            completed["webResults"] = event["web_results"]
         if event and event.get("command"):
             completed["code"] = event["command"]
         if (
@@ -713,6 +726,16 @@ class CoderAgent(BaseTool):
                 },
             ]
             authoritative_request = _user_request or task
+            web_tools = CoderWebTools(authoritative_request + "\n" + task)
+            if web_tools.available:
+                messages.insert(
+                    1,
+                    {
+                        "role": "user",
+                        "content": web_tools.catalog(),
+                        "metadata": {"coder_web_catalog": True},
+                    },
+                )
             state = RunState(
                 explicit_constraints=explicit_choices(authoritative_request)
             )
@@ -756,7 +779,8 @@ class CoderAgent(BaseTool):
             premature_finals = 0
             incomplete_generations = 0
             preferences = coder_settings.effective()
-            coder_tools = scaffold_tools(model, CODER_TOOLS)
+            base_coder_tools = scaffold_tools(model, CODER_TOOLS)
+            coder_tools = [*base_coder_tools, *web_tools.schemas]
             plan_checkpoints = PlanCheckpoints()
             thinking_started = None
 
@@ -848,6 +872,7 @@ class CoderAgent(BaseTool):
             observe("limits", preferences.max_rounds)
             last_round = 0
             for _round in range(preferences.max_rounds):
+                coder_tools[:] = [*base_coder_tools, *web_tools.schemas]
                 # The previous iteration has fully completed, including all
                 # of its tool calls. Persist it before beginning new work.
                 if last_round:
@@ -1198,7 +1223,12 @@ class CoderAgent(BaseTool):
                             (
                                 "Advanced scaffolding is not exposed in this session. Use scaffold_project for a minimal starter, then implement the requested app. Do not retry scaffold_crud_app."
                                 if name == "scaffold_crud_app"
-                                else "Unknown coder tool"
+                                else (
+                                    "Web tool schema is not loaded. Call discover_tools with its name, then retry. No web request was executed."
+                                    if name in web_tools.available
+                                    and "discover_tools" in web_tools.active
+                                    else "Unknown or disabled coder tool. Use only exposed schemas; continue locally if web access is unavailable."
+                                )
                             )
                         ]
                         if schema is None
@@ -1269,7 +1299,9 @@ class CoderAgent(BaseTool):
                         state=state,
                         parent_id=_parent_tool_call_id,
                         event_queue=_event_queue,
+                        web_tools=web_tools,
                     )
+                    coder_tools[:] = [*base_coder_tools, *web_tools.schemas]
                     abort_reason = _track_step(state, name, args, output, event)
                     if name == "scaffold_crud_app" and baseline_commands(event):
                         generated_event = event
@@ -1286,14 +1318,14 @@ class CoderAgent(BaseTool):
                         else (
                             agent_scaffold_result(output, event)
                             if name in {"scaffold_project", "scaffold_crud_app"}
-                            else output
+                            else (event or {}).get("model_output", output)
                         )
                     )
                     result_message = tool_result_message(
                         item,
                         (
                             agent_output
-                            if name in {"load_skill", "read_file"}
+                            if name in {"load_skill", "read_file"} or name in WEB_TYPES
                             else bounded_output(
                                 agent_output,
                                 state.memory.budgets(model)["output"],
