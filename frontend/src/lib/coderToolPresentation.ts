@@ -13,6 +13,15 @@ export type CoderToolPresentation = {
   facts: Array<{ label: string; value: string }>;
   stdout?: string;
   stderr?: string;
+  plan?: {
+    steps: Array<{
+      task: string;
+      status: "pending" | "in_progress" | "completed";
+    }>;
+    nextAction: string;
+    notes?: string;
+    files: string[];
+  };
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -126,6 +135,44 @@ export function presentCoderToolOutput(
   const data = parseRecord(output);
   if (!data) return null;
 
+  const savedPlan = record(data.saved_plan);
+  if (
+    savedPlan &&
+    Array.isArray(savedPlan.steps) &&
+    savedPlan.steps.length &&
+    typeof savedPlan.next_action === "string" &&
+    savedPlan.next_action.trim()
+  ) {
+    const steps: NonNullable<CoderToolPresentation["plan"]>["steps"] = [];
+    for (const value of savedPlan.steps) {
+      const step = record(value);
+      if (
+        !step ||
+        typeof step.task !== "string" ||
+        !step.task.trim() ||
+        !["pending", "in_progress", "completed"].includes(String(step.status))
+      )
+        return null;
+      steps.push({
+        task: step.task,
+        status: step.status as (typeof steps)[number]["status"],
+      });
+    }
+    return {
+      summary: `Plan saved · ${steps.length} step${steps.length === 1 ? "" : "s"}`,
+      files: [],
+      checks: [],
+      facts: [],
+      plan: {
+        steps,
+        nextAction: savedPlan.next_action,
+        notes:
+          typeof savedPlan.notes === "string" ? savedPlan.notes : undefined,
+        files: stringArray(savedPlan.files),
+      },
+    };
+  }
+
   const files = [
     ...stringArray(data.created_files),
     ...stringArray(data.changed_files),
@@ -233,6 +280,26 @@ export function formatCoderToolOutput(
   if (!view) return typeof output === "string" ? output : "";
 
   const lines = [`✓ ${view.summary}`];
+  if (view.plan) {
+    lines.push("Model-authored plan, not execution verification:");
+    for (const [index, step] of view.plan.steps.entries()) {
+      const status =
+        step.status === "completed"
+          ? "Completed"
+          : step.status === "in_progress"
+            ? "In progress"
+            : "Pending";
+      lines.push(`  ${index + 1}. [${status}] ${step.task}`);
+    }
+    lines.push("Next action:", indent(view.plan.nextAction));
+    if (view.plan.notes)
+      lines.push("Decisions and notes:", indent(view.plan.notes));
+    if (view.plan.files.length)
+      lines.push(
+        "Working files:",
+        ...view.plan.files.map((path) => `  ${path}`),
+      );
+  }
   if (view.files.length) {
     lines.push("Files:", ...view.files.map((path) => `  + ${path}`));
   }

@@ -1,4 +1,5 @@
 import { common, createStarryNight } from "@wooorm/starry-night";
+import tsx from "@wooorm/starry-night/source.tsx";
 
 export const MAX_HIGHLIGHT_BYTES = 200_000;
 
@@ -21,7 +22,19 @@ const cache = new Map<string, HighlightResult | null>();
 const MAX_CACHE_ENTRIES = 100;
 
 function highlighter() {
-  starryNightPromise ??= createStarryNight(common);
+  starryNightPromise ??= createStarryNight([
+    ...common.map((grammar) =>
+      grammar.scopeName === "text.html.basic"
+        ? { ...grammar, extensions: [...grammar.extensions, ".html"] }
+        : grammar,
+    ),
+    {
+      // TSX also parses JavaScript JSX; the common JS grammar only colors JS.
+      ...tsx,
+      extensions: [...tsx.extensions, ".jsx"],
+      names: [...tsx.names, "jsx", "javascriptreact"],
+    },
+  ]);
   return starryNightPromise;
 }
 

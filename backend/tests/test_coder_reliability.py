@@ -348,7 +348,9 @@ async def test_identical_write_does_not_publish_or_invalidate_validation(workspa
 
 
 @pytest.mark.asyncio
-async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(workspace):
+async def test_minimal_starter_has_local_styling_and_proxy_without_application_layers(
+    workspace,
+):
     sandbox, files, calls = workspace
     output, event = await tooling.dispatch_tool(
         sandbox,
@@ -358,10 +360,8 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
     assert event["exit_code"] == 0
     project = json.loads(output)["project"]
     assert project["backend"]["setup"] == "python"
-    assert "sqlite3" in files["/workspace/backend/db.py"]
-    assert "TestClient" in files["/workspace/backend/tests/conftest.py"]
-    assert "tmp_path" in files["/workspace/backend/tests/conftest.py"]
-    assert "test_health(client)" in files["/workspace/backend/tests/test_api.py"]
+    assert "/workspace/backend/db.py" not in files
+    assert not any("/tests/" in path or ".test." in path for path in files)
     assert "tailwindcss" in files["/workspace/frontend/package.json"]
     assert 'types="vite/client"' in files["/workspace/frontend/src/vite-env.d.ts"]
     assert '"/api"' in files["/workspace/frontend/vite.config.ts"]
@@ -369,7 +369,7 @@ async def test_starter_has_local_styling_sqlite_tests_and_connected_proxy(worksp
     manifest = json.loads(files["/workspace/.realopen-project.json"])
     assert manifest["starter"]["schema_version"] == 1
     assert "/workspace/backend/app.py" in manifest["starter"]["source_hashes"]
-    assert "/workspace/frontend/src/api.test.ts" in manifest["starter"]["test_hashes"]
+    assert not manifest["starter"]["test_hashes"]
     assert event["starter_test_hashes"] == manifest["starter"]["test_hashes"]
     assert not any("cdn." in value for value in files.values())
     assert {payload["command"] for action, payload in calls if action == "exec"} == {

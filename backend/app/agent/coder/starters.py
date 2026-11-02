@@ -18,6 +18,7 @@ BACKENDS = {
         "dev_dependencies": ["pytest", "httpx2"],
         "test": "uv run python -m pytest backend/tests -q",
         "preview": "uv run uvicorn backend.app:app --host 0.0.0.0 --port 6969",
+        "readiness_path": "/api/health",
     }
 }
 FRONTENDS = {
@@ -32,6 +33,7 @@ FRONTENDS = {
         ],
         "entrypoint": "src/main.tsx",
         "framework": "react",
+        "readiness_path": "/",
         "install": "bun install --cwd frontend",
         "test": "bun run --cwd frontend test",
         "typecheck": "bun run --cwd frontend typecheck",
@@ -43,6 +45,7 @@ FRONTENDS = {
         "assets": "vite",
         "entrypoint": "src/main.ts",
         "framework": "vanilla",
+        "readiness_path": "/",
         "install": "bun install --cwd frontend",
         "test": "bun run --cwd frontend test",
         "typecheck": "bun run --cwd frontend typecheck",
@@ -61,13 +64,32 @@ def read_assets(name):
     }
 
 
-def frontend_assets(name):
+def frontend_assets(name, *, minimal=False):
     entry = FRONTENDS[name]
     files = read_assets(entry["assets"])
     if entry.get("overlay"):
         files.update(read_assets(entry["overlay"]))
     for path in entry.get("omit", []):
         files.pop(path, None)
+    if minimal:
+        files = {
+            path: content
+            for path, content in files.items()
+            if not path.startswith("frontend/src/")
+            or path in {"frontend/src/vite-env.d.ts", "frontend/src/style.css"}
+        }
+        if entry["framework"] == "react":
+            files.update(
+                {
+                    p: c
+                    for p, c in read_assets("minimal").items()
+                    if p.startswith("frontend/")
+                }
+            )
+        else:
+            files["frontend/src/main.ts"] = (
+                'import "./style.css";\ndocument.querySelector("#status")!.textContent = "Ready";\n'
+            )
     return files
 
 
@@ -83,21 +105,26 @@ async def scaffold(
     ):
         raise ValueError("Choose supported backend/frontend starters, not both none")
     files = {}
+    minimal = composition is None
     if backend != "none":
-        files.update(
-            {
-                "/workspace/" + path: content
-                for path, content in read_assets(BACKENDS[backend]["assets"]).items()
+        backend_files = read_assets(BACKENDS[backend]["assets"])
+        if minimal and backend == "fastapi":
+            backend_files = {
+                p: c
+                for p, c in backend_files.items()
+                if p in {"backend/app.py", "backend/__init__.py"}
             }
+        files.update(
+            {"/workspace/" + path: content for path, content in backend_files.items()}
         )
     if frontend != "none":
         files.update(
             {
                 "/workspace/" + path: content
-                for path, content in frontend_assets(frontend).items()
+                for path, content in frontend_assets(frontend, minimal=minimal).items()
             }
         )
-    if frontend != "none" and backend == "none":
+    if frontend != "none" and backend == "none" and not minimal:
         if FRONTENDS[frontend]["framework"] == "react":
             files["/workspace/frontend/src/main.tsx"] = files[
                 "/workspace/frontend/src/main.tsx"
@@ -111,11 +138,15 @@ async def scaffold(
             {"/workspace/" + path: content for path, content in generated.items()}
         )
     if frontend != "none" and not composition:
-        apply_styling(files, styling, prefix="/workspace/")
+        apply_styling(files, styling, prefix="/workspace/", minimal=True)
     project = {
         "backend": dict(BACKENDS[backend]) if backend != "none" else None,
         "frontend": dict(FRONTENDS[frontend]) if frontend != "none" else None,
     }
+    if minimal:
+        for role in ("backend", "frontend"):
+            if project[role]:
+                project[role]["scaffold"] = "minimal"
     if project["frontend"]:
         project["frontend"]["styling"] = styling
     if composition:

@@ -103,7 +103,9 @@ async def test_plain_default_is_react_and_refuses_to_overwrite_existing_work(
     assert json.loads(output)["project"]["frontend"]["framework"] == "react"
     assert json.loads(output)["project"]["frontend"]["styling"] == "tailwind"
     assert "tailwindcss()" in files["/workspace/frontend/vite.config.ts"]
-    assert "connected={false}" in files["/workspace/frontend/src/main.tsx"]
+    assert "<App />" in files["/workspace/frontend/src/main.tsx"]
+    assert "connected=" not in files["/workspace/frontend/src/main.tsx"]
+    assert "/workspace/frontend/src/api.ts" not in files
     assert "/workspace/frontend/src/main.ts" not in files
     assert "jsx" in files["/workspace/frontend/tsconfig.json"]
     files["/workspace/frontend/src/App.tsx"] = "CUSTOMIZED REACT APP"

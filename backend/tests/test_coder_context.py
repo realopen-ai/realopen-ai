@@ -194,7 +194,10 @@ def test_duplicate_read_is_referenced_only_when_exact_source_is_retained():
     pruned = state.memory.prune(messages, 0, 700)
     assert "retained active_sources" in pruned[1]["content"]
     state.memory.sources.clear()
-    assert state.memory.prune(messages, 0, 700)[1] == messages[1]
+    archived = state.memory.prune(messages, 0, 700)[1]
+    assert "Previously inspected range archived" in archived["content"]
+    assert "retained active_sources" not in archived["content"]
+    assert archived["metadata"]["coder_result"]["archived"]
 
 
 def test_successful_skill_resources_survive_as_continuity_metadata():
@@ -215,7 +218,7 @@ def test_sources_yield_space_to_actual_fixed_context_and_latest_feedback():
     state = RunState()
     read(state, "/workspace/main.py", "print('retained')\n" * 1000)
     messages = [
-        {"role": "system", "content": "instructions " * 1700},
+        {"role": "system", "content": "instructions " * 2000},
         {
             "role": "user",
             "content": "Continue the current task",
@@ -372,59 +375,64 @@ async def test_real_compaction_keeps_app_source_pending_fix_and_structured_notes
         tools=None,
         native_tools=True,
     )
-    assert changed and summarize.await_count > 0
-    assert summarize.call_args.kwargs["prompt_name"] == "coder_compaction"
-    assert summarize.call_args.kwargs["max_tokens"] > 512
+    assert changed
+    summarize.assert_not_awaited()
     assert all(item in result for item in latest)
     serialized = json.dumps(result)
-    assert "PATCH /api/items/{id}" in serialized and "export const update" in serialized
-    assert state.memory.handoff == handoff and state.memory.compactions == 1
+    assert "/api/items/{id}" in serialized and "export const update" in serialized
+    assert "archived deterministically" in state.memory.handoff
+    assert state.memory.compactions == 1
+    assert handoff not in serialized
     assert "frontend_entrypoint" in serialized and "Runtime OpenAPI" in serialized
     assert "backend_tests" in state.validations
     checkpoint = state.memory.checkpoint()
     assert checkpoint["project_handoff"]["resources"] == ["contacts"]
     assert checkpoint["api_contract"]["operations"][0]["method"] == "PATCH"
     assert cc.estimate_request_tokens(result) <= cc.context_budget("coder").input_limit
-    # A second compaction sees the first handoff and retains its relevant decisions.
+    # Repeated compaction preserves structured facts without generated history.
     followup = [
         *result[:-1],
         *exchange("more-work", "run_command", "new evidence\n" * 2500, False),
         *exchange("latest-read", "read_file", "latest exact source"),
         state.context(),
     ]
-    await state.memory.compact(
+    again, _ = await state.memory.compact(
         followup,
         "coder",
         compactor=cc.compact_conversation,
         tools=None,
         native_tools=True,
     )
-    assert any(
-        "PATCH /api/items/{id}" in str(call.args)
-        for call in summarize.call_args_list[1:]
-    )
+    summarize.assert_not_awaited()
+    assert "Runtime OpenAPI" in json.dumps(again)
     assert state.memory.compactions == 2
 
 
 @pytest.mark.asyncio
-async def test_failed_compaction_retains_previous_handoff_and_context(monkeypatch):
+async def test_compaction_does_not_depend_on_summarizer_or_replay_legacy_handoff(
+    monkeypatch,
+):
     memory = CoderMemory(handoff="Previous decisions")
-    monkeypatch.setattr(cc, "_llm_summarize", AsyncMock(return_value=None))
+    summarize = AsyncMock(side_effect=RuntimeError("summarizer unavailable"))
+    monkeypatch.setattr(cc, "_llm_summarize", summarize)
     messages = [
         {"role": "user", "content": "Continue", "metadata": {"agent_request": True}},
         *exchange("old", "run_tests", "failed\n" * 6000, False),
         *exchange("latest", "read_file", "current source"),
     ]
     original = copy.deepcopy(messages)
-    with pytest.raises(cc.ContextBudgetExceeded):
-        await memory.compact(
-            messages,
-            "coder",
-            compactor=cc.compact_conversation,
-            tools=None,
-            native_tools=True,
-        )
-    assert messages == original and memory.handoff == "Previous decisions"
+    result, changed = await memory.compact(
+        messages,
+        "coder",
+        compactor=cc.compact_conversation,
+        tools=None,
+        native_tools=True,
+    )
+    summarize.assert_not_awaited()
+    assert changed and messages == original
+    assert "Previous decisions" not in json.dumps(result)
+    assert all(item in result for item in messages[-2:])
+    assert memory.checkpoint()["compaction_mode"] == "deterministic"
 
 
 @pytest.mark.asyncio

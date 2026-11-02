@@ -23,6 +23,7 @@ import {
   Square,
   RotateCcw,
   RotateCw,
+  Circle,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -1250,8 +1251,91 @@ function CoderToolResultDetail({
   return (
     <div className="space-y-3">
       <p className="text-[12.5px] font-medium text-foreground">
-        {result.summary}
+        {result.plan
+          ? translate("tool.coder.plan.saved", {
+              count: result.plan.steps.length,
+            })
+          : result.summary}
       </p>
+      {result.plan && (
+        <div className="space-y-3">
+          <p className="text-[11px] text-muted-foreground">
+            {translate("tool.coder.plan.disclaimer")}
+          </p>
+          <ol className="space-y-2">
+            {result.plan.steps.map((step, index) => (
+              <li key={index} className="flex items-start gap-2 text-[12px]">
+                {step.status === "completed" ? (
+                  <Check
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                ) : step.status === "in_progress" ? (
+                  <Play
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Circle
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                )}
+                <div className="min-w-0">
+                  <p className="whitespace-pre-wrap break-words text-foreground/90">
+                    {step.task}
+                  </p>
+                  <span
+                    className={cn(
+                      "text-[10.5px]",
+                      step.status === "in_progress"
+                        ? "text-primary"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {translate(`tool.coder.plan.${step.status}`)}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ol>
+          <div className="border-s-2 border-primary/50 ps-3">
+            <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+              {translate("tool.coder.plan.nextAction")}
+            </p>
+            <p className="whitespace-pre-wrap break-words text-[12px] text-foreground">
+              {result.plan.nextAction}
+            </p>
+          </div>
+          {result.plan.notes && (
+            <div>
+              <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+                {translate("tool.coder.plan.notes")}
+              </p>
+              <p className="whitespace-pre-wrap break-words text-[12px] text-foreground/80">
+                {result.plan.notes}
+              </p>
+            </div>
+          )}
+          {result.plan.files.length > 0 && (
+            <div>
+              <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground">
+                {translate("tool.coder.plan.files")}
+              </p>
+              <ul className="space-y-1">
+                {result.plan.files.map((path) => (
+                  <li
+                    key={path}
+                    className="break-all font-mono text-[11.5px] text-foreground/80"
+                  >
+                    {path}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       {result.files.length > 0 && (
         <div>
           <p className="mb-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground/80">

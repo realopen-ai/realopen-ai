@@ -14,11 +14,6 @@ services:
     ports:
       - "6379:6379"
 
-  # SearxNG (expose port)
-  searxng:
-    ports:
-      - "8080:8080"
-
   # Backend: dev build with hot reload
   backend:
     build:

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.core.prompt_security import untrusted_context_message
-from app.agent.coder.context import CoderMemory, tokens
+from app.agent.coder.context import CoderMemory, bounded_output, tokens
 from app.agent.coder.handoff import bounded_contract
 
 
@@ -174,12 +174,24 @@ def inspection_step(name, args):
     if name != "run_command":
         return False
     try:
-        words = shlex.split(args.get("command", ""))
+        lexer = shlex.shlex(
+            args.get("command", ""), posix=True, punctuation_chars=";&|"
+        )
+        lexer.whitespace_split = True
+        words = list(lexer)
     except ValueError:
         return False
     # Advisory only; actual mutation receipts always take precedence.
-    return bool(words) and (
-        words[0]
+    stages, current = [], []
+    for word in [*words, ";"]:
+        if word in {";", "&&", "||", "|"}:
+            if current:
+                stages.append(current)
+            current = []
+        else:
+            current.append(word)
+    return bool(stages) and all(
+        stage[0]
         in {
             "cat",
             "head",
@@ -192,8 +204,10 @@ def inspection_step(name, args):
             "pwd",
             "roai-project-info",
         }
-        or words[:2] in (["git", "diff"], ["git", "status"], ["git", "show"])
-        or words[:2] == ["sed", "-n"]
+        or stage[:2] in (["git", "diff"], ["git", "status"], ["git", "show"])
+        or stage[:2] == ["sed", "-n"]
+        or (stage[0] == "cd" and len(stage) == 2)
+        for stage in stages
     )
 
 
@@ -207,6 +221,7 @@ class RunState:
     validations: dict = field(default_factory=dict)
     last_checks: dict = field(default_factory=dict)
     repeat_counts: dict = field(default_factory=dict)
+    failures: dict = field(default_factory=dict)
     previews: set = field(default_factory=set)
     project: dict | None = None
     project_facts: dict | None = None
@@ -227,6 +242,42 @@ class RunState:
     read_only_rounds: int = 0
     repeated_read_rounds: int = 0
     recovery_sent: bool = False
+    available_reads: list | None = None
+    recovered_source_reads: int = 0
+    stop_reason: str | None = None
+
+    def source_available(self, path, digest, start, end):
+        for a, b in sorted(
+            (a, b)
+            for p, h, a, b in (self.available_reads or [])
+            if p == path and h == digest
+        ):
+            if a > start:
+                break
+            start = max(start, b)
+            if start >= end:
+                return True
+        return False
+
+    def prepare_round(self, messages):
+        """Track exact source actually supplied, not just historical read receipts."""
+        self.available_reads = [
+            (s["path"], s["sha256"], s["offset"], s["offset"] + len(s["content"]))
+            for s in (self.memory.active_sources or [])
+        ]
+        for message in messages:
+            receipt = (message.get("metadata") or {}).get("coder_result") or {}
+            span = receipt.get("range")
+            if (
+                receipt.get("tool") == "read_file"
+                and receipt.get("success")
+                and not receipt.get("archived")
+                and span
+                and receipt.get("path")
+            ):
+                self.available_reads.append(
+                    (receipt["path"], receipt["sha256"], span[0], span[0] + span[1])
+                )
 
     def round_marker(self):
         return (
@@ -234,6 +285,7 @@ class RunState:
             self.verification_attempts,
             len(self.observation_keys),
             self.exploration_steps,
+            self.recovered_source_reads,
         )
 
     def finish_round(self, marker):
@@ -245,15 +297,36 @@ class RunState:
             self.repeated_read_rounds = (
                 self.repeated_read_rounds + 1
                 if len(self.observation_keys) == marker[2]
+                and self.recovered_source_reads == marker[4]
                 else 0
             )
         if self.recovery_sent and self.repeated_read_rounds >= 2:
+            self.stop_reason = "repeated_available_evidence"
             return "Coder stopped after repeated read-only rounds revisited unchanged evidence despite recovery. No additional implementation or verification was performed; preserved files and outstanding checks are reported below."
+        if (
+            self.recovery_sent
+            and self.read_only_rounds >= 6
+            and (self.project or self.files_changed)
+        ):
+            self.stop_reason = "sustained_exploration"
+            return "Coder stopped after sustained source exploration without implementation or verification despite recovery. Reading new files is not implementation progress. Files are preserved; continue from the saved plan, project map and outstanding checks rather than restarting discovery."
         return ""
 
     def invalidate_checks(self, paths, unknown=False):
         """Local layer edits do not erase verified evidence for the other layer."""
         roles = {_workspace_relative(path).split("/", 1)[0] for path in paths}
+        if (
+            unknown
+            or not roles
+            or not roles <= {"backend", "frontend"}
+            or "backend" in roles
+        ):
+            self.memory.api_contract_status = {
+                "status": "invalidated",
+                "reason": "Backend or unscoped source changed; refresh the relevant /openapi.json contract if needed, not the whole project.",
+                "changed_paths": [str(path)[:300] for path in paths[:8]],
+                "tracking_unavailable": unknown,
+            }
         if unknown or not roles or not roles <= {"backend", "frontend"}:
             self.validations.clear()
             self.memory.api_contract = None
@@ -287,6 +360,7 @@ class RunState:
                 if self.memory.api_contract
                 else None
             ),
+            "observed_api_contract_status": self.memory.api_contract_status,
             "outstanding_verification": checks,
             "next_focus": (
                 "Review remaining explicit requirements, then report verified completion if satisfied; do not repeat exploration or checks without a reason."
@@ -295,11 +369,15 @@ class RunState:
                     "Verify generated CRUD before exploring source; implement only remaining explicit requirements."
                     if generated and not self.validations
                     else (
-                        "Backend tested: use its observed API contract for frontend work; reopen backend only for a concrete failure or requirement."
-                        if "backend_tests" in self.validations
-                        and self.project
-                        and self.project.get("frontend")
-                        else "Work on the next requirement with targeted inspection, then verify the affected layer and integration."
+                        "Implementation checks have passed; start or reuse previews and perform the outstanding HTTP/API smoke check (through the frontend /api proxy for full-stack apps). Then review explicit requirements and report verified completion. Do not restart source discovery."
+                        if checks == ["live preview smoke check"]
+                        else (
+                            "Backend tested: use its observed API contract for frontend work; reopen backend only for a concrete failure or requirement."
+                            if "backend_tests" in self.validations
+                            and self.project
+                            and self.project.get("frontend")
+                            else "Work on the next requirement with targeted inspection, then verify the affected layer and integration."
+                        )
                     )
                 )
             ),
@@ -358,7 +436,26 @@ class RunState:
 
     def record(self, name, args, output, event):
         event = event or {}
+        read = event.get("read")
+        restored = False
+        if read and self.available_reads is not None:
+            path, digest = read["path"], read["sha256"]
+            start, end = read["offset"], read["offset"] + len(read["content"])
+            historical = (
+                path,
+                digest,
+                start,
+                len(read["content"]),
+            ) in self.observation_keys
+            restored = historical and not self.source_available(
+                path, digest, start, end
+            )
+            if restored:
+                self.recovered_source_reads += 1
+            self.available_reads.append((path, digest, start, end))
         self.memory.record(name, args, event)
+        if event.get("working_plan"):
+            self.memory.plan = event["working_plan"]
         if "checks" in event:
             reason = ""
             for check in event["checks"]:
@@ -372,6 +469,25 @@ class RunState:
                     or reason
                 )
             return reason
+        attempt_key = hashlib.sha256(
+            json.dumps([name, args], sort_keys=True, default=str).encode()
+        ).hexdigest()
+        self.failures.pop(attempt_key, None)
+        if event.get("exit_code") not in (None, 0) or event.get("corrective"):
+            self.failures[attempt_key] = {
+                "tool": name,
+                "observed_revision": self.revision,
+                "target": {
+                    key: str(args[key])[:300]
+                    for key in ("path", "command")
+                    if key in args
+                },
+                "error": bounded_output(
+                    output, max(128, self.memory.budgets()["output"] // 3)
+                ),
+            }
+            while len(self.failures) > 3:
+                self.failures.pop(next(iter(self.failures)))
         self.worklog.append(
             {
                 "tool": name,
@@ -451,12 +567,20 @@ class RunState:
             self.project_facts = event["project_facts"]
         if event.get("api_contract") and event.get("exit_code") == 0:
             self.memory.api_contract = event["api_contract"]
+            self.memory.api_contract_status = {
+                "status": "observed",
+                "revision": self.revision,
+            }
         elif (
             name == "check_preview"
             and args.get("path") == "/openapi.json"
             and event.get("exit_code") != 0
         ):
             self.memory.api_contract = None
+            self.memory.api_contract_status = {
+                "status": "unavailable",
+                "reason": "Runtime schema request failed; see recent failed attempts.",
+            }
         if event.get("preview_url"):
             self.preview_started = True
             self.previews.add(event.get("port"))
@@ -477,6 +601,11 @@ class RunState:
                     "revision": self.revision,
                     "status": (
                         "failed" if event.get("exit_code") != 0 else "not_verified"
+                    ),
+                    **(
+                        {"failure": output[-1200:]}
+                        if event.get("exit_code") != 0
+                        else {}
                     ),
                 }
             if (
@@ -518,6 +647,7 @@ class RunState:
                 "status": "failed",
                 "path": args.get("path"),
                 "port": args.get("port"),
+                "failure": output[-1200:],
             }
         if name == "check_preview" and event.get("exit_code") == 0:
             full_stack = (
@@ -561,10 +691,29 @@ class RunState:
                 [self.revision, name, args, output], sort_keys=True, default=str
             ).encode()
         ).hexdigest()
-        self.repeat_counts[signature] = self.repeat_counts.get(signature, 0) + 1
+        self.repeat_counts[signature] = (
+            1 if restored else self.repeat_counts.get(signature, 0) + 1
+        )
+        if attempt_key in self.failures:
+            self.failures[attempt_key]["observed_revision"] = self.revision
+        # Application-owned facts survive deterministic history archival. Plan
+        # assertions are deliberately separate from executed check receipts.
+        self.checkpoint()
         if self.repeat_counts[signature] >= 3:
+            self.stop_reason = "repeated_action_without_progress"
             return "Coder stopped after repeating the same action/result three times without file progress. Inspect a different source of evidence or report the concrete blocker."
         return ""
+
+    def checkpoint(self):
+        self.memory.execution = {
+            "revision": self.revision,
+            "recent_changes": self.files_changed[-12:],
+            "checks": self.verification_report()["checks"],
+            "outstanding_verification": self.completion_missing(),
+            "read_only_rounds": self.read_only_rounds,
+            "recent_failures": list(self.failures.values()),
+        }
+        return self.memory.checkpoint()
 
     def completion_missing(self):
         if not self.files_changed and not self.unverified_changes:
@@ -683,8 +832,15 @@ class RunState:
                     "revision": self.revision,
                     "workflow": self.workflow_context(model),
                     "continuation": {
+                        "compaction_mode": "deterministic",
                         "compactions": self.memory.compactions,
                         "loaded_resources": self.memory.resources,
+                        "model_authored_plan_not_verification": self.memory.plan,
+                        "previously_inspected": list(self.memory.observations.values()),
+                        "latest_check_outcomes": self.memory.execution.get(
+                            "checks", {}
+                        ),
+                        "recent_failed_attempts": list(self.failures.values()),
                         "active_sources": self.memory.source_context(
                             model, source_limit
                         ),
@@ -701,13 +857,6 @@ class RunState:
                     },
                     "observed_project": self.project_facts,
                     "changed_files": self.files_changed,
-                    "read_files": {
-                        path: {
-                            "sha256": item.get("sha256"),
-                            "total_chars": item.get("total"),
-                        }
-                        for path, item in self.reads.items()
-                    },
                     "current_validation": self.validations,
                     "generated_app_evidence": {
                         "scaffolded_roles": sorted(self.scaffolded_roles),
@@ -724,7 +873,20 @@ class RunState:
                     "source_tracking_unavailable": self.unverified_changes,
                     "previews": sorted(p for p in self.previews if p),
                     "recent_steps": [
-                        {"tool": item["tool"], "result": item["result"][:600]}
+                        {
+                            "tool": item["tool"],
+                            "args": {
+                                key: str(item["args"][key])[:300]
+                                for key in (
+                                    "path",
+                                    "query",
+                                    "command",
+                                    "name",
+                                    "resource",
+                                )
+                                if key in item["args"]
+                            },
+                        }
                         for item in self.worklog[-3:]
                     ],
                 },

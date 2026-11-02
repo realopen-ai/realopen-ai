@@ -48,6 +48,21 @@ class ResultView:
     shortened: bool = False
 
 
+def coder_result_data(parsed):
+    if not isinstance(parsed, dict) or not isinstance(
+        parsed.get("execution_outcome"), dict
+    ):
+        return None
+    outcome = dict(parsed["execution_outcome"])
+    files = outcome.get("files_changed", [])
+    outcome.update(files_changed=files[:12], files_changed_count=len(files))
+    return {
+        "task_id": parsed.get("task_id"),
+        "execution_outcome": outcome,
+        "summary_excerpt": str(parsed.get("summary", ""))[:1600],
+    }
+
+
 def compact_result(
     name, output, call=None, *, success=True, result_ref=None, limit=6000
 ):
@@ -57,6 +72,28 @@ def compact_result(
     No summarizer, semantic rewriting, or lost IDs/citation headers.
     """
     text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+    if name == "delegate_to_coder":
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            parsed = None
+        data = coder_result_data(parsed)
+        if data is not None:
+            data.update(
+                {
+                    "shortened": True,
+                    "result_ref": result_ref,
+                    "original_chars": len(text),
+                    "message": "Full coder output remains in the UI and persisted task history. "
+                    + (
+                        "Read omitted evidence with read_tool_result(result_ref). "
+                        if result_ref
+                        else ""
+                    )
+                    + "Use the structured stop reason, not an inferred permissions explanation.",
+                }
+            )
+            return ResultView(json.dumps(data, ensure_ascii=False), True)
     if (
         not success
         or name in {"load_skill", "read_tool_result"}

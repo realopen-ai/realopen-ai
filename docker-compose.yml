@@ -45,16 +45,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # SearxNG
+  # Bundled search services: the host runtime reconciles saved provider choices.
+  # Profiles prevent Compose startup from running unselected services.
   searxng:
     image: docker.io/searxng/searxng:latest
     container_name: realopen-searxng
+    profiles: [search]
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./monitoring/searxng-settings.yml:/etc/searxng/settings.yml:ro
       - ./monitoring/searxng-limiter.toml:/etc/searxng/limiter.toml:ro
-    restart: unless-stopped
+    restart: "no"
     mem_limit: 256m
     cpus: 0.5
+    networks:
+      - realopen-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Degoog (also available through the manual "degoog" profile)
+  # Open localhost:4444 and install web engines using the setup wizard.
+  degoog:
+    image: ghcr.io/degoog-org/degoog:latest
+    container_name: realopen-degoog
+    profiles: [search, degoog]
+    volumes:
+      - ./data/degoog:/app/data
+    ports:
+      - "127.0.0.1:4444:4444"
+    restart: "no"
     networks:
       - realopen-net
     logging:

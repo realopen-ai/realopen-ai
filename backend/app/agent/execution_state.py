@@ -4,6 +4,7 @@ import json
 
 from app.core.prompt_security import untrusted_context_message
 from app.prompts import format_prompt
+from app.agent.results import coder_result_data
 
 
 def result_metadata(output, generated=None):
@@ -90,6 +91,14 @@ class ExecutionState:
         counts = self.attempt_counts.setdefault(name, {"successful": 0, "failed": 0})
         counts["successful" if success else "failed"] += 1
         item = {"call_id": call["id"], "tool": name}
+        coder = None
+        if name == "delegate_to_coder":
+            try:
+                coder = coder_result_data(json.loads(str(output)))
+            except (TypeError, ValueError):
+                pass
+            if coder:
+                item["coder_outcome"] = coder["execution_outcome"]
         if success:
             item["result"] = result_metadata(output, generated)
             self.successes.append(item)
@@ -100,6 +109,8 @@ class ExecutionState:
             # traces retain it, but the decision ledger needs only the error.
             item["error"] = str(output).split("; received ", 1)[0][:2000]
             item["kind"] = "validation" if validation else "execution"
+            if coder:
+                item["error"] = coder["summary_excerpt"]
             self.failures[name] = item
             if validation:
                 self.rejected_call_ids.add(call["id"])

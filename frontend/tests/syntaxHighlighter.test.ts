@@ -43,6 +43,26 @@ test("detects a grammar from a sandbox filename", async () => {
   assert.equal(flatten(result.children).text, code);
 });
 
+test("highlights TSX filenames and fenced language flags with TypeScript and JSX tokens", async () => {
+  const code =
+    'export const Card = ({ label }: { label: string }) => <button title="Open">{label}</button>;';
+  for (const selector of [
+    { filePath: "/workspace/frontend/src/Card.tsx" },
+    { language: "tsx" },
+    { language: "language-tsx" },
+    { language: "typescriptreact" },
+  ]) {
+    const result = await highlightCode({ code, ...selector });
+    assert.ok(result);
+    assert.equal(result.scope, "source.tsx");
+    const rendered = flatten(result.children);
+    assert.equal(rendered.text, code);
+    assert.ok(rendered.classes.includes("pl-k"));
+    assert.ok(rendered.classes.includes("pl-ent"));
+    assert.strictEqual(await highlightCode({ code, ...selector }), result);
+  }
+});
+
 test("keeps unknown languages and oversized files as plain-text fallbacks", async () => {
   assert.equal(
     await highlightCode({ code: "plain text", filePath: "notes.customxyz" }),
@@ -59,6 +79,44 @@ test("keeps unknown languages and oversized files as plain-text fallbacks", asyn
     }),
     null,
   );
+});
+
+test("highlights HTML files and fences without losing markup", async () => {
+  const code =
+    '<!doctype html>\n<section class="card"><h1>Hello</h1></section>';
+  for (const selector of [
+    { filePath: "/workspace/frontend/index.html" },
+    { filePath: "/workspace/INDEX.HTML" },
+    { filePath: "/workspace/page.htm" },
+    { language: "html" },
+    { language: "language-html" },
+  ]) {
+    const result = await highlightCode({ code, ...selector });
+    assert.ok(result);
+    assert.equal(result.scope, "text.html.basic");
+    const rendered = flatten(result.children);
+    assert.equal(rendered.text, code);
+    assert.ok(rendered.classes.includes("pl-ent"));
+  }
+});
+
+test("highlights JSX tags and JavaScript in filenames and fences", async () => {
+  const code =
+    "export const Card = ({ label }) => <button onClick={() => console.log(label)}>{label}</button>;";
+  for (const selector of [
+    { filePath: "/workspace/frontend/src/Card.jsx" },
+    { language: "jsx" },
+    { language: "language-jsx" },
+    { language: "javascriptreact" },
+  ]) {
+    const result = await highlightCode({ code, ...selector });
+    assert.ok(result);
+    assert.equal(result.scope, "source.tsx");
+    const rendered = flatten(result.children);
+    assert.equal(rendered.text, code);
+    assert.ok(rendered.classes.includes("pl-k"));
+    assert.ok(rendered.classes.includes("pl-ent"));
+  }
 });
 
 test("chat and file views retain their controls and use the shared highlighter", () => {

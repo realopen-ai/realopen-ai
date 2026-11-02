@@ -41,7 +41,7 @@ from app.api.skills import router as skills_router  # noqa: E402
 from app.api.voice import router as voice_router  # noqa: E402
 from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa: E402
 from app.core.logger import is_debug  # noqa: E402
-from app.services import agent_settings, coder_settings  # noqa: E402
+from app.services import agent_settings, coder_settings, search_services  # noqa: E402
 from app.services import skills as skill_store  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
 from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
@@ -392,11 +392,15 @@ async def lifespan(app: FastAPI):
                 logger.debug("Sandbox idle monitor: %s", exc)
 
     sandbox_monitor = asyncio.create_task(idle_sandbox_monitor())
+    search_monitor = asyncio.create_task(search_services.monitor())
     try:
         yield
     finally:
         # Shutdown: flush the optional local trace writer after active requests stop.
         sandbox_monitor.cancel()
+        search_monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await search_monitor
         with suppress(asyncio.CancelledError):
             await sandbox_monitor
         await flush_traces()

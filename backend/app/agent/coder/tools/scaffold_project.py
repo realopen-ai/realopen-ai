@@ -9,7 +9,7 @@ from app.agent.coder.tools.schema import STYLING_PROPERTY
 
 SCHEMA = _function(
     "scaffold_project",
-    "Create a new FastAPI/SQLite and/or React+Vite+TypeScript starter with local Tailwind CSS. Vanilla TypeScript is optional. Never overwrites existing files. Implement the requested app and rerun validation.",
+    "Create a minimal FastAPI and/or React+Vite+TypeScript starter with local Tailwind CSS and an /api proxy. No CRUD, database layer, auth, ownership or application-specific tests are generated. Implement the requested app yourself. Vanilla TypeScript is optional. Never overwrites existing files.",
     {
         "name": {"type": "string"},
         "backend": {"type": "string", "enum": ["none", *BACKENDS]},
