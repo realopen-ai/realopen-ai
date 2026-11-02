@@ -13,6 +13,7 @@ import httpx
 
 from app.agent import service, tracing
 from app.agent.coder import agent as coder_agent, provider as coder_provider
+from app.agent.coder import web_tools as coder_web_tools
 from app.agent.coder.checkpoints import PlanCheckpoints, PLAN_TOOLS
 from app.agent.coder.tools.update_plan import execute as save_plan
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, ToolRegistry
@@ -198,7 +199,9 @@ async def test_coder_saves_plan_before_archival_without_displacing_latest_failur
     monkeypatch.setattr(
         coder_agent, "compact_conversation", context_compactor.compact_conversation
     )
-    monkeypatch.setitem(agent_settings._overrides, "compaction_threshold", 0.45)
+    # Keep the first diagnostic intact, then explicitly introduce context
+    # pressure after the second one. Prompt/schema growth must not move the
+    # checkpoint to an earlier round and change which feedback is protected.
     phases = []
     latest_feedback = "SECOND_FAILURE_EXACT: " + "specific failure details " * 160
     initial = {
@@ -211,6 +214,16 @@ async def test_coder_saves_plan_before_archival_without_displacing_latest_failur
         "notes": "Preserve existing interfaces; two diagnostics failed, nothing was implemented.",
     }
     normal_calls = 0
+    effective_preferences = agent_settings.effective
+
+    def preferences_with_pressure():
+        # Coder execution snapshots preferences; override the effective view
+        # explicitly rather than changing persisted settings mid-request.
+        return effective_preferences().model_copy(
+            update={"compaction_threshold": 0.5 if normal_calls >= 2 else 0.95}
+        )
+
+    monkeypatch.setattr(agent_settings, "effective", preferences_with_pressure)
 
     async def chat(model, messages, tools=None, **kwargs):
         nonlocal normal_calls
@@ -606,6 +619,10 @@ async def saved(path):
 
 @pytest.fixture
 def coder_setup(trace_setup, monkeypatch):
+    # These tests exercise local coder lifecycle/trace behavior. Optional web
+    # schemas have their own integration tests and must not depend on global
+    # registry discovery or the developer's saved tool preferences here.
+    monkeypatch.setattr(coder_web_tools, "get_tool_registry", ToolRegistry)
     # These protocol/lifecycle tests start after initial planning so their round
     # fixtures stay focused on implementation. Checkpoint integration tests
     # below restore the real initial phase explicitly.
