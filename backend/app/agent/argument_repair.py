@@ -279,6 +279,11 @@ def native_rebuild(calls, name, repair=None):
 def parse_rebuild(text, name, repair=None):
     """Parse one complete response; do not guess missing quotes or fields."""
     raw = re.sub(r"\A```(?:json|tool)?\s*\n?|\n?```\s*\Z", "", text.strip())
+    if text.lstrip().startswith("```"):
+        # Some models emit surplus closing Markdown backticks after the JSON
+        # object. Strip framing punctuation only; never alter JSON strings,
+        # insert missing delimiters, or accept extra prose/JSON documents.
+        raw = raw.rstrip("` \t\r\n")
     call = {"id": "repair-" + uuid.uuid4().hex, "tool": name, "args": {}}
     if repair:
         call["repair_mode"] = "fields"

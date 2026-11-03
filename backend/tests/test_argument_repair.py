@@ -62,6 +62,21 @@ def test_missing_schema_field_retains_conservative_full_rebuild():
     assert field_repair({}, parameters, issues) is None
 
 
+def test_surplus_markdown_backticks_do_not_change_repair_values():
+    body = json.dumps(
+        {"tool": "echo", "args": {"input": 'Keep `code` and quotes: "yes"'}}
+    )
+    parsed = parse_rebuild("```json\n" + body + "`\n```", "echo")
+    assert "parse_error" not in parsed
+    assert parsed["args"] == {"input": 'Keep `code` and quotes: "yes"'}
+    for suffix in [" extra prose", " {}", ', "broken":']:
+        rejected = parse_rebuild("```json\n" + body + suffix + "`\n```", "echo")
+        assert "parse_error" in rejected
+    assert "parse_error" in parse_rebuild(
+        '```json\n{"tool":"echo","args":{"input":"bad}`\n```', "echo"
+    )
+
+
 def schema(tool):
     return {
         "function": {
