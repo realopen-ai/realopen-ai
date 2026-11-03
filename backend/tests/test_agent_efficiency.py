@@ -225,8 +225,9 @@ async def test_report_receives_original_evidence_not_compact_views_or_model_inje
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [False, True])
 async def test_quiz_receives_only_request_local_successful_fetch_receipts(
-    agent, monkeypatch
+    agent, monkeypatch, cited
 ):
     fetch, quiz = WebFetchTool(), CreateQuizTool()
     registry = ToolRegistry()
@@ -249,7 +250,7 @@ async def test_quiz_receives_only_request_local_successful_fetch_receipts(
                 "prompt": "What is shape?",
                 "answer": "Dimension sizes",
                 "explanation": "Definition",
-                "source_urls": [url],
+                "source_urls": [url] if cited else [],
             }
         ],
         "_evidence": [
@@ -274,6 +275,7 @@ async def test_quiz_receives_only_request_local_successful_fetch_receipts(
     assert receipt["tool"] == fetch.name
     assert receipt["text"] == raw
     assert receipt["request"] == {"url": url}
+    assert "_require_sources" not in writer.await_args.kwargs
     assert all("_evidence" not in event.get("tool_call", {}) for event in events)
     writer.reset_mock()
     script(
@@ -285,83 +287,6 @@ async def test_quiz_receives_only_request_local_successful_fetch_receipts(
     )
     await run()
     assert writer.await_args.kwargs["_evidence"] == []
-
-
-@pytest.mark.asyncio
-async def test_quiz_source_requirement_survives_repairs_but_not_next_request(
-    agent, monkeypatch
-):
-    quiz = CreateQuizTool()
-    registry = ToolRegistry()
-    registry.register(quiz)
-    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
-    monkeypatch.setattr(service, "_select_tools", lambda _: {quiz.name})
-    writer = AsyncMock(
-        return_value=ToolResult(False, "Missing citations", failure_kind="validation")
-    )
-    monkeypatch.setattr(quiz, "execute", writer)
-    arguments = {
-        "title": "Arrays",
-        "questions": [
-            {
-                "type": "short_answer",
-                "prompt": "What is shape?",
-                "answer": "Dimension sizes",
-                "explanation": "Definition",
-            }
-        ],
-    }
-    script(
-        monkeypatch,
-        [
-            [
-                {
-                    "tool_calls": [
-                        call(
-                            {**arguments, "source_grounded": True},
-                            name=quiz.name,
-                            id="first",
-                        )
-                    ],
-                    "done": True,
-                }
-            ],
-            [
-                {
-                    "tool_calls": [
-                        call(
-                            {
-                                **arguments,
-                                "source_grounded": False,
-                                "_require_sources": False,
-                            },
-                            name=quiz.name,
-                            id="repair",
-                        )
-                    ],
-                    "done": True,
-                }
-            ],
-            [{"content": "Sources needed", "done": True}],
-        ],
-    )
-    events = await run()
-    assert writer.await_count == 2, events
-    assert [entry.kwargs["_require_sources"] for entry in writer.await_args_list] == [
-        True,
-        True,
-    ]
-    assert all("_require_sources" not in event.get("tool_call", {}) for event in events)
-    writer.reset_mock()
-    script(
-        monkeypatch,
-        [
-            [{"tool_calls": [call(arguments, name=quiz.name)], "done": True}],
-            [{"content": "Done", "done": True}],
-        ],
-    )
-    await run()
-    assert writer.await_args.kwargs["_require_sources"] is False
 
 
 @pytest.mark.asyncio

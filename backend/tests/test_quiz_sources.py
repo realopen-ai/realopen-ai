@@ -121,39 +121,27 @@ def test_offline_quizzes_stay_available_without_claiming_verification():
     assert "not automatic answer verification" in summary["message"]
 
 
-@pytest.mark.parametrize("explicit", [False, True])
-def test_researched_quiz_requires_each_question_to_have_a_source(explicit):
+@pytest.mark.parametrize("partial", [False, True])
+def test_researched_quiz_allows_missing_and_partial_citations(partial):
     evidence = [{"tool": "use_webfetch", "request": {"url": URL}, "text": "Definition"}]
     questions = [
-        question(source_urls=[URL]),
+        question(source_urls=[URL] if partial else []),
         question(),
-        question(source_urls=[URL]),
+        question(source_urls=[URL] if partial else []),
         question(),
     ]
-    with pytest.raises(
-        ValueError, match="Questions 2, 4 need supporting citations"
-    ) as caught:
-        validate_web_sources(questions, evidence, source_grounded=explicit)
-    assert [issue["path"] for issue in caught.value.issues] == [
-        ["questions", 1],
-        ["questions", 3],
-    ]
+    validate_web_sources(questions, evidence)
     assert not questions[1].source_urls  # No automatic attribution.
-    questions[1].source_urls = [URL]
-    questions[3].source_urls = [URL]
-    validate_web_sources(questions, evidence, source_grounded=explicit)
 
 
-def test_explicit_grounding_requires_sources_even_before_successful_retrieval():
-    with pytest.raises(ValueError, match="Questions 1 need supporting citations"):
-        validate_web_sources([question()], [], source_grounded=True)
+def test_citation_requirement_is_not_exposed_to_the_model():
+    assert "source_grounded" not in quiz_tool.CreateQuizTool().get_parameters()
     validate_web_sources([question()], [])  # Ordinary offline quiz.
 
 
-def test_search_snippets_require_citations_but_cannot_validate_urls():
+def test_search_snippets_allow_missing_citations_but_cannot_validate_urls():
     receipts = [{"tool": "use_websearch", "metadata": {"url": URL}, "text": "Snippet"}]
-    with pytest.raises(ValueError, match="supporting citations"):
-        validate_web_sources([question()], receipts)
+    validate_web_sources([question()], receipts)
     with pytest.raises(ValueError, match="not successfully fetched"):
         validate_web_sources([question(source_urls=[URL])], receipts)
 
@@ -169,7 +157,6 @@ def test_document_and_artifact_provenance_also_satisfy_coverage():
             ),
         ],
         [],
-        source_grounded=True,
     )
 
 
@@ -187,21 +174,9 @@ async def test_invalid_citation_does_not_open_database_or_save(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_required_citations_do_not_open_database_or_save(monkeypatch):
-    factory = AsyncMock()
-    monkeypatch.setattr(quiz_tool, "async_session_factory", factory)
-    result = await quiz_tool.CreateQuizTool().execute(
-        title="Arrays", questions=[question().model_dump()], source_grounded=True
-    )
-    assert not result.success and result.failure_kind == "validation"
-    assert result.validation_issues[0]["path"] == ["questions", 0]
-    assert "Nothing was saved" in result.output
-    factory.assert_not_called()
-
-
-@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [False, True])
 async def test_agent_tool_persists_citations_without_leaking_answers(
-    database, monkeypatch
+    database, monkeypatch, cited
 ):
     @asynccontextmanager
     async def factory():
@@ -209,26 +184,23 @@ async def test_agent_tool_persists_citations_without_leaking_answers(
             yield AsyncAdapter(db)
 
     monkeypatch.setattr(quiz_tool, "async_session_factory", factory)
-    q = question(source_urls=[URL])
+    q = question(source_urls=[URL] if cited else [])
     evidence = [{"tool": "use_webfetch", "request": {"url": URL}, "text": "Definition"}]
-    rejected = await quiz_tool.CreateQuizTool().execute(
-        title="Arrays", questions=[question().model_dump()], _evidence=evidence
-    )
-    assert not rejected.success and rejected.failure_kind == "validation"
-    with Session(database) as db:
-        assert db.scalars(select(Quiz)).all() == []
     result = await quiz_tool.CreateQuizTool().execute(
         title="Arrays",
         questions=[q.model_dump()],
         _evidence=evidence,
+        # Older conversations may still contain these removed flags.
+        source_grounded=True,
+        _require_sources=True,
     )
     assert result.success, result.output
     assert q.answer not in result.output
     assert q.prompt not in result.output
-    assert json.loads(result.output)["grounding"]["sourced_questions"] == 1
+    assert json.loads(result.output)["grounding"]["sourced_questions"] == int(cited)
     with Session(database) as db:
         (quiz,) = db.scalars(select(Quiz)).all()
-        assert quiz.questions[0]["source_urls"] == [URL]
+        assert quiz.questions[0]["source_urls"] == ([URL] if cited else [])
 
 
 def test_web_citations_survive_edit_snapshot_reload_and_retry_without_spoilers(client):
