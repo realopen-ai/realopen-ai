@@ -982,6 +982,13 @@ async def test_validation_repairs_work_in_text_fallback(agent, monkeypatch):
 async def test_completed_actions_survive_working_compaction_and_allow_chaining(
     agent, monkeypatch
 ):
+    # Exercise ledger/compaction boundaries independently of unrelated product
+    # prompt additions (the deliberately large latest call must still fit).
+    monkeypatch.setattr(
+        service,
+        "_build_system_prompt",
+        AsyncMock(return_value="Stable test instructions."),
+    )
     count = 0
 
     async def execute(**kwargs):
