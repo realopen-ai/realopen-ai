@@ -4,13 +4,20 @@ import {
   prepareQuizCelebrationSound,
 } from "@/assets/sounds/quiz-celebration";
 import { QuizCelebration } from "./QuizCelebration";
-import { CheckCircle2, XCircle, CircleHelp, Circle } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  CircleHelp,
+  Circle,
+  ExternalLink,
+} from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { quizzesApi, type QuizAttempt } from "@/api/quizzesClient";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/store/settingsStore";
 import { CardMarkdown } from "./CardMarkdown";
 import { SourceAction } from "./SourceAction";
+import { quizSourceLinks } from "@/lib/quizSources";
 import { fieldClass } from "./LearnDialogs";
 import { DeckArtifact } from "./DeckArtifact";
 import type { Deck } from "@/api/flashcardsClient";
@@ -252,12 +259,28 @@ export function QuizSession({
                     </p>
                   )}
                   <SourceAction
-                    conversationId={attempt.snapshot.source_conversation_id}
+                    conversationId={
+                      q.source_urls?.length
+                        ? null
+                        : attempt.snapshot.source_conversation_id
+                    }
                     documentId={q.source_document_id}
                     page={q.source_page}
                     chunk={q.source_chunk_id}
                     artifact={q.source_artifact}
                   />
+                  {quizSourceLinks(q.source_urls).map((source) => (
+                    <a
+                      key={source.href}
+                      href={source.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex w-fit items-center gap-1 text-xs text-muted-foreground hover:text-primary"
+                    >
+                      <ExternalLink className="size-3" />
+                      {t("learn.viewSource")} · {source.label}
+                    </a>
+                  ))}
                   {q.type === "short_answer" && (
                     <div className="flex gap-2">
                       <Button

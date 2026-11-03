@@ -10,6 +10,7 @@ export interface QuizQuestion {
   source_page?: number | null;
   source_chunk_id?: string | null;
   source_artifact?: import("./artifactsClient").ArtifactReference | null;
+  source_urls?: string[];
 }
 export interface Quiz {
   id: string;

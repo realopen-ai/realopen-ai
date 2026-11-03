@@ -2,6 +2,28 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { quizzesApi } from "../src/api/quizzesClient.ts";
+import { quizSourceLinks } from "../src/lib/quizSources.ts";
+
+test("quiz web citations render only safe bounded external links", () => {
+  assert.deepEqual(quizSourceLinks(), []);
+  assert.deepEqual(
+    quizSourceLinks([
+      "javascript:alert(1)",
+      "data:text/html,bad",
+      "/relative",
+      "https://user:password@example.org",
+      "https://docs.example.org/api#shape",
+      "https://docs.example.org/api#shape",
+    ]),
+    [{ href: "https://docs.example.org/api#shape", label: "docs.example.org" }],
+  );
+  assert.equal(
+    quizSourceLinks(
+      Array.from({ length: 8 }, (_, i) => `https://docs.example.org/${i}`),
+    ).length,
+    3,
+  );
+});
 
 test("quiz client separates drafts, submission, and explicit answer-key editing", async () => {
   const original = globalThis.fetch;
