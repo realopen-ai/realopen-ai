@@ -443,7 +443,6 @@ async def run_agent_stream(
     result_store = {}
     result_metadata_store = {}
     research_evidence = []
-    quiz_sources_required = False
     generated_reports = {}
     inspected_reports = set()
     artifact_edits = ArtifactEditState()
@@ -1749,8 +1748,6 @@ async def run_agent_stream(
 
             if tool_name in {"use_report_gen", "create_quiz"}:
                 tool_args.pop("_evidence", None)
-            if tool_name == "create_quiz":
-                tool_args.pop("_require_sources", None)
             if tool_name == "use_report_gen":
                 # These fields belong to the application, not the tool schema.
                 tool_args.pop("_user_request", None)
@@ -1882,10 +1879,6 @@ async def run_agent_stream(
                 # Only application-owned successful source receipts can support
                 # web citations. Never accept model-supplied evidence.
                 exec_args["_evidence"] = list(research_evidence)
-                quiz_sources_required = (
-                    quiz_sources_required or tool_args.get("source_grounded") is True
-                )
-                exec_args["_require_sources"] = quiz_sources_required
             elif tool_name == "use_report_gen":
                 # Execution-only handoff: raw evidence is not repeated in SSE
                 # or supplied by the model. The writer bounds its own context.

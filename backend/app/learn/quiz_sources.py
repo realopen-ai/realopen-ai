@@ -9,32 +9,6 @@ class QuizCitationError(ValueError):
         self.issues = issues
 
 
-def requires_citations(questions, evidence, source_grounded=False):
-    # Successful research and existing question provenance cannot be silently
-    # downgraded by omitting the model's source_grounded flag on a repair.
-    if source_grounded or any(
-        q.source_urls or q.source_document_id or q.source_artifact for q in questions
-    ):
-        return True
-    for record in evidence:
-        if not record.get("text", "").strip():
-            continue
-        metadata = record.get("metadata", {})
-        if record.get("tool") in {"use_websearch", "use_webfetch"}:
-            url = metadata.get("url") or record.get("request", {}).get("url")
-            if url:
-                try:
-                    source_url(url)
-                    return True
-                except ValueError:
-                    continue
-        elif record.get("evidence_kind") != "generated_draft" and (
-            metadata.get("document_id") or metadata.get("artifact_id")
-        ):
-            return True
-    return False
-
-
 def source_url(value: str) -> str:
     value = value.strip()
     try:
@@ -61,7 +35,8 @@ def citation_key(value: str) -> str:
     return urlunsplit(urlsplit(source_url(value))._replace(fragment=""))
 
 
-def validate_web_sources(questions, evidence, *, source_grounded=False):
+def validate_web_sources(questions, evidence):
+    """Validate supplied links only; missing citations never prevent saving."""
     fetched = set()
     for record in evidence:
         if record.get("tool") != "use_webfetch" or not record.get("text", "").strip():
@@ -77,22 +52,8 @@ def validate_web_sources(questions, evidence, *, source_grounded=False):
                     # A fetched URL with credentials or malformed metadata is
                     # not a publishable citation; unrelated questions still work.
                     continue
-    missing = []
     issues = []
-    required = requires_citations(questions, evidence, source_grounded)
     for index, question in enumerate(questions):
-        if required and not (
-            question.source_urls
-            or question.source_document_id
-            or question.source_artifact
-        ):
-            missing.append(index + 1)
-            issues.append(
-                {
-                    "path": ["questions", index],
-                    "message": "Missing supporting source: add fetched source_urls or an exact retrieved document/artifact reference.",
-                }
-            )
         for url_index, url in enumerate(question.source_urls):
             if citation_key(url) not in fetched:
                 issues.append(
@@ -106,15 +67,9 @@ def validate_web_sources(questions, evidence, *, source_grounded=False):
             f"{'.'.join(str(part) for part in issue['path'])}: {issue['message']}"
             for issue in issues[:3]
         )
-        summary = (
-            f"Questions {', '.join(map(str, missing))} need supporting citations. "
-            if missing
-            else ""
-        )
         raise QuizCitationError(
-            summary
-            + details
-            + " Nothing was saved. Repair the affected questions without removing the source requirement; do not invent references or silently substitute an offline quiz.",
+            details
+            + " Nothing was saved. Correct the affected links or omit unavailable optional citations; never invent references.",
             issues,
         )
 

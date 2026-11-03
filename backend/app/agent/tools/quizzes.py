@@ -34,10 +34,6 @@ class CreateQuizTool(BaseTool):
         return {
             "title": {"type": "string", "maxLength": 200},
             "description": {"type": "string", "maxLength": 2000},
-            "source_grounded": {
-                "type": "boolean",
-                "description": "Set true when the user requests a source-based quiz or citations. Every question then needs a supporting source. Retrieved sources also activate this requirement automatically; false cannot bypass it.",
-            },
             "questions": {
                 "type": "array",
                 "minItems": 1,
@@ -55,10 +51,8 @@ class CreateQuizTool(BaseTool):
         title,
         questions,
         description="",
-        source_grounded=False,
         conversation_id=None,
         _evidence=(),
-        _require_sources=False,
         **kwargs,
     ):
         call = ToolCall(
@@ -81,11 +75,7 @@ class CreateQuizTool(BaseTool):
                 questions=questions,
                 source_conversation_id=conversation_id,
             )
-            validate_web_sources(
-                body.questions,
-                _evidence,
-                source_grounded=source_grounded or _require_sources,
-            )
+            validate_web_sources(body.questions, _evidence)
             async with async_session_factory() as db:
                 quiz = await save_quiz(db, body)
                 await attach_generated(db, conversation_id, "quiz", quiz.id)
