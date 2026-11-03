@@ -65,7 +65,14 @@ def evidence_records(result_ref, tool, arguments, result):
     return [
         {
             **provenance,
-            "metadata": reference_metadata(value),
+            "metadata": {
+                **reference_metadata(value),
+                **(
+                    {"url": call.query}
+                    if tool.name == "use_webfetch" and getattr(call, "query", None)
+                    else {}
+                ),
+            },
             "evidence_kind": kind,
             "text": text,
         }

@@ -70,6 +70,7 @@ class WebFetchTool(BaseTool):
         )
         try:
             page = await web_fetch.fetch(url, timeout_s)
+            call.query = page.url
             call.status = "completed"
             call.completed_at = time.time()
             call.title = f"Read page: {page.title}"
