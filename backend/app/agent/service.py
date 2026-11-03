@@ -27,7 +27,11 @@ from app.agent.protocol import (
 )
 from app.agent.tracing import observe, traced_execution, timestamp
 from app.agent.execution_state import ExecutionState
-from app.agent.validation import argument_errors, normalize_structured_arguments
+from app.agent.validation import (
+    argument_errors,
+    argument_issues,
+    normalize_structured_arguments,
+)
 from app.agent.argument_repair import (
     field_repair,
     rebuild_view,
@@ -1712,7 +1716,12 @@ async def run_agent_stream(
             # trusted execution-only kwargs. Aliases keep legacy tools usable.
             errors = argument_errors(tool_args, schema)
             if errors:
-                feedback = validation_feedback(call, errors)
+                feedback = validation_feedback(
+                    call,
+                    errors,
+                    arguments=tool_args,
+                    issues=argument_issues(tool_args, schema),
+                )
                 observe(
                     "end_tool", "failed", error="; ".join(errors), validation_error=True
                 )

@@ -21,6 +21,45 @@ from app.agent.tools.flashcards import CreateFlashcardDeckTool
 from app.agent.tools.notes import CreateStudyNoteTool
 from app.services import providers, structured_outputs
 from app.config import settings
+from app.agent.validation import argument_errors, argument_issues
+
+
+def test_schema_diagnostics_have_exact_typed_paths_without_parsing_error_text():
+    parameters = {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name.with/slash": {"type": "integer"},
+                    },
+                },
+            },
+        },
+    }
+    arguments = {"rows": [{"name.with/slash": "bad"}]}
+    issues = argument_issues(arguments, parameters)
+    assert issues == [
+        {"path": ["rows", 0, "name.with/slash"], "message": "expected integer, got str"}
+    ]
+    assert argument_errors(arguments, parameters) == [
+        "arguments.rows.0.name.with/slash: expected integer, got str"
+    ]
+    repair = field_repair(arguments, parameters, issues)
+    assert repair.fields[0]["path"] == "/rows/0/name.with~1slash"
+
+
+def test_missing_schema_field_retains_conservative_full_rebuild():
+    parameters = {
+        "type": "object",
+        "properties": {"required": {"type": "string"}},
+        "required": ["required"],
+    }
+    issues = argument_issues({}, parameters)
+    assert issues[0]["path"] == ["required"]
+    assert field_repair({}, parameters, issues) is None
 
 
 def schema(tool):

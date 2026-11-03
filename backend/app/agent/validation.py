@@ -39,9 +39,21 @@ def normalize_structured_arguments(value, schema):
 
 
 def argument_errors(value, schema, path="arguments"):
+    return [
+        f"{path}{''.join('.' + str(part) for part in issue['path'])}: {issue['message']}"
+        for issue in argument_issues(value, schema)
+    ]
+
+
+def argument_issues(value, schema, path=()):
+    """Return exact typed field locations; never reconstruct paths from prose."""
     errors = []
-    if "not" in schema and not argument_errors(value, schema["not"], path):
-        errors.append(f"{path}: matches forbidden schema {json.dumps(schema['not'])}")
+
+    def issue(message, parts=path):
+        return {"path": list(parts), "message": message}
+
+    if "not" in schema and not argument_issues(value, schema["not"], path):
+        errors.append(issue(f"matches forbidden schema {json.dumps(schema['not'])}"))
     types = {
         "object": lambda v: isinstance(v, dict),
         "array": lambda v: isinstance(v, list),
@@ -54,27 +66,27 @@ def argument_errors(value, schema, path="arguments"):
     expected = schema.get("type")
     names = [expected] if isinstance(expected, str) else expected or []
     if names and not any(types.get(name, lambda _: True)(value) for name in names):
-        error = f"{path}: expected {' or '.join(names)}, got {type(value).__name__}"
+        error = f"expected {' or '.join(names)}, got {type(value).__name__}"
         if isinstance(value, str) and expected in ("array", "object"):
             try:
                 json.loads(value)
             except ValueError as exc:
                 error += f"; JSON decoding failed: {exc}"
-        return [error]
+        return [issue(error)]
     if "enum" in schema and value not in schema["enum"]:
-        errors.append(f"{path}: allowed values are {json.dumps(schema['enum'])}")
+        errors.append(issue(f"allowed values are {json.dumps(schema['enum'])}"))
     if isinstance(value, dict):
         required = schema.get("required", [])
         for key in required:
             if key not in value:
-                errors.append(f"{path}.{key}: required field is missing")
+                errors.append(issue("required field is missing", (*path, key)))
         for key, field in schema.get("properties", {}).items():
             if key in value and not (value[key] is None and key not in required):
-                errors.extend(argument_errors(value[key], field, f"{path}.{key}"))
+                errors.extend(argument_issues(value[key], field, (*path, key)))
         # Conditional requirements (e.g. MC answers versus short answers).
         for condition in schema.get("allOf", []):
-            if not argument_errors(value, condition.get("if", {}), path):
-                errors.extend(argument_errors(value, condition.get("then", {}), path))
+            if not argument_issues(value, condition.get("if", {}), path):
+                errors.extend(argument_issues(value, condition.get("then", {}), path))
     if isinstance(value, list):
         for constraint, op in (
             ("minItems", lambda n: len(value) < n),
@@ -82,11 +94,11 @@ def argument_errors(value, schema, path="arguments"):
         ):
             if constraint in schema and op(schema[constraint]):
                 errors.append(
-                    f"{path}: {constraint}={schema[constraint]}, got {len(value)} items"
+                    issue(f"{constraint}={schema[constraint]}, got {len(value)} items")
                 )
         for index, item in enumerate(value):
             errors.extend(
-                argument_errors(item, schema.get("items", {}), f"{path}.{index}")
+                argument_issues(item, schema.get("items", {}), (*path, index))
             )
     if isinstance(value, str):
         for constraint, op in (
@@ -94,12 +106,12 @@ def argument_errors(value, schema, path="arguments"):
             ("maxLength", lambda n: len(value) > n),
         ):
             if constraint in schema and op(schema[constraint]):
-                errors.append(f"{path}: {constraint}={schema[constraint]}")
+                errors.append(issue(f"{constraint}={schema[constraint]}"))
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         for constraint, op in (
             ("minimum", lambda n: value < n),
             ("maximum", lambda n: value > n),
         ):
             if constraint in schema and op(schema[constraint]):
-                errors.append(f"{path}: {constraint}={schema[constraint]}")
+                errors.append(issue(f"{constraint}={schema[constraint]}"))
     return errors[:8]
