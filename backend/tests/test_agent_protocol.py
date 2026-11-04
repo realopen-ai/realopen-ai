@@ -982,6 +982,13 @@ async def test_validation_repairs_work_in_text_fallback(agent, monkeypatch):
 async def test_completed_actions_survive_working_compaction_and_allow_chaining(
     agent, monkeypatch
 ):
+    # Exercise ledger/compaction boundaries independently of unrelated product
+    # prompt additions (the deliberately large latest call must still fit).
+    monkeypatch.setattr(
+        service,
+        "_build_system_prompt",
+        AsyncMock(return_value="Stable test instructions."),
+    )
     count = 0
 
     async def execute(**kwargs):
@@ -1217,7 +1224,7 @@ async def test_real_tool_rejections_survive_sse_block_assembly(
 
 
 @pytest.mark.asyncio
-async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
+async def test_schema_field_repair_uses_typed_schema_without_replaying_other_args(
     agent, monkeypatch
 ):
     monkeypatch.setattr(
@@ -1234,7 +1241,12 @@ async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
             }
         },
     )
-    rebuild = json.dumps({"tool": "echo", "args": {"input": [{"value": "fixed"}]}})
+    rebuild = json.dumps(
+        {
+            "tool": "echo",
+            "corrections": [{"path": "/input", "value": [{"value": "fixed"}]}],
+        }
+    )
     captured = script(
         monkeypatch,
         [
@@ -1254,11 +1266,14 @@ async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
     repair = captured[1]
     assert repair["tools"] is None
     assert (
-        repair["format"]["properties"]["args"]["properties"]["input"]["type"] == "array"
+        repair["format"]["properties"]["corrections"]["items"]["anyOf"][0][
+            "properties"
+        ]["value"]["type"]
+        == "array"
     )
     assert repair["think"] is False
-    assert "BROKEN_JSON_ARRAY" not in json.dumps(repair["messages"])
-    assert any("ARGUMENT REBUILD ROUND" in m["content"] for m in repair["messages"])
+    assert "BROKEN_JSON_ARRAY" in json.dumps(repair["messages"])
+    assert any("FIELD CORRECTION ROUND" in m["content"] for m in repair["messages"])
     assert repair["messages"][0]["content"] == captured[0]["messages"][0]["content"]
     assert any(
         "arguments.input: expected array" in message["content"]
@@ -1268,6 +1283,69 @@ async def test_focused_rebuild_uses_typed_schema_without_replaying_invalid_args(
     assert "format" not in captured[2]
     assert captured[2]["tools"]
     assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_nested_schema_failure_repairs_only_malformed_options(agent, monkeypatch):
+    original = {
+        "input": "Preserve the task",
+        "questions": [
+            {
+                "prompt": "Keep this prompt",
+                "options": '["First", ""Second"]',
+                "correct_option": 1,
+            },
+            {
+                "prompt": "Keep the other question",
+                "options": ["Yes", "No"],
+                "correct_option": 0,
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        agent,
+        "get_parameters",
+        lambda: {
+            "input": {"type": "string"},
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "options": {"type": "array", "items": {"type": "string"}},
+                        "correct_option": {"type": "integer"},
+                    },
+                },
+            },
+        },
+    )
+    correction = json.dumps(
+        {
+            "tool": "echo",
+            "corrections": [
+                {"path": "/questions/0/options", "value": ["First", "Second"]}
+            ],
+        }
+    )
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call(deepcopy(original))], "done": True}],
+            [{"content": correction, "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run()
+    expected = deepcopy(original)
+    expected["questions"][0]["options"] = ["First", "Second"]
+    assert agent.executed == [expected]
+    repair = captured[1]
+    assert set(repair["format"]["properties"]) == {"tool", "corrections"}
+    assert "Keep the other question" not in json.dumps(repair["messages"])
+    assert "Keep this prompt" not in json.dumps(repair["messages"])
+    assert "/questions/0/options" in json.dumps(repair["messages"])
+    assert not any(event["event"] == "error" for event in events)
 
 
 @pytest.mark.asyncio

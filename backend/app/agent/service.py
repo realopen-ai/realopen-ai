@@ -27,7 +27,11 @@ from app.agent.protocol import (
 )
 from app.agent.tracing import observe, traced_execution, timestamp
 from app.agent.execution_state import ExecutionState
-from app.agent.validation import argument_errors, normalize_structured_arguments
+from app.agent.validation import (
+    argument_errors,
+    argument_issues,
+    normalize_structured_arguments,
+)
 from app.agent.argument_repair import (
     field_repair,
     rebuild_view,
@@ -1711,7 +1715,12 @@ async def run_agent_stream(
             # trusted execution-only kwargs. Aliases keep legacy tools usable.
             errors = argument_errors(tool_args, schema)
             if errors:
-                feedback = validation_feedback(call, errors)
+                feedback = validation_feedback(
+                    call,
+                    errors,
+                    arguments=tool_args,
+                    issues=argument_issues(tool_args, schema),
+                )
                 observe(
                     "end_tool", "failed", error="; ".join(errors), validation_error=True
                 )
@@ -1737,9 +1746,10 @@ async def run_agent_stream(
             if tool_name == "delegate_to_coder":
                 coder_attempted = True
 
+            if tool_name in {"use_report_gen", "create_quiz"}:
+                tool_args.pop("_evidence", None)
             if tool_name == "use_report_gen":
                 # These fields belong to the application, not the tool schema.
-                tool_args.pop("_evidence", None)
                 tool_args.pop("_user_request", None)
                 tool_args.pop("_draft", None)
                 tool_args.pop("_previous_report", None)
@@ -1865,6 +1875,10 @@ async def run_agent_stream(
             if tool_name == "delegate_to_coder":
                 # Original wording is application-owned, never a model rewrite.
                 exec_args["_user_request"] = last_user
+            elif tool_name == "create_quiz":
+                # Only application-owned successful source receipts can support
+                # web citations. Never accept model-supplied evidence.
+                exec_args["_evidence"] = list(research_evidence)
             elif tool_name == "use_report_gen":
                 # Execution-only handoff: raw evidence is not repeated in SSE
                 # or supplied by the model. The writer bounds its own context.
