@@ -11,6 +11,11 @@ from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
 from app.learn.quizzes import QuizInput, QUESTION_SCHEMA, save_quiz
+from app.learn.quiz_sources import (
+    validate_web_sources,
+    grounding_summary,
+    QuizCitationError,
+)
 from app.prompts import format_prompt
 from app.learn.notebooks import attach_generated
 
@@ -41,7 +46,14 @@ class CreateQuizTool(BaseTool):
         return ["title", "questions"]
 
     async def execute(
-        self, *, title, questions, description="", conversation_id=None, **kwargs
+        self,
+        *,
+        title,
+        questions,
+        description="",
+        conversation_id=None,
+        _evidence=(),
+        **kwargs,
     ):
         call = ToolCall(
             id=f"tc-quiz-{uuid.uuid4()}",
@@ -63,6 +75,7 @@ class CreateQuizTool(BaseTool):
                 questions=questions,
                 source_conversation_id=conversation_id,
             )
+            validate_web_sources(body.questions, _evidence)
             async with async_session_factory() as db:
                 quiz = await save_quiz(db, body)
                 await attach_generated(db, conversation_id, "quiz", quiz.id)
@@ -76,9 +89,15 @@ class CreateQuizTool(BaseTool):
             call.gen_results = [artifact]
             call.status = "completed"
             output = json.dumps(
-                {**artifact, "message": "Saved in Learn. Do not reveal the answer key."}
+                {
+                    **artifact,
+                    "grounding": grounding_summary(body.questions),
+                    "message": "Saved in Learn. Do not reveal questions or the answer key in chat.",
+                }
             )
         except (ValidationError, ValueError, HTTPException) as exc:
+            if isinstance(exc, QuizCitationError):
+                validation_issues = exc.issues
             if isinstance(exc, ValidationError):
                 validation_issues = [
                     {"path": list(error["loc"]), "message": error["msg"]}

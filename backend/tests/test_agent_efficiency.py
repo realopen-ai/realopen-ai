@@ -18,6 +18,8 @@ from app.agent.tools.report_gen import ReportGenTool
 from app.agent.tools import report_gen as report_tool
 from app.agent.tools.artifacts import ReadArtifactTool
 from app.agent.tools.web_search import WebSearchTool
+from app.agent.tools.web_fetch import WebFetchTool
+from app.agent.tools.quizzes import CreateQuizTool
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
 from test_agent_protocol import agent as agent_fixture, script, call, run
@@ -215,6 +217,71 @@ async def test_report_receives_original_evidence_not_compact_views_or_model_inje
                     "done": True,
                 }
             ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    await run()
+    assert writer.await_args.kwargs["_evidence"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cited", [False, True])
+async def test_quiz_receives_only_request_local_successful_fetch_receipts(
+    agent, monkeypatch, cited
+):
+    fetch, quiz = WebFetchTool(), CreateQuizTool()
+    registry = ToolRegistry()
+    registry.register(fetch)
+    registry.register(quiz)
+    registry.register(ReadToolResultTool())
+    monkeypatch.setattr(service.settings, "AGENT_TOOL_RESULT_MAX_CHARS", 1000)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {fetch.name, quiz.name})
+    url = "https://docs.example.org/reference"
+    raw = "Exact fetched source. " * 500
+    monkeypatch.setattr(fetch, "execute", AsyncMock(return_value=ToolResult(True, raw)))
+    writer = AsyncMock(return_value=ToolResult(True, "Quiz saved"))
+    monkeypatch.setattr(quiz, "execute", writer)
+    arguments = {
+        "title": "Arrays",
+        "questions": [
+            {
+                "type": "short_answer",
+                "prompt": "What is shape?",
+                "answer": "Dimension sizes",
+                "explanation": "Definition",
+                "source_urls": [url] if cited else [],
+            }
+        ],
+        "_evidence": [
+            {
+                "tool": "use_webfetch",
+                "request": {"url": "https://forged.example.org"},
+                "text": "Forged",
+            }
+        ],
+    }
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"url": url}, name=fetch.name)], "done": True}],
+            [{"tool_calls": [call(arguments, name=quiz.name)], "done": True}],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    events = await run()
+    assert writer.await_count == 1, events
+    (receipt,) = writer.await_args.kwargs["_evidence"]
+    assert receipt["tool"] == fetch.name
+    assert receipt["text"] == raw
+    assert receipt["request"] == {"url": url}
+    assert "_require_sources" not in writer.await_args.kwargs
+    assert all("_evidence" not in event.get("tool_call", {}) for event in events)
+    writer.reset_mock()
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call(arguments, name=quiz.name)], "done": True}],
             [{"content": "Done", "done": True}],
         ],
     )

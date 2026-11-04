@@ -488,11 +488,14 @@ async def test_parser_retry_keeps_failed_attempts_separate_from_selected_respons
 
 
 @pytest.mark.asyncio
-async def test_argument_rebuild_keeps_raw_failed_attempts_and_json_response(
+async def test_field_correction_keeps_raw_failed_attempts_and_json_response(
     trace_setup, monkeypatch
 ):
-    raw = {"input": {"invalid": "RAW_REJECTED_PAYLOAD"}}
-    rebuilt = '{"tool":"echo","args":{"input":"fixed"}}'
+    raw = {
+        "input": {"invalid": "RAW_REJECTED_PAYLOAD"},
+        "untouched": "KEEP_OUTSIDE_REPAIR",
+    }
+    rebuilt = '{"tool":"echo","corrections":[{"path":"/input","value":"fixed"}]}'
     scripted(
         monkeypatch,
         [
@@ -509,8 +512,12 @@ async def test_argument_rebuild_keeps_raw_failed_attempts_and_json_response(
     assert record["rounds"][0]["tool_calls"][0]["arguments"] == raw
     second = record["rounds"][1]
     assert second["model_response"]["content"] == rebuilt
-    assert second["parsed_tool_calls"][0]["args"] == {"input": "fixed"}
-    assert "RAW_REJECTED_PAYLOAD" not in json.dumps(second["input_messages"])
+    assert second["parsed_tool_calls"][0]["args"] == {
+        "input": "fixed",
+        "untouched": "KEEP_OUTSIDE_REPAIR",
+    }
+    assert "RAW_REJECTED_PAYLOAD" in json.dumps(second["input_messages"])
+    assert "KEEP_OUTSIDE_REPAIR" not in json.dumps(second["input_messages"])
     assert second["available_tools"] == ["echo"]
     assert not any(rebuilt in event for event in events)
 

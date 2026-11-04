@@ -24,6 +24,7 @@ from app.services.artifact_refs import (
 )
 from app.learn.schemas import similar_question
 from app.learn.quiz_markdown import mask_code_blocks, validate_code_fences
+from app.learn.quiz_sources import source_url
 
 QUESTION_SCHEMA = {
     "type": "object",
@@ -63,6 +64,12 @@ QUESTION_SCHEMA = {
             "description": "Optional exact retrieved chunk UUID.",
         },
         "source_artifact": REFERENCE_SCHEMA,
+        "source_urls": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {"type": "string", "maxLength": 2048},
+            "description": "Optional supporting HTTP(S) URLs successfully read with use_webfetch in this request. Search snippets alone do not qualify. Omit for offline/document-only questions; never invent URLs.",
+        },
     },
     "required": ["type", "prompt", "explanation"],
     "allOf": [
@@ -176,6 +183,14 @@ class Question(BaseModel):
     source_page: int | None = Field(default=None, ge=1)
     source_chunk_id: uuid.UUID | None = None
     source_artifact: ArtifactReference | None = None
+    source_urls: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("source_urls")
+    @classmethod
+    def validate_source_urls(cls, values):
+        if any(len(value) > 2048 for value in values):
+            raise ValueError("Source URLs must be at most 2048 characters")
+        return list(dict.fromkeys(source_url(value) for value in values))
 
     @field_validator("prompt", "answer", "explanation", "options")
     @classmethod
@@ -262,7 +277,7 @@ def public_questions(questions):
         {
             key: value
             for key, value in q.items()
-            if key not in {"correct_option", "answer", "explanation"}
+            if key not in {"correct_option", "answer", "explanation", "source_urls"}
         }
         for q in questions
     ]
@@ -278,7 +293,9 @@ def quiz_dict(quiz, editor=False):
         "grounded": bool(
             quiz.source_note_id
             or any(
-                q.get("source_document_id") or q.get("source_artifact")
+                q.get("source_document_id")
+                or q.get("source_artifact")
+                or q.get("source_urls")
                 for q in quiz.questions
             )
         ),
