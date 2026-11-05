@@ -15,6 +15,16 @@ _wake: asyncio.Event | None = None
 _status: dict = {}
 
 
+def provider_url(name, configured=None):
+    """Translate only bundled Docker aliases; preserve custom network URLs."""
+    default = getattr(settings, f"{name.upper()}_BASE_URL")
+    if settings.REALOPEN_RUNTIME == "native" and (
+        not configured or configured.rstrip("/") == LOCAL_URLS[name]
+    ):
+        return default
+    return configured or default
+
+
 def provider_choices() -> list[dict]:
     from app.agent.tools import config_store
     from app.agent.tools.config_base import definition_for_tool
@@ -53,8 +63,17 @@ def desired_services() -> dict:
     result = {}
     for name, default in LOCAL_URLS.items():
         provider = providers.get(name, {})
-        url = provider.get("base_url") or getattr(settings, f"{name.upper()}_BASE_URL")
-        managed = urlsplit(url.rstrip("/")) == urlsplit(default)
+        url = provider_url(name, provider.get("base_url"))
+        expected = (
+            getattr(settings, f"{name.upper()}_BASE_URL")
+            if settings.REALOPEN_RUNTIME == "native"
+            else default
+        )
+        managed = urlsplit(url.rstrip("/")) == urlsplit(expected)
+        if settings.REALOPEN_RUNTIME == "native":
+            managed = (
+                managed and getattr(settings, f"NATIVE_MANAGED_{name.upper()}")
+            )
         result[name] = {
             "enabled": bool(
                 config.get("enabled", True)
@@ -104,7 +123,7 @@ async def reconcile_once():
                 ):
                     path = "/healthz" if name == "searxng" else "/readyz"
                     try:
-                        probe = await client.get(LOCAL_URLS[name] + path, timeout=3)
+                        probe = await client.get(provider_url(name) + path, timeout=3)
                         if probe.status_code != 200:
                             states[name] = {"status": "starting"}
                     except httpx.HTTPError:
@@ -117,7 +136,11 @@ async def reconcile_once():
             _status[name] = {
                 "desired": choice,
                 "status": "failed",
-                "error": "Host runtime unavailable or outdated. Start/restart the host runtime and check Docker.",
+                "error": (
+                    "Host runtime unavailable or outdated. Restart the native launcher and check data/logs/native/."
+                    if settings.REALOPEN_RUNTIME == "native"
+                    else "Host runtime unavailable or outdated. Start/restart the host runtime and check Docker."
+                ),
             }
 
 
@@ -142,7 +165,7 @@ async def monitor():
                     _status[name] = {
                         "desired": choice,
                         "status": "failed",
-                        "error": "Saved provider preferences are unavailable. Containers were left unchanged; retrying automatically.",
+                        "error": "Saved provider preferences are unavailable. Services were left unchanged; retrying automatically.",
                     }
             try:
                 await asyncio.wait_for(_wake.wait(), timeout=15)
