@@ -21,6 +21,7 @@ from app.config import settings  # noqa: E402
 from app.core import metrics as app_metrics  # noqa: E402
 from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
+from app.api.frontend import install_frontend  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
 from app.api.modules import router as modules_router  # noqa: E402
@@ -477,3 +478,6 @@ if voice_manager is not None:
             await session.handle(websocket)
         finally:
             voice_manager.remove(conversation_id)
+
+
+install_frontend(app, settings.STATIC_FRONTEND_DIR)
