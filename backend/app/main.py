@@ -62,25 +62,8 @@ except Exception as _voice_import_error:  # noqa: BLE001 — voice is optional
 
 
 def _get_data_dir() -> Path:
-    """Get the data directory for persistent files.
-
-    In Docker: /app/data (mounted volume)
-    In dev: backend/../data
-    """
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    # Fallback
-    fallback = Path("/app/data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 def _detect_setup_mode() -> bool:

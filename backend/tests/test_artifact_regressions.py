@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.config import settings
 from app.services import artifacts, report_gen
 from app.services.artifact_sources import sections_for
 from app.services.artifact_summary import summarize_sections
@@ -135,7 +136,7 @@ async def test_report_keeps_original_user_constraints(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_truncated_summary_is_not_cached(tmp_path, monkeypatch):
-    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "REALOPEN_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(
         artifacts.model_prefs, "resolve_task_model", AsyncMock(return_value="test")
     )
@@ -162,7 +163,7 @@ async def test_truncated_summary_is_not_cached(tmp_path, monkeypatch):
 async def test_cutoff_omits_unfinished_sentence_and_marks_abridged(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "REALOPEN_DATA_DIR", str(tmp_path))
 
     async def stream(*args, **kwargs):
         assert args[0] == "override"

@@ -33,6 +33,8 @@ from app.db.models import Template
 from app.db.session import get_db
 from app.services.pptx_gen import AVAILABLE_TEMPLATES
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -50,16 +52,8 @@ def _slugify(name: str) -> str:
 
 
 def _get_data_dir() -> Path:
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        if d.exists():
-            return d
-    fallback = Path("/app/data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 # ─── Request/Response models ─────────────────────────────────────────

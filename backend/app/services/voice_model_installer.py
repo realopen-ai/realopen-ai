@@ -110,6 +110,7 @@ from urllib.parse import quote
 
 import yaml
 
+from app.config import settings
 try:  # httpx is a hard backend dependency, but keep the module importable
     import httpx
 except ImportError:  # pragma: no cover - only hit in exotic environments
@@ -300,8 +301,6 @@ def resolve_voice_config(profile: Optional[str] = None) -> Optional[VoiceConfig]
     2. Direct profiles.yml parsing (standalone fallback so this installer
        works even when config.py has no voice support yet).
     """
-    from app.config import settings  # local import avoids cycles
-
     getter = getattr(settings, "get_voice_config", None)
     if callable(getter):
         try:
@@ -563,20 +562,8 @@ _MODELS_DIR_OVERRIDE: Optional[Path] = None
 
 
 def get_data_dir() -> Path:
-    """The persisted data directory (Docker: /app/data, dev: backend/../data)."""
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    fallback = Path("/tmp/realopen-data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 def _models_store():
@@ -802,8 +789,6 @@ def voice_enabled_for_profile(
     profile: str, enabled_modules: Optional[Sequence[str]] = None
 ) -> bool:
     """Whether voice dependencies should be installed for this setup run."""
-    from app.config import settings
-
     try:
         modules = settings.get_modules()
     except Exception:
@@ -2180,8 +2165,6 @@ async def install_voice_models_cli(
 
 def _current_profile() -> str:
     try:
-        from app.config import settings
-
         return settings.HARDWARE_PROFILE
     except Exception:
         return "cpu_small"

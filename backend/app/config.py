@@ -526,6 +526,13 @@ class Settings(BaseSettings):
     APP_NAME: str = "RealOpen-AI"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
+    REALOPEN_RUNTIME: str = "docker"
+    REALOPEN_DATA_DIR: str = ""
+    REALOPEN_STATE_DIR: str = ""
+    NATIVE_MANAGED_SEARXNG: bool = False
+    NATIVE_MANAGED_DEGOOG: bool = False
+    HOST_RUNTIME_PORT: int = 8766
+    STATIC_FRONTEND_DIR: str = ""
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://realopen:realopen@postgres:5432/realopen"
@@ -852,6 +859,23 @@ class Settings(BaseSettings):
         """Initialize non-picklable private attributes after Pydantic init."""
         self._toggle_lock = threading.Lock()
 
+    def get_data_dir(self) -> Path:
+        """One storage root for native services and Docker-backed application data."""
+        if self.REALOPEN_DATA_DIR:
+            directory = Path(self.REALOPEN_DATA_DIR)
+            directory.mkdir(parents=True, exist_ok=True)
+            return directory
+        candidates = [Path("/app/data"), Path(__file__).resolve().parents[2] / "data"]
+        for directory in candidates:
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                return directory
+            except OSError:
+                continue
+        directory = candidates[0]
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
     def get_profiles(self) -> Dict[str, ProfileConfig]:
         """Load profiles.yml once and cache it."""
         if self._profiles is None:
@@ -1002,6 +1026,7 @@ class Settings(BaseSettings):
         In dev: backend/../state
         """
         candidates = [
+            *([Path(self.REALOPEN_STATE_DIR)] if self.REALOPEN_STATE_DIR else []),
             Path("/app/state"),
             Path(__file__).parent.parent.parent / "state",
         ]

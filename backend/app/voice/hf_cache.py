@@ -13,7 +13,7 @@ The setup wizard warms this cache ONCE (natural downloads, real progress);
 afterwards every engine load is a local cache hit — no network, no
 "weights being pulled" mid-conversation, no app hang.
 
-Public surface (stdlib only — importable before huggingface_hub):
+Public surface (importable before huggingface_hub):
 
     ensure_hf_env()      → set HF_HOME (+patch hub constants if already imported)
     hf_home()            → <data>/huggingface
@@ -43,6 +43,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 # Env var pinning for tests / unusual deployments (never a selection source).
@@ -50,20 +52,8 @@ _HF_HOME_OVERRIDE: Optional[str] = os.environ.get("REALOPEN_HF_HOME")
 
 
 def _data_dir() -> Path:
-    """The persisted data directory (Docker ``/app/data`` first, dev repo
-    ``data/`` second) — same resolution order as models_store / the
-    installer, so every module agrees on the location by construction."""
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    return Path("/tmp/realopen-data")
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 def set_hf_home_for_testing(path: Optional[Path]) -> None:

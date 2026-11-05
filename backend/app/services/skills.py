@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from app.config import settings
 from app.services.safe_paths import bounded_text, confined_path
 from app.services import builtin_skill_sync
 
@@ -18,11 +19,7 @@ VALID_ROLES = {"general", "coder", "voice"}
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 MAX_FILES = 200
 MAX_INSTRUCTIONS = 200_000
-SKILLS_DIR = (
-    Path("/app/data/skills")
-    if Path("/app/data").exists()
-    else Path(__file__).resolve().parents[3] / "data" / "skills"
-)
+SKILLS_DIR = settings.get_data_dir() / "skills"
 
 
 class SkillReferenceError(ValueError):

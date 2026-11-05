@@ -35,6 +35,8 @@ import sys
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Sequence, Tuple
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 _WHEELHOUSE_OVERRIDE: Optional[Path] = None
@@ -47,17 +49,8 @@ VOICE_RUNTIME_LAYOUT_VERSION = "v2"
 
 
 def _data_dir() -> Path:
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    return Path("/tmp/realopen-data")
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 def set_dirs_for_testing(

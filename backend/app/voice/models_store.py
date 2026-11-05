@@ -66,6 +66,7 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
+from app.config import settings
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -75,24 +76,8 @@ MANIFEST_FILENAME = ".manifest.json"
 
 
 def _default_models_dir() -> Path:
-    """``<repo>/data/models/voice`` — robust to the process cwd.
-
-    Same candidate order as ``voice_model_installer.get_data_dir()``:
-    the Docker bind mount (``/app/data``) when writable/present, else the
-    repository root's ``data/`` directory located relative to this file.
-    """
-    candidates = [
-        Path("/app/data"),  # inside the Docker container (bind mount)
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for data_dir in candidates:
-        # mkdir doubles as the writability probe (same as the installer).
-        try:
-            data_dir.mkdir(parents=True, exist_ok=True)
-            return data_dir / "models" / "voice"
-        except OSError:
-            continue
-    return Path("/tmp/realopen-data") / "models" / "voice"
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir() / "models" / "voice"
 
 
 # Voice model storage root. Module-level attribute so tests (and the
@@ -220,8 +205,6 @@ def _resolved_voice_config() -> Any:
     profiles.yml.
     """
     try:
-        from app.config import settings
-
         return settings.get_voice_config()
     except Exception as e:  # profiles.yml missing / unparsable
         logger.warning("voice config resolution failed: %s", e)
@@ -459,8 +442,6 @@ def voice_dependency_status() -> dict:
     asr_status = _side_status("asr", asr_spec)
     tts_status = _side_status("tts", tts_spec)
     try:
-        from app.config import settings
-
         enabled = bool(settings.VOICE_ENABLED)
     except Exception:
         enabled = True
