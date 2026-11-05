@@ -27,6 +27,7 @@ coverage/
 # Environment
 .env
 .env.local
+.env.native
 .env.*.local
 
 # IDE
