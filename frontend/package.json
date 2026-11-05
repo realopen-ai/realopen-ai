@@ -23,15 +23,15 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.61.0",
+    "lucide-react": "^1.63.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
-    "react-resizable-panels": "^4.14.8",
-    "react-router-dom": "^7.18.4",
+    "react-resizable-panels": "^4.15.0",
+    "react-router-dom": "^7.18.5",
     "remark-gfm": "^4.0.0",
     "tailwind-merge": "^3.7.0",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
