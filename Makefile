@@ -1,6 +1,9 @@
+.DEFAULT_GOAL := all
 COMPOSE			= docker compose
 COMPOSE_DEV		= $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 COMPOSE_MON		= $(COMPOSE) -f docker-compose.yml -f docker-compose.monitoring.yml
+export REALOPEN_UID ?= $(shell id -u)
+export REALOPEN_GID ?= $(shell id -g)
 
 # Default: auto-setup if needed, then dev environment with hot-reloading
 .PHONY: all
