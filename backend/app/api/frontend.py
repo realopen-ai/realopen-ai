@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
+from app.services.safe_paths import confined_path
+
 
 def install_frontend(app, directory):
     if not directory:
@@ -17,9 +19,10 @@ def install_frontend(app, directory):
     async def frontend(path: str):
         if path.split("/", 1)[0] in {"api", "ws", "metrics"}:
             raise HTTPException(404)
-        target = (root / path).resolve()
-        if not target.is_relative_to(root):
-            raise HTTPException(404)
+        try:
+            target = confined_path(root, path or "index.html")
+        except (ValueError, OSError):
+            raise HTTPException(404) from None
         if target.is_file():
             return FileResponse(target)
         if path.startswith("assets/"):
