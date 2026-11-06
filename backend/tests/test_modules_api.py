@@ -275,7 +275,11 @@ async def test_get_hardware_info_corrupt_json_falls_back_to_profile(monkeypatch)
     monkeypatch.setattr(Path, "exists", lambda self: True)
     monkeypatch.setattr(Path, "read_text", lambda self, encoding="utf-8": "{broken")
     monkeypatch.setattr(
-        modules_api, "settings", SimpleNamespace(HARDWARE_PROFILE="cpu_small")
+        modules_api,
+        "settings",
+        SimpleNamespace(
+            HARDWARE_PROFILE="cpu_small", get_data_dir=lambda: Path("/unused")
+        ),
     )
     info = await modules_api._get_hardware_info()
     assert info == {"ram_gb": 8, "gpu_type": "cpu", "gpu_vram_gb": 0}
@@ -291,10 +295,11 @@ async def test_get_hardware_info_corrupt_json_falls_back_to_profile(monkeypatch)
         ("mystery_profile", {"ram_gb": 64, "gpu_type": "unknown", "gpu_vram_gb": 32}),
     ],
 )
-async def test_get_hardware_info_profile_estimates(monkeypatch, profile, expected):
-    monkeypatch.setattr(Path, "exists", lambda self: False)
+async def test_get_hardware_info_profile_estimates(monkeypatch, tmp_path, profile, expected):
     monkeypatch.setattr(
-        modules_api, "settings", SimpleNamespace(HARDWARE_PROFILE=profile)
+        modules_api,
+        "settings",
+        SimpleNamespace(HARDWARE_PROFILE=profile, get_data_dir=lambda: tmp_path),
     )
     assert await modules_api._get_hardware_info() == expected
 

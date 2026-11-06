@@ -93,18 +93,8 @@ def _get_project_root() -> Path:
 
 
 def _get_data_dir() -> Path:
-    """Get the data directory for persistent files.
-
-    In Docker: /app/data (mounted volume)
-    In dev: backend/../data
-    """
-    root = _get_project_root()
-    data_dir = root / "data"
-    try:
-        data_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    return data_dir
+    """Use the shared persistent data root in every runtime."""
+    return settings.get_data_dir()
 
 
 def _is_setup_complete() -> bool:

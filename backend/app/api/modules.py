@@ -46,20 +46,11 @@ async def _get_hardware_info() -> dict:
 
     Tries to read from data/hardware.json (written by setup detection script).
     """
-    from pathlib import Path
-
-    candidates = [
-        Path("/app/data/hardware.json"),
-        Path(__file__).parent.parent.parent.parent / "data" / "hardware.json",
-    ]
-
-    for p in candidates:
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                return data
-            except Exception:
-                pass
+    path = settings.get_data_dir() / "hardware.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
 
     # Fallback: estimate based on profile
     profile_name = settings.HARDWARE_PROFILE
