@@ -30,7 +30,6 @@ export function DependenciesTab() {
   const [installError, setInstallError] = useState<string>("");
   const [outputDep, setOutputDep] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   const loadDeps = useCallback(async () => {
     setIsLoading(true);
@@ -55,7 +54,6 @@ export function DependenciesTab() {
         await installDependency(name, (event: InstallEvent) => {
           if (event.output) {
             setInstallOutput((prev) => prev + event.output + "\n");
-            logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
           }
           if (event.stage === "error") {
             setInstallError(
@@ -94,7 +92,6 @@ export function DependenciesTab() {
         await uninstallDependency(name, (event: InstallEvent) => {
           if (event.output) {
             setInstallOutput((prev) => prev + event.output + "\n");
-            logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
           }
           if (event.stage === "error") {
             setInstallError(
@@ -154,7 +151,6 @@ export function DependenciesTab() {
             installOutput={outputDep === dep.name ? installOutput : ""}
             installError={outputDep === dep.name ? installError : ""}
             confirmUninstall={confirmUninstall === dep.name}
-            logsEndRef={logsEndRef}
             onInstall={() => handleInstall(dep.name)}
             onUninstall={() => setConfirmUninstall(dep.name)}
             onConfirmUninstall={() => handleUninstall(dep.name)}
@@ -173,7 +169,6 @@ function DependencyRow({
   installOutput,
   installError,
   confirmUninstall,
-  logsEndRef,
   onInstall,
   onUninstall,
   onConfirmUninstall,
@@ -185,13 +180,20 @@ function DependencyRow({
   installOutput: string;
   installError: string;
   confirmUninstall: boolean;
-  logsEndRef: React.RefObject<HTMLDivElement | null>;
   onInstall: () => void;
   onUninstall: () => void;
   onConfirmUninstall: () => void;
   onCancelUninstall: () => void;
 }) {
   const [showOutput, setShowOutput] = useState(false);
+  const logBoxRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    const logBox = logBoxRef.current;
+    if (logBox) {
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+  }, [installOutput, showOutput]);
 
   return (
     <div className="py-3.5">
@@ -343,9 +345,11 @@ function DependencyRow({
                   : t("settings.dependencies.showLog")}
               </button>
               {showOutput && (
-                <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                <pre
+                  ref={logBoxRef}
+                  className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground"
+                >
                   {installOutput}
-                  <div className="mt-1.5" ref={logsEndRef} />
                 </pre>
               )}
             </div>
