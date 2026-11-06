@@ -306,7 +306,7 @@ def env(monkeypatch):
     async def fake_idle(cid: str) -> None:
         stream_marks.append(f"idle:{cid}")
 
-    async def fake_model_label() -> str:
+    async def fake_model_label(*args, **kwargs) -> str:
         return "test-model"
 
     monkeypatch.setattr(vs, "create_asr_engine", lambda spec: scripted_asr)
@@ -317,6 +317,7 @@ def env(monkeypatch):
     monkeypatch.setattr(vs, "mark_stream_active", fake_active)
     monkeypatch.setattr(vs, "mark_stream_idle", fake_idle)
     monkeypatch.setattr(vs, "_resolve_model_label", fake_model_label)
+    monkeypatch.setattr(vs.model_prefs, "resolve_task_model", fake_model_label)
     monkeypatch.setattr(vs, "create_aec", lambda mode=None: PassThroughAec())
     monkeypatch.setattr(models_store, "asr_ready", lambda: True)
     monkeypatch.setattr(models_store, "tts_ready", lambda: True)
