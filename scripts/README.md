@@ -31,7 +31,7 @@ Copy [.env.native.example](../.env.native.example) to `.env.native` only if you 
 - Native SearXNG and DeGoog are prepared during setup but run only when enabled in Setup or Brain → Tools → Web Search. DeGoog still needs engines installed through its setup wizard. Custom search instances remain externally managed.
 - Source checkouts and platform-specific environments live under `data/native/`. Existing source checkouts are not automatically updated; deliberately review upstream updates before replacing their prepared environments.
 
-Core setup installs Tesseract with English and PDF rendering libraries. Optional system-package installers in the app were originally designed for Debian containers; on other native platforms, install optional system tools using the OS package manager. Optional monitoring remains available through the existing Compose monitoring commands.
+Core setup installs Tesseract with English and PDF rendering libraries. Settings → Dependencies uses the platform package manager for supported optional tools. Native macOS LibreOffice installs into `data/native/apps/`; existing system installations are detected and reused. If administrator access is needed, the UI shows a terminal command rather than requesting your password. Docker's APT recovery is never replayed on native startup. Optional monitoring remains available through the existing Compose monitoring commands.
 
 ### Docker storage and one-time migration
 
