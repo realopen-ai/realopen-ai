@@ -25,8 +25,7 @@ Scope:
    optional LibreOffice thumbnail (mocked).
 10. DB template helpers — _get_available_templates_from_db /
     _get_templates_with_descriptions against a fake session factory.
-11. _get_reports_dir fallback logic via a Path double (first writable
-    candidate → repo-data fallback → /app retry; no real dirs created),
+11. _get_reports_dir uses central storage and rejects an invalid explicit root,
     plus the bug-fixed _strip_printer_settings_rels behaviour.
 
 Mocks:
@@ -41,7 +40,7 @@ Mocks:
 import sys
 import uuid
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -302,6 +301,7 @@ class TestThemes:
         custom_dir.mkdir()
         Presentation().save(str(custom_dir / "shiny.pptx"))
         monkeypatch.setattr(pg, "_get_templates_dir", lambda: tmp_path)
+        monkeypatch.setattr(pg.settings, "REALOPEN_DATA_DIR", str(tmp_path / "data"))
 
         slug, theme = pg._resolve_theme("shiny")
         assert slug == "shiny"
@@ -1271,106 +1271,21 @@ class TestLogHelper:
         assert "NaN" in capsys.readouterr().out
 
 
-def _fake_reports_path(fail_on):
-    """Build a Path double for _get_reports_dir() tests.
-
-    ``fail_on`` maps a path value to the set of 1-based mkdir attempt
-    numbers that raise OSError. Call counting is shared per path VALUE
-    (not per object) so the function's fallback — a NEW
-    Path("/app/data/reports") instance — observes attempt #2 for that
-    path, modelling a transient first-attempt failure. No real
-    directory is ever created.
-    """
-    calls: dict = {}
-
-    class _PathDouble:
-        def __init__(self, value):
-            self.value = str(value)
-
-        def resolve(self):
-            return self
-
-        @property
-        def parent(self):
-            return _PathDouble(str(PurePosixPath(self.value).parent))
-
-        def __truediv__(self, other):
-            return _PathDouble(str(PurePosixPath(self.value) / str(other)))
-
-        def mkdir(self, parents=True, exist_ok=True):
-            attempt = calls.get(self.value, 0) + 1
-            calls[self.value] = attempt
-            if attempt in fail_on.get(self.value, set()):
-                raise OSError(f"simulated mkdir failure for {self.value}")
-            return None
-
-        def __eq__(self, other):
-            return isinstance(other, _PathDouble) and self.value == other.value
-
-        def __ne__(self, other):
-            return not self.__eq__(other)
-
-        def __hash__(self):
-            return hash(self.value)
-
-        def __repr__(self):
-            return f"FakePath({self.value!r})"
-
-    return _PathDouble, calls
 
 
 class TestGetReportsDir:
-    """The real _get_reports_dir (no monkeypatching of the function) via a
-    Path double: calling it for real would either hit the unwritable /app
-    candidate and create <backend>/data/reports inside the checkout, or
-    (as root) create /app/data/reports — environment-dependent side
-    effects the tests must not have."""
+    def test_uses_central_storage(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pg.settings, "REALOPEN_DATA_DIR", str(tmp_path))
+        assert pg._get_reports_dir() == tmp_path / "reports"
+        assert (tmp_path / "reports").is_dir()
 
-    APP = "/app/data/reports"
-    REPO = str(BACKEND_ROOT / "data" / "reports")
-
-    def test_first_writable_candidate_wins(self, monkeypatch):
-        cls, calls = _fake_reports_path({})
-        monkeypatch.setattr(pg, "Path", cls)
-
-        result = pg._get_reports_dir()
-
-        assert result == cls(self.APP)
-        # Early return: exactly one mkdir, on the first candidate only.
-        assert calls == {self.APP: 1}
-
-    def test_unwritable_app_dir_falls_back_to_repo_data(self, monkeypatch):
-        # /app/data/reports mkdir raises PermissionError-class OSError
-        # (the situation on this machine) → the repo-relative candidate.
-        cls, calls = _fake_reports_path({self.APP: {1}})
-        monkeypatch.setattr(pg, "Path", cls)
-
-        result = pg._get_reports_dir()
-
-        assert result == cls(self.REPO)
-        assert calls == {self.APP: 1, self.REPO: 1}
-
-    def test_transient_failures_retry_the_app_fallback(self, monkeypatch):
-        # Both candidates fail their first mkdir; the final fallback is a
-        # NEW Path("/app/data/reports") whose mkdir (attempt #2 for that
-        # path value) succeeds → the /app path is returned.
-        cls, calls = _fake_reports_path({self.APP: {1}, self.REPO: {1}})
-        monkeypatch.setattr(pg, "Path", cls)
-
-        result = pg._get_reports_dir()
-
-        assert result == cls(self.APP)
-        assert calls == {self.APP: 2, self.REPO: 1}
-
-    def test_persistent_failures_raise_out_of_the_helper(self, monkeypatch):
-        # Every mkdir (including the fallback retry) fails → the OSError
-        # propagates rather than returning a bogus path.
-        cls, calls = _fake_reports_path({self.APP: {1, 2}, self.REPO: {1}})
-        monkeypatch.setattr(pg, "Path", cls)
-
-        with pytest.raises(OSError, match="simulated mkdir failure"):
+    def test_invalid_explicit_storage_is_not_redirected(self, monkeypatch, tmp_path):
+        blocked = tmp_path / "blocked"
+        blocked.write_text("retain")
+        monkeypatch.setattr(pg.settings, "REALOPEN_DATA_DIR", str(blocked))
+        with pytest.raises(OSError):
             pg._get_reports_dir()
-        assert calls == {self.APP: 2, self.REPO: 1}
+        assert blocked.read_text() == "retain"
 
 
 def test_uuid_result_ids_are_unique(reports_dir, no_libreoffice):
