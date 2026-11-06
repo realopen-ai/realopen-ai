@@ -598,8 +598,14 @@ async def _install_system_direct(
     """Install with the detected package manager; never request a web password."""
     try:
         commands = _system_commands(dep, distro)
-    except ValueError as exc:
-        yield {"stage": "error", "error": str(exc)}
+    except ValueError:
+        logger.exception(
+            "Cannot prepare dependency installation for %s on %s", dep.name, distro
+        )
+        yield {
+            "stage": "error",
+            "error": "Cannot prepare dependency installation for this platform. Check server logs for details.",
+        }
         return
     manager = commands[-1][0]
     manual = " && ".join(_manual_command(command) for command in commands)
@@ -845,8 +851,14 @@ async def _uninstall_system_direct(
     """Remove only an app-managed native installation; retain state on failure."""
     try:
         command = _system_commands(dep, distro, remove=True)[-1]
-    except ValueError as exc:
-        yield {"stage": "error", "error": str(exc)}
+    except ValueError:
+        logger.exception(
+            "Cannot prepare dependency removal for %s on %s", dep.name, distro
+        )
+        yield {
+            "stage": "error",
+            "error": "Cannot prepare dependency removal for this platform. Check server logs for details.",
+        }
         return
     manual = _manual_command(command)
     if settings.REALOPEN_RUNTIME == "native":
