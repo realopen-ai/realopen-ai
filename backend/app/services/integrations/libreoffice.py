@@ -1,27 +1,10 @@
-"""
-LibreOffice helper — headless document conversion and thumbnail rendering.
+"""Find and run local LibreOffice for headless conversion and previews.
 
-This module wraps the `soffice` wrapper script (at /usr/lib/libreoffice/program/soffice)
-to provide PPTX → PNG thumbnail rendering, PPTX → PDF conversion, and
-PPTX → per-slide JPEG rendering (for the in-app slide viewer).
-
-The slide/page viewer pipeline is format-generic:
-    PPTX --soffice --> PDF --fitz/pdftoppm      --> slide_NNN.jpg (+ _t thumb)
-    DOCX --soffice --> PDF (into the cache dir) --> page JPEGs
-    XLSX --soffice --> PDF (into the cache dir) --> page JPEGs
-    PDF  (already a PDF — no soffice needed)    --> page JPEGs
-
-XLSX workbooks honor the print setup stored in the workbook (the excel_gen
-service writes landscape + fit-to-width + repeated header rows), so the
-converted pages read like a properly paginated print preview.
-
-LibreOffice is installed to its DEFAULT system location (/usr/lib/libreoffice)
-via apt-get install, and that path is mounted as a Docker volume. This means:
-  - All hardcoded paths in fundamentalrc are correct by default
-  - The wrapper script handles URE_BOOTSTRAP, LD_LIBRARY_PATH, etc. itself
-  - No env var hacks, no path patching, no overlay extraction needed
-
-We just call the wrapper script. That's it.
+Use the system wrapper or PATH entry in containers/Linux; also discover
+macOS app bundles and the standard Windows installation. Native macOS
+installs managed by the Dependencies UI live under data/native/apps.
+Container processes must not mistake a shared macOS bundle for a Linux
+executable. Conversions are serialized and use isolated temporary profiles.
 """
 
 from __future__ import annotations
@@ -30,9 +13,11 @@ import asyncio
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -62,14 +47,31 @@ _SOFFICE_BIN = "/usr/lib/libreoffice/program/soffice.bin"
 
 def is_available() -> bool:
     """Check if LibreOffice (soffice) is installed."""
-    return Path(_SOFFICE_BIN).exists() or shutil.which("soffice") is not None
+    return Path(_SOFFICE_BIN).exists() or _find_soffice() is not None
 
 
 def _find_soffice() -> Optional[str]:
     """Find the soffice wrapper script."""
     if Path(_SOFFICE_PATH).exists():
         return _SOFFICE_PATH
-    return shutil.which("soffice")
+    binary = shutil.which("soffice")
+    if binary:
+        return binary
+    candidates = (
+        [
+            Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+            Path.home() / "Applications/LibreOffice.app/Contents/MacOS/soffice",
+            settings.get_data_dir()
+            / "native/apps/LibreOffice.app/Contents/MacOS/soffice",
+        ]
+        if sys.platform == "darwin"
+        else (
+            [Path("C:/Program Files/LibreOffice/program/soffice.exe")]
+            if sys.platform == "win32"
+            else []
+        )
+    )
+    return next((str(path) for path in candidates if path.is_file()), None)
 
 
 async def _run_soffice(
