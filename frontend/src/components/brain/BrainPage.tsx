@@ -5,6 +5,7 @@ import { PageContainer, PageHeader } from "@/components/ui/primitives";
 import { MemoriesTab } from "@/components/brain/MemoriesTab";
 import { SkillsTab } from "@/components/brain/SkillsTab";
 import { HistoryTab } from "@/components/brain/HistoryTab";
+import { ModelsTab } from "@/components/brain/ModelsTab";
 import { ToolsTab } from "@/components/brain/ToolsTab";
 import { brainTabPath, getBrainRoute, type BrainTab } from "@/lib/appRoutes";
 
@@ -19,6 +20,7 @@ export function BrainPage() {
     { key: "history", label: t("brain.history") },
     { key: "skills", label: t("brain.skills") },
     { key: "tools", label: t("brain.tools") },
+    { key: "models", label: t("models.title") },
   ];
 
   return (
@@ -34,7 +36,7 @@ export function BrainPage() {
             stretched across the page. */}
         <nav
           aria-label={t("brain.title")}
-          className="flex items-center gap-1 border-b border-border/60"
+          className="flex items-center gap-1 overflow-x-auto border-b border-border/60"
         >
           {tabs.map((tabItem) => {
             const active = tab === tabItem.key;
@@ -67,6 +69,7 @@ export function BrainPage() {
             <HistoryTab onOpenConversation={(id) => navigate(`/${id}`)} />
           )}
           {tab === "skills" && <SkillsTab />}
+          {tab === "models" && <ModelsTab />}
           {tab === "tools" && (
             <ToolsTab
               selectedTool={toolId}

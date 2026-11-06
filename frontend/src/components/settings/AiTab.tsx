@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Cloud,
   HardDrive,
@@ -205,7 +206,8 @@ function ProvidersSection() {
 
 // ─── AI tab ────────────────────────────────────────────────────────
 
-export function AiTab() {
+export function AiTab({ onManageModels }: { onManageModels?: () => void }) {
+  const navigate = useNavigate();
   const t = useT();
   const models = useAiStore((s) => s.models);
   const tasks = useAiStore((s) => s.tasks);
@@ -227,9 +229,16 @@ export function AiTab() {
           title={t("settings.ai.models")}
           description={t("settings.ai.description")}
           actions={
-            <span className="text-xs text-muted-foreground">
-              {models.length}
-            </span>
+            <Button
+              variant="link"
+              size="sm"
+              onClick={() => {
+                onManageModels?.();
+                navigate("/brain/models");
+              }}
+            >
+              {t("models.manage")}
+            </Button>
           }
         />
 
