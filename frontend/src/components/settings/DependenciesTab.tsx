@@ -28,8 +28,8 @@ export function DependenciesTab() {
   );
   const [installOutput, setInstallOutput] = useState<string>("");
   const [installError, setInstallError] = useState<string>("");
+  const [outputDep, setOutputDep] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   const loadDeps = useCallback(async () => {
     setIsLoading(true);
@@ -45,32 +45,36 @@ export function DependenciesTab() {
   const handleInstall = useCallback(
     async (name: string) => {
       setBusy(name);
+      setOutputDep(name);
       setBusyAction("install");
       setInstallOutput("");
       setInstallError("");
 
-      await installDependency(name, (event: InstallEvent) => {
-        if (event.output) {
-          setInstallOutput((prev) => prev + event.output + "\n");
-          logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-        }
-        if (event.stage === "error") {
-          setInstallError(
-            event.error || t("settings.dependencies.installFailed"),
-          );
-          if (event.manual_command) {
+      try {
+        await installDependency(name, (event: InstallEvent) => {
+          if (event.output) {
+            setInstallOutput((prev) => prev + event.output + "\n");
+          }
+          if (event.stage === "error") {
             setInstallError(
-              event.error +
-                `\n\n${t("settings.dependencies.manualCommand")}:\n` +
-                event.manual_command,
+              (event.error || t("settings.dependencies.installFailed")) +
+                (event.manual_command
+                  ? `\n\n${t("settings.dependencies.manualCommand")}:\n${event.manual_command}`
+                  : ""),
             );
           }
-        }
-      });
-
-      setBusy(null);
-      setBusyAction(null);
-      await loadDeps();
+        });
+      } catch (error) {
+        setInstallError(
+          error instanceof Error
+            ? error.message
+            : t("settings.dependencies.installFailed"),
+        );
+      } finally {
+        setBusy(null);
+        setBusyAction(null);
+        await loadDeps();
+      }
     },
     [loadDeps],
   );
@@ -78,26 +82,37 @@ export function DependenciesTab() {
   const handleUninstall = useCallback(
     async (name: string) => {
       setBusy(name);
+      setOutputDep(name);
       setBusyAction("uninstall");
       setConfirmUninstall(null);
       setInstallOutput("");
       setInstallError("");
 
-      await uninstallDependency(name, (event: InstallEvent) => {
-        if (event.output) {
-          setInstallOutput((prev) => prev + event.output + "\n");
-          logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-        }
-        if (event.stage === "error") {
-          setInstallError(
-            event.error || t("settings.dependencies.uninstallFailed"),
-          );
-        }
-      });
-
-      setBusy(null);
-      setBusyAction(null);
-      await loadDeps();
+      try {
+        await uninstallDependency(name, (event: InstallEvent) => {
+          if (event.output) {
+            setInstallOutput((prev) => prev + event.output + "\n");
+          }
+          if (event.stage === "error") {
+            setInstallError(
+              (event.error || t("settings.dependencies.uninstallFailed")) +
+                (event.manual_command
+                  ? `\n\n${t("settings.dependencies.manualCommand")}:\n${event.manual_command}`
+                  : ""),
+            );
+          }
+        });
+      } catch (error) {
+        setInstallError(
+          error instanceof Error
+            ? error.message
+            : t("settings.dependencies.uninstallFailed"),
+        );
+      } finally {
+        setBusy(null);
+        setBusyAction(null);
+        await loadDeps();
+      }
     },
     [loadDeps],
   );
@@ -133,10 +148,9 @@ export function DependenciesTab() {
             dep={dep}
             isBusy={busy === dep.name}
             busyAction={busy === dep.name ? busyAction : null}
-            installOutput={busy === dep.name ? installOutput : ""}
-            installError={busy === dep.name ? installError : ""}
+            installOutput={outputDep === dep.name ? installOutput : ""}
+            installError={outputDep === dep.name ? installError : ""}
             confirmUninstall={confirmUninstall === dep.name}
-            logsEndRef={logsEndRef}
             onInstall={() => handleInstall(dep.name)}
             onUninstall={() => setConfirmUninstall(dep.name)}
             onConfirmUninstall={() => handleUninstall(dep.name)}
@@ -155,7 +169,6 @@ function DependencyRow({
   installOutput,
   installError,
   confirmUninstall,
-  logsEndRef,
   onInstall,
   onUninstall,
   onConfirmUninstall,
@@ -167,13 +180,20 @@ function DependencyRow({
   installOutput: string;
   installError: string;
   confirmUninstall: boolean;
-  logsEndRef: React.RefObject<HTMLDivElement | null>;
   onInstall: () => void;
   onUninstall: () => void;
   onConfirmUninstall: () => void;
   onCancelUninstall: () => void;
 }) {
   const [showOutput, setShowOutput] = useState(false);
+  const logBoxRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    const logBox = logBoxRef.current;
+    if (logBox) {
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+  }, [installOutput, showOutput]);
 
   return (
     <div className="py-3.5">
@@ -303,7 +323,7 @@ function DependencyRow({
       </div>
 
       {/* Install/uninstall output (collapsible) */}
-      {(isBusy || installError) && (
+      {(isBusy || installError || installOutput) && (
         <div className="mt-2.5">
           {installError && (
             <div className="mb-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2">
@@ -325,9 +345,11 @@ function DependencyRow({
                   : t("settings.dependencies.showLog")}
               </button>
               {showOutput && (
-                <pre className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                <pre
+                  ref={logBoxRef}
+                  className="mt-1.5 max-h-48 overflow-y-auto rounded-lg bg-secondary p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground"
+                >
                   {installOutput}
-                  <div className="mt-1.5" ref={logsEndRef} />
                 </pre>
               )}
             </div>

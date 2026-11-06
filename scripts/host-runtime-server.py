@@ -43,6 +43,7 @@ from sandbox_runtime import (  # noqa: E402
     SandboxSpec,
 )
 from search_runtime import SearchRuntime  # noqa: E402
+from native.services import NativeSearchRuntime  # noqa: E402
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -53,7 +54,7 @@ tts = create_tts_engine(cfg.tts)
 tts_engines = {str(cfg.tts.voice or "mary"): tts}
 asr_lock = asyncio.Lock()
 voice_lock = asyncio.Lock()
-CUSTOM_DIR = ROOT / "data" / "voice-voices"
+CUSTOM_DIR = settings.get_data_dir() / "voice-voices"
 CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -79,9 +80,21 @@ def online_hub():
         reset_sessions()
 
 
-app = FastAPI(title="RealOpen Host Runtime")
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        yield
+    finally:
+        close = getattr(search_runtime, "close", None)
+        if close is not None:
+            await asyncio.to_thread(close)
+
+
+app = FastAPI(title="RealOpen Host Runtime", lifespan=lifespan)
 sandbox_runtime = None
-search_runtime = SearchRuntime()
+search_runtime = (
+    NativeSearchRuntime() if settings.REALOPEN_RUNTIME == "native" else SearchRuntime()
+)
 direct_preview_specs: dict[int, SandboxSpec] = {}
 
 
@@ -205,6 +218,7 @@ async def health() -> dict:
         "asr": asr.status(),
         "tts": tts.status(),
         "docker": docker_ready,
+        "runtime": settings.REALOPEN_RUNTIME,
     }
 
 
@@ -567,4 +581,9 @@ if __name__ == "__main__":
             daemon=True,
             name=f"sandbox-preview-{direct_port}",
         ).start()
-    uvicorn.run(app, host="127.0.0.1", port=8766, log_level="info")
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=settings.HOST_RUNTIME_PORT,
+        log_level="info",
+    )

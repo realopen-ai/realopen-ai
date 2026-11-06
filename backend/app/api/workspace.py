@@ -31,7 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Template
 from app.db.session import get_db
-from app.services.pptx_gen import AVAILABLE_TEMPLATES
+from app.services.pptx_gen import AVAILABLE_TEMPLATES, get_custom_templates_dir
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,7 +41,7 @@ router = APIRouter()
 
 def _get_templates_dir() -> Path:
     """Get the custom templates directory."""
-    return Path(__file__).resolve().parent.parent / "templates" / "pptx" / "custom"
+    return get_custom_templates_dir()
 
 
 def _slugify(name: str) -> str:
@@ -50,16 +52,8 @@ def _slugify(name: str) -> str:
 
 
 def _get_data_dir() -> Path:
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        if d.exists():
-            return d
-    fallback = Path("/app/data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 # ─── Request/Response models ─────────────────────────────────────────

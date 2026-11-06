@@ -22,6 +22,36 @@ MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules["sandbox_runtime"] = MODULE
 SPEC.loader.exec_module(MODULE)
 
+
+def test_create_keeps_legacy_workspace_instead_of_hiding_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(MODULE, "WORKSPACES", tmp_path / "sandboxes")
+    runtime = object.__new__(MODULE.SandboxRuntime)
+    runtime.client = SimpleNamespace(
+        volumes=SimpleNamespace(get=lambda _name: object())
+    )
+    runtime.start = lambda spec: {"mount": runtime._workspace_mount(spec)}
+    spec = MODULE.SandboxSpec("legacy", "old-volume", "container", "image", 1, 256)
+    assert runtime.create(spec)["mount"] == "old-volume"
+    assert not (tmp_path / "sandboxes/old-volume").exists()
+
+
+def test_new_workspace_uses_confined_host_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(MODULE, "WORKSPACES", tmp_path / "sandboxes")
+    runtime = object.__new__(MODULE.SandboxRuntime)
+
+    def missing(_name):
+        raise MODULE.NotFound("Missing test volume")
+
+    runtime.client = SimpleNamespace(volumes=SimpleNamespace(get=missing))
+    runtime.start = lambda spec: {"mount": runtime._workspace_mount(spec)}
+    spec = MODULE.SandboxSpec("new", "new-workspace", "container", "image", 1, 256)
+    assert runtime.create(spec)["mount"] == str(tmp_path / "sandboxes/new-workspace")
+    assert (tmp_path / "sandboxes/new-workspace").is_dir()
+    spec.volume_name = "../escape"
+    with pytest.raises(ValueError, match="storage name"):
+        runtime.create(spec)
+
+
 TREE_LOADER = importlib.machinery.SourceFileLoader(
     "roai_tree", str(ROOT / "sandbox" / "helpers" / "roai-tree")
 )

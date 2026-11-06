@@ -45,6 +45,7 @@ from datetime import date as _date
 from pathlib import Path
 from typing import Optional
 
+from app.config import settings
 from app.services import model_prefs
 from app.services import providers
 from app.services.artifact_sources import (
@@ -73,20 +74,10 @@ def _log(msg: str, *args) -> None:
 
 
 def _get_reports_dir() -> Path:
-    """Get the reports directory under data/. Creates it if missing."""
-    candidates = [
-        Path("/app/data/reports"),
-        Path(__file__).resolve().parent.parent.parent / "data" / "reports",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    fallback = Path("/app/data/reports")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Write deliverables beside the files served by the reports API."""
+    directory = settings.get_data_dir() / "reports"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 # ── Design tokens (shared by PDF + DOCX) ─────────────────────────────

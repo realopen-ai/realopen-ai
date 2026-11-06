@@ -93,7 +93,7 @@ def test_get_data_dir_falls_back_when_app_data_unwritable(main, monkeypatch):
                 raise OSError("simulated: /app/data not writable")
             return super().mkdir(*args, **kwargs)
 
-    monkeypatch.setattr(main, "Path", _NoAppDataPath)
+    monkeypatch.setattr(importlib.import_module("app.config"), "Path", _NoAppDataPath)
     result = main._get_data_dir()
 
     expected = Path(main.__file__).parent.parent.parent / "data"
@@ -108,7 +108,7 @@ def test_get_data_dir_raises_when_all_candidates_fail(main, monkeypatch):
         def mkdir(self, *args, **kwargs):
             raise OSError("simulated: everything is read-only")
 
-    monkeypatch.setattr(main, "Path", _FailingPath)
+    monkeypatch.setattr(importlib.import_module("app.config"), "Path", _FailingPath)
     with pytest.raises(OSError, match="read-only"):
         main._get_data_dir()
 

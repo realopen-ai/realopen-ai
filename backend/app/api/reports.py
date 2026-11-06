@@ -18,6 +18,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from app.services.safe_paths import confined_path
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -42,18 +44,8 @@ def _report_path(root: Path, relative: str | Path) -> Path:
 
 
 def _get_data_dir() -> Path:
-    """Get the data directory (same logic as app.main._get_data_dir)."""
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).resolve().parent.parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        if d.exists():
-            return d
-    # Fallback
-    fallback = Path("/app/data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 # MIME types for supported report formats

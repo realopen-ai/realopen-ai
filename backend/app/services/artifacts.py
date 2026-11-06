@@ -7,10 +7,8 @@ failed or conflicting candidates never replace the current version.
 import asyncio
 import hashlib
 import json
-import os
 import re
 import uuid
-from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import select, update, or_, false, text
@@ -42,7 +40,7 @@ async def identity_lock(db, identifier):
 
 
 def data_dir():
-    return Path(os.environ.get("REALOPEN_DATA_DIR") or _get_data_dir())
+    return _get_data_dir()
 
 
 def file_path(relative):

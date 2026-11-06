@@ -1,47 +1,16 @@
-"""
-Dependency management service — installs, uninstalls, and persists optional
-system-level dependencies using apt-get or pip.
+"""Optional dependency installation with streamed package-manager progress.
 
-## Architecture
+System packages use the detected OS manager (APT in Debian containers,
+Homebrew casks on macOS, and the supported native Linux/Windows managers).
+Native commands never prompt for passwords over HTTP: privileged Linux
+commands use noninteractive sudo and return a manual terminal command if
+permissions are unavailable. macOS app bundles live under data/native/apps.
 
-Optional dependencies (like LibreOffice) are installed via `apt-get install`
-to their default system locations. We persist:
-
-  - `/var/cache/apt` (cached .deb files) — Docker volume
-  - `/var/lib/apt/lists` (apt package index) — Docker volume
-  - `/app/data/.installed-deps.json` (manifest of installed deps) — Docker volume
-
-We do NOT persist the installed files themselves. After a container rebuild,
-the dpkg database is fresh and all apt-installed packages are gone. On startup,
-we replay `apt-get install --no-download` for each dep in the manifest — this
-reinstalls from cached .debs with no network access needed. Debian handles
-dependency resolution, triggers, ldconfig, and filesystem layout exactly as
-intended.
-
-Python (pip) dependencies (kind "pip", e.g. the voice runtime packages) are
-installed into the interpreter's site-packages with `python -m pip install`.
-Those live in the image, not in the data volume, so after an image rebuild
-they are gone — the voice setup wizard (provider-aware, idempotent,
-find_spec-based) re-installs them on the next setup run. The manifest is
-still updated so the Dependencies UI reflects the user's choices.
-
-## Install flow (user clicks Install)
-
-  1. apt-get update                       (kind "system-direct")
-     python -m pip install <pip_name>     (kind "pip", streamed output)
-  2. apt-get install -y <packages>        (kind "system-direct")
-  3. Update manifest
-
-## Uninstall flow
-
-  1. apt-get remove -y --auto-remove <packages>  (kind "system-direct")
-     python -m pip uninstall -y <pip_name>        (kind "pip")
-  2. Delete cached .debs for these packages (so it stays uninstalled after
-     rebuild) — apt deps only
-  3. Update manifest
-
-This scales to any Debian package or pip package with zero
-package-specific logic.
+The shared data/.installed-deps.json manifest records runtime and platform
+ownership. Native removal does not adopt pre-existing system installations,
+and failed operations keep the manifest unchanged. Cached APT recovery is
+restricted to Debian Docker startup; native system packages persist in place.
+Python dependencies retain their provider-aware persistent pip install path.
 """
 
 from __future__ import annotations
@@ -52,6 +21,7 @@ import importlib.metadata
 import importlib.util
 import json
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -60,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Callable, Optional
+from app.config import settings
+from app.services.integrations.libreoffice import _find_soffice
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +51,7 @@ APT_CACHE_DIR = Path("/var/cache/apt/archives")
 
 # Manifest file tracks which deps the user has explicitly installed.
 # Lives in /app/data which is mounted as a Docker volume (./data:/app/data).
-MANIFEST_PATH = Path("/app/data/.installed-deps.json")
+MANIFEST_PATH = settings.get_data_dir() / ".installed-deps.json"
 
 
 # ── Dependency catalog ───────────────────────────────────────────────
@@ -254,8 +226,12 @@ _PKG_MAP: dict[str, dict[str, list[str]]] = {
         "suse": ["libreoffice"],
         "alpine": [],
         "macos": ["libreoffice"],
+        "windows": ["TheDocumentFoundation.LibreOffice"],
     },
 }
+
+# Formulae are the Homebrew default; GUI applications declare cask packaging.
+_PKG_KINDS = {"libreoffice": {"macos": "cask"}}
 
 
 # ── Detection ────────────────────────────────────────────────────────
@@ -273,7 +249,11 @@ def is_installed(dep: Dependency) -> bool:
     if dep.ocr_language:
         return dep.ocr_language in ocr.installed_languages()
     if dep.binary_name:
-        return shutil.which(dep.binary_name) is not None
+        return (
+            _find_soffice()
+            if dep.binary_name == "soffice"
+            else shutil.which(dep.binary_name)
+        ) is not None
     if dep.pip_name:
         module_name = dep.import_name or dep.pip_name.replace("-", "_")
         try:
@@ -296,7 +276,14 @@ def get_version(dep: Dependency) -> Optional[str]:
     try:
         if dep.binary_name:
             proc = subprocess.run(
-                [dep.binary_name, "--version"],
+                [
+                    (
+                        _find_soffice()
+                        if dep.binary_name == "soffice"
+                        else dep.binary_name
+                    ),
+                    "--version",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -327,6 +314,8 @@ def _detect_distro() -> str:
     """Detect the Linux distribution (or 'macos' / 'unknown')."""
     if sys.platform == "darwin":
         return "macos"
+    if sys.platform == "win32":
+        return "windows"
 
     # Check /etc/os-release
     try:
@@ -383,14 +372,104 @@ def get_install_command(dep: Dependency) -> Optional[str]:
         packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
         if not packages:
             return None
-        pkgs_str = " ".join(shlex.quote(p) for p in packages)
-        return f"apt-get install -y --no-install-recommends {pkgs_str}"
+        return shlex.join(_system_commands(dep, distro)[-1])
     if dep.kind == "pip" and dep.pip_name:
         cmd = f"pip install {dep.pip_name}"
         if dep.pip_extra_args:
             cmd += " " + " ".join(shlex.quote(a) for a in dep.pip_extra_args)
         return cmd
     return None
+
+
+def _system_commands(dep: Dependency, distro: str, *, remove=False) -> list[list[str]]:
+    """Package-manager commands shared by UI previews and actual execution."""
+    packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
+    if not packages:
+        raise ValueError(
+            f"{dep.display_name} has no supported package mapping for {distro}."
+        )
+    if distro == "macos":
+        cask = _PKG_KINDS.get(dep.name, {}).get(distro) == "cask"
+        command = [
+            "brew",
+            "uninstall" if remove else "install",
+            *(["--cask"] if cask else []),
+            *packages,
+        ]
+        if cask and not remove:
+            command.append(f"--appdir={settings.get_data_dir() / 'native/apps'}")
+        return [command]
+    if distro == "windows":
+        return [
+            [
+                "winget",
+                "uninstall" if remove else "install",
+                "--id",
+                packages[0],
+                "--exact",
+                "--silent",
+                "--disable-interactivity",
+                *(
+                    []
+                    if remove
+                    else ["--accept-package-agreements", "--accept-source-agreements"]
+                ),
+            ]
+        ]
+    if distro == "debian":
+        return (
+            [["apt-get", "remove", "-y", "--auto-remove", *packages]]
+            if remove
+            else [
+                ["apt-get", "update", "-qq"],
+                ["apt-get", "install", "-y", "--no-install-recommends", *packages],
+            ]
+        )
+    managers = {
+        "fedora": [
+            "yum" if not shutil.which("dnf") and shutil.which("yum") else "dnf",
+            "remove" if remove else "install",
+            "-y",
+        ],
+        "arch": ["pacman", "-R" if remove else "-S", "--noconfirm"],
+        "suse": ["zypper", "--non-interactive", "remove" if remove else "install"],
+        "alpine": ["apk", "del" if remove else "add"],
+    }
+    if distro not in managers:
+        raise ValueError(f"No package-manager integration for {distro}.")
+    return [[*managers[distro], *packages]]
+
+
+def _execution_command(command: list[str]) -> str:
+    prefix = []
+    if (
+        settings.REALOPEN_RUNTIME == "native"
+        and command[0] not in {"brew", "winget"}
+        and hasattr(os, "geteuid")
+        and os.geteuid() != 0
+    ):
+        prefix = ["sudo", "-n"]
+    if command[0] == "apt-get":
+        prefix = ["env", "DEBIAN_FRONTEND=noninteractive", *prefix]
+    return shlex.join([*prefix, *command])
+
+
+def _manual_command(command: list[str]) -> str:
+    if command[0] == "winget":
+        command = [
+            part
+            for part in command
+            if part not in {"--silent", "--disable-interactivity"}
+        ]
+    prefix = (
+        ["sudo"]
+        if settings.REALOPEN_RUNTIME == "native"
+        and command[0] not in {"brew", "winget"}
+        and hasattr(os, "geteuid")
+        and os.geteuid() != 0
+        else []
+    )
+    return shlex.join([*prefix, *command])
 
 
 # ── Manifest ─────────────────────────────────────────────────────────
@@ -421,6 +500,8 @@ def _record_install(dep: Dependency) -> None:
     manifest = _read_manifest()
     manifest.setdefault("installed", {})[dep.name] = {
         "installed_at": datetime.utcnow().isoformat(),
+        "runtime": settings.REALOPEN_RUNTIME,
+        "platform": _detect_distro(),
     }
     _write_manifest(manifest)
     _log("recorded %s in manifest", dep.name)
@@ -472,11 +553,26 @@ async def _run_command_streaming(
 ) -> AsyncGenerator[dict, None]:
     """Run a command and yield each line of output as an SSE event."""
     parts = shlex.split(cmd)
-    proc = await asyncio.create_subprocess_exec(
-        *parts,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
+    env = {
+        **os.environ,
+        "HOMEBREW_NO_AUTO_UPDATE": "1",
+        "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+        "HOMEBREW_NO_SUDO": "1",
+    }
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *parts,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError:
+        message = f"Cannot start {parts[0]}. Install the package manager or run the suggested command in a terminal."
+        output_lines.append(message)
+        yield {"stage": stage, "output": message}
+        yield {"_returncode": 127}
+        return
 
     while True:
         line = await proc.stdout.readline()
@@ -499,58 +595,60 @@ async def _install_system_direct(
     distro: str,
     progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> AsyncGenerator[dict, None]:
-    """Install a system-direct dep via apt-get install to the default location.
-
-    apt-get install handles everything: downloads .debs (cached for future
-    reinstalls), installs to the correct locations, runs triggers, ldconfig, etc.
-    """
-    packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
-    if not packages:
+    """Install with the detected package manager; never request a web password."""
+    try:
+        commands = _system_commands(dep, distro)
+    except ValueError:
+        logger.exception(
+            "Cannot prepare dependency installation for %s on %s", dep.name, distro
+        )
         yield {
             "stage": "error",
-            "error": f"{dep.display_name} is not available for {distro}.",
+            "error": "Cannot prepare dependency installation for this platform. Check server logs for details.",
         }
         return
-
-    pkgs_str = " ".join(shlex.quote(p) for p in packages)
-
-    # Step 1: apt-get update
-    yield {"stage": "updating", "output": "Updating package lists..."}
-    async for event in _run_command_streaming(
-        "env DEBIAN_FRONTEND=noninteractive apt-get update -qq",
-        "updating",
-        [],
-    ):
-        if "output" in event:
-            if progress_callback:
-                progress_callback(event)
-            yield event
-
-    # Step 2: apt-get install
-    yield {"stage": "installing", "output": f"Installing {pkgs_str}..."}
-    install_cmd = f"env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {pkgs_str}"
-    install_lines: list[str] = []
-    rc = 0
-    async for event in _run_command_streaming(install_cmd, "installing", install_lines):
-        if "_returncode" in event:
-            rc = event["_returncode"]
-        elif "output" in event:
-            if progress_callback:
-                progress_callback(event)
-            yield event
-
-    if rc != 0:
+    manager = commands[-1][0]
+    manual = " && ".join(_manual_command(command) for command in commands)
+    if not shutil.which(manager):
         yield {
             "stage": "error",
-            "exit_code": rc,
-            "error": f"apt-get install failed (exit code {rc}).",
-            "output": "\n".join(install_lines[-30:]),
+            "error": f"{manager} is not installed or not on PATH. Install it or run this command in a terminal.",
+            "manual_command": manual,
         }
         return
-
-    # Step 3: Update manifest
+    if distro == "macos":
+        (settings.get_data_dir() / "native/apps").mkdir(parents=True, exist_ok=True)
+    for command in commands:
+        stage = "updating" if command is not commands[-1] else "installing"
+        yield {"stage": stage, "output": f"Running {shlex.join(command)}..."}
+        output_lines = []
+        rc = 0
+        async for event in _run_command_streaming(
+            _execution_command(command), stage, output_lines
+        ):
+            if "_returncode" in event:
+                rc = event["_returncode"]
+            else:
+                if progress_callback:
+                    progress_callback(event)
+                yield event
+        if rc != 0:
+            yield {
+                "stage": "error",
+                "exit_code": rc,
+                "error": f"{manager} {stage} failed (exit code {rc}). If administrator access is required, run the command below in a terminal; the app cannot request your password.",
+                "manual_command": manual,
+                "output": "\n".join(output_lines[-30:]),
+            }
+            return
+    if not is_installed(dep):
+        yield {
+            "stage": "error",
+            "error": f"{manager} finished, but {dep.display_name} is not detectable. Check its installation location and server logs.",
+            "manual_command": manual,
+        }
+        return
     _record_install(dep)
-
     yield {
         "stage": "done",
         "exit_code": 0,
@@ -750,54 +848,50 @@ async def _uninstall_system_direct(
     dep: Dependency,
     distro: str,
 ) -> AsyncGenerator[dict, None]:
-    """Uninstall a system-direct dep via apt-get remove.
-
-    apt-get remove handles everything: removes files, cleans dpkg db, runs
-    triggers. We also clean cached .debs so it stays uninstalled after rebuild.
-    """
-    packages = _PKG_MAP.get(dep.name, {}).get(distro, [])
-    if not packages:
+    """Remove only an app-managed native installation; retain state on failure."""
+    try:
+        command = _system_commands(dep, distro, remove=True)[-1]
+    except ValueError:
+        logger.exception(
+            "Cannot prepare dependency removal for %s on %s", dep.name, distro
+        )
         yield {
             "stage": "error",
-            "error": f"Cannot uninstall — no packages for {distro}.",
+            "error": "Cannot prepare dependency removal for this platform. Check server logs for details.",
         }
         return
-
-    pkgs_str = " ".join(shlex.quote(p) for p in packages)
-
-    # Step 1: apt-get remove
-    yield {"stage": "uninstalling", "output": f"Running apt-get remove {pkgs_str}..."}
-    remove_cmd = (
-        f"env DEBIAN_FRONTEND=noninteractive apt-get remove -y --auto-remove {pkgs_str}"
-    )
-    remove_lines: list[str] = []
+    manual = _manual_command(command)
+    if settings.REALOPEN_RUNTIME == "native":
+        record = _read_manifest().get("installed", {}).get(dep.name, {})
+        if record.get("runtime") != "native" or record.get("platform") != distro:
+            yield {
+                "stage": "error",
+                "error": f"{dep.display_name} was not installed by this native runtime. Manage this existing installation with your OS package manager.",
+                "manual_command": manual,
+            }
+            return
+    yield {"stage": "uninstalling", "output": f"Running {shlex.join(command)}..."}
+    output_lines = []
     rc = 0
-    async for event in _run_command_streaming(remove_cmd, "uninstalling", remove_lines):
+    async for event in _run_command_streaming(
+        _execution_command(command), "uninstalling", output_lines
+    ):
         if "_returncode" in event:
             rc = event["_returncode"]
-        elif "output" in event:
+        else:
             yield event
-
-    # apt-get remove may return non-zero if the package isn't in the dpkg db
-    # (e.g. after a rebuild where the startup reinstall failed). That's OK —
-    # we still clean the cache + manifest.
     if rc != 0:
         yield {
-            "stage": "uninstalling",
-            "output": f"apt-get remove returned {rc} (package may not be in dpkg db)",
+            "stage": "error",
+            "exit_code": rc,
+            "error": f"{command[0]} removal failed (exit code {rc}). Run the command in a terminal if administrator access is required.",
+            "manual_command": manual,
+            "output": "\n".join(output_lines[-30:]),
         }
-
-    # Step 2: Clean cached .debs so it stays uninstalled after rebuild
-    debs_removed = _remove_debs_from_cache_for_packages(packages)
-    if debs_removed > 0:
-        yield {
-            "stage": "uninstalling",
-            "output": f"Deleted {debs_removed} cached .deb file(s).",
-        }
-
-    # Step 3: Update manifest
+        return
+    if distro == "debian":
+        _remove_debs_from_cache_for_packages(_PKG_MAP[dep.name][distro])
     _record_uninstall(dep)
-
     yield {
         "stage": "done",
         "exit_code": 0,
@@ -921,6 +1015,10 @@ async def verify_deps_on_startup() -> None:
     Debian handles everything: dependency resolution, triggers, ldconfig,
     symlinks, filesystem layout. No package-specific recovery code needed.
     """
+    if settings.REALOPEN_RUNTIME != "docker" or _detect_distro() != "debian":
+        # Native installs persist in their OS locations. Never replay a shared
+        # Docker manifest with a host package manager (or during app startup).
+        return
     manifest = _read_manifest()
     installed = manifest.get("installed", {})
 
@@ -1046,9 +1144,13 @@ def get_catalog() -> list[dict]:
                 "install_cmd": install_cmd,
                 "distro": distro,
                 "persistence": (
-                    "apt-cache"
-                    if installed and dep.kind == "system-direct"
-                    else ("image" if installed else "none")
+                    "native"
+                    if installed and settings.REALOPEN_RUNTIME == "native"
+                    else (
+                        "apt-cache"
+                        if installed and dep.kind == "system-direct"
+                        else ("image" if installed else "none")
+                    )
                 ),
             }
         )

@@ -42,7 +42,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.config import settings
+from app.services.search_services import provider_url
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +271,7 @@ async def search_searxng(
     timeout_s: float = 15.0,
 ) -> tuple:
     """Query the SearXNG API and return parsed results."""
-    url = f"{(base_url or settings.SEARXNG_BASE_URL).rstrip('/')}/search"
+    url = f"{provider_url('searxng', base_url).rstrip('/')}/search"
     params = {
         "q": query,
         "format": "json",
@@ -328,7 +328,7 @@ async def search_degoog(
     timeout_s: float = 20.0,
 ) -> tuple:
     """Use Degoog's native JSON API; engines are managed by the instance."""
-    url = f"{(base_url or settings.DEGOOG_BASE_URL).rstrip('/')}/api/search"
+    url = f"{provider_url('degoog', base_url).rstrip('/')}/api/search"
     async with httpx.AsyncClient(timeout=timeout_s) as client:
         response = await client.get(
             url,

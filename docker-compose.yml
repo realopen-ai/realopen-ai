@@ -12,7 +12,7 @@ services:
       POSTGRES_USER: realopen
       POSTGRES_PASSWORD: realopen
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./data/postgres/docker:/var/lib/postgresql/data
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
     mem_limit: 256m
@@ -35,6 +35,9 @@ services:
     image: docker.io/valkey/valkey:8-alpine
     container_name: realopen-redis
     restart: unless-stopped
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/valkey/docker:/data
     mem_limit: 64m
     cpus: 0.25
     networks:
@@ -94,23 +97,24 @@ services:
     container_name: realopen-backend
     env_file: .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://realopen:realopen@postgres:5432/realopen
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - SEARXNG_BASE_URL=http://searxng:8080
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://realopen:realopen@postgres:5432/realopen}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://searxng:8080}
+      - DEGOOG_BASE_URL=${DEGOOG_BASE_URL:-http://degoog:4444}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - VOICE_RUNTIME_URL=${VOICE_RUNTIME_URL:-http://host.docker.internal:8766}
       - ENABLED_MODULES=${ENABLED_MODULES:-assistant}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
-      - upload-data:/app/uploads
+      - ./data/uploads:/app/uploads
       - ./profiles.yml:/app/profiles.yml:ro
       - ./modules.yml:/app/modules.yml:ro
-      - module-state:/app/state
+      - ./data/state:/app/state
       - ./data:/app/data
-      - apt-cache:/var/cache/apt
-      - apt-lists:/var/lib/apt/lists
+      - ./data/cache/apt:/var/cache/apt
+      - ./data/cache/apt-lists:/var/lib/apt/lists
     restart: unless-stopped
     mem_limit: 4g
     cpus: 4.0
@@ -142,7 +146,7 @@ services:
       backend:
         condition: service_healthy
     volumes:
-      - nginx-cache:/var/cache/nginx
+      - ./data/cache/nginx:/var/cache/nginx
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.5
@@ -168,14 +172,6 @@ services:
     restart: unless-stopped
     networks:
       - realopen-net
-
-volumes:
-  postgres-data:
-  upload-data:
-  module-state:
-  nginx-cache:
-  apt-cache:
-  apt-lists:
 
 networks:
   realopen-net:

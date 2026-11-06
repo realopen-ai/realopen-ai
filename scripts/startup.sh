@@ -142,6 +142,8 @@ prepare_search_images() {
 }
 
 main() {
+    python3 "${PROJECT_ROOT}/scripts/migrate-storage.py" --check
+    mkdir -p "${PROJECT_ROOT}/data/monitoring/grafana" "${PROJECT_ROOT}/data/monitoring/victoria-metrics"
     create_env_file
     start_ollama
     prepare_search_images

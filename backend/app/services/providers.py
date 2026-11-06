@@ -93,7 +93,7 @@ def _get_tags_lock():
 
 
 def _state_dir() -> Path:
-    """Persistent runtime state dir (Docker: /app/state, dev: ../state)."""
+    """Persistent runtime state under the configured shared data directory."""
     return settings._get_state_dir()
 
 

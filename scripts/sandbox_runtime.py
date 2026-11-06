@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import io
 import json
+import os
+from pathlib import Path
 import posixpath
 import re
 import shlex
 import tarfile
 import uuid
+import shutil
 from dataclasses import dataclass, field
 
 try:
@@ -28,6 +31,7 @@ WORKSPACE = "/workspace"
 FRONTEND_PORT = 6767
 BACKEND_PORT = 6969
 PREVIEW_PORTS = (FRONTEND_PORT, BACKEND_PORT)
+WORKSPACES = Path(__file__).resolve().parents[1] / "data/sandboxes"
 MAX_FILE_READ_BYTES = 5 * 1024 * 1024
 
 
@@ -141,13 +145,28 @@ class SandboxRuntime:
         return container, canonical
 
     def create(self, spec: SandboxSpec) -> dict:
-        try:
-            self.client.volumes.get(spec.volume_name)
-        except NotFound:
-            self.client.volumes.create(
-                spec.volume_name, labels={LABEL: spec.sandbox_id}
-            )
+        if not self._workspace_path(spec).exists():
+            try:
+                self.client.volumes.get(spec.volume_name)
+            except NotFound:
+                pass
+            else:
+                # Never hide a pre-migration workspace behind a new empty bind.
+                return self.start(spec)
+        self._workspace_path(spec).mkdir(parents=True, exist_ok=True)
         return self.start(spec)
+
+    def _workspace_path(self, spec):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", spec.volume_name):
+            raise ValueError("Invalid workspace storage name")
+        path = (WORKSPACES / spec.volume_name).resolve()
+        if not path.is_relative_to(WORKSPACES.resolve()):
+            raise ValueError("Workspace storage must remain under data/sandboxes")
+        return path
+
+    def _workspace_mount(self, spec):
+        path = self._workspace_path(spec)
+        return str(path) if path.is_dir() else spec.volume_name
 
     def _ensure_workspace_owner(self, spec: SandboxSpec) -> None:
         """Keep the persistent volume writable without running the main container as root."""
@@ -157,16 +176,17 @@ class SandboxRuntime:
             remove=True,
             user="0:0",
             network_mode="none",
-            volumes={spec.volume_name: {"bind": WORKSPACE, "mode": "rw"}},
+            volumes={self._workspace_mount(spec): {"bind": WORKSPACE, "mode": "rw"}},
         )
 
     def start(self, spec: SandboxSpec) -> dict:
-        try:
-            self.client.volumes.get(spec.volume_name)
-        except NotFound as exc:
-            raise RuntimeError(
-                "Persistent workspace volume is missing; refusing to create a blank replacement"
-            ) from exc
+        if not self._workspace_path(spec).is_dir():
+            try:
+                self.client.volumes.get(spec.volume_name)
+            except NotFound as exc:
+                raise RuntimeError(
+                    "Persistent workspace storage is missing; refusing to create a blank replacement"
+                ) from exc
         # This also repairs volumes created before ownership initialization
         # was introduced. The short-lived helper has no application data or
         # Docker socket; the long-lived container remains UID 1000/cap-drop.
@@ -176,8 +196,15 @@ class SandboxRuntime:
             container.reload()
             bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
             current_image = self.client.images.get(spec.image)
-            if container.attrs.get("Image") != current_image.id or not all(
-                f"{port}/tcp" in bindings for port in PREVIEW_PORTS
+            mount_changed = self._workspace_path(spec).is_dir() and any(
+                mount.get("Destination") == WORKSPACE
+                and mount.get("Source") != self._workspace_mount(spec)
+                for mount in container.attrs.get("Mounts", [])
+            )
+            if (
+                mount_changed
+                or container.attrs.get("Image") != current_image.id
+                or not all(f"{port}/tcp" in bindings for port in PREVIEW_PORTS)
             ):
                 # Port bindings cannot be changed in-place. Recreate only the
                 # disposable compute container; the workspace volume survives.
@@ -194,7 +221,9 @@ class SandboxRuntime:
                 detach=True,
                 working_dir=WORKSPACE,
                 labels={LABEL: spec.sandbox_id},
-                volumes={spec.volume_name: {"bind": WORKSPACE, "mode": "rw"}},
+                volumes={
+                    self._workspace_mount(spec): {"bind": WORKSPACE, "mode": "rw"}
+                },
                 nano_cpus=max(1, int(spec.cpu_limit * 1_000_000_000)),
                 mem_limit=f"{spec.memory_limit_mb}m",
                 user="1000:1000",
@@ -233,6 +262,21 @@ class SandboxRuntime:
 
     def delete(self, spec: SandboxSpec) -> None:
         self.stop(spec)
+        path = self._workspace_path(spec)
+        if path.exists():
+            # Linux bind mounts are owned by the sandbox UID. Return ownership
+            # to the launcher before removing them from the host filesystem.
+            if hasattr(os, "getuid"):
+                self.client.containers.run(
+                    spec.image,
+                    ["chown", "-R", f"{os.getuid()}:{os.getgid()}", WORKSPACE],
+                    remove=True,
+                    user="0:0",
+                    network_mode="none",
+                    volumes={str(path): {"bind": WORKSPACE, "mode": "rw"}},
+                )
+            shutil.rmtree(path)
+            return
         try:
             self.client.volumes.get(spec.volume_name).remove(force=True)
         except NotFound:
@@ -380,9 +424,9 @@ class SandboxRuntime:
         stdout = stdout or b""
         stderr = stderr or b""
         if result.exit_code:
-            detail = (stderr or b"Could not read file").decode(
-                "utf-8", "replace"
-            ).strip()
+            detail = (
+                (stderr or b"Could not read file").decode("utf-8", "replace").strip()
+            )
             raise RuntimeError(detail)
         if len(stdout) > max_bytes:
             raise ValueError(

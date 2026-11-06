@@ -242,48 +242,20 @@ def test_get_templates_dir_points_at_custom_templates():
     assert p.parts[-3:] == ("templates", "pptx", "custom")
 
 
-class _FakePath:
-    """Path stand-in for _get_data_dir (parent chains collapse onto self)."""
-
-    def __init__(self, p):
-        self.p = str(p)
-
-    def resolve(self):
-        return self
-
-    @property
-    def parent(self):
-        return self
-
-    def __truediv__(self, other):
-        return _FakePath(self.p + "/" + str(other))
-
-    def exists(self):
-        return self.p == "/app/data"
-
-    def mkdir(self, parents=True, exist_ok=True):
-        raise AssertionError("mkdir must not run when a candidate exists")
+def test_get_data_dir_uses_central_settings(tmp_path, monkeypatch):
+    directory = tmp_path / "shared-data"
+    monkeypatch.setattr(workspace.settings, "REALOPEN_DATA_DIR", str(directory))
+    assert workspace._get_data_dir() == directory
+    assert directory.is_dir()
 
 
-def test_get_data_dir_returns_first_existing_candidate(monkeypatch):
-    monkeypatch.setattr(workspace, "Path", _FakePath)
-    assert workspace._get_data_dir().p == "/app/data"
-
-
-def test_get_data_dir_fallback_creates_missing_dir(monkeypatch):
-    created = []
-
-    class _MissingPath(_FakePath):
-        def exists(self):
-            return False
-
-        def mkdir(self, parents=True, exist_ok=True):
-            created.append(self.p)
-
-    monkeypatch.setattr(workspace, "Path", _MissingPath)
-    result = workspace._get_data_dir()
-    assert created == ["/app/data"]
-    assert result.p == "/app/data"
+def test_get_data_dir_does_not_fall_back_from_invalid_explicit_root(tmp_path, monkeypatch):
+    directory = tmp_path / "not-a-directory"
+    directory.write_text("retain")
+    monkeypatch.setattr(workspace.settings, "REALOPEN_DATA_DIR", str(directory))
+    with pytest.raises(OSError):
+        workspace._get_data_dir()
+    assert directory.read_text() == "retain"
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -17,6 +17,12 @@ RealOpen-AI runs language models through Ollama on your machine, with a FastAPI 
 
 Local inference does not require a paid cloud LLM API. **Local-first does not mean every feature is offline:** initial setup downloads images, packages, and model weights; web search, page fetching, dependency installation, optional remote access, and explicitly configured external providers use the network. Once the necessary models are cached, local chat and voice can run without those online features.
 
+## Run directly on the host
+
+Run `bash scripts/start-native.sh` on macOS/Linux, or `./scripts/start-native.ps1` on Windows (WSL by default). Add `--dev` on macOS/Linux or `-Dev` on Windows for hot reload. The launcher prepares dependencies, runs a private PostgreSQL/pgvector and Valkey instance, and serves the app without Docker. Coder sandboxes still use Docker.
+
+Custom service URLs and explicit managed/external modes go in `.env.native`; see [.env.native.example](.env.native.example). All application storage stays under root `data/`. Existing Docker users must migrate named volumes before starting the new bind-mount setup. See [native startup and storage migration](scripts/README.md#native-application-startup) for commands, platform support and migration safeguards.
+
 ## Architecture
 
 ```mermaid

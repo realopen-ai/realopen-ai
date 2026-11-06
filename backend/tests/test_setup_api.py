@@ -882,19 +882,18 @@ def test_get_project_root_falls_back_to_app(monkeypatch):
 
 
 def test_get_data_dir_creates_and_returns_data_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(setup_api, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(setup_api.settings, "REALOPEN_DATA_DIR", str(tmp_path / "data"))
     data_dir = setup_api._get_data_dir()
     assert data_dir == tmp_path / "data"
     assert data_dir.is_dir()  # created (parents=True, exist_ok=True)
 
 
-def test_get_data_dir_swallows_mkdir_oserror(monkeypatch, tmp_path):
-    # The data dir's parent exists as a FILE → mkdir raises
-    # (NotADirectoryError, an OSError) → swallowed, path still returned.
+def test_get_data_dir_reports_unusable_configured_storage(monkeypatch, tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("i am a file", encoding="utf-8")
-    monkeypatch.setattr(setup_api, "_get_project_root", lambda: blocker)
-    assert setup_api._get_data_dir() == blocker / "data"
+    monkeypatch.setattr(setup_api.settings, "REALOPEN_DATA_DIR", str(blocker / "data"))
+    with pytest.raises(OSError):
+        setup_api._get_data_dir()
 
 
 def test_get_project_root_contains_profiles():

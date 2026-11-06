@@ -1,6 +1,9 @@
+.DEFAULT_GOAL := all
 COMPOSE			= docker compose
 COMPOSE_DEV		= $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 COMPOSE_MON		= $(COMPOSE) -f docker-compose.yml -f docker-compose.monitoring.yml
+export REALOPEN_UID ?= $(shell id -u)
+export REALOPEN_GID ?= $(shell id -g)
 
 # Default: auto-setup if needed, then dev environment with hot-reloading
 .PHONY: all
@@ -208,3 +211,22 @@ test: test-backend test-frontend
 # Backend coverage gate, matching CI; frontend currently has no coverage gate.
 coverage:
 	cd backend && poetry run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=$(COVERAGE_MIN) $(PYTEST_ARGS)
+
+.PHONY: native native-dev native-setup native-stop migrate-storage migrate-native
+native:
+	@bash scripts/start-native.sh
+
+native-dev:
+	@bash scripts/start-native.sh --dev
+
+native-setup:
+	@bash scripts/start-native.sh setup
+
+native-stop:
+	@python3 scripts/run-native.py stop
+
+migrate-storage:
+	@python3 scripts/migrate-storage.py
+
+migrate-native:
+	@bash scripts/start-native.sh migrate

@@ -21,6 +21,7 @@ from app.config import settings  # noqa: E402
 from app.core import metrics as app_metrics  # noqa: E402
 from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
+from app.api.frontend import install_frontend  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
 from app.api.modules import router as modules_router  # noqa: E402
@@ -62,25 +63,8 @@ except Exception as _voice_import_error:  # noqa: BLE001 — voice is optional
 
 
 def _get_data_dir() -> Path:
-    """Get the data directory for persistent files.
-
-    In Docker: /app/data (mounted volume)
-    In dev: backend/../data
-    """
-    candidates = [
-        Path("/app/data"),
-        Path(__file__).parent.parent.parent / "data",
-    ]
-    for d in candidates:
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-        except OSError:
-            continue
-    # Fallback
-    fallback = Path("/app/data")
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    """Resolve persistent storage through the central application settings."""
+    return settings.get_data_dir()
 
 
 def _detect_setup_mode() -> bool:
@@ -494,3 +478,6 @@ if voice_manager is not None:
             await session.handle(websocket)
         finally:
             voice_manager.remove(conversation_id)
+
+
+install_frontend(app, settings.STATIC_FRONTEND_DIR)

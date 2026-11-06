@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+from app.config import settings
 from app.db.models import Artifact, ArtifactVersion, Document, Notebook
 from app.services import artifacts as service, ocr, document_extraction
 from app.services.artifact_sources import (
@@ -52,7 +53,7 @@ async def test_render_rejects_invalid_formats_before_filesystem_access(monkeypat
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "REALOPEN_DATA_DIR", str(tmp_path))
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -614,7 +615,7 @@ async def test_summary_retry_reuses_completed_batches(tmp_path, monkeypatch):
     import httpx
     from app.services import providers, model_prefs
 
-    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "REALOPEN_DATA_DIR", str(tmp_path))
 
     async def model(_):
         return "local-test"
@@ -805,7 +806,7 @@ async def test_cancelled_summary_retry_retains_only_completed_batches(tmp_path, 
     import asyncio
     from app.services import providers
 
-    monkeypatch.setenv("REALOPEN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "REALOPEN_DATA_DIR", str(tmp_path))
     artifact = SimpleNamespace(id=uuid.uuid4())
     version = SimpleNamespace(
         number=1,
