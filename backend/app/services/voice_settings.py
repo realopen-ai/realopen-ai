@@ -20,11 +20,7 @@ _lock = threading.Lock()
 
 
 def _path() -> Path:
-    path = Path("/app/data/voice-settings.json")
-    if not path.parent.exists():
-        path = Path(__file__).resolve().parents[3] / "data" / "voice-settings.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return settings.get_data_dir() / "voice-settings.json"
 
 
 def defaults() -> Dict[str, Any]:

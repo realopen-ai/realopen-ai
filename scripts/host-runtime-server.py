@@ -54,7 +54,7 @@ tts = create_tts_engine(cfg.tts)
 tts_engines = {str(cfg.tts.voice or "mary"): tts}
 asr_lock = asyncio.Lock()
 voice_lock = asyncio.Lock()
-CUSTOM_DIR = ROOT / "data" / "voice-voices"
+CUSTOM_DIR = settings.get_data_dir() / "voice-voices"
 CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
 
 
