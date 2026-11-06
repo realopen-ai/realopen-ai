@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Template
 from app.db.session import get_db
-from app.services.pptx_gen import AVAILABLE_TEMPLATES
+from app.services.pptx_gen import AVAILABLE_TEMPLATES, get_custom_templates_dir
 
 from app.config import settings
 
@@ -41,7 +41,7 @@ router = APIRouter()
 
 def _get_templates_dir() -> Path:
     """Get the custom templates directory."""
-    return Path(__file__).resolve().parent.parent / "templates" / "pptx" / "custom"
+    return get_custom_templates_dir()
 
 
 def _slugify(name: str) -> str:

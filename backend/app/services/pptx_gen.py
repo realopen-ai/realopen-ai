@@ -54,7 +54,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -88,6 +90,29 @@ def _get_reports_dir() -> Path:
     """Write deliverables beside the files served by the reports API."""
     directory = settings.get_data_dir() / "reports"
     directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def get_custom_templates_dir() -> Path:
+    """Persist user templates under data; preserve existing source-tree uploads."""
+    directory = settings.get_data_dir() / "templates" / "pptx" / "custom"
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / ".legacy-imported"
+    if not marker.exists():
+        legacy = _get_templates_dir() / "custom"
+        for source in legacy.glob("*.pptx"):
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    stream.write(source.read_bytes())
+                    stream.close()
+                    try:
+                        os.link(temporary, directory / source.name)
+                    except FileExistsError:
+                        pass
+                finally:
+                    temporary.unlink(missing_ok=True)
+        marker.touch()
     return directory
 
 
@@ -495,7 +520,7 @@ def _resolve_theme(
     templates_dir = _get_templates_dir()
     for candidate in (
         templates_dir / f"{slug}.pptx",
-        templates_dir / "custom" / f"{slug}.pptx",
+        get_custom_templates_dir() / f"{slug}.pptx",
     ):
         if candidate.exists():
             _log("using custom template as theme: %s", candidate.name)
