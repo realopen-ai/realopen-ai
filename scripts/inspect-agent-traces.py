@@ -21,7 +21,15 @@ def records(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--dir", default=os.environ.get("AGENT_TRACE_DIR", "data/agent_traces")
+        "--dir",
+        default=os.environ.get("AGENT_TRACE_DIR")
+        or str(
+            Path(
+                os.environ.get("REALOPEN_DATA_DIR")
+                or Path(__file__).resolve().parents[1] / "data"
+            )
+            / "agent_traces"
+        ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
     parser.add_argument(

@@ -138,7 +138,13 @@ class Trace:
         )
         self.limit = max(1024, settings.AGENT_TRACE_MAX_TEXT_CHARS)
         self.result_limit = max(1, settings.AGENT_TRACE_MAX_TOOL_RESULT_CHARS)
-        self.directory = str(Path(settings.AGENT_TRACE_DIR).resolve())
+        self.directory = str(
+            (
+                Path(settings.AGENT_TRACE_DIR)
+                if settings.AGENT_TRACE_DIR
+                else settings.get_data_dir() / "agent_traces"
+            ).resolve()
+        )
         self.data = {
             "schema_version": SCHEMA_VERSION,
             "capture_policy": {

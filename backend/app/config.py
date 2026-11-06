@@ -575,14 +575,7 @@ class Settings(BaseSettings):
 
     # Opt-in local traces contain conversation content and tool outputs.
     AGENT_TRACE_ENABLED: bool = False
-    AGENT_TRACE_DIR: str = str(
-        (
-            Path("/app/data")
-            if Path("/app/data").is_dir()
-            else Path(__file__).resolve().parents[2] / "data"
-        )
-        / "agent_traces"
-    )
+    AGENT_TRACE_DIR: str = ""  # Empty uses the shared data root / agent_traces.
     AGENT_TRACE_MAX_TOOL_RESULT_CHARS: int = 16000
     AGENT_TRACE_MAX_TEXT_CHARS: int = 256000
     AGENT_TRACE_QUEUE_SIZE: int = 64
@@ -865,7 +858,12 @@ class Settings(BaseSettings):
             directory = Path(self.REALOPEN_DATA_DIR)
             directory.mkdir(parents=True, exist_ok=True)
             return directory
-        candidates = [Path("/app/data"), Path(__file__).resolve().parents[2] / "data"]
+        native_directory = Path(__file__).resolve().parents[2] / "data"
+        candidates = (
+            [native_directory]
+            if self.REALOPEN_RUNTIME == "native"
+            else [Path("/app/data"), native_directory]
+        )
         for directory in candidates:
             try:
                 directory.mkdir(parents=True, exist_ok=True)
@@ -1020,31 +1018,14 @@ class Settings(BaseSettings):
         return True
 
     def _get_state_dir(self) -> Path:
-        """Get the directory for persistent runtime state files.
-
-        In Docker: /app/state (mounted volume)
-        In dev: backend/../state
-        """
-        candidates = [
-            *([Path(self.REALOPEN_STATE_DIR)] if self.REALOPEN_STATE_DIR else []),
-            Path("/app/state"),
-            Path(__file__).parent.parent.parent / "state",
-        ]
-        for d in candidates:
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-                # Test write access
-                test_file = d / ".write_test"
-                test_file.write_text("ok", encoding="utf-8")
-                test_file.unlink()
-                return d
-            except OSError:
-                continue
-
-        # Fallback: /tmp (won't persist across restarts but better than nothing)
-        fallback = Path("/tmp/realopen-state")
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
+        """Persistent state, shared with Docker's data/state bind mount."""
+        directory = (
+            Path(self.REALOPEN_STATE_DIR)
+            if self.REALOPEN_STATE_DIR
+            else self.get_data_dir() / "state"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
 
     def _persist_module_state(self) -> None:
         """Persist the enabled modules set to a JSON state file.
