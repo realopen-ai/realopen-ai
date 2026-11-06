@@ -15,10 +15,11 @@ import venv
 import zipfile
 
 from .config import atomic_json
+from .output import log
 
 
 def run(command, cfg, cwd=None, env=None):
-    print("Running " + " ".join(str(x) for x in command), flush=True)
+    log(" ".join(str(x) for x in command), "run")
     subprocess.run(
         [str(x) for x in command], cwd=cwd or cfg.root, env=env or cfg.env, check=True
     )
@@ -175,9 +176,9 @@ class Installer:
                         cfg,
                     )
         else:
-            print(
+            log(
                 "No automatic system installer for this distribution. Using dependencies already on PATH.",
-                flush=True,
+                "warning",
             )
         self.node()
 

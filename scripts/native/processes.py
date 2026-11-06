@@ -8,6 +8,8 @@ import subprocess
 import time
 import urllib.request
 
+from .output import log
+
 
 def port_open(host, port):
     try:
@@ -51,13 +53,13 @@ class Processes:
             raise RuntimeError(
                 f"Port {port} is already occupied; refusing to adopt/stop it. Configure an external endpoint or another managed port."
             )
-        print(f"Starting {name}; log: {self.logs / (name + '.log')}", flush=True)
-        with (self.logs / (name + ".log")).open("ab") as log:
+        log(f"{name} — log: {self.logs / (name + '.log')}", "start")
+        with (self.logs / (name + ".log")).open("ab") as output:
             process = subprocess.Popen(
                 [str(x) for x in command],
                 cwd=cwd,
                 env=env,
-                stdout=log,
+                stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=self.groups and os.name != "nt",
                 creationflags=(
@@ -96,7 +98,7 @@ class Processes:
             try:
                 self.stop(name)
             except OSError as exc:
-                print(f"Could not stop managed process {name}: {exc}", flush=True)
+                log(f"Could not stop managed process {name}: {exc}", "warning")
 
 
 class RuntimeLock:

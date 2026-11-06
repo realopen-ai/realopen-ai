@@ -12,6 +12,7 @@ import re
 import uuid
 
 from .config import atomic_json, dotenv
+from .output import log
 
 DESTINATIONS = {
     ("postgres", "/var/lib/postgresql/data"): "postgres/docker",
@@ -238,7 +239,7 @@ def migrate_storage(root):
         x["Config"]["Labels"]["com.docker.compose.service"] == "postgres"
         for x in managed
     ):
-        print("No Docker database or unmigrated legacy volumes found; nothing changed.")
+        log("No Docker database or unmigrated legacy volumes found; nothing changed.")
         return
     for item in pending:
         target = data / item["destination"]
@@ -448,9 +449,12 @@ def migrate_storage(root):
             "archive": str(archive.relative_to(data)),
         }
         atomic_json(marker, copied)
-        print(f"Copied {item['volume']} to {target}; original volume retained.")
-    print(
-        "Storage migration/export complete. Containers remain stopped. Start Docker normally, or run start-native migrate to restore the database natively."
+        log(
+            f"Copied {item['volume']} to {target}; original volume retained.", "success"
+        )
+    log(
+        "Storage migration/export complete. Containers remain stopped. Start Docker normally, or run start-native migrate to restore the database natively.",
+        "success",
     )
 
 
@@ -480,9 +484,7 @@ def restore_native(cfg, services):
             restored.exists()
             and json.loads(restored.read_text()).get("sha256") == metadata["sha256"]
         ):
-            print(
-                "This export was already restored; current native data left unchanged."
-            )
+            log("This export was already restored; current native data left unchanged.")
             return
         raise RuntimeError(
             "Target native database is not empty; refusing to restore over it"
@@ -505,4 +507,7 @@ def restore_native(cfg, services):
         cfg.runtime / "migration.json",
         {"restored_from": metadata["dump"], "sha256": metadata["sha256"]},
     )
-    print("Native database restored. Original Docker volumes and export retained.")
+    log(
+        "Native database restored. Original Docker volumes and export retained.",
+        "success",
+    )

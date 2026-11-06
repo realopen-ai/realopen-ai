@@ -13,6 +13,7 @@ from .config import Config, atomic_json
 from .dependencies import Installer, run
 from .migration import check_legacy, restore_native
 from .processes import Processes, RuntimeLock, wait_http
+from .output import log
 from .services import Services
 
 
@@ -25,8 +26,9 @@ def setup(cfg, dev):
     if os.name != "nt":
         run(["bash", cfg.root / "scripts/detect-hardware.sh", cfg.data], cfg)
     else:
-        print(
-            "Experimental Windows native mode. Configure HARDWARE_PROFILE in .env.native if needed."
+        log(
+            "Experimental Windows native mode. Configure HARDWARE_PROFILE in .env.native if needed.",
+            "warning",
         )
 
 
@@ -156,9 +158,9 @@ def launch(cfg, dev=False, install=True, migrate=False):
                     "mode": "dev" if dev else "normal",
                 },
             )
-            print(
+            log(
                 f"RealOpen-AI ready: {address}\nPress Ctrl+C to stop. Logs: {processes.logs}",
-                flush=True,
+                "ready",
             )
             while not stop.wait(0.5):
                 request = cfg.runtime / "stop.json"
@@ -199,30 +201,30 @@ def main():
     if args.command in {"status", "stop"}:
         path = cfg.runtime / "run.json"
         if not path.exists():
-            print("Native runtime is not running")
+            log("Native runtime is not running")
             return
         state = json.loads(path.read_text())
         try:
             with RuntimeLock(cfg.runtime / "runner.lock"):
-                print("Native runtime is not running (stale status file)")
+                log("Native runtime is not running (stale status file)")
                 return
         except RuntimeError:
             pass  # Only the active supervisor may consume a stop request.
         if args.command == "stop":
             atomic_json(cfg.runtime / "stop.json", {"session": state["session"]})
-            print("Requested graceful native shutdown")
+            log("Requested graceful native shutdown", "success")
         else:
             print(json.dumps(state, indent=2))
     elif args.command == "doctor":
-        print("Data:", cfg.data)
-        print(
-            "Python:",
-            cfg.python,
-            "installed" if cfg.python.exists() else "not installed",
+        log(f"Data: {cfg.data}")
+        installed = cfg.python.exists()
+        log(
+            f"Python: {cfg.python} — {'installed' if installed else 'not installed'}",
+            "info" if installed else "warning",
         )
         for key, managed in cfg.managed.items():
             # Do not print credentials or full connection URLs.
-            print(key, "managed" if managed else "external")
+            log(f"{key}: {'managed' if managed else 'external'}")
         check_legacy(cfg.root)
     elif args.command == "setup":
         with RuntimeLock(cfg.runtime / "runner.lock"):
