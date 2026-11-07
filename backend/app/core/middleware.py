@@ -68,7 +68,13 @@ class DebugLoggingMiddleware:
         # Read request body for POST/PUT/PATCH (for logging only)
         body_str = ""
         downstream_receive: Receive = receive  # default: pass through
-        if method in ("POST", "PUT", "PATCH"):
+        binary_stream = (
+            request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            == "application/octet-stream"
+        )
+        if binary_stream:
+            body_str = "<binary stream>"
+        elif method in ("POST", "PUT", "PATCH"):
             try:
                 raw = await request.body()
                 body_str = raw.decode("utf-8", errors="replace")[:MAX_BODY_LOG]

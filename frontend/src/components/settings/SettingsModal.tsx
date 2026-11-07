@@ -670,7 +670,7 @@ export function SettingsModal({
                 </div>
               )}
 
-              {tab === "ai" && <AiTab />}
+              {tab === "ai" && <AiTab onManageModels={onClose} />}
 
               {tab === "voice" && <VoiceTab />}
 

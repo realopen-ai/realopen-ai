@@ -112,9 +112,7 @@ async def test_disabled_middleware_passes_original_receive_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_logs_request_and_response_lines_when_debug_enabled(
-    monkeypatch, capsys
-):
+async def test_logs_request_and_response_lines_when_debug_enabled(monkeypatch, capsys):
     monkeypatch.setattr("app.core.middleware.is_debug", lambda: True)
     app = _build_app()
     async with _client(app) as client:
@@ -381,3 +379,36 @@ def test_truncate_long_text_gets_marker():
 
 def test_truncate_zero_limit():
     assert _truncate("abc", 0) == "... (3 chars total)"
+
+
+@pytest.mark.asyncio
+async def test_binary_upload_is_streamed_without_buffering_or_logging_contents(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr("app.core.middleware.is_debug", lambda: True)
+    app = FastAPI()
+    app.add_middleware(DebugLoggingMiddleware)
+    seen = []
+
+    @app.put("/weights")
+    async def weights(request: Request):
+        async for chunk in request.stream():
+            if chunk:
+                seen.append(chunk)
+        return {"size": sum(map(len, seen))}
+
+    async def content():
+        yield b"private model weights part one"
+        yield b"private model weights part two"
+
+    async with _client(app) as client:
+        response = await client.put(
+            "/weights",
+            content=content(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert len(seen) == 2
+    assert response.json()["size"] == sum(map(len, seen))
+    output = capsys.readouterr().out
+    assert "<binary stream>" in output
+    assert "private model weights" not in output
