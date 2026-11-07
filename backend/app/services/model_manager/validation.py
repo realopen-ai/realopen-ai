@@ -2,31 +2,43 @@
 
 import re
 from pathlib import PurePosixPath
+from string import ascii_letters, digits
 from urllib.parse import unquote, urlsplit
 
 from .types import ModelManagerError
 
-_NAME = re.compile(
-    r"[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?"
-)
-_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
+_ALPHANUMERIC = frozenset(ascii_letters + digits)
+_IDENTIFIER_CHARACTERS = _ALPHANUMERIC | frozenset("_.-")
+
+
+def _identifier(value: str) -> bool:
+    """Check one component in a single pass, without regex backtracking."""
+    return (
+        bool(value)
+        and value[0] in _ALPHANUMERIC
+        and all(character in _IDENTIFIER_CHARACTERS for character in value)
+    )
 
 
 def model_name(value: str) -> str:
+    name, separator, tag = value.partition(":")
+    components = name.split("/")
     if (
         len(value) > 200
-        or not _NAME.fullmatch(value)
-        or any(p in {".", ".."} for p in value.split("/"))
+        or len(components) not in {1, 2}
+        or not all(_identifier(part) for part in components)
+        or (separator and not _identifier(tag))
     ):
         raise ModelManagerError("Use a model name such as qwen3:8b or my-model:q4.")
     return value
 
 
 def repository(value: str) -> str:
+    components = value.split("/")
     if (
         len(value) > 240
-        or not _REPO.fullmatch(value)
-        or any(p in {".", ".."} for p in value.split("/"))
+        or len(components) != 2
+        or not all(_identifier(part) for part in components)
     ):
         raise ModelManagerError(
             "Use a Hugging Face repository such as publisher/model."

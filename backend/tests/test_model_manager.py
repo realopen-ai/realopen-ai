@@ -29,7 +29,66 @@ from app.services.model_manager.types import (
     ModelManagerError,
     Variant,
 )
-from app.services.model_manager.validation import resolve_reference
+from app.services.model_manager.validation import (
+    model_name,
+    repository,
+    resolve_reference,
+)
+
+
+@pytest.mark.parametrize(
+    "validator,value",
+    [
+        (repository, "ornith-ai/Ornith-1.5-9B-MLX-4bit"),
+        (repository, "0" * 119 + "/" + "0" * 120),
+        (model_name, "org/model.name-1:q4_K_M"),
+        (model_name, "model"),
+        (model_name, "0" * 200),
+    ],
+)
+def test_model_identifiers_accept_valid_components(validator, value):
+    assert validator(value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "/model",
+        "owner/",
+        "owner/model/extra",
+        "../model",
+        "owner/.model",
+        "owner/model:tag",
+        "owner/modél",
+        "owner/model\n",
+        "0" * 240,
+        "0" * 119 + "/" + "0" * 119 + "!",
+        "owner/" + "0" * 240,
+    ],
+)
+def test_repository_rejects_malformed_components(value):
+    with pytest.raises(ModelManagerError):
+        repository(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "model:",
+        "model:tag:extra",
+        "owner/model/extra",
+        "model/.hidden",
+        "model:é",
+        "model\n",
+        "0" * 199 + "!",
+        "0" * 201,
+    ],
+)
+def test_model_names_reject_malformed_components(value):
+    with pytest.raises(ModelManagerError):
+        model_name(value)
 
 
 @pytest.fixture
