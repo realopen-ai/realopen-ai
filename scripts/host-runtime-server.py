@@ -44,6 +44,8 @@ from sandbox_runtime import (  # noqa: E402
 )
 from search_runtime import SearchRuntime  # noqa: E402
 from native.services import NativeSearchRuntime  # noqa: E402
+from app.services.model_manager.jobs import ModelJobs  # noqa: E402
+from app.services.model_manager.host_api import model_host_router  # noqa: E402
 
 cfg = settings.get_voice_config()
 # This process is the native endpoint; never select the remote adapters even
@@ -82,15 +84,19 @@ def online_hub():
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
+    await model_jobs.start()
     try:
         yield
     finally:
+        await model_jobs.close()
         close = getattr(search_runtime, "close", None)
         if close is not None:
             await asyncio.to_thread(close)
 
 
+model_jobs = ModelJobs()
 app = FastAPI(title="RealOpen Host Runtime", lifespan=lifespan)
+app.include_router(model_host_router(model_jobs))
 sandbox_runtime = None
 search_runtime = (
     NativeSearchRuntime() if settings.REALOPEN_RUNTIME == "native" else SearchRuntime()

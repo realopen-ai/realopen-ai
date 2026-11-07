@@ -49,12 +49,18 @@ async def get_profile_models():
     The frontend uses this to populate the model selector dropdown.
     """
     profile = settings.get_current_profile()
+    models = settings.get_available_models()
+    known = {model["id"] for model in models}
+    for installed in await providers._fetch_ollama_tags():
+        if installed["id"] not in known:
+            models.append({**installed, "role": ""})
+            known.add(installed["id"])
     return {
         "profile": settings.HARDWARE_PROFILE,
         "label": profile.label,
         "engine": profile.engine,
         "description": profile.description,
-        "models": settings.get_available_models(),
+        "models": models,
     }
 
 

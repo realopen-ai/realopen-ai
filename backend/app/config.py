@@ -532,6 +532,8 @@ class Settings(BaseSettings):
     NATIVE_MANAGED_SEARXNG: bool = False
     NATIVE_MANAGED_DEGOOG: bool = False
     HOST_RUNTIME_PORT: int = 8766
+    MODEL_RUNTIME_URL: str = ""  # Empty shares the existing host runtime endpoint.
+    MODEL_IMPORT_MAX_BYTES: int = 128 * 1024**3  # Browser-upload staging limit.
     STATIC_FRONTEND_DIR: str = ""
 
     # Database

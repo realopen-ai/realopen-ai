@@ -1,4 +1,4 @@
-export type BrainTab = "memories" | "history" | "skills" | "tools";
+export type BrainTab = "memories" | "history" | "skills" | "tools" | "models";
 export type WorkspaceSection =
   | "documents"
   | "templates"
@@ -7,7 +7,13 @@ export type WorkspaceSection =
   | "sandboxes"
   | "artifacts";
 
-const brainTabs = new Set<BrainTab>(["memories", "history", "skills", "tools"]);
+const brainTabs = new Set<BrainTab>([
+  "memories",
+  "history",
+  "skills",
+  "tools",
+  "models",
+]);
 
 const workspaceSections = new Set<WorkspaceSection>([
   "artifacts",
