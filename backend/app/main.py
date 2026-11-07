@@ -23,6 +23,7 @@ from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
 from app.api.frontend import install_frontend  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
+from app.api.model_manager import router as model_manager_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
 from app.api.modules import router as modules_router  # noqa: E402
 from app.api.setup import router as setup_router  # noqa: E402
@@ -430,6 +431,7 @@ app.mount("/metrics", metrics_app)
 app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(chat_router, prefix="/api", tags=["chat"])
 app.include_router(models_router, prefix="/api", tags=["models"])
+app.include_router(model_manager_router, prefix="/api", tags=["model-manager"])
 app.include_router(modules_router, prefix="/api", tags=["modules"])
 app.include_router(setup_router, prefix="/api", tags=["setup"])
 app.include_router(memory_router, prefix="/api", tags=["memory"])
