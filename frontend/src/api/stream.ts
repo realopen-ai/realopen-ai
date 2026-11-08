@@ -113,6 +113,7 @@ export async function streamChat(
     conversationId?: string;
     modelOverride?: string;
     shrug?: boolean;
+    resumeCoderTaskId?: string;
   },
 ): Promise<void> {
   const controller = new AbortController();
@@ -145,6 +146,7 @@ export async function streamChat(
       conversation_id: options?.conversationId,
       model_override: options?.modelOverride,
       shrug: options?.shrug,
+      resume_coder_task_id: options?.resumeCoderTaskId,
     };
     log(
       `   request body: messages=${messages.length}  model=${model}  stream=true  convId=${options?.conversationId ?? "none"}  modelOverride=${options?.modelOverride ?? "none"}`,
