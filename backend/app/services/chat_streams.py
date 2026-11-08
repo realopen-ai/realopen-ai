@@ -77,10 +77,13 @@ _active: dict[str, ActiveChatStream] = {}
 
 
 async def start_stream(
-    conversation_id: str, source: AsyncIterator[str]
+    conversation_id: str, source: AsyncIterator[str], *, replace_existing: bool = True
 ) -> ActiveChatStream:
     previous = _active.get(conversation_id)
     if previous and not previous.done and previous.task:
+        if not replace_existing:
+            await source.aclose()
+            raise ValueError("A response is already running in this conversation.")
         previous.cancel_requested = True
         previous.task.cancel()
 

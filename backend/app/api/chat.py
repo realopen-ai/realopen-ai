@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.service import run_agent_stream
+from app.agent.coder.resume import resume_coder_stream
+from app.services.coder_tasks import resumable_task
 from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
@@ -96,6 +98,7 @@ class ChatRequest(BaseModel):
     # Slash command options from frontend
     model_override: Optional[str] = None
     shrug: Optional[bool] = None
+    resume_coder_task_id: Optional[uuid.UUID] = None
 
 
 class ChatResponse(BaseModel):
@@ -361,6 +364,21 @@ async def chat_stream(request: ChatRequest):
         except ValueError:
             _log("   ⚠️  invalid conversation_id=%s", request.conversation_id)
 
+    if request.resume_coder_task_id:
+        if not conv_id:
+            raise HTTPException(400, "A conversation is required to resume coding.")
+        current_stream = get_stream(str(conv_id))
+        if current_stream and not current_stream.done:
+            raise HTTPException(
+                409, "Wait for the current response to finish before resuming."
+            )
+        async with async_session_factory() as db:
+            try:
+                await resumable_task(db, request.resume_coder_task_id, conv_id)
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from None
+        resolved_model = await model_prefs.resolve_task_model("coder")
+
     # Persist the user message EAGERLY using an independent session.
     # We must commit before returning the StreamingResponse because there
     # is no request-scoped DB session to rely on.
@@ -413,12 +431,17 @@ async def chat_stream(request: ChatRequest):
 
         _log("   🤖 entering agent loop")
         try:
-            async for chunk in run_agent_stream(
-                messages=messages,
-                model=_resolved_model,
-                images=None,
-                conversation_id=str(_conv_id) if _conv_id else None,
-            ):
+            source = (
+                resume_coder_stream(str(_conv_id), str(request.resume_coder_task_id))
+                if request.resume_coder_task_id
+                else run_agent_stream(
+                    messages=messages,
+                    model=_resolved_model,
+                    images=None,
+                    conversation_id=str(_conv_id) if _conv_id else None,
+                )
+            )
+            async for chunk in source:
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
                     _log(
@@ -624,7 +647,11 @@ async def chat_stream(request: ChatRequest):
                 "X-Accel-Buffering": "no",
             },
         )
-    active_stream = await start_stream(str(_conv_id), generate())
+    active_stream = await start_stream(
+        str(_conv_id),
+        generate(),
+        **({"replace_existing": False} if request.resume_coder_task_id else {}),
+    )
     return StreamingResponse(
         active_stream.subscribe(),
         media_type="text/event-stream",
