@@ -4,7 +4,7 @@ import hashlib
 import json
 import posixpath
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 
 from app.core.prompt_security import untrusted_context_message
@@ -214,6 +214,8 @@ def inspection_step(name, args):
 @dataclass
 class RunState:
     memory: CoderMemory = field(default_factory=CoderMemory)
+    progress: dict = field(default_factory=dict)
+    original_request: str = ""
     worklog: list = field(default_factory=list)
     web_sources: list = field(default_factory=list)
     files_changed: list = field(default_factory=list)
@@ -716,7 +718,75 @@ class RunState:
             "read_only_rounds": self.read_only_rounds,
             "recent_failures": list(self.failures.values()),
         }
-        return self.memory.checkpoint()
+        snapshot = self.memory.checkpoint()
+        snapshot["schema_version"] = 2
+        snapshot["run_state"] = {
+            item.name: sorted(value, key=repr) if isinstance(value, set) else value
+            for item in fields(self)
+            if item.name
+            not in {
+                "memory",
+                "worklog",
+                "files_changed",
+                "tests_run",
+                "reads",
+                "available_reads",
+                "observation_keys",
+            }
+            for value in [getattr(self, item.name)]
+        }
+        return snapshot
+
+    @classmethod
+    def restore(cls, snapshot, *, worklog, files_changed, tests_run):
+        """Restore application-owned receipts; never treat a plan as executed work."""
+        if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 2:
+            raise ValueError(
+                "This task has no resumable checkpoint. Start a new coding request."
+            )
+        state = cls()
+        saved = snapshot.get("run_state") or {}
+        for item in fields(state):
+            if item.name in saved and item.name not in {
+                "memory",
+                "worklog",
+                "files_changed",
+                "tests_run",
+            }:
+                value = saved[item.name]
+                if isinstance(getattr(state, item.name), set):
+                    value = set(value)
+                setattr(state, item.name, value)
+        for name in (
+            "handoff",
+            "compactions",
+            "project_handoff",
+            "api_contract",
+            "api_contract_status",
+            "plan",
+            "execution",
+        ):
+            if name in snapshot:
+                setattr(state.memory, name, snapshot[name])
+        state.memory.resources = snapshot.get("loaded_resources", [])
+        state.memory.observations = {
+            item["path"]: item
+            for item in snapshot.get("observations", [])
+            if isinstance(item, dict) and item.get("path")
+        }
+        state.worklog = list(worklog or [])
+        state.files_changed = list(files_changed or [])
+        state.tests_run = list(tests_run or [])
+        # Source receipts and edit hashes must be obtained again after a pause:
+        # users may have edited the workspace outside the coder in the meantime.
+        state.reads.clear()
+        state.available_reads = []
+        state.stop_reason = None
+        state.repeat_counts.clear()
+        state.read_only_rounds = state.repeated_read_rounds = 0
+        state.exploration_steps = 0
+        state.recovery_sent = False
+        return state
 
     def completion_missing(self):
         if not self.files_changed and not self.unverified_changes:

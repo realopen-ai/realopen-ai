@@ -449,7 +449,8 @@ async def test_task_progress_saves_continuity_checkpoint(monkeypatch):
 
     monkeypatch.setattr(agent, "async_session_factory", session)
     await agent._save_progress("task", state)
-    assert record.context_state == state.memory.checkpoint()
+    assert record.context_state == state.checkpoint()
+    assert record.context_state["schema_version"] == 2
     assert record.context_state["handoff"].endswith("Verify the UI.")
     assert record.context_state["sources"][0]["path"] == "/workspace/app.py"
     commit.assert_awaited_once()
