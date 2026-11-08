@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
+import { CoderTaskPanel } from "@/components/chat/CoderTaskPanel";
 import { InputArea } from "@/components/chat/InputArea";
 import { VoiceCallPanel } from "@/components/chat/VoiceCallPanel";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
@@ -620,6 +621,7 @@ export function ChatArea({
       content: string,
       options?: {
         modelOverride?: string;
+        resumeCoderTaskId?: string;
         shrug?: boolean;
         images?: File[];
         documents?: File[];
@@ -678,7 +680,7 @@ export function ChatArea({
       const assistantMsgId = store.addMessage(convId, {
         role: "assistant",
         content: "",
-        model: modelForMessage,
+        model: options?.resumeCoderTaskId ? undefined : modelForMessage,
       });
       store.setStreaming(convId, assistantMsgId, true);
 
@@ -720,6 +722,7 @@ export function ChatArea({
         conversationId: capturedConvId,
         modelOverride: options?.modelOverride,
         shrug: options?.shrug,
+        resumeCoderTaskId: options?.resumeCoderTaskId,
       };
 
       try {
@@ -745,7 +748,9 @@ export function ChatArea({
             `Calling streamChat  model=${modelForMessage}  convId=${capturedConvId}  messages=${allMessages.length}`,
           );
           await streamChat(
-            allMessages,
+            options?.resumeCoderTaskId
+              ? [{ role: "user", content }]
+              : allMessages,
             modelForMessage,
             callbacks,
             streamOptions,
@@ -1034,6 +1039,13 @@ export function ChatArea({
         </div>
       )}
 
+      <CoderTaskPanel
+        conversationId={effectiveConvId}
+        streaming={isStreaming}
+        onResume={(id) =>
+          handleSend(t("coderTask.resumeMessage"), { resumeCoderTaskId: id })
+        }
+      />
       <InputArea
         sourceGrounded={notebookMode}
         onSend={handleSend}
