@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import uuid
+
 import httpx
 from urllib.parse import parse_qsl
 
 from app.config import settings
 from app.db.models import Sandbox
+
+logger = logging.getLogger(__name__)
 
 
 def base_url() -> str:
@@ -32,10 +38,35 @@ async def call(
 ) -> dict:
     body = payload(sandbox)
     body.update(extra or {})
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(f"{base_url()}/v1/sandboxes/{action}", json=body)
-        response.raise_for_status()
-        return response.json()
+    if action == "exec":
+        body.setdefault("command_id", str(uuid.uuid4()))
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{base_url()}/v1/sandboxes/{action}", json=body
+            )
+            response.raise_for_status()
+            return response.json()
+    except asyncio.CancelledError:
+        if action == "exec":
+            try:
+                await asyncio.shield(
+                    call(
+                        "exec/cancel",
+                        sandbox,
+                        {
+                            "command_id": body["command_id"],
+                            "command": "cancel",
+                            "timeout": 10,
+                        },
+                        timeout=15,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Could not cancel interrupted sandbox command", exc_info=True
+                )
+        raise
 
 
 async def preview_get(sandbox: Sandbox, port: int, path: str, query: str = ""):
