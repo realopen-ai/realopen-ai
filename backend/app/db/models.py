@@ -389,6 +389,13 @@ class SandboxTask(Base):
     files_changed = Column(JSONB, nullable=False, default=list)
     tests_run = Column(JSONB, nullable=False, default=list)
     cancellation_requested = Column(Boolean, nullable=False, default=False)
+    stop_after_round = Column(Boolean, nullable=False, default=False)
+    progress = Column(JSONB, nullable=False, default=dict)
+    resumed_from = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sandbox_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
