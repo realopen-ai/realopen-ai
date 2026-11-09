@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import {
   Send,
   Paperclip,
@@ -222,6 +222,7 @@ export function InputArea({
   onStartVoice,
   onStopResponse,
   sourceGrounded = false,
+  taskActivity,
 }: {
   onSend: (
     message: string,
@@ -239,6 +240,7 @@ export function InputArea({
   onStopResponse: () => void;
   /** Notebook attachments are managed through its selected-source panel. */
   sourceGrounded?: boolean;
+  taskActivity?: ReactNode;
 }) {
   const [input, setInput] = useState("");
   const dictationConversation = useChatStore((s) => s.activeConversationId);
@@ -551,18 +553,23 @@ export function InputArea({
   return (
     <div className="p-4 sm:px-6">
       <div className="max-w-210 mx-auto relative">
-        {voiceState === "inactive" && (
-          <Button
-            onClick={onStartVoice}
-            disabled={voiceSetupDisabled || dictation !== "idle"}
-            aria-label={voiceDisabledReason ?? t("voice.call.start")}
-            title={voiceDisabledReason ?? t("voice.call.start")}
-            className="absolute -top-11 right-0 h-9 w-9 rounded-full bg-primary text-primary-foreground shadow-lg cursor-pointer hover:bg-primary/90"
-            size="icon-sm"
-          >
-            <PhoneCall className="h-4 w-4" />
-          </Button>
-        )}
+        <div className="flex items-start gap-2">
+          <div className="peer mb-2 min-w-0 flex-1 empty:hidden">
+            {taskActivity}
+          </div>
+          {voiceState === "inactive" && (
+            <Button
+              onClick={onStartVoice}
+              disabled={voiceSetupDisabled || dictation !== "idle"}
+              aria-label={voiceDisabledReason ?? t("voice.call.start")}
+              title={voiceDisabledReason ?? t("voice.call.start")}
+              className="h-9 w-9 shrink-0 rounded-full peer-empty:absolute peer-empty:-top-11 peer-empty:end-0 bg-primary text-primary-foreground shadow-lg cursor-pointer hover:bg-primary/90"
+              size="icon-sm"
+            >
+              <PhoneCall className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
         {(dictation !== "idle" || dictationError) && (
           <p
             role="status"
