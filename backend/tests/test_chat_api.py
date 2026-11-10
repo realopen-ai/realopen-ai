@@ -1809,3 +1809,28 @@ async def test_temporary_document_upload_streams_ingestion_progress(client, env)
         assert not env.persists
     finally:
         await client.post(f"/api/chat/temporary/{ident}/discard")
+
+
+@pytest.mark.asyncio
+async def test_temporary_report_download_uses_session_file(client, env):
+    from app.services import temporary_chats
+
+    session = temporary_chats.get_session(uuid.uuid4())
+    report_id = uuid.uuid4()
+    path = session.reports_dir() / "generated.pdf"
+    path.write_bytes(b"temporary report")
+    session.reports[str(report_id)] = {
+        "filename": "Report.pdf",
+        "file_path": "reports/generated.pdf",
+    }
+    url = f"/api/chat/temporary/{session.id}/reports/{report_id}"
+    try:
+        response = await client.get(url)
+        assert response.status_code == 200
+        assert response.content == b"temporary report"
+        assert response.headers["cache-control"] == "no-store"
+
+        path.unlink()
+        assert (await client.get(url)).status_code == 404
+    finally:
+        temporary_chats.discard_session(session.id)

@@ -15,6 +15,7 @@ import json
 import logging
 import shutil
 import time
+from pathlib import Path
 from typing import Any, List, Literal, Optional
 import uuid
 
@@ -36,6 +37,7 @@ from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import temporary_chats
+from app.services.safe_paths import confined_path
 from app.services import model_prefs
 from app.services import providers
 from app.services import rag as rag_service
@@ -1377,7 +1379,10 @@ async def temporary_report_download(temporary_id: uuid.UUID, report_id: uuid.UUI
     report = session.reports.get(str(report_id)) if session else None
     if not report:
         raise HTTPException(404, "Temporary report not found")
-    path = session.reports_dir() / f"{report_id}.{report['format']}"
+    try:
+        path = confined_path(session.reports_dir(), Path(report["file_path"]).name)
+    except ValueError:
+        raise HTTPException(404, "Temporary report file not found") from None
     if not path.is_file():
         raise HTTPException(404, "Temporary report file not found")
     return FileResponse(
