@@ -40,4 +40,4 @@ EXPOSE 8000
 
 # Hot reload via uvicorn --reload. Voice sessions use an application-level
 # heartbeat, so keep uvicorn's transport ping from expiring during inference.
-CMD ["sh", "-c", "alembic upgrade head && cd /app/app && PYTHONPATH=/app uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir . --ws-ping-interval 3600 --ws-ping-timeout 3600"]
+CMD ["sh", "-c", "alembic upgrade head && cd /app/app && PYTHONPATH=/app uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir . --reload-exclude /app/app/agent/coder/starters --timeout-graceful-shutdown 10 --ws-ping-interval 3600 --ws-ping-timeout 3600"]
