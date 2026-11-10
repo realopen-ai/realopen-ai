@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Check,
   ChevronRight,
@@ -10,6 +12,7 @@ import {
   Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
 import {
   Dialog,
   DialogContent,
@@ -246,9 +249,18 @@ export function CoderTaskPanel({
         </DialogHeader>
         <div className="min-h-0 space-y-5 overflow-y-auto overscroll-contain px-5 py-4 text-sm [overflow-wrap:anywhere]">
           {!running && task.summary && (
-            <p className="whitespace-pre-wrap rounded-lg bg-secondary/60 p-3 leading-relaxed">
-              {task.summary}
-            </p>
+            <div
+              dir="auto"
+              className="prose overflow-x-auto rounded-lg bg-secondary/60 p-4 leading-relaxed [&_h1]:text-lg [&_h2]:text-base [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:ps-5 [&_ul]:ps-5"
+            >
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={markdownCodeComponents}
+                skipHtml
+              >
+                {task.summary}
+              </ReactMarkdown>
+            </div>
           )}
           {task.plan?.steps?.length ? (
             <section className="space-y-2">
