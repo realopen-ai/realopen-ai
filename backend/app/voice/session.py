@@ -51,6 +51,7 @@ from app.config import settings
 from app.services.background_queue import mark_stream_active, mark_stream_idle
 from app.services.blocks import BlockBuilder
 from app.services.conversations import persist_message_standalone
+from app.services.temporary_chats import TemporaryChat
 from app.services.memory_extractor import maybe_run_memory_extraction
 from app.voice import FRAME_FAR, FRAME_MIC, FRAME_TTS, models_store
 from app.voice.aec import create_aec
@@ -186,8 +187,16 @@ def _apply_event_to_builder(parsed: dict, builder: BlockBuilder) -> None:
 class VoiceSession:
     """One protocol-v1 voice WebSocket session (one conversation)."""
 
-    def __init__(self, conversation_id: uuid_mod.UUID, ws: Optional[WebSocket] = None):
+    def __init__(
+        self,
+        conversation_id: uuid_mod.UUID,
+        ws: Optional[WebSocket] = None,
+        *,
+        temporary_chat: TemporaryChat | None = None,
+    ):
         self.conversation_id = conversation_id
+        self.temporary_chat = temporary_chat
+        self._temporary_history: list[dict[str, str]] = []
         self.session_id = uuid_mod.uuid4().hex
         self._ws = ws
 
@@ -349,6 +358,16 @@ class VoiceSession:
                 "start.conversation_id does not match this connection.",
             )
             return
+        if self.temporary_chat:
+            history = payload.get("history")
+            if isinstance(history, list):
+                self._temporary_history = [
+                    {"role": item["role"], "content": item["content"]}
+                    for item in history[-VOICE_HISTORY_LIMIT:]
+                    if isinstance(item, dict)
+                    and item.get("role") in ("user", "assistant")
+                    and isinstance(item.get("content"), str)
+                ]
         # Protocol v1 fixes the input format.
         declared_rate = payload.get("sample_rate") or settings.VOICE_SAMPLE_RATE
         try:
@@ -682,9 +701,12 @@ class VoiceSession:
         # may precede/follow) with the voice modality marker.
         msg_id: Optional[uuid_mod.UUID] = None
         try:
-            msg_id = await persist_message_standalone(
-                self.conversation_id, "user", transcript, modality="voice"
-            )
+            if self.temporary_chat:
+                msg_id = uuid_mod.uuid4()
+            else:
+                msg_id = await persist_message_standalone(
+                    self.conversation_id, "user", transcript, modality="voice"
+                )
         except Exception as e:  # noqa: BLE001 — DB errors are non-fatal
             logger.error("voice: user message persist failed: %s", e)
         if msg_id is None:
@@ -732,6 +754,14 @@ class VoiceSession:
         The voice transcript joins the SAME conversation as text chat —
         text turns may precede/follow voice turns.
         """
+        if self.temporary_chat:
+            self._temporary_history.append(
+                {"role": "user", "content": self._current_transcript}
+            )
+            self._temporary_history = self._temporary_history[-VOICE_HISTORY_LIMIT:]
+            self._history_messages = list(self._temporary_history)
+            return self._history_messages
+
         from app.db.session import async_session_factory
         from app.services import conversations as conv_service
 
@@ -769,8 +799,9 @@ class VoiceSession:
         tts_task: Optional[asyncio.Task] = None
         try:
             # KV-cache protection — the same markers the text stream uses.
-            await mark_stream_active(conv_id_str)
-            self._stream_marked = True
+            if not self.temporary_chat:
+                await mark_stream_active(conv_id_str)
+                self._stream_marked = True
             messages = await self._load_history()
             self._tts_queue = asyncio.Queue()
             tts_task = asyncio.create_task(self._tts_worker())
@@ -781,7 +812,12 @@ class VoiceSession:
                 messages=messages,
                 model=await model_prefs.resolve_task_model("voice"),
                 images=None,
-                conversation_id=conv_id_str,
+                conversation_id=None if self.temporary_chat else conv_id_str,
+                **(
+                    {"temporary": True, "temporary_chat": self.temporary_chat}
+                    if self.temporary_chat
+                    else {}
+                ),
                 # Same default agent/tool loop, with spoken-response behavior
                 # and no hidden reasoning delay. Length is prompt-adaptive,
                 # not hard-truncated: detailed questions can stay detailed.
@@ -850,7 +886,7 @@ class VoiceSession:
         """Persist the assistant message, notify, extract memory, LISTEN."""
         await self._persist_assistant(builder, interrupted=False)
         content = builder.get_text_content()
-        if content:
+        if content and not self.temporary_chat:
             # Fire-and-forget pattern from chat.py generate(): the inline
             # watermark check is fast; the LLM extraction itself is
             # enqueued to the background queue (waits for stream idle).
@@ -884,17 +920,24 @@ class VoiceSession:
         blocks = list(builder.to_db_blocks())
         msg_id: Optional[uuid_mod.UUID] = None
         try:
-            msg_id = await persist_message_standalone(
-                self.conversation_id,
-                "assistant",
-                content,
-                model=self._model_label,
-                blocks=blocks,
-                generation_duration=builder.generation_duration,
-                deliverables=(builder.deliverables or None),
-                modality="voice",
-                completion_status="interrupted" if interrupted else "completed",
-            )
+            if self.temporary_chat:
+                msg_id = uuid_mod.uuid4()
+                if content:
+                    self._temporary_history.append(
+                        {"role": "assistant", "content": content}
+                    )
+            else:
+                msg_id = await persist_message_standalone(
+                    self.conversation_id,
+                    "assistant",
+                    content,
+                    model=self._model_label,
+                    blocks=blocks,
+                    generation_duration=builder.generation_duration,
+                    deliverables=(builder.deliverables or None),
+                    modality="voice",
+                    completion_status="interrupted" if interrupted else "completed",
+                )
         except Exception as e:  # noqa: BLE001 — DB errors are non-fatal
             logger.error("voice: assistant message persist failed: %s", e)
         if msg_id is None:

@@ -72,7 +72,12 @@ class DebugLoggingMiddleware:
             request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             == "application/octet-stream"
         )
-        if binary_stream:
+        if path in {
+            "/api/chat/temporary/stream",
+            "/api/chat/temporary/stream/multipart",
+        }:
+            body_str = "<temporary chat>"
+        elif binary_stream:
             body_str = "<binary stream>"
         elif method in ("POST", "PUT", "PATCH"):
             try:

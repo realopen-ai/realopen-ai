@@ -15,7 +15,11 @@ from app.agent.base import (
     ToolArgumentError,
     tool_registry,
 )
+from app.db.models import ArtifactVersion
 from app.db.session import async_session_factory
+from app.services.artifact_sources import sections_for
+from pathlib import PurePosixPath
+from types import SimpleNamespace
 from app.services import artifacts as service
 from app.api.artifacts import UpdateArtifact
 from app.agent.tools import config_store
@@ -119,6 +123,89 @@ class ArtifactTool(BaseTool):
             )
         )
 
+    async def _temporary_operation(self, chat, artifact_id, args, progress):
+        offset = args.get("offset", 0)
+        if self.operation == "list":
+            return chat.artifact_catalog(offset), None
+        kind, title, version = chat.artifact_version(artifact_id, args.get("version"))
+        if self.operation == "read":
+            data = service.read(version, args.get("section_id"), offset)
+            return {
+                **data,
+                "artifact_kind": kind,
+                "document_id": str(artifact_id) if kind == "upload" else None,
+            }, None
+        if self.operation == "summarize":
+            result = await service.summarize(
+                None,
+                SimpleNamespace(id=artifact_id),
+                version,
+                args.get("question") or "Summarize this document",
+                progress,
+                model=await config_store.tool_model_override(self.name),
+                cache_dir=chat.reports_dir() / "summaries",
+            )
+            return {
+                **result,
+                "artifact_id": str(artifact_id),
+                "artifact_kind": kind,
+                "version": version.number,
+            }, None
+        if kind == "upload":
+            raise HTTPException(403, "Uploaded artifacts are read-only")
+        if self.operation == "update":
+            body = UpdateArtifact(
+                expected_version=args.get("expected_version"),
+                changes=args.get("changes"),
+            )
+            if body.expected_version != version.number:
+                raise HTTPException(
+                    409, "Artifact changed; read the latest version before editing"
+                )
+            source = service.edited_source(
+                version, kind, [change.model_dump() for change in body.changes]
+            )
+            sections = sections_for(source, kind)
+            fmt = version.settings.get("format", next(iter(version.outputs)))
+            path = await service.render(
+                kind, source, version.settings, fmt, directory=chat.reports_dir()
+            )
+            version = ArtifactVersion(
+                artifact_id=artifact_id,
+                number=version.number + 1,
+                source=source,
+                settings=version.settings,
+                sections=sections,
+                outputs={fmt: path},
+            )
+            chat.versions[artifact_id].append(version)
+        else:
+            fmt = args["format"]
+            path = version.outputs.get(fmt)
+            if not path:
+                path = await service.render(
+                    kind,
+                    version.source,
+                    version.settings,
+                    fmt,
+                    directory=chat.reports_dir(),
+                )
+                version.outputs = {**version.outputs, fmt: path}
+        report_id = PurePosixPath(path).stem
+        generated = {
+            "type": kind,
+            "artifact_id": str(artifact_id),
+            "report_id": report_id,
+            "title": title,
+            "version": version.number,
+            "format": fmt,
+            "filename": f"{title.rsplit('.', 1)[0]}.{fmt}",
+            "file_path": path,
+            "download_url": f"/api/chat/temporary/{chat.id}/reports/{report_id}",
+        }
+        chat.reports[report_id] = generated
+        return generated, generated
+
     async def execute(self, *, conversation_id=None, artifact_id=None, **args):
         call = ToolCall(
             id=f"tc-artifact-{uuid.uuid4()}",
@@ -163,92 +250,103 @@ class ArtifactTool(BaseTool):
                     raise ToolArgumentError(
                         "Provide an exact artifact UUID from attachments or list_artifacts."
                     ) from exc
-            async with async_session_factory() as db:
-                if self.operation == "list":
-                    offset = int(args.get("offset", 0))
-                    if offset < 0:
-                        raise ToolArgumentError("Offset must be nonnegative")
-                    data = await service.catalog(
-                        db, conversation_id, scoped=True, offset=offset
-                    )
-                else:
-                    artifact = await service.get_artifact(
-                        db, artifact_id, conversation_id, scoped=True
-                    )
-                    number = args.get("version")
-                    if number is not None and (
-                        not isinstance(number, int) or number < 1
-                    ):
-                        raise ToolArgumentError("Version must be positive")
-                    current = await service.get_version(db, artifact, number)
-                    if self.operation == "read":
+            if (temporary_chat := args.get("_temporary_chat")) is not None:
+                data, generated = await self._temporary_operation(
+                    temporary_chat, artifact_id, args, progress
+                )
+            else:
+                async with async_session_factory() as db:
+                    if self.operation == "list":
                         offset = int(args.get("offset", 0))
                         if offset < 0:
                             raise ToolArgumentError("Offset must be nonnegative")
-                        data = service.read(current, args.get("section_id"), offset)
-                        data["artifact_kind"] = artifact.kind
-                        data["document_id"] = (
-                            str(artifact.document_id) if artifact.document_id else None
+                        data = await service.catalog(
+                            db, conversation_id, scoped=True, offset=offset
                         )
-                    elif self.operation == "update":
-                        body = UpdateArtifact(
-                            expected_version=args.get("expected_version"),
-                            changes=args.get("changes"),
+                    else:
+                        artifact = await service.get_artifact(
+                            db, artifact_id, conversation_id, scoped=True
                         )
-                        source = service.edited_source(
-                            current,
-                            artifact.kind,
-                            [change.model_dump() for change in body.changes],
-                        )
-                        current = await service.publish(
-                            db, artifact, body.expected_version, source
-                        )
-                        data = {
-                            **service.metadata(artifact),
-                            "message": "Updated artifact; previous versions retained.",
-                        }
-                        fmt = next(iter(current.outputs))
-                    elif self.operation == "export":
-                        fmt = args.get("format")
-                        await service.export(db, artifact, current, fmt)
-                        data = {
-                            **service.metadata(artifact),
+                        number = args.get("version")
+                        if number is not None and (
+                            not isinstance(number, int) or number < 1
+                        ):
+                            raise ToolArgumentError("Version must be positive")
+                        current = await service.get_version(db, artifact, number)
+                        if self.operation == "read":
+                            offset = int(args.get("offset", 0))
+                            if offset < 0:
+                                raise ToolArgumentError("Offset must be nonnegative")
+                            data = service.read(current, args.get("section_id"), offset)
+                            data["artifact_kind"] = artifact.kind
+                            data["document_id"] = (
+                                str(artifact.document_id)
+                                if artifact.document_id
+                                else None
+                            )
+                        elif self.operation == "update":
+                            body = UpdateArtifact(
+                                expected_version=args.get("expected_version"),
+                                changes=args.get("changes"),
+                            )
+                            source = service.edited_source(
+                                current,
+                                artifact.kind,
+                                [change.model_dump() for change in body.changes],
+                            )
+                            current = await service.publish(
+                                db, artifact, body.expected_version, source
+                            )
+                            data = {
+                                **service.metadata(artifact),
+                                "message": "Updated artifact; previous versions retained.",
+                            }
+                            fmt = next(iter(current.outputs))
+                        elif self.operation == "export":
+                            fmt = args.get("format")
+                            await service.export(db, artifact, current, fmt)
+                            data = {
+                                **service.metadata(artifact),
+                                "version": current.number,
+                                "download_url": f"/api/artifacts/{artifact.id}/download/{fmt}?version={current.number}",
+                            }
+                        else:
+                            question = args.get("question") or "Summarize this document"
+                            if not isinstance(question, str) or len(question) > 1000:
+                                raise ToolArgumentError(
+                                    "Summary question exceeds limit"
+                                )
+                            data = {
+                                "artifact_id": str(artifact.id),
+                                "artifact_kind": artifact.kind,
+                                "version": current.number,
+                                **await service.summarize(
+                                    db,
+                                    artifact,
+                                    current,
+                                    question,
+                                    progress,
+                                    model=await config_store.tool_model_override(
+                                        self.name
+                                    ),
+                                ),
+                            }
+                    await db.commit()
+                    if self.operation in {"update", "export"}:
+                        path = current.outputs[fmt]
+                        filename = f"{artifact.title.rsplit('.', 1)[0]}.{fmt}"
+                        generated = {
+                            "type": artifact.kind,
+                            "artifact_id": str(artifact.id),
+                            "report_id": service.file_path(path).stem,
+                            "title": artifact.title,
                             "version": current.number,
+                            "format": fmt,
+                            "filename": filename,
+                            "file_path": path,
                             "download_url": f"/api/artifacts/{artifact.id}/download/{fmt}?version={current.number}",
                         }
-                    else:
-                        question = args.get("question") or "Summarize this document"
-                        if not isinstance(question, str) or len(question) > 1000:
-                            raise ToolArgumentError("Summary question exceeds limit")
-                        data = {
-                            "artifact_id": str(artifact.id),
-                            "artifact_kind": artifact.kind,
-                            "version": current.number,
-                            **await service.summarize(
-                                db,
-                                artifact,
-                                current,
-                                question,
-                                progress,
-                                model=await config_store.tool_model_override(self.name),
-                            ),
-                        }
-                await db.commit()
-                if self.operation in {"update", "export"}:
-                    path = current.outputs[fmt]
-                    filename = f"{artifact.title.rsplit('.', 1)[0]}.{fmt}"
-                    generated = {
-                        "type": artifact.kind,
-                        "artifact_id": str(artifact.id),
-                        "report_id": service.file_path(path).stem,
-                        "title": artifact.title,
-                        "version": current.number,
-                        "format": fmt,
-                        "filename": filename,
-                        "file_path": path,
-                        "download_url": f"/api/artifacts/{artifact.id}/download/{fmt}?version={current.number}",
-                    }
-                    data["download_url"] = generated["download_url"]
+                        data["download_url"] = generated["download_url"]
             call.status = "completed"
             call.output = json.dumps(data, ensure_ascii=False)
             if self.operation in {"update", "export"}:

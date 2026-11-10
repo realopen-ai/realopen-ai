@@ -47,6 +47,7 @@ from app.api.sandboxes import router as sandboxes_router, terminal_proxy  # noqa
 from app.core.logger import is_debug  # noqa: E402
 from app.services import agent_settings, coder_settings, search_services  # noqa: E402
 from app.services import skills as skill_store  # noqa: E402
+from app.services.temporary_chats import discard_session  # noqa: E402
 from app.db.session import async_session_factory  # noqa: E402
 from app.core.middleware import DebugLoggingMiddleware  # noqa: E402
 
@@ -471,7 +472,11 @@ async def sandbox_terminal_socket(websocket: WebSocket, sandbox_id: str):
 if voice_manager is not None:
 
     @app.websocket("/ws/voice")
-    async def voice_ws(websocket: WebSocket, conversation_id: str = Query(...)) -> None:
+    async def voice_ws(
+        websocket: WebSocket,
+        conversation_id: str = Query(...),
+        temporary: bool = Query(False),
+    ) -> None:
         """Real-time voice session for one conversation.
 
         The URL carries the conversation id (the registry key for the
@@ -479,13 +484,37 @@ if voice_manager is not None:
         re-validates it. See app/voice/session.py for the frame contract.
         """
         await websocket.accept()
-        session = await voice_manager.get_or_create(conversation_id, websocket)
+        session = await voice_manager.get_or_create(
+            conversation_id, websocket, **({"temporary": True} if temporary else {})
+        )
         if session is None:
             # Rejected (session_exists / invalid id) — the error frame and
             # close were sent by the manager.
             return
         try:
-            await session.handle(websocket)
+            if temporary:
+                if (
+                    session.temporary_chat.discarded
+                    or session.temporary_chat.lock.locked()
+                ):
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "temporary_chat_busy",
+                            "message": "This temporary chat is busy.",
+                            "fatal": True,
+                        }
+                    )
+                    await websocket.close(code=1008)
+                    return
+                async with session.temporary_chat.lock:
+                    try:
+                        await session.handle(websocket)
+                    finally:
+                        if session.temporary_chat.discarded:
+                            discard_session(session.temporary_chat.id)
+            else:
+                await session.handle(websocket)
         finally:
             voice_manager.remove(conversation_id)
 
