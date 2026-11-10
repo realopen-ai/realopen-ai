@@ -22,6 +22,8 @@ from app.core import metrics as app_metrics  # noqa: E402
 from app.agent.tracing import flush_traces  # noqa: E402
 from app.api.health import router as health_router  # noqa: E402
 from app.api.frontend import install_frontend  # noqa: E402
+from app.api.coder_tasks import router as coder_tasks_router  # noqa: E402
+from app.services.coder_tasks import recover_interrupted_tasks  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
 from app.api.model_manager import router as model_manager_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
@@ -215,6 +217,11 @@ async def lifespan(app: FastAPI):
             "Detailed agent tracing enabled: conversation content, memories and tool "
             "outputs are stored locally. Review traces before sharing."
         )
+
+    try:
+        await recover_interrupted_tasks()
+    except Exception:
+        logger.exception("Could not recover interrupted coding tasks")
 
     # Detect setup mode
     setup_mode = _detect_setup_mode()
@@ -430,6 +437,7 @@ app.mount("/metrics", metrics_app)
 # Routes
 app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(chat_router, prefix="/api", tags=["chat"])
+app.include_router(coder_tasks_router, prefix="/api")
 app.include_router(models_router, prefix="/api", tags=["models"])
 app.include_router(model_manager_router, prefix="/api", tags=["model-manager"])
 app.include_router(modules_router, prefix="/api", tags=["modules"])
