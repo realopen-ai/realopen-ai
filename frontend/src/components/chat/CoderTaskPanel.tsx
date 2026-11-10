@@ -34,6 +34,32 @@ import {
   coderTaskDuration,
 } from "@/lib/coderTaskProgress";
 
+function TaskMarkdown({
+  text,
+  className,
+}: {
+  text: string;
+  className: string;
+}) {
+  return (
+    <div
+      dir="auto"
+      className={cn(
+        "prose overflow-x-auto leading-relaxed [&_h1]:text-lg [&_h2]:text-base [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:ps-5 [&_ul]:ps-5",
+        className,
+      )}
+    >
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownCodeComponents}
+        skipHtml
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export function CoderTaskPanel({
   conversationId,
   streaming,
@@ -249,18 +275,10 @@ export function CoderTaskPanel({
         </DialogHeader>
         <div className="min-h-0 space-y-5 overflow-y-auto overscroll-contain px-5 py-4 text-sm [overflow-wrap:anywhere]">
           {!running && task.summary && (
-            <div
-              dir="auto"
-              className="prose overflow-x-auto rounded-lg bg-secondary/60 p-4 leading-relaxed [&_h1]:text-lg [&_h2]:text-base [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:ps-5 [&_ul]:ps-5"
-            >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={markdownCodeComponents}
-                skipHtml
-              >
-                {task.summary}
-              </ReactMarkdown>
-            </div>
+            <TaskMarkdown
+              text={task.summary}
+              className="rounded-lg bg-secondary/60 p-4"
+            />
           )}
           {task.plan?.steps?.length ? (
             <section className="space-y-2">
@@ -352,9 +370,10 @@ export function CoderTaskPanel({
             <summary className="cursor-pointer px-3 py-2.5 font-medium">
               {t("coderTask.request")}
             </summary>
-            <p className="whitespace-pre-wrap border-t border-border/60 px-3 py-2.5 leading-relaxed">
-              {task.request}
-            </p>
+            <TaskMarkdown
+              text={task.request}
+              className="border-t border-border/60 px-3 py-2.5"
+            />
           </details>
           {task.resumed_from && (
             <p className="text-xs text-muted-foreground">
