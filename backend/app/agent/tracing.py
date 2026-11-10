@@ -826,7 +826,7 @@ def traced_execution(function):
 
     @functools.wraps(function)
     async def wrapper(*args, **kwargs):
-        if not settings.AGENT_TRACE_ENABLED:
+        if not settings.AGENT_TRACE_ENABLED or kwargs.get("temporary"):
             stream = function(*args, **kwargs)
             try:
                 async for item in stream:

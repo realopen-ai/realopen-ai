@@ -489,7 +489,7 @@ def re_split_slides(source):
     return [part for part in re.split(r"(?m)^\s*---\s*$", source) if part.strip()]
 
 
-async def render(kind, source, settings, fmt):
+async def render(kind, source, settings, fmt, *, directory=None):
     extension = {
         ("report", "pdf"): "pdf",
         ("report", "docx"): "docx",
@@ -501,7 +501,7 @@ async def render(kind, source, settings, fmt):
     if extension is None:
         raise HTTPException(422, "Unsupported export format")
     token = str(uuid.uuid4())
-    directory = file_path("reports")
+    directory = directory or file_path("reports")
     directory.mkdir(parents=True, exist_ok=True)
     output = directory / f"{token}.{extension}"
     try:
@@ -611,7 +611,14 @@ async def export(db, artifact, version, fmt):
 
 
 async def summarize(
-    db, artifact, version, question="Summarize this document", progress=None, model=None
+    db,
+    artifact,
+    version,
+    question="Summarize this document",
+    progress=None,
+    model=None,
+    *,
+    cache_dir=None,
 ):
     model = model or await model_prefs.resolve_task_model("chat")
     key = hashlib.sha256(
@@ -627,7 +634,8 @@ async def summarize(
             ensure_ascii=False,
         ).encode()
     ).hexdigest()
-    cache = file_path(f"artifacts/summaries/{key}.json")
+    cache_dir = cache_dir or file_path("artifacts/summaries")
+    cache = cache_dir / f"{key}.json"
     if cache.is_file():
         if progress:
             await progress({"stage": "cached", "completed": 1, "total": 1})
@@ -640,7 +648,7 @@ async def summarize(
     async def ask(text):
         nonlocal abbreviated
         batch_key = hashlib.sha256(text.encode()).hexdigest()
-        batch_cache = file_path(f"artifacts/summaries/{key}/{batch_key}.json")
+        batch_cache = cache_dir / key / f"{batch_key}.json"
         if batch_cache.is_file():
             return await asyncio.to_thread(
                 lambda: json.loads(batch_cache.read_text(encoding="utf-8"))["summary"]

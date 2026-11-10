@@ -35,10 +35,13 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
+from dataclasses import replace
 from typing import List
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
+from app.services.temporary_chats import MemoryDraft
 from app.services.memory import MemoryManager, VALID_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,89 @@ class ManageMemoryTool(BaseTool):
     def get_required_params(self) -> List[str]:
         return ["action"]
 
+    async def _temporary_operation(self, chat, call, action, args):
+        async with async_session_factory() as db:
+            manager = MemoryManager()
+            if action in {"list", "search"}:
+                if action == "search":
+                    memories = await manager.search_memories(
+                        db, args["query"], limit=10
+                    )
+                    query = args["query"].casefold()
+                    memories = [
+                        memory
+                        for memory in chat.merge_memories(memories)
+                        if memory.id not in chat.memory_changes
+                        or query in memory.text.casefold()
+                    ]
+                else:
+                    memories = chat.merge_memories(
+                        await manager.get_all_memories(db, limit=50)
+                    )
+                    if category := args.get("category"):
+                        memories = [
+                            memory for memory in memories if memory.category == category
+                        ]
+                output = (
+                    "\n".join(
+                        f"- [{memory.category}] {memory.text} (id: {str(memory.id)[:8]})"
+                        for memory in memories[:50]
+                    )
+                    or "No matching memories."
+                )
+            else:
+                text = (args.get("text") or "").strip()
+                category = args.get("category")
+                if action == "add":
+                    draft = MemoryDraft(
+                        uuid.uuid4(), text, category or "fact", category == "identity"
+                    )
+                else:
+                    prefix = args["memory_id"].strip()
+                    pending = [
+                        draft
+                        for draft in chat.memory_changes.values()
+                        if str(draft.id).startswith(prefix)
+                    ]
+                    if len(pending) > 1:
+                        return self.invalid_arguments(
+                            "Provide a longer memory ID.", call
+                        )
+                    draft = pending[0] if pending else None
+                    if not draft:
+                        memory = await self._find_by_prefix(manager, db, prefix)
+                        if memory:
+                            draft = MemoryDraft(
+                                memory.id,
+                                memory.text,
+                                memory.category,
+                                memory.pinned,
+                                original=(memory.text, memory.category, memory.pinned),
+                            )
+                    if not draft or draft.deleted:
+                        return self.invalid_arguments(
+                            "Memory not found in this chat.", call
+                        )
+                    draft = replace(
+                        draft,
+                        text=text or draft.text,
+                        category=category or draft.category,
+                        deleted=action == "delete",
+                    )
+                if (
+                    draft.id not in chat.memory_changes
+                    and len(chat.memory_changes) >= 100
+                ):
+                    return self.invalid_arguments(
+                        "This chat already has 100 staged memory changes.", call
+                    )
+                chat.memory_changes[draft.id] = draft
+                output = f"Memory change staged for Save (id: {str(draft.id)[:8]})."
+        call.status = "completed"
+        call.completed_at = time.time()
+        call.output = output
+        return ToolResult(True, output, call)
+
     async def execute(self, *, action: str, **kwargs) -> ToolResult:
         """Execute the memory management action."""
         start = time.time()
@@ -163,6 +249,9 @@ class ManageMemoryTool(BaseTool):
             return self.invalid_arguments(
                 "Edit requires at least one of: text, category.", tool_call
             )
+
+        if temporary := kwargs.get("_temporary_chat"):
+            return await self._temporary_operation(temporary, tool_call, action, kwargs)
 
         try:
             async with async_session_factory() as db:

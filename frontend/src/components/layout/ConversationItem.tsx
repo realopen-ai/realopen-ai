@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
+  Clock,
   Loader2,
   MessageSquare,
   MoreHorizontal,
@@ -100,6 +101,11 @@ export function ConversationItem({
         className="size-4 shrink-0 animate-spin text-primary"
         aria-label={t("sidebar.generating")}
       />
+    ) : conv.temporary ? (
+      <Clock
+        className="size-4 shrink-0 text-primary"
+        aria-label={t("temporaryChat.title")}
+      />
     ) : conv.pinned ? (
       <Pin className="size-4 shrink-0 text-primary fill-primary/20" />
     ) : (
@@ -138,7 +144,9 @@ export function ConversationItem({
           sideOffset={8}
           className="max-w-52 truncate"
         >
-          {conv.title}
+          {conv.temporary
+            ? `${t("temporaryChat.title")} · ${conv.title}`
+            : conv.title}
         </TooltipContent>
       </Tooltip>
     );
@@ -185,7 +193,12 @@ export function ConversationItem({
             {conv.title}
           </span>
 
-          {isStreaming ? (
+          {conv.temporary && (
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              {t("temporaryChat.badge")}
+            </span>
+          )}
+          {isStreaming || conv.saving ? (
             <Loader2
               className="size-4 shrink-0 animate-spin text-primary"
               aria-label={t("sidebar.generating")}
@@ -215,21 +228,27 @@ export function ConversationItem({
                   {t("sidebar.rename")}
                 </DropdownMenuItem>
 
-                <DropdownMenuItem
-                  onSelect={() => togglePinConversation(conv.id)}
-                >
-                  {conv.pinned ? <PinOff /> : <Pin />}
-                  {conv.pinned ? t("sidebar.unpinChat") : t("sidebar.pinChat")}
-                </DropdownMenuItem>
+                {!conv.temporary && (
+                  <>
+                    <DropdownMenuItem
+                      onSelect={() => togglePinConversation(conv.id)}
+                    >
+                      {conv.pinned ? <PinOff /> : <Pin />}
+                      {conv.pinned
+                        ? t("sidebar.unpinChat")
+                        : t("sidebar.pinChat")}
+                    </DropdownMenuItem>
 
-                <DropdownMenuItem
-                  onSelect={() => toggleArchiveConversation(conv.id)}
-                >
-                  {conv.archived ? <ArchiveRestore /> : <Archive />}
-                  {conv.archived
-                    ? t("sidebar.unarchiveChat")
-                    : t("sidebar.archiveChat")}
-                </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => toggleArchiveConversation(conv.id)}
+                    >
+                      {conv.archived ? <ArchiveRestore /> : <Archive />}
+                      {conv.archived
+                        ? t("sidebar.unarchiveChat")
+                        : t("sidebar.archiveChat")}
+                    </DropdownMenuItem>
+                  </>
+                )}
 
                 <DropdownMenuSeparator />
 

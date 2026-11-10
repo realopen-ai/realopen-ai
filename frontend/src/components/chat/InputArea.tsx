@@ -223,6 +223,7 @@ export function InputArea({
   onStopResponse,
   sourceGrounded = false,
   taskActivity,
+  saving = false,
 }: {
   onSend: (
     message: string,
@@ -241,7 +242,9 @@ export function InputArea({
   /** Notebook attachments are managed through its selected-source panel. */
   sourceGrounded?: boolean;
   taskActivity?: ReactNode;
+  saving?: boolean;
 }) {
+  const canAttach = !sourceGrounded;
   const [input, setInput] = useState("");
   const dictationConversation = useChatStore((s) => s.activeConversationId);
   const [dictation, setDictation] = useState<
@@ -298,7 +301,7 @@ export function InputArea({
   };
   const toggleDictation = async () => {
     if (dictation === "recording") return stopDictation();
-    if (dictation !== "idle") return;
+    if (dictation !== "idle" || saving) return;
     setDictationError(false);
     setDictation("starting");
     setDictationLevels(Array(WAVEFORM_BARS).fill(0));
@@ -443,10 +446,7 @@ export function InputArea({
   const handleSend = () => {
     if (dictation !== "idle") return;
     const trimmed = input.trim();
-    if (
-      (!trimmed && (sourceGrounded || attachments.length === 0)) ||
-      isStreaming
-    )
+    if ((!trimmed && (!canAttach || attachments.length === 0)) || isStreaming)
       return;
 
     const { command, remainingContent } = parseSlashCommand(trimmed);
@@ -469,9 +469,8 @@ export function InputArea({
     onSend(finalContent || trimmed, {
       modelOverride: command?.modelOverride,
       shrug: command?.shrug,
-      images: !sourceGrounded && images.length > 0 ? images : undefined,
-      documents:
-        !sourceGrounded && documents.length > 0 ? documents : undefined,
+      images: canAttach && images.length > 0 ? images : undefined,
+      documents: canAttach && documents.length > 0 ? documents : undefined,
     });
 
     // Cleanup preview URLs
@@ -547,8 +546,7 @@ export function InputArea({
     return acc;
   }, {});
 
-  const hasImages =
-    !sourceGrounded && attachments.some((a) => a.type === "image");
+  const hasImages = canAttach && attachments.some((a) => a.type === "image");
 
   return (
     <div className="p-4 sm:px-6">
@@ -593,7 +591,7 @@ export function InputArea({
         {/* ── Composer — one cohesive floating input surface ── */}
         <div className="input-glow rounded-xl border border-border/70 bg-card shadow-[0_8px_30px_var(--color-shadow-soft)] transition-all">
           {/* Attachment Previews */}
-          {!sourceGrounded && attachments.length > 0 && (
+          {canAttach && attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 px-3.5 pt-3">
               {attachments.map((att, i) => (
                 <AttachmentPreview
@@ -651,7 +649,7 @@ export function InputArea({
             />
 
             {/* Attach button (opens image picker on click, document on right-click) */}
-            {!sourceGrounded && (
+            {canAttach && (
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -749,7 +747,7 @@ export function InputArea({
             <span className="flex-1" />
 
             {/* Web search indicator — available automatically when needed */}
-            {!sourceGrounded && (
+            {canAttach && (
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -810,10 +808,11 @@ export function InputArea({
             <Button
               onClick={isStreaming ? onStopResponse : handleSend}
               disabled={
-                !isStreaming &&
-                (dictation !== "idle" ||
-                  (!input.trim() &&
-                    (sourceGrounded || attachments.length === 0)))
+                saving ||
+                (!isStreaming &&
+                  (dictation !== "idle" ||
+                    (!input.trim() &&
+                      (!canAttach || attachments.length === 0))))
               }
               aria-label={
                 isStreaming ? t("input.stopResponse") : t("input.send")
@@ -824,7 +823,7 @@ export function InputArea({
                 "h-9 w-9 rounded-full shrink-0 transition-all",
                 isStreaming
                   ? "bg-secondary border border-border/70 text-foreground hover:bg-surface-hover"
-                  : input.trim() || (!sourceGrounded && attachments.length > 0)
+                  : input.trim() || (canAttach && attachments.length > 0)
                     ? "bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
                     : "bg-secondary text-muted-foreground/70 hover:bg-secondary disabled:opacity-100",
               )}

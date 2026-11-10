@@ -836,3 +836,55 @@ async def test_cancelled_summary_retry_retains_only_completed_batches(tmp_path, 
     assert calls.count(first) == 1
     assert "Unfinished" not in result["summary"]
     assert [ref["page"] for ref in result["source_references"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_temporary_artifact_updates_keep_original_and_skip_database(monkeypatch):
+    from app.agent.tools.artifacts import ReadArtifactTool, UpdateArtifactTool
+    from app.services.artifact_sources import capture_source
+    from app.services.temporary_chats import TemporaryChat
+
+    def unexpected_session():
+        pytest.fail("Temporary artifact operations opened a database session")
+
+    monkeypatch.setattr(
+        "app.agent.tools.artifacts.async_session_factory", unexpected_session
+    )
+    ident = uuid.uuid4()
+    chat = TemporaryChat(uuid.uuid4())
+    directory = chat.reports_dir()
+    original = "# Introduction\n\nOriginal text.\n"
+    capture_source(directory, str(ident), original, "report", {"format": "docx"})
+    await chat.register_report(
+        {
+            "report_id": str(ident),
+            "type": "report",
+            "format": "docx",
+            "filename": "Report.docx",
+            "file_path": f"reports/{ident}.docx",
+        }
+    )
+
+    async def render(kind, source, settings, fmt, *, directory):
+        assert directory == chat.reports_dir()
+        output = directory / f"{uuid.uuid4()}.{fmt}"
+        output.write_text(source)
+        return f"reports/{output.name}"
+
+    monkeypatch.setattr("app.services.artifacts.render", render)
+    result = await UpdateArtifactTool().execute(
+        artifact_id=str(ident),
+        expected_version=1,
+        changes=[
+            {"section_id": "section-1", "content": "# Introduction\n\nRevised text.\n"}
+        ],
+        _temporary_chat=chat,
+    )
+    assert result.success, result.output
+    assert result.tool_call.gen_results[0]["version"] == 2
+    assert chat.artifact_version(ident, 1)[2].source == original
+    latest = await ReadArtifactTool().execute(
+        artifact_id=str(ident), section_id="section-1", _temporary_chat=chat
+    )
+    assert latest.success
+    assert "Revised text." in latest.output

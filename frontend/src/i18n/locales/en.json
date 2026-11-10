@@ -1134,5 +1134,12 @@
   "coderTask.check.not_verified": "Not verified",
   "coderTask.check.stale": "Needs rechecking",
   "coderTask.check.running": "Running",
-  "coderTask.continued": "Continued from run {id}"
+  "coderTask.continued": "Continued from run {id}",
+  "temporaryChat.title": "Temporary chat",
+  "temporaryChat.badge": "Temporary",
+  "temporaryChat.stagedOutput": "Save this chat to add the result to Learn.",
+  "temporaryChat.description": "This temporary chat stays in this tab until you refresh or close it. Save it anytime after a response.",
+  "temporaryChat.save": "Save chat",
+  "temporaryChat.saving": "Saving…",
+  "temporaryChat.saveError": "Could not save this chat. It is still available in this tab."
 }

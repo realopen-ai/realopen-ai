@@ -118,7 +118,9 @@ class RagSearchTool(BaseTool):
             _log("empty query — nothing to search")
             return self.invalid_arguments("No query provided.", tool_call)
 
-        _log("execute START  query=%r  conv=%s", query[:80], conversation_id)
+        temporary = kwargs.get("_temporary_chat")
+        if not temporary:
+            _log("execute START  query=%r  conv=%s", query[:80], conversation_id)
 
         # Parse conversation_id (it arrives as a string from the LLM/tool args)
         conv_uuid: Optional[uuid.UUID] = None
@@ -159,6 +161,10 @@ class RagSearchTool(BaseTool):
                 tool_call=tool_call,
             )
 
+        if temporary:
+            local_sources = temporary.search(query, top_k_total)
+            sources = [*local_sources, *sources][:top_k_total]
+
         # Stash the sources on the tool_call so the SSE layer can emit a
         # rag_sources event for the frontend. We piggy-back on the
         # `output` field for the LLM-facing text, and put the structured
@@ -173,13 +179,14 @@ class RagSearchTool(BaseTool):
         # ToolCall is a dataclass so we can attach ad-hoc attributes.
         tool_call.rag_sources = source_dicts  # type: ignore[attr-defined]
 
-        _log(
-            "execute DONE  query=%r  conv=%s  sources=%d  time=%.2fs",
-            query[:80],
-            conv_uuid,
-            len(sources),
-            time.time() - start,
-        )
+        if not temporary:
+            _log(
+                "execute DONE  query=%r  conv=%s  sources=%d  time=%.2fs",
+                query[:80],
+                conv_uuid,
+                len(sources),
+                time.time() - start,
+            )
 
         return ToolResult(
             success=True,

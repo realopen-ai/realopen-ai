@@ -59,6 +59,7 @@ export interface BuildStreamCallbacksOptions {
 export interface UseVoiceSessionOptions {
   /** The currently open conversation (null on the home page). */
   conversationId: string | null;
+  temporary?: boolean;
   /**
    * Builds the SAME stream callbacks object the text path uses — extracted
    * from ChatArea.handleSend into a reusable function so voice responses
@@ -136,9 +137,10 @@ export function useVoiceSession(
     const store = useChatStore.getState();
     const voiceStore = useVoiceStore.getState();
 
-    log(
-      `voice turn start  convId=${convId}  content="${userMsg.content.slice(0, 60)}"`,
-    );
+    if (!store.conversations.some((c) => c.id === convId && c.temporary))
+      log(
+        `voice turn start  convId=${convId}  content="${userMsg.content.slice(0, 60)}"`,
+      );
 
     // Replace the transient partial-transcript bubble with the persisted
     // user message.
@@ -404,10 +406,11 @@ export function useVoiceSession(
     // voice is toggled from the home page (mirrors handleSend's behavior
     // of creating the conversation on first send).
     let convId = optionsRef.current.conversationId;
+    const temporary = optionsRef.current.temporary;
     voiceCreatedHomeConversationRef.current = false;
     if (!convId) {
       log("no active conversation — creating one for voice");
-      convId = await useChatStore.getState().createConversation();
+      convId = await useChatStore.getState().createConversation(temporary);
       if (!convId) return;
       voiceCreatedHomeConversationRef.current = true;
       optionsRef.current.onConversationCreated?.(convId);
@@ -420,7 +423,15 @@ export function useVoiceSession(
     useVoiceStore.getState().setVoiceState("connecting");
 
     try {
-      await client.connect(convId);
+      const history = temporary
+        ? (
+            useChatStore.getState().conversations.find((c) => c.id === convId)
+              ?.messages ?? []
+          )
+            .filter((m) => m.role !== "system" && m.content)
+            .map(({ role, content }) => ({ role, content }))
+        : undefined;
+      await client.connect(convId, history);
       log("voice session ready");
     } catch {
       // Error event already emitted by the client → shown in the status

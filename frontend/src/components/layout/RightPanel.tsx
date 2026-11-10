@@ -138,7 +138,11 @@ export function RightPanel() {
   const linkSandbox = useSandboxStore((s) => s.linkSandbox);
   const lifecycle = useSandboxStore((s) => s.lifecycle);
   const lifecyclePending = useSandboxStore((s) => s.lifecyclePending);
-  const conversationId = useChatStore((s) => s.activeConversationId);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const temporary = useChatStore((s) =>
+    s.conversations.some((c) => c.id === s.activeConversationId && c.temporary),
+  );
+  const conversationId = temporary ? null : activeConversationId;
   const previewUrl = useSandboxStore((s) => s.previewUrl);
   const previewPort = useSandboxStore((s) => s.previewPort);
   const previewBaseUrl = previewHostUrl(previewPort, previewUrl ?? "");
@@ -150,10 +154,10 @@ export function RightPanel() {
   useEffect(() => {
     // A home-page conversation is not active in the URL until its first
     // stream finishes. Its workspace may already have arrived over SSE.
-    if (shouldLoadConversationWorkspace(conversationId)) {
+    if (temporary || shouldLoadConversationWorkspace(conversationId)) {
       void loadForConversation(conversationId);
     }
-  }, [conversationId, loadForConversation]);
+  }, [conversationId, temporary, loadForConversation]);
   useEffect(() => {
     if (sandboxId) setTerminalTab("coder");
   }, [sandboxId]);

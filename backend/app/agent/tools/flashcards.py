@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
+from app.services.temporary_chats import stage_learning_result
 from app.learn.schemas import DeckInput
 from app.learn.service import create_deck
 from app.services.artifact_refs import REFERENCE_SCHEMA
@@ -100,6 +101,16 @@ class CreateFlashcardDeckTool(BaseTool):
             )
             if not body.cards:
                 raise ValueError("Provide at least one card")
+            if temporary := kwargs.get("_temporary_chat"):
+                return stage_learning_result(
+                    temporary,
+                    call,
+                    body,
+                    create_deck,
+                    "flashcard_deck",
+                    "deck_id",
+                    card_count=len(body.cards),
+                )
             async with async_session_factory() as db:
                 deck = await create_deck(db, body)
                 await attach_generated(db, conversation_id, "deck", deck.id)
