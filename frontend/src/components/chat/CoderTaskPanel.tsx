@@ -1,6 +1,27 @@
 import { useEffect, useState } from "react";
-import { Code2, Pause, Play, Square } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import {
+  Check,
+  ChevronRight,
+  Circle,
+  Code2,
+  Loader2,
+  Pause,
+  Play,
+  Square,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { markdownCodeComponents } from "@/components/chat/MarkdownCodeBlock";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 import { useT } from "@/store/settingsStore";
 import {
   listCoderTasks,
@@ -12,6 +33,32 @@ import {
   coderContextPercent,
   coderTaskDuration,
 } from "@/lib/coderTaskProgress";
+
+function TaskMarkdown({
+  text,
+  className,
+}: {
+  text: string;
+  className: string;
+}) {
+  return (
+    <div
+      dir="auto"
+      className={cn(
+        "prose overflow-x-auto leading-relaxed [&_h1]:text-lg [&_h2]:text-base [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:ps-5 [&_ul]:ps-5",
+        className,
+      )}
+    >
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownCodeComponents}
+        skipHtml
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 export function CoderTaskPanel({
   conversationId,
@@ -81,178 +128,277 @@ export function CoderTaskPanel({
       setPending(false);
     }
   }
+  const status = t(`coderTask.status.${task.status}`);
+  const round =
+    progress.round == null
+      ? null
+      : t("coderTask.round", {
+          round: String(progress.round),
+          max: String(progress.max_rounds ?? "?"),
+        });
+  const statusTone = running
+    ? "bg-primary/10 text-primary"
+    : task.status === "completed"
+      ? "bg-success/10 text-success"
+      : task.status === "failed"
+        ? "bg-danger/10 text-danger"
+        : "bg-secondary text-muted-foreground";
+
   return (
-    <section
-      aria-label={t("coderTask.title")}
-      className="mx-auto mb-2 w-full max-w-210 px-4 sm:px-6 text-xs"
-    >
-      <div className="rounded-xl border border-border/60 bg-card px-3 py-2.5">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <span className="inline-flex items-center gap-2 font-medium">
-            <Code2 className="h-4 w-4 text-primary" />
-            {t("coderTask.title")}
-          </span>
-          <span className="text-muted-foreground">
-            {t(`coderTask.status.${task.status}`)} ·{" "}
-            {coderTaskDuration(elapsed)}
-          </span>
-          {progress.round != null && (
-            <span>
-              {t("coderTask.round", {
-                round: String(progress.round),
-                max: String(progress.max_rounds ?? "?"),
-              })}
-            </span>
-          )}
-          {percent != null && (
-            <span title={t("coderTask.contextHelp")}>
-              {t("coderTask.context", { percent: String(percent) })}
-            </span>
-          )}
-          <div className="ms-auto flex flex-wrap gap-1">
-            {running && (
-              <>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={
-                    pending ||
-                    task.stop_after_round ||
-                    task.cancellation_requested
-                  }
-                  onClick={() => void act("stop-after-round")}
-                >
-                  <Pause />
-                  {t(
-                    task.stop_after_round
-                      ? "coderTask.stopping"
-                      : "coderTask.stopAfterRound",
-                  )}
-                </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={pending || task.cancellation_requested}
-                  onClick={() => void act("cancel")}
-                >
-                  <Square />
-                  {t("coderTask.cancel")}
-                </Button>
-              </>
-            )}
-            {!running && task.can_resume && (
+    <Dialog>
+      <section
+        aria-label={t("coderTask.title")}
+        className="rounded-xl border border-border/60 bg-card text-sm"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 p-1.5">
+          <DialogTrigger asChild>
+            <button
+              type="button"
+              className="flex min-w-0 grow basis-44 items-center gap-2.5 rounded-lg px-2 py-1 text-start transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Code2
+                aria-hidden="true"
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+              <span className="min-w-0 grow">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-medium">{t("coderTask.title")}</span>
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+                      statusTone,
+                    )}
+                  >
+                    {running && (
+                      <Loader2
+                        aria-hidden="true"
+                        className="size-3 motion-safe:animate-spin"
+                      />
+                    )}
+                    {status}
+                  </span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {coderTaskDuration(elapsed)}
+                  </span>
+                </span>
+                {running && (
+                  <span className="mt-1 block truncate text-xs text-muted-foreground">
+                    {[
+                      round,
+                      t(`coderTask.phase.${progress.phase || "preparing"}`),
+                      progress.phase === "tool"
+                        ? progress.action?.replace(/_/g, " ")
+                        : null,
+                      percent == null
+                        ? null
+                        : t("coderTask.context", { percent: String(percent) }),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
+              </span>
+              <ChevronRight
+                aria-hidden="true"
+                className="size-4 shrink-0 text-muted-foreground rtl:rotate-180"
+              />
+              <span className="sr-only">{t("coderTask.details")}</span>
+            </button>
+          </DialogTrigger>
+          {running && (
+            <div className="flex flex-wrap items-center gap-1 px-1">
               <Button
+                type="button"
                 size="xs"
-                disabled={pending || streaming}
-                onClick={() => void act("resume")}
+                variant="secondary"
+                disabled={
+                  pending ||
+                  task.stop_after_round ||
+                  task.cancellation_requested
+                }
+                onClick={() => void act("stop-after-round")}
               >
-                <Play />
-                {t("coderTask.resume")}
+                <Pause />
+                {t(
+                  task.stop_after_round
+                    ? "coderTask.stopping"
+                    : "coderTask.stopAfterRound",
+                )}
               </Button>
-            )}
-          </div>
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                className="text-danger"
+                disabled={pending || task.cancellation_requested}
+                onClick={() => void act("cancel")}
+              >
+                <Square />
+                {t("coderTask.cancel")}
+              </Button>
+            </div>
+          )}
+          {!running && task.can_resume && (
+            <Button
+              type="button"
+              size="xs"
+              disabled={pending || streaming}
+              onClick={() => void act("resume")}
+            >
+              <Play />
+              {t("coderTask.resume")}
+            </Button>
+          )}
         </div>
-        {running && (
-          <p className="mt-1.5 text-muted-foreground">
-            {t(`coderTask.phase.${progress.phase || "preparing"}`)}
-            {progress.phase === "tool" && progress.action
-              ? ` · ${progress.action.replace(/_/g, " ")}`
-              : ""}
-          </p>
-        )}
         {task.stop_after_round && running && (
-          <p className="mt-1.5 text-muted-foreground">
+          <p className="px-4 pb-2 text-xs text-muted-foreground">
             {t("coderTask.stopHelp")}
           </p>
         )}
-        <details className="mt-2 text-muted-foreground">
-          <summary className="cursor-pointer hover:text-foreground">
-            {t("coderTask.details")}
-          </summary>
-          <div className="mt-2 space-y-2 break-words">
-            <p>{task.request}</p>
-            {progress.model && <p>{progress.model}</p>}
-            {task.resumed_from && (
-              <p>
-                {t("coderTask.continued", {
-                  id: task.resumed_from.slice(0, 8),
-                })}
-              </p>
-            )}
-            {percent != null && (
-              <p>
-                {t("coderTask.tokens", {
-                  used: String(progress.input_tokens),
-                  limit: String(progress.input_limit),
-                  output: String(progress.output_reserve),
-                })}
-              </p>
-            )}
-            <p>{t("coderTask.resumeHelp")}</p>
-            {task.files_changed.length > 0 && (
-              <div>
-                <p className="font-medium text-foreground">
-                  {t("coderTask.files")}
-                </p>
-                <ul className="list-inside list-disc">
-                  {task.files_changed.map((file) => (
-                    <li key={file}>{file}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {task.plan?.steps?.length ? (
-              <div>
-                <p className="font-medium text-foreground">
-                  {t("coderTask.plan")}
-                </p>
-                <ul className="space-y-1">
-                  {task.plan.steps.map((step, index) => (
-                    <li key={index}>
-                      <span aria-hidden="true">
-                        {step.status === "completed"
-                          ? "✓"
-                          : step.status === "in_progress"
-                            ? "→"
-                            : "○"}
-                      </span>{" "}
-                      {step.task}
-                    </li>
-                  ))}
-                </ul>
-                {task.plan.next_action && (
-                  <p className="mt-1">{task.plan.next_action}</p>
-                )}
-              </div>
-            ) : null}
-            {Object.keys(task.verification).length > 0 && (
-              <div>
-                <p className="font-medium text-foreground">
-                  {t("coderTask.verification")}
-                </p>
-                <ul className="list-inside list-disc">
-                  {Object.entries(task.verification).map(([name, check]) => (
-                    <li key={name}>
-                      {name.replace(/_/g, " ")}:{" "}
-                      {t(`coderTask.check.${check.status}`)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {!running && task.summary && (
-              <p className="whitespace-pre-wrap max-h-48 overflow-y-auto">
-                {task.summary}
-              </p>
-            )}
-          </div>
-        </details>
         {error && (
-          <p role="alert" className="mt-2 text-destructive">
+          <p role="alert" className="break-words px-4 pb-2 text-xs text-danger">
             {error}
           </p>
         )}
-      </div>
-    </section>
+      </section>
+
+      <DialogContent className="flex max-h-[80dvh] max-w-xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4 pe-12">
+          <DialogTitle className="text-base font-semibold">
+            {t("coderTask.title")}
+          </DialogTitle>
+          <DialogDescription className="text-sm text-muted-foreground">
+            {[status, coderTaskDuration(elapsed), round, progress.model]
+              .filter(Boolean)
+              .join(" · ")}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 space-y-5 overflow-y-auto overscroll-contain px-5 py-4 text-sm [overflow-wrap:anywhere]">
+          {!running && task.summary && (
+            <TaskMarkdown
+              text={task.summary}
+              className="rounded-lg bg-secondary/60 p-4"
+            />
+          )}
+          {task.plan?.steps?.length ? (
+            <section className="space-y-2">
+              <h3 className="font-medium">{t("coderTask.plan")}</h3>
+              <ol className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {task.plan.steps.map((step, index) => (
+                  <li
+                    key={index}
+                    className="flex items-start gap-2.5 px-3 py-2.5"
+                  >
+                    {step.status === "completed" ? (
+                      <Check
+                        aria-hidden="true"
+                        className="mt-0.5 size-4 shrink-0 text-success"
+                      />
+                    ) : step.status === "in_progress" ? (
+                      <ChevronRight
+                        aria-hidden="true"
+                        className="mt-0.5 size-4 shrink-0 text-primary rtl:rotate-180"
+                      />
+                    ) : (
+                      <Circle
+                        aria-hidden="true"
+                        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                      />
+                    )}
+                    <span>{step.task}</span>
+                  </li>
+                ))}
+              </ol>
+              {task.plan.next_action && (
+                <p className="leading-relaxed text-muted-foreground">
+                  {task.plan.next_action}
+                </p>
+              )}
+            </section>
+          ) : null}
+          {Object.keys(task.verification).length > 0 && (
+            <section className="space-y-2">
+              <h3 className="font-medium">{t("coderTask.verification")}</h3>
+              <ul className="divide-y divide-border/60 rounded-lg border border-border/60">
+                {Object.entries(task.verification).map(([name, check]) => (
+                  <li
+                    key={name}
+                    className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2"
+                  >
+                    <span className="capitalize">
+                      {name.replace(/_/g, " ")}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-xs",
+                        check.status === "passed"
+                          ? "text-success"
+                          : check.status === "failed"
+                            ? "text-danger"
+                            : "text-muted-foreground",
+                      )}
+                    >
+                      {t(`coderTask.check.${check.status}`)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {task.files_changed.length > 0 && (
+            <details className="rounded-lg border border-border/60">
+              <summary className="cursor-pointer px-3 py-2.5 font-medium">
+                {t("coderTask.files")}{" "}
+                <span className="ms-1 text-xs text-muted-foreground">
+                  ({task.files_changed.length})
+                </span>
+              </summary>
+              <ul className="divide-y divide-border/60 border-t border-border/60 font-mono text-xs">
+                {task.files_changed.map((file) => (
+                  <li
+                    key={file}
+                    dir="ltr"
+                    className="px-3 py-2 text-muted-foreground"
+                  >
+                    {file}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          <details className="rounded-lg border border-border/60">
+            <summary className="cursor-pointer px-3 py-2.5 font-medium">
+              {t("coderTask.request")}
+            </summary>
+            <TaskMarkdown
+              text={task.request}
+              className="border-t border-border/60 px-3 py-2.5"
+            />
+          </details>
+          {task.resumed_from && (
+            <p className="text-xs text-muted-foreground">
+              {t("coderTask.continued", { id: task.resumed_from.slice(0, 8) })}
+            </p>
+          )}
+          {percent != null && (
+            <p
+              className="text-xs text-muted-foreground"
+              title={t("coderTask.contextHelp")}
+            >
+              {t("coderTask.tokens", {
+                used: String(progress.input_tokens),
+                limit: String(progress.input_limit),
+                output: String(progress.output_reserve),
+              })}
+            </p>
+          )}
+          {task.can_resume && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {t("coderTask.resumeHelp")}
+            </p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

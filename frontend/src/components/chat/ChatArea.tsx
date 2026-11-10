@@ -1039,14 +1039,18 @@ export function ChatArea({
         </div>
       )}
 
-      <CoderTaskPanel
-        conversationId={effectiveConvId}
-        streaming={isStreaming}
-        onResume={(id) =>
-          handleSend(t("coderTask.resumeMessage"), { resumeCoderTaskId: id })
-        }
-      />
       <InputArea
+        taskActivity={
+          <CoderTaskPanel
+            conversationId={effectiveConvId}
+            streaming={isStreaming}
+            onResume={(id) =>
+              handleSend(t("coderTask.resumeMessage"), {
+                resumeCoderTaskId: id,
+              })
+            }
+          />
+        }
         sourceGrounded={notebookMode}
         onSend={handleSend}
         isStreaming={isStreaming}

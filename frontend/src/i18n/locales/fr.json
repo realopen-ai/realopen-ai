@@ -1112,6 +1112,7 @@
   "coderTask.details": "Plan, fichiers et vérification",
   "coderTask.stopHelp": "Le tour et ses appels d’outils se termineront avant la pause.",
   "coderTask.resumeHelp": "La reprise conserve la demande et l’espace de travail. Les anciennes lectures sont invalidées et les vérifications pertinentes doivent être relancées.",
+  "coderTask.request": "Demande initiale",
   "coderTask.files": "Fichiers modifiés",
   "coderTask.plan": "Plan enregistré",
   "coderTask.verification": "Vérifications enregistrées",

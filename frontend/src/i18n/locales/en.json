@@ -1112,6 +1112,7 @@
   "coderTask.details": "Plan, files and verification",
   "coderTask.stopHelp": "The current round and its tool calls will finish before the task pauses.",
   "coderTask.resumeHelp": "Resume continues the original request in the same workspace. Old source reads are invalidated and relevant checks must run again.",
+  "coderTask.request": "Original request",
   "coderTask.files": "Files changed",
   "coderTask.plan": "Saved plan",
   "coderTask.verification": "Recorded checks",
