@@ -396,6 +396,23 @@ function ToolCallBlockView({
   const [expanded, setExpanded] = useState(false);
   const tc = block.toolCall;
   if (!tc) return null;
+  const stagedOutputs = tc.genResults?.filter(
+    (result) => result.type === "temporary_output",
+  );
+  if (stagedOutputs?.length && tc.status === "completed") {
+    return (
+      <div className="rounded-xl border bg-card px-4 py-3">
+        {stagedOutputs.map((result, index) => (
+          <p key={index} className="text-sm font-medium">
+            {result.title}
+          </p>
+        ))}
+        <p className="mt-1 text-xs text-muted-foreground">
+          {translate("temporaryChat.stagedOutput")}
+        </p>
+      </div>
+    );
+  }
   const quizzes = tc.genResults?.filter((r) => r.type === "quiz" && r.quiz_id);
   if (quizzes?.length && tc.status === "completed")
     return (
@@ -1614,7 +1631,11 @@ function ReportGenDetail({
             // eye button is always offered; PPTX/DOCX/XLSX need LibreOffice
             // (XLSX workbooks are converted to paginated PDF by soffice —
             // the workbook's print setup controls the pagination).
-            const viewable = !!r.report_id && (fmt === "pdf" || canViewPptx);
+            const temporary = r.download_url?.startsWith(
+              "/api/chat/temporary/",
+            );
+            const viewable =
+              !temporary && !!r.report_id && (fmt === "pdf" || canViewPptx);
             return (
               <div key={i} className="space-y-2">
                 <ReportDeliverableBadge
@@ -1641,7 +1662,7 @@ function ReportGenDetail({
                       : undefined
                   }
                 />
-                {r.artifact_id && (
+                {r.artifact_id && !temporary && (
                   <Link
                     className="inline-flex text-xs text-primary hover:underline"
                     to={`/workspace/artifacts/${r.artifact_id}`}
@@ -1705,15 +1726,25 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
         {location && <SourceAction {...location} />}
         {tc.genResults
           ?.filter((r) => r.artifact_id)
-          .map((r) => (
-            <Link
-              key={r.artifact_id}
-              className="inline-flex text-sm text-primary hover:underline"
-              to={`/workspace/artifacts/${r.artifact_id}${r.version ? `?version=${r.version}` : ""}`}
-            >
-              {r.title} · {translate("artifacts.open")}
-            </Link>
-          ))}
+          .map((r) =>
+            r.download_url?.startsWith("/api/chat/temporary/") ? (
+              <ReportDeliverableBadge
+                key={r.report_id}
+                filename={r.filename ?? "report"}
+                format={r.format ?? "pdf"}
+                downloadUrl={r.download_url}
+                label={r.title ?? translate("tool.detail.report")}
+              />
+            ) : (
+              <Link
+                key={r.artifact_id}
+                className="inline-flex text-sm text-primary hover:underline"
+                to={`/workspace/artifacts/${r.artifact_id}${r.version ? `?version=${r.version}` : ""}`}
+              >
+                {r.title} · {translate("artifacts.open")}
+              </Link>
+            ),
+          )}
       </div>
     );
   }
@@ -2047,6 +2078,7 @@ export function MessageBubble({
               downloadUrl={d.download_url}
               onView={
                 d.report_id &&
+                !d.download_url.startsWith("/api/chat/temporary/") &&
                 ["pdf", "docx", "pptx", "xlsx"].includes(d.format) &&
                 (d.format === "pdf" || libreOfficeAvailable)
                   ? () =>

@@ -82,12 +82,18 @@ export interface StreamCallbacks {
 const STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 const activeControllers = new Set<AbortController>();
+const temporaryControllers = new Map<string, AbortController>();
 
 /** Stop user-visible text generation without treating it as a timeout. */
 export async function stopActiveStream(
   conversationId?: string | null,
 ): Promise<void> {
   if (conversationId) {
+    const temporary = temporaryControllers.get(conversationId);
+    if (temporary) {
+      temporary.abort("user_stop");
+      return;
+    }
     try {
       const response = await fetch(
         `/api/chat/stream/${encodeURIComponent(conversationId)}/stop`,
@@ -111,13 +117,16 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   options?: {
     conversationId?: string;
+    temporary?: boolean;
     modelOverride?: string;
     shrug?: boolean;
     resumeCoderTaskId?: string;
   },
 ): Promise<void> {
   const controller = new AbortController();
-  activeControllers.add(controller);
+  const temporaryId = options?.temporary ? options.conversationId : undefined;
+  if (temporaryId) temporaryControllers.set(temporaryId, controller);
+  else activeControllers.add(controller);
   // An active task may legitimately run for hours. Only dead transports time out.
   // Idle timeout: abort if no data received for this long
   let idleTimeoutId = setTimeout(
@@ -143,7 +152,8 @@ export async function streamChat(
       messages,
       model,
       stream: true,
-      conversation_id: options?.conversationId,
+      conversation_id: options?.temporary ? undefined : options?.conversationId,
+      temporary_id: temporaryId,
       model_override: options?.modelOverride,
       shrug: options?.shrug,
       resume_coder_task_id: options?.resumeCoderTaskId,
@@ -152,13 +162,16 @@ export async function streamChat(
       `   request body: messages=${messages.length}  model=${model}  stream=true  convId=${options?.conversationId ?? "none"}  modelOverride=${options?.modelOverride ?? "none"}`,
     );
 
-    const response = await fetch("/api/chat/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: controller.signal,
-      keepalive: true, // allow request to outlive page navigation (for better chance of receiving response in case of accidental nav)
-    });
+    const response = await fetch(
+      options?.temporary ? "/api/chat/temporary/stream" : "/api/chat/stream",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+        keepalive: !options?.temporary,
+      },
+    );
 
     // We got a response — reset idle timeout
     resetIdleTimeout();
@@ -178,7 +191,7 @@ export async function streamChat(
       callbacks,
       resetIdleTimeout,
       controller,
-      options?.conversationId,
+      options?.temporary ? undefined : options?.conversationId,
     );
     log("✅ streamChat complete");
   } catch (err) {
@@ -197,6 +210,9 @@ export async function streamChat(
   } finally {
     clearTimeout(idleTimeoutId);
     activeControllers.delete(controller);
+    if (temporaryId && temporaryControllers.get(temporaryId) === controller) {
+      temporaryControllers.delete(temporaryId);
+    }
   }
 }
 
@@ -214,11 +230,14 @@ export async function streamChatWithFiles(
   },
   options?: {
     conversationId?: string;
+    temporary?: boolean;
     modelOverride?: string;
   },
 ): Promise<void> {
   const controller = new AbortController();
-  activeControllers.add(controller);
+  const temporaryId = options?.temporary ? options.conversationId : undefined;
+  if (temporaryId) temporaryControllers.set(temporaryId, controller);
+  else activeControllers.add(controller);
   let idleTimeoutId = setTimeout(
     () => controller.abort(),
     STREAM_IDLE_TIMEOUT_MS,
@@ -240,7 +259,8 @@ export async function streamChatWithFiles(
     const formData = new FormData();
     formData.append("messages", JSON.stringify(messages));
     if (model) formData.append("model", model);
-    if (options?.conversationId)
+    if (temporaryId) formData.append("temporary_id", temporaryId);
+    else if (options?.conversationId)
       formData.append("conversation_id", options.conversationId);
     if (options?.modelOverride)
       formData.append("model_override", options.modelOverride);
@@ -259,12 +279,17 @@ export async function streamChatWithFiles(
       }
     }
 
-    const response = await fetch("/api/chat/stream/multipart", {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-      keepalive: true, // allow request to outlive page navigation (for better chance of receiving response in case of accidental nav)
-    });
+    const response = await fetch(
+      options?.temporary
+        ? "/api/chat/temporary/stream/multipart"
+        : "/api/chat/stream/multipart",
+      {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+        keepalive: !options?.temporary,
+      },
+    );
 
     resetIdleTimeout();
 
@@ -283,7 +308,7 @@ export async function streamChatWithFiles(
       callbacks,
       resetIdleTimeout,
       controller,
-      options?.conversationId,
+      options?.temporary ? undefined : options?.conversationId,
     );
     log("✅ streamChatWithFiles complete");
   } catch (err) {
@@ -302,6 +327,8 @@ export async function streamChatWithFiles(
   } finally {
     clearTimeout(idleTimeoutId);
     activeControllers.delete(controller);
+    if (temporaryId && temporaryControllers.get(temporaryId) === controller)
+      temporaryControllers.delete(temporaryId);
   }
 }
 

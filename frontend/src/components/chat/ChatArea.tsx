@@ -15,7 +15,15 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
 import { useT } from "@/store/settingsStore";
-import { Brain, Check, ChevronDown, Loader2, Mic } from "lucide-react";
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  Clock,
+  Loader2,
+  Mic,
+  Save,
+} from "lucide-react";
 import {
   streamChat,
   streamChatWithFiles,
@@ -25,6 +33,7 @@ import {
   type StreamCallbacks,
 } from "@/api/stream";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { createDebugLogger } from "@/lib/debug";
 import {
@@ -91,6 +100,35 @@ export function ChatArea({
       : undefined,
   );
   const messages = conv?.messages ?? [];
+  useEffect(() => {
+    function discardTemporaryChats(event: PageTransitionEvent) {
+      if (event.persisted) return;
+      for (const chat of useChatStore.getState().conversations) {
+        if (chat.temporary && !chat.saving) {
+          navigator.sendBeacon(`/api/chat/temporary/${chat.id}/discard`);
+        }
+      }
+    }
+    window.addEventListener("pagehide", discardTemporaryChats);
+    return () => window.removeEventListener("pagehide", discardTemporaryChats);
+  }, []);
+  const [temporaryMode, setTemporaryMode] = useState(false);
+  const [saveErrorId, setSaveErrorId] = useState<string | null>(null);
+  const home = !notebookMode && !effectiveConvId;
+  const temporary = conv?.temporary === true || (home && temporaryMode);
+  const saveTemporaryConversation = useChatStore(
+    (s) => s.saveTemporaryConversation,
+  );
+
+  async function saveTemporary() {
+    if (!conv) return;
+    setSaveErrorId(null);
+    try {
+      await saveTemporaryConversation(conv.id);
+    } catch {
+      setSaveErrorId(conv.id);
+    }
+  }
 
   // ── Voice session state (reactive, for indicators) ──
   const voiceState = useVoiceStore((s) => s.voiceState);
@@ -126,7 +164,7 @@ export function ChatArea({
       .getState()
       .conversations.find((c) => c.id === urlConvId);
 
-    if (existsInStore?.messages.length) {
+    if (existsInStore?.temporary || existsInStore?.messages.length) {
       // Already in store — just set as active and load messages if needed
       useChatStore.getState().setActiveConversation(urlConvId);
       setHydratedConvId(urlConvId);
@@ -559,14 +597,15 @@ export function ChatArea({
             const completedConversation = useChatStore
               .getState()
               .conversations.find((item) => item.id === capturedConvId);
-            notifyResponseCompleted({
-              conversationId: capturedConvId,
-              responseId: assistantMsgId,
-              conversationTitle:
-                completedConversation?.title || t("chat.newChat"),
-              origin,
-              responsePreview: completionPreview(current?.content ?? ""),
-            });
+            if (!completedConversation?.temporary)
+              notifyResponseCompleted({
+                conversationId: capturedConvId,
+                responseId: assistantMsgId,
+                conversationTitle:
+                  completedConversation?.title || t("chat.newChat"),
+                origin,
+                responsePreview: completionPreview(current?.content ?? ""),
+              });
           }
           // Only redirect if the stream generation matches (user hasn't navigated away)
           // and this conversation was created from the home page.
@@ -631,11 +670,13 @@ export function ChatArea({
 
       // Determine which conversation to use
       let convId = effectiveConvId;
+      if (store.isStreaming || conv?.saving) return;
       const isFromHomePage = !urlConvId && !pendingConvId;
 
       if (!convId) {
         log("No active conversation — creating one...");
-        convId = await store.createConversation();
+        convId = await store.createConversation(temporary);
+        if (temporary) setTemporaryMode(false);
         log(`Created conversation: ${convId}`);
 
         // Make the durable conversation addressable before starting any
@@ -646,9 +687,10 @@ export function ChatArea({
         }
       }
 
-      log(
-        `handleSend  content=${content.slice(0, 60)}  modelOverride=${options?.modelOverride}  images=${options?.images?.length ?? 0}  docs=${options?.documents?.length ?? 0}`,
-      );
+      if (!temporary)
+        log(
+          `handleSend  content=${content.slice(0, 60)}  modelOverride=${options?.modelOverride}  images=${options?.images?.length ?? 0}  docs=${options?.documents?.length ?? 0}`,
+        );
 
       // Use model override if provided, otherwise use selected model
       const modelForMessage = options?.modelOverride ?? store.selectedModel;
@@ -696,8 +738,11 @@ export function ChatArea({
         currentConv.messages.length <= 2 &&
         (!currentConv.title || currentConv.title === "New Chat")
       ) {
+        const text = content.trim();
         const title =
-          content.length > 40 ? content.slice(0, 40) + "..." : content;
+          text.length > 40
+            ? text.slice(0, 40) + "..."
+            : text || currentConv.title;
         useChatStore.setState((s) => ({
           conversations: s.conversations.map((c) =>
             c.id === convId ? { ...c, title } : c,
@@ -714,12 +759,13 @@ export function ChatArea({
       const callbacks = buildStreamCallbacks(capturedConvId, assistantMsgId, {
         userMsgId,
         content,
-        isFromHomePage: capturedIsFromHomePage,
+        isFromHomePage: capturedIsFromHomePage && !temporary,
         origin: "text",
       });
 
       const streamOptions = {
         conversationId: capturedConvId,
+        temporary,
         modelOverride: options?.modelOverride,
         shrug: options?.shrug,
         resumeCoderTaskId: options?.resumeCoderTaskId,
@@ -775,6 +821,8 @@ export function ChatArea({
     },
     [
       effectiveConvId,
+      temporary,
+      conv?.saving,
       urlConvId,
       pendingConvId,
       navigate,
@@ -788,8 +836,10 @@ export function ChatArea({
   // ── Voice session (one per ChatArea; drives the same store) ──
   const voiceSession = useVoiceSession({
     conversationId: effectiveConvId,
+    temporary,
     buildStreamCallbacks,
     onConversationCreated: (convId) => {
+      setTemporaryMode(false);
       setPendingConvId(convId);
       navigate(`/${convId}`, { replace: true });
     },
@@ -802,6 +852,9 @@ export function ChatArea({
   useEffect(() => {
     if (
       !urlConvId ||
+      useChatStore
+        .getState()
+        .conversations.some((c) => c.id === urlConvId && c.temporary) ||
       hydratedConvId !== urlConvId ||
       resumedConversationsRef.current.has(urlConvId)
     ) {
@@ -926,7 +979,56 @@ export function ChatArea({
           <h2 className="text-[13.5px] font-medium text-foreground truncate">
             {conv?.title ?? "New Chat"}
           </h2>
+          {home && (
+            <Button
+              type="button"
+              size="sm"
+              variant={temporaryMode ? "secondary" : "ghost"}
+              className="ms-auto shrink-0"
+              aria-pressed={temporaryMode}
+              disabled={voiceState !== "inactive" || isStreaming}
+              onClick={() => setTemporaryMode((enabled) => !enabled)}
+            >
+              <Clock />
+              {t("temporaryChat.title")}
+            </Button>
+          )}
+          {conv?.temporary && (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="ms-auto shrink-0"
+              disabled={
+                conv.saving ||
+                voiceState !== "inactive" ||
+                !messages.length ||
+                messages.some((m) => m.isStreaming)
+              }
+              onClick={() => void saveTemporary()}
+            >
+              {conv.saving ? (
+                <Loader2 className="motion-safe:animate-spin" />
+              ) : (
+                <Save />
+              )}
+              {t(conv.saving ? "temporaryChat.saving" : "temporaryChat.save")}
+            </Button>
+          )}
         </div>
+        {temporary && (
+          <p className="mx-auto mt-1.5 max-w-210 text-xs text-muted-foreground">
+            {t("temporaryChat.description")}
+          </p>
+        )}
+        {conv?.temporary && saveErrorId === conv.id && (
+          <p
+            role="alert"
+            className="mx-auto mt-1.5 max-w-210 text-xs text-danger"
+          >
+            {t("temporaryChat.saveError")}
+          </p>
+        )}
       </div>
 
       <VoiceCallPanel
@@ -1042,7 +1144,7 @@ export function ChatArea({
       <InputArea
         taskActivity={
           <CoderTaskPanel
-            conversationId={effectiveConvId}
+            conversationId={temporary ? null : effectiveConvId}
             streaming={isStreaming}
             onResume={(id) =>
               handleSend(t("coderTask.resumeMessage"), {
@@ -1052,6 +1154,7 @@ export function ChatArea({
           />
         }
         sourceGrounded={notebookMode}
+        saving={conv?.saving}
         onSend={handleSend}
         isStreaming={isStreaming}
         onStartVoice={voiceSession.toggleVoice}
