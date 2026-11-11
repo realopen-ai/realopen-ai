@@ -78,13 +78,28 @@ class RagSearchTool(BaseTool):
                 "type": "string",
                 "description": "Search query to find relevant document excerpts",
             },
+            "exact_text": {
+                "type": "string",
+                "maxLength": 300,
+                "description": "For an exact name or phrase in an attachment, provide just that literal text.",
+            },
+            "attachment_id": {
+                "type": "string",
+                "description": "Optional exact attachment ID from the conversation's file metadata.",
+            },
         }
 
     def get_required_params(self) -> List[str]:
         return ["query"]
 
     async def execute(
-        self, *, query: str, conversation_id: Optional[str] = None, **kwargs
+        self,
+        *,
+        query: str,
+        conversation_id: Optional[str] = None,
+        exact_text: str | None = None,
+        attachment_id: str | None = None,
+        **kwargs,
     ) -> ToolResult:
         """Run the RAG search and return formatted results for the LLM.
 
@@ -119,6 +134,22 @@ class RagSearchTool(BaseTool):
             return self.invalid_arguments("No query provided.", tool_call)
 
         temporary = kwargs.get("_temporary_chat")
+        attachment_ids = kwargs.get("_attachment_ids")
+        if attachment_id:
+            matching_ids = [
+                ident for ident in attachment_ids or [] if str(ident) == attachment_id
+            ]
+            if not matching_ids:
+                return self.invalid_arguments(
+                    "Choose an attachment ID in the current search scope.", tool_call
+                )
+            attachment_ids = matching_ids
+        exact_text = exact_text.strip() if exact_text else None
+        if exact_text and attachment_ids is None:
+            return self.invalid_arguments(
+                "exact_text is available for attachment searches. Use query for library search.",
+                tool_call,
+            )
         if not temporary:
             _log("execute START  query=%r  conv=%s", query[:80], conversation_id)
 
@@ -139,17 +170,37 @@ class RagSearchTool(BaseTool):
             # (Brain ▸ Tools ▸ Document Search); defaults mirror the
             # global RAG_* env settings.
             top_k_per_doc, top_k_total, cutoff = _configured_retrieval()
-            async with async_session_factory() as db:
-                document_ids = await selected_document_ids(db, conv_uuid)
-                sources = await rag_service.search_documents(
-                    db,
-                    query=query,
-                    conversation_id=conv_uuid,
-                    top_k_per_doc=top_k_per_doc,
-                    top_k_total=top_k_total,
-                    similarity_cutoff=cutoff,
-                    document_ids=document_ids,
+            if attachment_ids == []:
+                sources = []
+            elif temporary and attachment_ids is not None:
+                sources = temporary.search(
+                    query,
+                    top_k_total,
+                    document_ids=attachment_ids,
+                    exact_text=exact_text,
                 )
+            else:
+                async with async_session_factory() as db:
+                    if exact_text:
+                        sources = await rag_service.search_attachment_text(
+                            db, attachment_ids, exact_text, top_k_total
+                        )
+                    else:
+                        document_ids = (
+                            attachment_ids
+                            if attachment_ids is not None
+                            else await selected_document_ids(db, conv_uuid)
+                        )
+                        sources = await rag_service.search_documents(
+                            db,
+                            query=query,
+                            conversation_id=conv_uuid,
+                            top_k_per_doc=top_k_per_doc,
+                            top_k_total=top_k_total,
+                            similarity_cutoff=cutoff,
+                            document_ids=document_ids,
+                            **({"rerank": False} if attachment_ids is not None else {}),
+                        )
         except Exception as e:
             _log("search FAILED: %s", e)
             tool_call.status = "error"
@@ -161,15 +212,15 @@ class RagSearchTool(BaseTool):
                 tool_call=tool_call,
             )
 
-        if temporary:
-            local_sources = temporary.search(query, top_k_total)
-            sources = [*local_sources, *sources][:top_k_total]
-
         # Stash the sources on the tool_call so the SSE layer can emit a
         # rag_sources event for the frontend. We piggy-back on the
         # `output` field for the LLM-facing text, and put the structured
         # sources in a separate attribute.
         formatted = rag_service.format_sources_for_llm(sources)
+        if attachment_ids == []:
+            formatted = "No uploaded documents were available to search for this turn."
+        elif exact_text and not sources:
+            formatted = "No exact match found in the extracted text of the selected attachments."
         source_dicts = [rag_service.retrieved_source_to_dict(s) for s in sources]
 
         tool_call.status = "completed"

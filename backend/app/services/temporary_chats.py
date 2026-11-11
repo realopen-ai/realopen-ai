@@ -187,11 +187,15 @@ class TemporaryChat:
         self.attachments.extend(additions)
         return additions
 
-    def search(self, query, limit):
+    def search(self, query, limit, *, document_ids, exact_text=None):
         terms = set(query.casefold().split())
         matches = []
         for item in self.attachments:
+            if item.id not in document_ids:
+                continue
             for chunk_id, chunk in item.chunks:
+                if exact_text and exact_text.casefold() not in chunk.text.casefold():
+                    continue
                 score = len(terms.intersection(chunk.text.casefold().split()))
                 matches.append(
                     (

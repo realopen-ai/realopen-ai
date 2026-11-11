@@ -533,7 +533,15 @@ async def _chat_stream(
                     model=_resolved_model,
                     images=image_data or None,
                     **(
-                        {"temporary": True, "temporary_chat": session}
+                        {
+                            "temporary": True,
+                            "temporary_chat": session,
+                            "attachment_ids": (
+                                [item.id for item in attachments if not item.image]
+                                if any(not image for _, image in files)
+                                else None
+                            ),
+                        }
                         if temporary
                         else {}
                     ),
@@ -908,7 +916,7 @@ async def chat_stream_multipart(
         builder = _BlockBuilder()
         assistant_message_id: uuid.UUID | None = None
         completion_status = "completed"
-        digested_doc_ids: List[str] = []  # for DB link to user message
+        digested_doc_ids: list[uuid.UUID] = []
         # Track digested document filenames so we can inject a system
         # hint into the agent's messages telling it these files are now
         # searchable via rag_search. Without this hint the LLM doesn't
@@ -1030,7 +1038,7 @@ async def chat_stream_multipart(
 
                 if digestion_doc[0] is not None:
                     doc = digestion_doc[0]
-                    digested_doc_ids.append(str(doc.id))
+                    digested_doc_ids.append(doc.id)
                     digested_doc_filenames.append(doc.filename)
                     yield "data: " + json.dumps(
                         {
@@ -1066,6 +1074,7 @@ async def chat_stream_multipart(
                 images=image_b64_list if image_b64_list else None,
                 conversation_id=str(_conv_id) if _conv_id else None,
                 trace_user_message=trace_user_message,
+                attachment_ids=digested_doc_ids if documents else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:

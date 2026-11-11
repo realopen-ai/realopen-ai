@@ -64,6 +64,20 @@ def matches(phrase, text):
     return bool(re.search(r"(?<!\w)" + pattern + r"(?!\w)", text.casefold()))
 
 
+def requests_library_search(text: str) -> bool:
+    """Recognize explicit search instructions in the user's turn."""
+    for sentence in re.split(r"[.!?;\n]+", text.casefold()):
+        if re.match(
+            r"\s*(?:(?:can|could|would) you\s+)?(?:(?:please|also)\s+)*"
+            r"(?:search|check|look in)\s+(?:(?:in|across)\s+)?"
+            r"(?:(?:my|the|our|entire|whole|full)\s+)*"
+            r"(?:(?:document )?library|knowledge base|all (?:uploaded )?(?:documents|files))\b",
+            sentence,
+        ):
+            return True
+    return False
+
+
 def enabled_tools(registry, configs, *, notebook=False):
     return {
         tool.name: tool

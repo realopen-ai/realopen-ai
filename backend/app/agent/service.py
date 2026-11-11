@@ -437,6 +437,7 @@ async def run_agent_stream(
     trace_user_message: Optional[str] = None,
     temporary: bool = False,
     temporary_chat: TemporaryChat | None = None,
+    attachment_ids: list[uuid.UUID] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
@@ -625,6 +626,27 @@ async def run_agent_stream(
         )
         if "rag_search" in available_tools:
             selected_tools.add("rag_search")
+
+    document_scope = None
+    if notebook is None:
+        if attachment_ids is not None:
+            document_scope = attachment_ids
+        elif temporary_chat:
+            document_scope = [
+                item.id for item in temporary_chat.attachments if not item.image
+            ]
+            document_scope = document_scope or None
+        else:
+            document_scope = [
+                uuid.UUID(item["document_id"])
+                for item in attachments["items"]
+                if item.get("kind") == "upload" and item.get("document_id")
+            ] or None
+        library_requested = routing.requests_library_search(last_user)
+        if library_requested:
+            document_scope = None
+        if document_scope is not None or library_requested:
+            selected_tools.update({"rag_search"} & available_tools.keys())
 
     # Memory injection — wrapped as untrusted data (memories are
     # auto-extracted from past conversations and could contain injected
@@ -824,6 +846,15 @@ async def run_agent_stream(
         tool_schemas=ollama_tools,
     )
     system_prompt += notebook_instructions
+    if document_scope is not None:
+        system_prompt += (
+            "\nDocument Search is scoped to this chat's attachments for this turn. "
+            "Ground answers about the uploaded files in that scope. If there is no "
+            "supporting result, report that instead of substituting other sources. For a specific name or "
+            "phrase, pass only that name or phrase as exact_text and quote a matching "
+            "line with its source. Use attachment_id if the user names a specific "
+            "file and its ID is in the attachment metadata."
+        )
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
     request_tools = ollama_tools
@@ -1838,13 +1869,6 @@ async def run_agent_stream(
             }:
                 # Trusted context, never a model-supplied conversation identity.
                 tool_args["conversation_id"] = conversation_id
-            if tool_name == "rag_search" and conversation_id:
-                tool_args.setdefault("conversation_id", conversation_id)
-                _dbg(
-                    "   🔎 rag_search: injected conversation_id=%s",
-                    conversation_id,
-                )
-
             # search_past_conversations: inject conversation_id so the
             # tool excludes the current conversation from its results.
             if tool_name == "search_past_conversations" and conversation_id:
@@ -1914,6 +1938,9 @@ async def run_agent_stream(
             if temporary:
                 exec_args.pop("conversation_id", None)
                 exec_args["_temporary_chat"] = temporary_chat
+            if tool_name == "rag_search":
+                exec_args["conversation_id"] = conversation_id
+                exec_args["_attachment_ids"] = document_scope
 
             if tool_name == "delegate_to_coder":
                 # Original wording is application-owned, never a model rewrite.
