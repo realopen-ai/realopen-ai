@@ -22,6 +22,7 @@ import {
   Image as ImageIcon,
   FileText,
   Library,
+  List,
   PhoneCall,
   Square,
   Mic,
@@ -80,6 +81,11 @@ export const slashCommands: SlashCommand[] = [
     name: "library",
     descriptionKey: "input.slash.library",
     icon: <Library className="w-4 h-4" />,
+  },
+  {
+    name: "sources",
+    descriptionKey: "input.slash.sources",
+    icon: <List className="w-4 h-4" />,
   },
 ];
 

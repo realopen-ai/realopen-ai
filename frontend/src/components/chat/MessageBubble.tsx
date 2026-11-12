@@ -32,6 +32,7 @@ import { elapsedMilliseconds } from "@/lib/timing";
 import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { WebFetchDetail } from "@/components/chat/WebFetchDetail";
+import { SearchSourceCards } from "@/components/chat/SearchSourceCards";
 import { parseSlashCommand } from "@/components/chat/InputArea";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
@@ -2022,20 +2023,32 @@ export function MessageBubble({
   // ─── Assistant Message — render blocks in chronological order ──
   const blocks = message.blocks ?? [];
   const hasContent = blocks.length > 0 || message.content;
+  const sourceList = blocks.find(
+    (block) => block.toolCall?.toolName === "list_search_sources",
+  )?.toolCall;
 
   return (
     <div className="animate-fade-in wrap-break-word">
-      {blocks.map((block) => (
-        <BlockView
-          key={block.id}
-          block={block}
-          isStreaming={message.isStreaming}
-          canViewPptx={libreOfficeAvailable}
-          onViewPptx={(reportId, filename, downloadUrl, format) =>
-            setViewingPptx({ reportId, filename, downloadUrl, format })
-          }
+      {sourceList ? (
+        <SearchSourceCards
+          output={sourceList.output ?? ""}
+          title={sourceList.title}
+          fallback={message.content}
+          conversationId={conversationId}
         />
-      ))}
+      ) : (
+        blocks.map((block) => (
+          <BlockView
+            key={block.id}
+            block={block}
+            isStreaming={message.isStreaming}
+            canViewPptx={libreOfficeAvailable}
+            onViewPptx={(reportId, filename, downloadUrl, format) =>
+              setViewingPptx({ reportId, filename, downloadUrl, format })
+            }
+          />
+        ))
+      )}
 
       {/* Fallback: if no blocks but has content (e.g. loading from old data) */}
       {blocks.length === 0 && message.content && (
