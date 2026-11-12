@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 import {
   Send,
   Paperclip,
@@ -9,10 +16,14 @@ import {
   Slash,
   Sparkles,
   Brain,
+  BrainCircuit,
   SmilePlus,
   X,
   Image as ImageIcon,
   FileText,
+  Library,
+  List,
+  Code2,
   PhoneCall,
   Square,
   Mic,
@@ -25,7 +36,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chatStore";
-import { t } from "@/store/settingsStore";
+import { t, useT } from "@/store/settingsStore";
 import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 import { DictationRecorder, appendDictation } from "@/voice/dictation";
@@ -35,7 +46,7 @@ import { DictationWaveform, WAVEFORM_BARS } from "./DictationWaveform";
 
 export interface SlashCommand {
   name: string;
-  description: string;
+  descriptionKey: string;
   icon: React.ReactNode;
   /** If true, this command changes the model for this message only */
   modelOverride?: string;
@@ -46,35 +57,80 @@ export interface SlashCommand {
 export const slashCommands: SlashCommand[] = [
   {
     name: "shrug",
-    description: t("input.slash.shrug"),
+    descriptionKey: "input.slash.shrug",
     icon: <SmilePlus className="w-4 h-4" />,
     shrug: true,
   },
   {
     name: "think",
-    description: t("input.slash.think"),
+    descriptionKey: "input.slash.think",
     icon: <Brain className="w-4 h-4" />,
     modelOverride: "default_reasoning",
   },
   {
+    name: "nothink",
+    descriptionKey: "input.slash.nothink",
+    icon: <BrainCircuit className="w-4 h-4" />,
+  },
+  {
     name: "imagine",
-    description: t("input.slash.imagine"),
+    descriptionKey: "input.slash.imagine",
     icon: <Sparkles className="w-4 h-4" />,
     modelOverride: "default_image_gen",
+  },
+  {
+    name: "library",
+    descriptionKey: "input.slash.library",
+    icon: <Library className="w-4 h-4" />,
+  },
+  {
+    name: "sources",
+    descriptionKey: "input.slash.sources",
+    icon: <List className="w-4 h-4" />,
+  },
+  {
+    name: "web",
+    descriptionKey: "input.slash.web",
+    icon: <Globe className="w-4 h-4" />,
+  },
+  {
+    name: "coder",
+    descriptionKey: "input.slash.coder",
+    icon: <Code2 className="w-4 h-4" />,
   },
 ];
 
 // ─── Slash Command Menu ───────────────────────────────────────────
+
+type SlashCommandOption = SlashCommand & { disabledReasonKey?: string };
 
 function SlashCommandMenu({
   commands,
   selectedIndex,
   onSelect,
 }: {
-  commands: SlashCommand[];
+  commands: SlashCommandOption[];
   selectedIndex: number;
   onSelect: (cmd: SlashCommand) => void;
 }) {
+  const translate = useT();
+  const listRef = useRef<HTMLDivElement>(null);
+  const selectedCommandRef = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const selected = selectedCommandRef.current;
+    if (!list || !selected) return;
+
+    const viewport = list.getBoundingClientRect();
+    const item = selected.getBoundingClientRect();
+    if (item.top < viewport.top) {
+      list.scrollTop += item.top - viewport.top;
+    } else if (item.bottom > viewport.bottom) {
+      list.scrollTop += item.bottom - viewport.bottom;
+    }
+  }, [commands, selectedIndex]);
+
   return (
     <div className="absolute bottom-full left-0 right-0 mb-2 max-w-3xl mx-auto z-40">
       <div className="bg-popover border border-border rounded-xl shadow-2xl overflow-hidden">
@@ -90,7 +146,7 @@ function SlashCommandMenu({
             </span>
           </div>
         </div>
-        <div className="py-1 max-h-50 overflow-y-auto">
+        <div ref={listRef} className="py-1 max-h-50 overflow-y-auto">
           {commands.length === 0 ? (
             <div className="px-3 py-4 text-center text-[12px] text-muted-foreground">
               {t("input.slash.noCommands")}
@@ -99,18 +155,24 @@ function SlashCommandMenu({
             commands.map((cmd, i) => (
               <button
                 key={cmd.name}
+                ref={i === selectedIndex ? selectedCommandRef : undefined}
                 onClick={() => onSelect(cmd)}
+                disabled={!!cmd.disabledReasonKey}
                 className={cn(
                   "w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors",
-                  i === selectedIndex
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  i === selectedIndex && "bg-accent",
+                  cmd.disabledReasonKey
+                    ? "cursor-not-allowed text-muted-foreground"
+                    : "text-foreground",
+                  i !== selectedIndex &&
+                    !cmd.disabledReasonKey &&
+                    "hover:bg-accent/50",
                 )}
               >
                 <div
                   className={cn(
                     "w-7 h-7 rounded-lg flex items-center justify-center shrink-0",
-                    i === selectedIndex
+                    i === selectedIndex && !cmd.disabledReasonKey
                       ? "bg-primary/15 text-primary"
                       : "bg-secondary text-muted-foreground",
                   )}
@@ -119,12 +181,10 @@ function SlashCommandMenu({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-medium text-foreground">
-                      /{cmd.name}
-                    </span>
+                    <span className="text-[13px] font-medium">/{cmd.name}</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground truncate">
-                    {cmd.description}
+                  <p className="text-[11px] text-muted-foreground">
+                    {translate(cmd.disabledReasonKey ?? cmd.descriptionKey)}
                   </p>
                 </div>
               </button>
@@ -201,16 +261,15 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
   if (!trimmed.startsWith("/"))
     return { command: null, remainingContent: input };
 
-  const parts = trimmed.split(/\s+/);
-  const cmdName = parts[0].slice(1); // remove the /
-  const remaining = parts.slice(1).join(" ");
+  const [prefix] = trimmed.split(/\s+/, 1);
+  const cmdName = prefix.slice(1).toLowerCase();
 
   const cmd = slashCommands.find((c) => c.name === cmdName);
   if (!cmd) return { command: null, remainingContent: input };
 
   return {
     command: cmd,
-    remainingContent: remaining || input.replace(parts[0], "").trim(),
+    remainingContent: trimmed.slice(prefix.length).trimStart(),
   };
 }
 
@@ -222,6 +281,8 @@ export function InputArea({
   onStartVoice,
   onStopResponse,
   sourceGrounded = false,
+  canDelegateToCoder = false,
+  temporary = false,
   taskActivity,
   saving = false,
 }: {
@@ -241,6 +302,8 @@ export function InputArea({
   onStopResponse: () => void;
   /** Notebook attachments are managed through its selected-source panel. */
   sourceGrounded?: boolean;
+  canDelegateToCoder?: boolean;
+  temporary?: boolean;
   taskActivity?: ReactNode;
   saving?: boolean;
 }) {
@@ -359,11 +422,25 @@ export function InputArea({
 
   const filteredCommands = useMemo(() => {
     if (!slashFilter && !showSlashMenu) return [];
-    if (!slashFilter) return slashCommands;
-    return slashCommands.filter((cmd) =>
-      cmd.name.toLowerCase().startsWith(slashFilter),
-    );
-  }, [slashFilter, showSlashMenu]);
+    return slashCommands
+      .filter(
+        (cmd) =>
+          (!sourceGrounded || !["library", "web"].includes(cmd.name)) &&
+          (canDelegateToCoder || temporary || cmd.name !== "coder") &&
+          cmd.name.startsWith(slashFilter),
+      )
+      .map<SlashCommandOption>((cmd) =>
+        temporary && cmd.name === "coder"
+          ? { ...cmd, disabledReasonKey: "input.slash.coderTemporary" }
+          : cmd,
+      );
+  }, [
+    slashFilter,
+    showSlashMenu,
+    sourceGrounded,
+    canDelegateToCoder,
+    temporary,
+  ]);
 
   // Show menu when typing / at start
   useEffect(() => {
@@ -443,20 +520,25 @@ export function InputArea({
     });
   };
 
+  const commandNeedsText = ["/library", "/nothink", "/coder", "/web"].includes(
+    input.trim().toLowerCase(),
+  );
+  const commandUnavailable =
+    !canDelegateToCoder &&
+    input.trimStart().split(/\s+/, 1)[0].toLowerCase() === "/coder";
+
   const handleSend = () => {
     if (dictation !== "idle") return;
     const trimmed = input.trim();
-    if ((!trimmed && (!canAttach || attachments.length === 0)) || isStreaming)
+    if (
+      (!trimmed && (!canAttach || attachments.length === 0)) ||
+      isStreaming ||
+      commandNeedsText ||
+      commandUnavailable
+    )
       return;
 
-    const { command, remainingContent } = parseSlashCommand(trimmed);
-    const contentToSend = command
-      ? remainingContent || trimmed.replace(/^\/\S+\s*/, "").trim() || trimmed
-      : trimmed;
-
-    const finalContent = command?.shrug
-      ? remainingContent || "¯\\_(ツ)_/¯"
-      : contentToSend;
+    const { command } = parseSlashCommand(trimmed);
 
     // Separate attachments into images and documents
     const images = attachments
@@ -466,7 +548,7 @@ export function InputArea({
       .filter((a) => a.type === "document")
       .map((a) => a.file);
 
-    onSend(finalContent || trimmed, {
+    onSend(trimmed, {
       modelOverride: command?.modelOverride,
       shrug: command?.shrug,
       images: canAttach && images.length > 0 ? images : undefined,
@@ -502,9 +584,11 @@ export function InputArea({
         return;
       }
       if (e.key === "Tab" || e.key === "Enter") {
-        if (filteredCommands[selectedIndex]) {
-          e.preventDefault();
-          handleSlashSelect(filteredCommands[selectedIndex]);
+        const selected = filteredCommands[selectedIndex];
+        if (selected) {
+          if (e.key === "Enter" || !selected.disabledReasonKey)
+            e.preventDefault();
+          if (!selected.disabledReasonKey) handleSlashSelect(selected);
           return;
         }
       }
@@ -811,6 +895,8 @@ export function InputArea({
                 saving ||
                 (!isStreaming &&
                   (dictation !== "idle" ||
+                    commandNeedsText ||
+                    commandUnavailable ||
                     (!input.trim() &&
                       (!canAttach || attachments.length === 0))))
               }

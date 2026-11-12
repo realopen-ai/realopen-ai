@@ -2,6 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
 import { useT } from "@/store/settingsStore";
 import { useNotebookStore } from "@/store/notebookStore";
+import { cn } from "@/lib/utils";
 import {
   openNotebookSource,
   isNotebookSourceRoute,
@@ -19,6 +20,7 @@ export function SourceAction({
   artifact,
   excerpt,
   title,
+  className,
 }: {
   documentId?: string | null;
   conversationId?: string | null;
@@ -27,6 +29,7 @@ export function SourceAction({
   artifact?: ArtifactReference | null;
   excerpt?: string;
   title?: string;
+  className?: string;
 }) {
   const t = useT();
   const notebook = useNotebookStore((s) => s.notebook);
@@ -66,7 +69,10 @@ export function SourceAction({
           });
         }
       }}
-      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary"
+      className={cn(
+        "inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary",
+        className,
+      )}
     >
       <ExternalLink className="size-3" />
       {t("learn.viewSource")}

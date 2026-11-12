@@ -20,6 +20,7 @@ from app.agent.tools.artifacts import ReadArtifactTool
 from app.agent.tools.web_search import WebSearchTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.quizzes import CreateQuizTool
+from app.services import web_search
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
 from test_agent_protocol import agent as agent_fixture, script, call, run
@@ -1012,6 +1013,11 @@ def test_trace_preserves_raw_result_model_view_and_runtime_usage(tmp_path, monke
         ("Do not search the library. Does this file contain FRYE?", False),
         ("Could you also search my library for FRYE?", True),
         ("Search my document library for FRYE", True),
+        ("Peux-tu chercher aussi dans ma bibliothèque de documents ?", True),
+        ("Ne cherche pas dans la bibliothèque. Ce fichier contient-il FRYE ?", False),
+        ("اِبحث في مكتبة المستندات عن FRYE", True),
+        ("هل يمكنك البحث في قاعدة المعرفة عن FRYE؟", True),
+        ("لا تبحث في المكتبة. هل يحتوي هذا الملف على FRYE؟", False),
     ],
 )
 async def test_attachment_search_scope_comes_from_the_user_turn(
@@ -1044,3 +1050,230 @@ async def test_attachment_search_scope_comes_from_the_user_turn(
     assert rag_tool.execute.await_args.kwargs["_attachment_ids"] == (
         None if scope_library else [attachment_id]
     )
+
+
+@pytest.mark.asyncio
+async def test_library_command_searches_before_first_model_response(agent, monkeypatch):
+    import uuid
+
+    from app.agent.tools.rag_search import RagSearchTool
+
+    registry = ToolRegistry()
+    rag_tool = RagSearchTool()
+    rag_tool.execute = AsyncMock(return_value=ToolResult(True, "Found in catalog.txt."))
+    registry.register(rag_tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    captured = script(monkeypatch, [[{"content": "Found it.", "done": True}]])
+
+    events = await run(
+        [{"role": "user", "content": "/library أين أجد FRYE؟"}],
+        attachment_ids=[uuid.uuid4()],
+    )
+
+    rag_tool.execute.assert_awaited_once()
+    args = rag_tool.execute.await_args.kwargs
+    assert args["query"] == "أين أجد FRYE؟"
+    assert args["_attachment_ids"] is None
+    assert "Found in catalog.txt." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_web_command_respects_saved_search_preferences(
+    agent, monkeypatch, enabled
+):
+    registry = ToolRegistry()
+    registry.register(WebSearchTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    prefs = {
+        "use_websearch": {
+            "enabled": enabled,
+            "always_load": False,
+            "tags": [],
+            "custom": {
+                "providers": {
+                    "searxng": {"enabled": False},
+                    "wikipedia": {"enabled": True, "language": "fr", "max_results": 2},
+                }
+            },
+        }
+    }
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: prefs)
+    monkeypatch.setattr(config_store, "get_tool_config", prefs.get)
+    wikipedia = AsyncMock(
+        return_value=(
+            "wikipedia",
+            [
+                {
+                    "title": "Paris",
+                    "url": "https://example.org/paris",
+                    "snippet": "France",
+                }
+            ],
+        )
+    )
+    searxng = AsyncMock()
+    monkeypatch.setattr(web_search, "search_wikipedia", wikipedia)
+    monkeypatch.setattr(web_search, "search_searxng", searxng)
+    captured = script(
+        monkeypatch, [[{"content": "Done.", "done": True}]] if enabled else []
+    )
+
+    events = await run([{"role": "user", "content": "/web Paris"}])
+
+    searxng.assert_not_awaited()
+    if enabled:
+        wikipedia.assert_awaited_once_with("Paris", language="fr", max_results=2)
+        assert any(
+            'Web search results for "Paris"' in message.get("content", "")
+            for message in captured[0]["messages"]
+        )
+    else:
+        wikipedia.assert_not_awaited()
+        assert not captured
+        assert any(
+            e.get("error", "").startswith("Web Search is disabled.") for e in events
+        )
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_composer_command_prefixes_are_removed_from_model_messages(
+    agent, monkeypatch
+):
+    captured = script(monkeypatch, [[{"content": "Done", "done": True}]])
+    command = "/think Explain this code:\n\n    return value"
+    await run(
+        [
+            {"role": "user", "content": "/imagine A forest"},
+            {"role": "assistant", "content": "Done."},
+            {"role": "user", "content": command},
+        ],
+        trace_user_message=command,
+    )
+    contents = [message["content"] for message in captured[0]["messages"]]
+    assert "A forest" in contents
+    assert "Explain this code:\n\n    return value" in contents
+    assert command not in contents
+
+
+@pytest.mark.asyncio
+async def test_nothink_applies_to_each_reply_round_but_not_the_next_turn(
+    agent, monkeypatch
+):
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"input": "hello"})], "done": True}],
+            [{"content": "Done.", "done": True}],
+            [{"content": "Next reply.", "done": True}],
+        ],
+    )
+    user = {"role": "user", "content": "/nothink Use echo"}
+    await run([user], trace_user_message=user["content"], think=True)
+    assert agent.executed == [{"input": "hello"}]
+    assert [round_request["think"] for round_request in captured] == [False, False]
+    assert any(
+        message["role"] == "user" and message["content"] == "Use echo"
+        for message in captured[0]["messages"]
+    )
+
+    await run(
+        [
+            user,
+            {"role": "assistant", "content": "Done."},
+            {"role": "user", "content": "Another question"},
+        ],
+        think=True,
+    )
+    assert captured[-1]["think"] is True
+
+
+@pytest.mark.asyncio
+async def test_sources_lists_current_temporary_attachments_without_inference(
+    agent, monkeypatch
+):
+    import uuid
+    from app.services.temporary_chats import Attachment, TemporaryChat
+
+    session = TemporaryChat(uuid.uuid4())
+    current_id = uuid.uuid4()
+    session.attachments.extend(
+        [
+            Attachment(uuid.uuid4(), "older.txt", b"Older", False, 0, [], 1),
+            Attachment(
+                current_id,
+                "current.txt",
+                b"Current",
+                False,
+                1,
+                [],
+                1,
+                created_at=datetime(2026, 11, 12),
+            ),
+            Attachment(uuid.uuid4(), "photo.png", b"Photo", True, 1, [], 0),
+        ]
+    )
+    captured = script(monkeypatch, [])
+    events = await run(
+        [{"role": "user", "content": "/sources"}],
+        temporary=True,
+        temporary_chat=session,
+        attachment_ids=[current_id],
+    )
+    assert events[0]["message"]["content"] == "**Chat attachments**\n\n- current.txt"
+    result = events[1]["tool_call"]
+    assert result["toolName"] == "list_search_sources"
+    assert json.loads(result["output"])["sources"] == [
+        {
+            "id": str(current_id),
+            "name": "current.txt",
+            "kind": "document",
+            "size": 7,
+            "pages": 1,
+            "chunks": 0,
+            "createdAt": 1794441600000,
+        },
+    ]
+    assert events[-1] == {"event": "done"}
+    assert captured == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temporary", [False, True])
+async def test_coder_command_delegates_directly_only_in_saved_chat(
+    agent, monkeypatch, temporary
+):
+    import uuid
+
+    from app.agent.coder.agent import CoderAgent
+
+    registry = ToolRegistry()
+    coder = CoderAgent()
+    coder.execute = AsyncMock(return_value=ToolResult(True, "Workspace task complete."))
+    registry.register(coder)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    captured = script(
+        monkeypatch, [[{"content": "Done.", "done": True}]] if not temporary else []
+    )
+    ident = str(uuid.uuid4())
+    task = "Implement the health endpoint.\nKeep it public."
+    events = await run(
+        [{"role": "user", "content": f"/coder {task}"}],
+        conversation_id=ident,
+        temporary=temporary,
+    )
+    if temporary:
+        coder.execute.assert_not_awaited()
+        assert not captured
+        assert any(
+            e.get("error") == "Save this chat before using /coder." for e in events
+        )
+    else:
+        coder.execute.assert_awaited_once()
+        args = coder.execute.await_args.kwargs
+        assert args["task"] == args["_user_request"] == task
+        assert args["conversation_id"] == ident
+        assert "Workspace task complete." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"

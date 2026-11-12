@@ -1,6 +1,7 @@
 """Deterministic, settings-aware tool exposure; no inference or execution."""
 
 import re
+import unicodedata
 from collections import Counter
 
 from app.agent.tools.tool_defaults import default_tags
@@ -52,6 +53,23 @@ def words(text):
     return re.findall(r"[^\W_]+", str(text).casefold(), re.UNICODE)
 
 
+def is_sources_command(content: str) -> bool:
+    return content.strip().casefold() == "/sources"
+
+
+def user_message_content(content: str) -> str:
+    """Remove display prefixes for commands handled by the composer."""
+    parts = content.split(maxsplit=1)
+    if not parts:
+        return content
+    command = parts[0].casefold()
+    if command == "/shrug" and len(parts) == 1:
+        return r"¯\_(ツ)_/¯"
+    if command in {"/shrug", "/think", "/imagine", "/nothink"} and len(parts) == 2:
+        return parts[1]
+    return content
+
+
 def matches(phrase, text):
     """Phrase boundaries, not substrings like 'note' in 'denotes'."""
     parts = words(phrase)
@@ -64,9 +82,71 @@ def matches(phrase, text):
     return bool(re.search(r"(?<!\w)" + pattern + r"(?!\w)", text.casefold()))
 
 
+def _requests_library_search_fr_or_ar(sentence: str) -> bool:
+    normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFD", sentence)
+        if unicodedata.category(char) != "Mn"
+    )
+    tokens = iter(words(normalized))
+    verb = next(tokens, "")
+    if verb in {"peux", "pourrais", "pouvez", "pourriez"}:
+        if next(tokens, "") not in {"tu", "vous"}:
+            return False
+        verb = next(tokens, "")
+    elif verb == "هل":
+        verb = next(tokens, "")
+    if verb in {"يمكنك", "تستطيع"}:
+        verb = next(tokens, "")
+
+    if verb in {
+        "cherche",
+        "cherchez",
+        "chercher",
+        "recherche",
+        "recherchez",
+        "rechercher",
+    }:
+        token = next(tokens, "")
+        if token == "aussi":
+            token = next(tokens, "")
+        if token != "dans":
+            return False
+        token = next(tokens, "")
+        while token in {"ma", "la", "notre", "toute"}:
+            token = next(tokens, "")
+        return token == "bibliotheque" or (
+            token == "base"
+            and next(tokens, "") == "de"
+            and next(tokens, "") == "connaissances"
+        )
+
+    if verb in {"ابحث", "البحث", "تبحث"}:
+        token = next(tokens, "")
+        if token == "ايضا":
+            token = next(tokens, "")
+        if token != "في":
+            return False
+        token = next(tokens, "")
+        if token in {"المكتبة", "مكتبتي", "مكتبتنا"}:
+            return True
+        if token == "مكتبة":
+            return next(tokens, "") in {
+                "المستندات",
+                "مستنداتي",
+                "الوثائق",
+                "الملفات",
+                "ملفاتي",
+            }
+        return token == "قاعدة" and next(tokens, "") == "المعرفة"
+    return False
+
+
 def requests_library_search(text: str) -> bool:
     """Recognize explicit search instructions in the user's turn."""
-    for sentence in re.split(r"[.!?;\n]+", text.casefold()):
+    for sentence in re.split(r"[.!?؟;؛\n]+", text.casefold()):
+        if _requests_library_search_fr_or_ar(sentence):
+            return True
         tokens = iter(sentence.split())
         token = next(tokens, "")
         if token in {"can", "could", "would"}:

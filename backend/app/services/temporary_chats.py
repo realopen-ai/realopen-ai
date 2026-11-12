@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from tempfile import TemporaryDirectory
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -91,6 +92,10 @@ class Attachment:
     message_index: int
     chunks: list[tuple[uuid.UUID, rag.Chunk]]
     pages: int
+    thumbnail: bytes | None = None
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(UTC).replace(tzinfo=None)
+    )
 
 
 @dataclass
@@ -237,6 +242,7 @@ class TemporaryChat:
                     total_pages=item.pages or None,
                     total_chunks=len(item.chunks),
                     digestion_status="ready",
+                    created_at=item.created_at,
                 )
             )
             await db.flush()
