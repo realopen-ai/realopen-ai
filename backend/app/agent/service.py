@@ -442,6 +442,20 @@ async def run_agent_stream(
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
     resolved_model = await model_prefs.resolve_chat_request_model(model)
+    original_user_message = (
+        trace_user_message
+        if trace_user_message is not None
+        else next(
+            (
+                m.get("content", "")
+                for m in reversed(messages)
+                if m.get("role") == "user"
+            ),
+            "",
+        )
+    )
+    if original_user_message.casefold().split(maxsplit=1)[:1] == ["/nothink"]:
+        think = False
     messages = [dict(m) for m in messages]
     for message in messages:
         if message.get("role") == "user" and isinstance(message.get("content"), str):
@@ -469,12 +483,7 @@ async def run_agent_stream(
     resource_context_loaded = set()
 
     # ── Select relevant tools ──
-    user_msgs = [m for m in messages if m.get("role") == "user"]
-    last_user = (
-        routing.user_message_content(trace_user_message)
-        if trace_user_message is not None
-        else (user_msgs[-1].get("content", "") if user_msgs else "")
-    )
+    last_user = routing.user_message_content(original_user_message)
     request_index = next(
         (
             i

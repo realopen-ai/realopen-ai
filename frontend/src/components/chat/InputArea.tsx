@@ -9,6 +9,7 @@ import {
   Slash,
   Sparkles,
   Brain,
+  BrainCircuit,
   SmilePlus,
   X,
   Image as ImageIcon,
@@ -56,6 +57,11 @@ export const slashCommands: SlashCommand[] = [
     descriptionKey: "input.slash.think",
     icon: <Brain className="w-4 h-4" />,
     modelOverride: "default_reasoning",
+  },
+  {
+    name: "nothink",
+    descriptionKey: "input.slash.nothink",
+    icon: <BrainCircuit className="w-4 h-4" />,
   },
   {
     name: "imagine",
@@ -450,7 +456,9 @@ export function InputArea({
     });
   };
 
-  const needsLibraryQuery = input.trim().toLowerCase() === "/library";
+  const commandNeedsText = ["/library", "/nothink"].includes(
+    input.trim().toLowerCase(),
+  );
 
   const handleSend = () => {
     if (dictation !== "idle") return;
@@ -458,7 +466,7 @@ export function InputArea({
     if (
       (!trimmed && (!canAttach || attachments.length === 0)) ||
       isStreaming ||
-      needsLibraryQuery
+      commandNeedsText
     )
       return;
 
@@ -817,7 +825,7 @@ export function InputArea({
                 saving ||
                 (!isStreaming &&
                   (dictation !== "idle" ||
-                    needsLibraryQuery ||
+                    commandNeedsText ||
                     (!input.trim() &&
                       (!canAttach || attachments.length === 0))))
               }

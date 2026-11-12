@@ -301,6 +301,7 @@
   "input.slash.noCommands": "No matching commands",
   "input.slash.shrug": "Add a ¯\\_(ツ)_/¯ to your message",
   "input.slash.think": "Use reasoning model for this message",
+  "input.slash.nothink": "Turn off thinking for this reply on supported models",
   "input.slash.imagine": "Use image generation model for this message",
   "input.slash.library": "Search your document library",
   "input.send": "Send message",

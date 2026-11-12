@@ -1095,3 +1095,35 @@ async def test_composer_command_prefixes_are_removed_from_model_messages(
     assert "A forest" in contents
     assert "Explain this code:\n\n    return value" in contents
     assert command not in contents
+
+
+@pytest.mark.asyncio
+async def test_nothink_applies_to_each_reply_round_but_not_the_next_turn(
+    agent, monkeypatch
+):
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call({"input": "hello"})], "done": True}],
+            [{"content": "Done.", "done": True}],
+            [{"content": "Next reply.", "done": True}],
+        ],
+    )
+    user = {"role": "user", "content": "/nothink Use echo"}
+    await run([user], trace_user_message=user["content"], think=True)
+    assert agent.executed == [{"input": "hello"}]
+    assert [round_request["think"] for round_request in captured] == [False, False]
+    assert any(
+        message["role"] == "user" and message["content"] == "Use echo"
+        for message in captured[0]["messages"]
+    )
+
+    await run(
+        [
+            user,
+            {"role": "assistant", "content": "Done."},
+            {"role": "user", "content": "Another question"},
+        ],
+        think=True,
+    )
+    assert captured[-1]["think"] is True

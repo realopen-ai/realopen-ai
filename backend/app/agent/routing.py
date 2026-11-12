@@ -61,7 +61,7 @@ def user_message_content(content: str) -> str:
     command = parts[0].casefold()
     if command == "/shrug" and len(parts) == 1:
         return r"¯\_(ツ)_/¯"
-    if command in {"/shrug", "/think", "/imagine"} and len(parts) == 2:
+    if command in {"/shrug", "/think", "/imagine", "/nothink"} and len(parts) == 2:
         return parts[1]
     return content
 
