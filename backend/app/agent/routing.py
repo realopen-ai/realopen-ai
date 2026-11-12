@@ -64,6 +64,48 @@ def matches(phrase, text):
     return bool(re.search(r"(?<!\w)" + pattern + r"(?!\w)", text.casefold()))
 
 
+def requests_library_search(text: str) -> bool:
+    """Recognize explicit search instructions in the user's turn."""
+    for sentence in re.split(r"[.!?;\n]+", text.casefold()):
+        tokens = iter(sentence.split())
+        token = next(tokens, "")
+        if token in {"can", "could", "would"}:
+            if next(tokens, "") != "you":
+                continue
+            token = next(tokens, "")
+        while token in {"please", "also"}:
+            token = next(tokens, "")
+        if token == "look":
+            if next(tokens, "") != "in":
+                continue
+        elif token not in {"search", "check"}:
+            continue
+
+        token = next(tokens, "")
+        if token in {"in", "across"}:
+            token = next(tokens, "")
+        while token in {"my", "the", "our", "entire", "whole", "full"}:
+            token = next(tokens, "")
+
+        if token == "knowledge":
+            targets = {"base"}
+            token = next(tokens, "")
+        elif token == "all":
+            targets = {"documents", "files"}
+            token = next(tokens, "")
+            if token == "uploaded":
+                token = next(tokens, "")
+        else:
+            targets = {"library"}
+            if token == "document":
+                token = next(tokens, "")
+
+        target = re.match(r"\w+", token)
+        if target and target[0] in targets:
+            return True
+    return False
+
+
 def enabled_tools(registry, configs, *, notebook=False):
     return {
         tool.name: tool

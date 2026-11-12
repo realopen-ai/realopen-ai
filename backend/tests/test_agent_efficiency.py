@@ -1002,3 +1002,45 @@ def test_trace_preserves_raw_result_model_view_and_runtime_usage(tmp_path, monke
     assert trace.round["tool_calls"][0]["model_view"]["output"] == "short view"
     assert trace.round["runtime_usage"]["cached_prompt_tokens"] == 10
     assert len(trace.round["prefix"]["system_sha256"]) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_text, scope_library",
+    [
+        ("Does this file contain FRYE?", False),
+        ("Do not search the library. Does this file contain FRYE?", False),
+        ("Could you also search my library for FRYE?", True),
+        ("Search my document library for FRYE", True),
+    ],
+)
+async def test_attachment_search_scope_comes_from_the_user_turn(
+    agent, monkeypatch, user_text, scope_library
+):
+    import uuid
+
+    from app.agent.tools.rag_search import RagSearchTool
+
+    registry = ToolRegistry()
+    rag_tool = RagSearchTool()
+    rag_tool.execute = AsyncMock(return_value=ToolResult(True, "Search complete."))
+    registry.register(rag_tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    attachment_id = uuid.uuid4()
+    script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [call({"query": "FRYE"}, name="rag_search")],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done", "done": True}],
+        ],
+    )
+    await run([{"role": "user", "content": user_text}], attachment_ids=[attachment_id])
+    rag_tool.execute.assert_awaited_once()
+    assert rag_tool.execute.await_args.kwargs["_attachment_ids"] == (
+        None if scope_library else [attachment_id]
+    )

@@ -295,6 +295,7 @@ def env(monkeypatch, db_override):
                 "model": model,
                 "images": images,
                 "conversation_id": conversation_id,
+                "attachment_ids": kw.get("attachment_ids"),
             }
         )
         if e.agent_error is not None:
@@ -1134,6 +1135,7 @@ async def test_multipart_document_digestion_with_progress(client, env):
     done = [ev for ev in events if ev.get("event") == "document_digest_done"]
     assert done and done[0]["document_id"] == str(DOC_ID)
     assert done[0]["total_chunks"] == 3
+    assert env.agent_calls[0]["attachment_ids"] == [DOC_ID]
 
     # a system hint about the fresh document was appended for the agent
     agent_messages = env.agent_calls[0]["messages"]
@@ -1806,6 +1808,7 @@ async def test_temporary_document_upload_streams_ingestion_progress(client, env)
         assert done["event"] == "document_digest_done"
         assert done["filename"] == start["filename"]
         assert done["total_chunks"] > 0
+        assert env.agent_calls[0]["attachment_ids"] == [uuid.UUID(done["document_id"])]
         assert not env.persists
     finally:
         await client.post(f"/api/chat/temporary/{ident}/discard")

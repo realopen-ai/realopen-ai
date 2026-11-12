@@ -1580,6 +1580,7 @@ async def search_documents(
     top_k_total: Optional[int] = None,
     similarity_cutoff: Optional[float] = None,
     document_ids: Optional[List[uuid.UUID]] = None,
+    rerank: bool = True,
 ) -> List[RetrievedSource]:
     """Hybrid vector + BM25 search with per-doc adaptive top-k.
 
@@ -1805,7 +1806,7 @@ async def search_documents(
             break
 
     # ── Step 5: LLM reranking (optional) ────────────────────────────────
-    if settings.RAG_LLM_RERANK and len(final) > 1:
+    if rerank and settings.RAG_LLM_RERANK and len(final) > 1:
         final = await _rerank_with_llm(query, final, k_total)
 
     final = final[:k_total]
@@ -1820,7 +1821,7 @@ async def search_documents(
         cutoff,
         k_per_doc,
         k_total,
-        settings.RAG_LLM_RERANK,
+        rerank and settings.RAG_LLM_RERANK,
     )
     return final
 
@@ -1967,6 +1968,42 @@ async def _rerank_with_llm(
     except Exception as e:
         _log("LLM rerank failed (keeping hybrid order): %s", e)
         return sources
+
+
+async def search_attachment_text(
+    db: AsyncSession, document_ids: list[uuid.UUID], exact_text: str, limit: int
+) -> list[RetrievedSource]:
+    """Find a literal in extracted text without vector retrieval or reranking."""
+    if not document_ids:
+        return []
+    rows = await db.execute(
+        select(DocumentChunk, Document.filename)
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(
+            Document.id.in_(document_ids),
+            Document.digestion_status == "ready",
+            DocumentChunk.chunk_type == "text",
+            DocumentChunk.text.icontains(exact_text, autoescape=True),
+        )
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        .limit(limit)
+    )
+    return [
+        RetrievedSource(
+            document_id=str(chunk.document_id),
+            document_filename=filename,
+            chunk_id=str(chunk.id),
+            text=chunk.text,
+            page_number=chunk.page_number,
+            line_start=chunk.line_start,
+            line_end=chunk.line_end,
+            chunk_type=chunk.chunk_type,
+            score=1.0,
+            vector_sim=0.0,
+            bm25_score=0.0,
+        )
+        for chunk, filename in rows
+    ]
 
 
 def format_sources_for_llm(sources: List[RetrievedSource]) -> str:
