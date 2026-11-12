@@ -53,6 +53,10 @@ def words(text):
     return re.findall(r"[^\W_]+", str(text).casefold(), re.UNICODE)
 
 
+def is_sources_command(content: str) -> bool:
+    return content.strip().casefold() == "/sources"
+
+
 def user_message_content(content: str) -> str:
     """Remove display prefixes for commands handled by the composer."""
     parts = content.split(maxsplit=1)

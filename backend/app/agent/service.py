@@ -14,9 +14,11 @@ import re
 import time
 import uuid
 from copy import deepcopy
+from datetime import UTC
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
+from sqlalchemy import select
 
 from app.agent.base import ToolCall, ToolType, get_tool_registry
 from app.agent.protocol import (
@@ -71,8 +73,9 @@ from app.services import skills as skill_store
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
+from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
-from app.learn.notebooks import for_conversation
+from app.learn.notebooks import for_conversation, source_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +423,85 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
     return d
 
 
+async def _list_search_sources(
+    conversation_id, notebook, document_scope, temporary_chat
+):
+    documents = []
+    sources = []
+    if notebook is not None:
+        heading = "Selected notebook sources"
+        async with async_session_factory() as db:
+            page = await source_catalog(db, conversation_id, limit=50)
+            items = page["items"] if page else []
+            document_ids = {
+                uuid.UUID(item["document_id"]) for item in items if item["document_id"]
+            }
+            if document_ids:
+                documents = (
+                    await db.scalars(
+                        select(Document).where(Document.id.in_(document_ids))
+                    )
+                ).all()
+        sources = [
+            {"id": item["id"], "name": item["title"], "kind": "artifact"}
+            for item in items
+            if not item["document_id"]
+        ]
+        has_more = bool(page and page["next_offset"] is not None)
+    elif document_scope is not None and temporary_chat:
+        heading = "Chat attachments"
+        sources = [
+            {
+                "id": str(item.id),
+                "name": item.filename,
+                "kind": "document",
+                "size": len(item.data),
+                "pages": item.pages,
+                "chunks": len(item.chunks),
+                "createdAt": int(
+                    item.created_at.replace(tzinfo=UTC).timestamp() * 1000
+                ),
+            }
+            for item in temporary_chat.attachments
+            if item.id in document_scope
+        ]
+        has_more = False
+    else:
+        heading = (
+            "Chat attachments" if document_scope is not None else "Document library"
+        )
+        query = select(Document).where(Document.digestion_status == "ready")
+        if document_scope is not None:
+            query = query.where(Document.id.in_(document_scope))
+        else:
+            query = query.where(Document.scope == "public")
+        async with async_session_factory() as db:
+            documents = (
+                await db.scalars(
+                    query.order_by(Document.created_at.desc(), Document.id).limit(51)
+                )
+            ).all()
+        has_more = len(documents) > 50
+
+    sources.extend(
+        {
+            "id": str(doc.id),
+            "name": doc.filename,
+            "kind": "document",
+            "size": doc.file_size_bytes,
+            "pages": doc.total_pages,
+            "chunks": doc.total_chunks,
+            "createdAt": (
+                int(doc.created_at.replace(tzinfo=UTC).timestamp() * 1000)
+                if doc.created_at
+                else None
+            ),
+        }
+        for doc in documents[:50]
+    )
+    return heading, sources, has_more
+
+
 # ── Main agent loop ──
 @traced_execution
 @agent_settings.with_snapshot
@@ -681,6 +763,48 @@ async def run_agent_stream(
             document_scope = None
         if document_scope is not None or library_requested:
             selected_tools.update({"rag_search"} & available_tools.keys())
+
+    if routing.is_sources_command(original_user_message):
+        heading, sources, has_more = await _list_search_sources(
+            conversation_id, notebook, document_scope, temporary_chat
+        )
+        content = f"**{heading}**"
+        if not sources:
+            content += "\n\nNo sources are available."
+        else:
+            names = [
+                re.sub(r"([\\`*_\[\]<>~|])", r"\\\1", " ".join(source["name"].split()))
+                for source in sources
+            ]
+            content += "\n\n- " + "\n- ".join(names)
+            if has_more:
+                content += "\n\nShowing the first 50 sources."
+        yield _sse_event(
+            "message", {"message": {"role": "assistant", "content": content}}
+        )
+        if sources:
+            now = int(time.time() * 1000)
+            yield _sse_event(
+                "tool_call",
+                {
+                    "tool_call": {
+                        "id": str(uuid.uuid4()),
+                        "type": ToolType.FILE_READ.value,
+                        "toolName": "list_search_sources",
+                        "title": heading,
+                        "status": "completed",
+                        "startedAt": now,
+                        "completedAt": now,
+                        "output": json.dumps(
+                            {"sources": sources, "hasMore": has_more},
+                            ensure_ascii=False,
+                        ),
+                    }
+                },
+            )
+        observe("finish", "completed", "listed document sources", content)
+        yield _sse_event("done", {})
+        return
 
     # Memory injection — wrapped as untrusted data (memories are
     # auto-extracted from past conversations and could contain injected

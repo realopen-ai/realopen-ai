@@ -1837,3 +1837,76 @@ async def test_temporary_report_download_uses_session_file(client, env):
         assert (await client.get(url)).status_code == 404
     finally:
         temporary_chats.discard_session(session.id)
+
+
+@pytest.mark.asyncio
+async def test_sources_command_and_reply_are_saved_without_background_generation(
+    client, env
+):
+    content = "**Chat attachments**"
+    tool = {
+        "id": "sources",
+        "type": "file_read",
+        "toolName": "list_search_sources",
+        "status": "completed",
+        "output": json.dumps(
+            [{"id": str(DOC_ID), "kind": "document", "name": "report.txt"}]
+        ),
+    }
+    env.agent_events = [
+        {"event": "message", "message": {"role": "assistant", "content": content}},
+        {"event": "tool_call", "tool_call": tool},
+        {"event": "done"},
+    ]
+    response = await client.post(
+        "/api/chat/stream",
+        json={
+            "conversation_id": str(CONV_ID),
+            "messages": [{"role": "user", "content": "/sources"}],
+        },
+    )
+    assert response.status_code == 200
+    assert content in [
+        e["message"]["content"]
+        for e in sse_events(response.text)
+        if e.get("event") == "message"
+    ]
+    assert [(m["role"], m["content"]) for m in env.persists] == [
+        ("user", "/sources"),
+        ("assistant", content),
+    ]
+    assert env.persists[-1]["blocks"][-1]["tool_call"] == tool
+    assert env.title_calls == []
+    assert env.memory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_temporary_document_thumbnail_stays_with_its_session(client, monkeypatch):
+    from app.services.temporary_chats import Attachment, discard_session, get_session
+
+    session = get_session(uuid.uuid4())
+    other = get_session(uuid.uuid4())
+    attachment = Attachment(uuid.uuid4(), "example.txt", b"example", False, 0, [], 1)
+    session.attachments.append(attachment)
+
+    async def render(path):
+        assert path.suffix == ".txt"
+        assert path.read_bytes() == b"example"
+        return b"jpeg preview"
+
+    preview = AsyncMock(side_effect=render)
+    monkeypatch.setattr(chat_module, "render_document_thumbnail", preview)
+    suffix = f"/documents/{attachment.id}/thumbnail"
+    try:
+        assert (
+            await client.get(f"/api/chat/temporary/{other.id}{suffix}")
+        ).status_code == 404
+        for _ in range(2):
+            response = await client.get(f"/api/chat/temporary/{session.id}{suffix}")
+            assert response.status_code == 200
+            assert response.content == b"jpeg preview"
+            assert response.headers["cache-control"] == "no-store"
+        preview.assert_awaited_once()
+    finally:
+        discard_session(session.id)
+        discard_session(other.id)

@@ -16,6 +16,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, List, Literal, Optional
 import uuid
 
@@ -30,6 +31,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.models import Conversation
 
 from app.agent.service import run_agent_stream
+from app.agent.routing import is_sources_command
 from app.agent.coder.resume import resume_coder_stream
 from app.services.coder_tasks import resumable_task
 from app.config import settings
@@ -38,6 +40,7 @@ from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import temporary_chats
 from app.services.safe_paths import confined_path
+from app.services.integrations.libreoffice import render_document_thumbnail
 from app.services import model_prefs
 from app.services import providers
 from app.services import rag as rag_service
@@ -444,6 +447,7 @@ async def _chat_stream(
     # titler always sees the original text (not anything the agent loop
     # may have appended to the messages list).
     _user_msg_for_title = messages[-1]["content"] if messages else ""
+    listing_sources = is_sources_command(_user_msg_for_title)
 
     async def generate():
         _log("   🔄 generate() started — preparing conversation")
@@ -460,7 +464,7 @@ async def _chat_stream(
         # Title the conversation before the agent loop. This generator is
         # already owned by the buffered server-side stream, so the work keeps
         # running and remains reconnectable if the browser reloads here.
-        if _conv_id and _user_msg_for_title:
+        if _conv_id and _user_msg_for_title and not listing_sources:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -659,6 +663,7 @@ async def _chat_stream(
                 completion_status,
             )
 
+        if _conv_id and builder.blocks and not listing_sources:
             # Memory extraction — watermark check is inline (fast DB read),
             # the actual LLM extraction is enqueued to the background queue
             # which waits for stream idle before running. See
@@ -905,6 +910,7 @@ async def chat_stream_multipart(
     # document-digestion step appends a system hint to parsed_messages
     # inside the generator (which would otherwise become the last message).
     _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
+    listing_sources = is_sources_command(trace_user_message)
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — preparing conversation")
@@ -925,7 +931,7 @@ async def chat_stream_multipart(
 
         # Keep the first-message lifecycle consistent with the JSON stream:
         # persist user → title conversation → process inputs → run agent.
-        if _conv_id and _user_msg_for_title:
+        if _conv_id and _user_msg_for_title and not listing_sources:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -1184,6 +1190,7 @@ async def chat_stream_multipart(
                 completion_status,
             )
 
+        if _conv_id and builder.blocks and not listing_sources:
             # Memory extraction — watermark check inline, LLM extraction
             # enqueued to background queue (KV-cache protection).
             try:
@@ -1380,6 +1387,42 @@ async def discard_temporary_chat(temporary_id: uuid.UUID):
         if not session.lock.locked():
             temporary_chats.discard_session(temporary_id)
     return Response(status_code=204)
+
+
+@router.get("/chat/temporary/{temporary_id}/documents/{document_id}/thumbnail")
+async def temporary_document_thumbnail(temporary_id: uuid.UUID, document_id: uuid.UUID):
+    session = temporary_chats.get_session(temporary_id, create=False)
+    attachment = (
+        next(
+            (
+                item
+                for item in session.attachments
+                if item.id == document_id and not item.image
+            ),
+            None,
+        )
+        if session and not session.discarded
+        else None
+    )
+    if attachment is None:
+        raise HTTPException(404, "Temporary document not found")
+
+    if attachment.thumbnail is None:
+        # Preview work uses its own scratch directory so saving or discarding
+        # the chat can safely proceed while the thumbnail renders.
+        with TemporaryDirectory(prefix="realopen-document-preview-") as directory:
+            path = confined_path(
+                Path(directory), "document" + Path(attachment.filename).suffix
+            )
+            await asyncio.to_thread(path.write_bytes, attachment.data)
+            attachment.thumbnail = await render_document_thumbnail(path)
+    if attachment.thumbnail is None:
+        raise HTTPException(404, "Document thumbnail unavailable")
+    return Response(
+        attachment.thumbnail,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/chat/temporary/{temporary_id}/reports/{report_id}")

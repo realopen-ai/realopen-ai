@@ -1127,3 +1127,53 @@ async def test_nothink_applies_to_each_reply_round_but_not_the_next_turn(
         think=True,
     )
     assert captured[-1]["think"] is True
+
+
+@pytest.mark.asyncio
+async def test_sources_lists_current_temporary_attachments_without_inference(
+    agent, monkeypatch
+):
+    import uuid
+    from app.services.temporary_chats import Attachment, TemporaryChat
+
+    session = TemporaryChat(uuid.uuid4())
+    current_id = uuid.uuid4()
+    session.attachments.extend(
+        [
+            Attachment(uuid.uuid4(), "older.txt", b"Older", False, 0, [], 1),
+            Attachment(
+                current_id,
+                "current.txt",
+                b"Current",
+                False,
+                1,
+                [],
+                1,
+                created_at=datetime(2026, 11, 12),
+            ),
+            Attachment(uuid.uuid4(), "photo.png", b"Photo", True, 1, [], 0),
+        ]
+    )
+    captured = script(monkeypatch, [])
+    events = await run(
+        [{"role": "user", "content": "/sources"}],
+        temporary=True,
+        temporary_chat=session,
+        attachment_ids=[current_id],
+    )
+    assert events[0]["message"]["content"] == "**Chat attachments**\n\n- current.txt"
+    result = events[1]["tool_call"]
+    assert result["toolName"] == "list_search_sources"
+    assert json.loads(result["output"])["sources"] == [
+        {
+            "id": str(current_id),
+            "name": "current.txt",
+            "kind": "document",
+            "size": 7,
+            "pages": 1,
+            "chunks": 0,
+            "createdAt": 1794441600000,
+        },
+    ]
+    assert events[-1] == {"event": "done"}
+    assert captured == []
