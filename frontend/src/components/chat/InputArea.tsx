@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  type ReactNode,
+} from "react";
 import {
   Send,
   Paperclip,
@@ -88,6 +95,23 @@ function SlashCommandMenu({
   onSelect: (cmd: SlashCommand) => void;
 }) {
   const translate = useT();
+  const listRef = useRef<HTMLDivElement>(null);
+  const selectedCommandRef = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const selected = selectedCommandRef.current;
+    if (!list || !selected) return;
+
+    const viewport = list.getBoundingClientRect();
+    const item = selected.getBoundingClientRect();
+    if (item.top < viewport.top) {
+      list.scrollTop += item.top - viewport.top;
+    } else if (item.bottom > viewport.bottom) {
+      list.scrollTop += item.bottom - viewport.bottom;
+    }
+  }, [commands, selectedIndex]);
+
   return (
     <div className="absolute bottom-full left-0 right-0 mb-2 max-w-3xl mx-auto z-40">
       <div className="bg-popover border border-border rounded-xl shadow-2xl overflow-hidden">
@@ -103,7 +127,7 @@ function SlashCommandMenu({
             </span>
           </div>
         </div>
-        <div className="py-1 max-h-50 overflow-y-auto">
+        <div ref={listRef} className="py-1 max-h-50 overflow-y-auto">
           {commands.length === 0 ? (
             <div className="px-3 py-4 text-center text-[12px] text-muted-foreground">
               {t("input.slash.noCommands")}
@@ -112,6 +136,7 @@ function SlashCommandMenu({
             commands.map((cmd, i) => (
               <button
                 key={cmd.name}
+                ref={i === selectedIndex ? selectedCommandRef : undefined}
                 onClick={() => onSelect(cmd)}
                 className={cn(
                   "w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors",
