@@ -13,6 +13,7 @@ import {
   X,
   Image as ImageIcon,
   FileText,
+  Library,
   PhoneCall,
   Square,
   Mic,
@@ -25,7 +26,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/store/chatStore";
-import { t } from "@/store/settingsStore";
+import { t, useT } from "@/store/settingsStore";
 import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 import { DictationRecorder, appendDictation } from "@/voice/dictation";
@@ -35,7 +36,7 @@ import { DictationWaveform, WAVEFORM_BARS } from "./DictationWaveform";
 
 export interface SlashCommand {
   name: string;
-  description: string;
+  descriptionKey: string;
   icon: React.ReactNode;
   /** If true, this command changes the model for this message only */
   modelOverride?: string;
@@ -46,21 +47,26 @@ export interface SlashCommand {
 export const slashCommands: SlashCommand[] = [
   {
     name: "shrug",
-    description: t("input.slash.shrug"),
+    descriptionKey: "input.slash.shrug",
     icon: <SmilePlus className="w-4 h-4" />,
     shrug: true,
   },
   {
     name: "think",
-    description: t("input.slash.think"),
+    descriptionKey: "input.slash.think",
     icon: <Brain className="w-4 h-4" />,
     modelOverride: "default_reasoning",
   },
   {
     name: "imagine",
-    description: t("input.slash.imagine"),
+    descriptionKey: "input.slash.imagine",
     icon: <Sparkles className="w-4 h-4" />,
     modelOverride: "default_image_gen",
+  },
+  {
+    name: "library",
+    descriptionKey: "input.slash.library",
+    icon: <Library className="w-4 h-4" />,
   },
 ];
 
@@ -75,6 +81,7 @@ function SlashCommandMenu({
   selectedIndex: number;
   onSelect: (cmd: SlashCommand) => void;
 }) {
+  const translate = useT();
   return (
     <div className="absolute bottom-full left-0 right-0 mb-2 max-w-3xl mx-auto z-40">
       <div className="bg-popover border border-border rounded-xl shadow-2xl overflow-hidden">
@@ -124,7 +131,7 @@ function SlashCommandMenu({
                     </span>
                   </div>
                   <p className="text-[11px] text-muted-foreground truncate">
-                    {cmd.description}
+                    {translate(cmd.descriptionKey)}
                   </p>
                 </div>
               </button>
@@ -359,11 +366,12 @@ export function InputArea({
 
   const filteredCommands = useMemo(() => {
     if (!slashFilter && !showSlashMenu) return [];
-    if (!slashFilter) return slashCommands;
-    return slashCommands.filter((cmd) =>
-      cmd.name.toLowerCase().startsWith(slashFilter),
+    return slashCommands.filter(
+      (cmd) =>
+        (!sourceGrounded || cmd.name !== "library") &&
+        cmd.name.startsWith(slashFilter),
     );
-  }, [slashFilter, showSlashMenu]);
+  }, [slashFilter, showSlashMenu, sourceGrounded]);
 
   // Show menu when typing / at start
   useEffect(() => {
@@ -443,16 +451,23 @@ export function InputArea({
     });
   };
 
+  const needsLibraryQuery = input.trim().toLowerCase() === "/library";
+
   const handleSend = () => {
     if (dictation !== "idle") return;
     const trimmed = input.trim();
-    if ((!trimmed && (!canAttach || attachments.length === 0)) || isStreaming)
+    if (
+      (!trimmed && (!canAttach || attachments.length === 0)) ||
+      isStreaming ||
+      needsLibraryQuery
+    )
       return;
 
     const { command, remainingContent } = parseSlashCommand(trimmed);
-    const contentToSend = command
-      ? remainingContent || trimmed.replace(/^\/\S+\s*/, "").trim() || trimmed
-      : trimmed;
+    const contentToSend =
+      command && command.name !== "library"
+        ? remainingContent || trimmed.replace(/^\/\S+\s*/, "").trim() || trimmed
+        : trimmed;
 
     const finalContent = command?.shrug
       ? remainingContent || "¯\\_(ツ)_/¯"
@@ -811,6 +826,7 @@ export function InputArea({
                 saving ||
                 (!isStreaming &&
                   (dictation !== "idle" ||
+                    needsLibraryQuery ||
                     (!input.trim() &&
                       (!canAttach || attachments.length === 0))))
               }

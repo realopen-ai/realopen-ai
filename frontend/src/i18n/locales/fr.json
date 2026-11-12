@@ -302,6 +302,7 @@
   "input.slash.shrug": "Ajouter un ¯\\_(ツ)_/¯ à votre message",
   "input.slash.think": "Utiliser le modèle de raisonnement pour ce message",
   "input.slash.imagine": "Utiliser le modèle de génération d'images pour ce message",
+  "input.slash.library": "Rechercher dans votre bibliothèque de documents",
   "input.send": "Envoyer le message",
   "input.stopResponse": "Arrêter la réponse",
   "voice.button.start": "Démarrer le mode vocal",

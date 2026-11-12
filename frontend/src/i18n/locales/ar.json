@@ -302,6 +302,7 @@
   "input.slash.shrug": "أضف ¯\\_(ツ)_/¯ إلى رسالتك",
   "input.slash.think": "استخدم نموذج الاستدلال لهذه الرسالة",
   "input.slash.imagine": "استخدم نموذج توليد الصور لهذه الرسالة",
+  "input.slash.library": "ابحث في مكتبة مستنداتك",
   "input.send": "إرسال الرسالة",
   "input.stopResponse": "إيقاف الرد",
   "voice.button.start": "بدء الوضع الصوتي",
