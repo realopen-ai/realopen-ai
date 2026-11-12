@@ -1012,6 +1012,11 @@ def test_trace_preserves_raw_result_model_view_and_runtime_usage(tmp_path, monke
         ("Do not search the library. Does this file contain FRYE?", False),
         ("Could you also search my library for FRYE?", True),
         ("Search my document library for FRYE", True),
+        ("Peux-tu chercher aussi dans ma bibliothèque de documents ?", True),
+        ("Ne cherche pas dans la bibliothèque. Ce fichier contient-il FRYE ?", False),
+        ("اِبحث في مكتبة المستندات عن FRYE", True),
+        ("هل يمكنك البحث في قاعدة المعرفة عن FRYE؟", True),
+        ("لا تبحث في المكتبة. هل يحتوي هذا الملف على FRYE؟", False),
     ],
 )
 async def test_attachment_search_scope_comes_from_the_user_turn(
@@ -1044,3 +1049,29 @@ async def test_attachment_search_scope_comes_from_the_user_turn(
     assert rag_tool.execute.await_args.kwargs["_attachment_ids"] == (
         None if scope_library else [attachment_id]
     )
+
+
+@pytest.mark.asyncio
+async def test_library_command_searches_before_first_model_response(agent, monkeypatch):
+    import uuid
+
+    from app.agent.tools.rag_search import RagSearchTool
+
+    registry = ToolRegistry()
+    rag_tool = RagSearchTool()
+    rag_tool.execute = AsyncMock(return_value=ToolResult(True, "Found in catalog.txt."))
+    registry.register(rag_tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    captured = script(monkeypatch, [[{"content": "Found it.", "done": True}]])
+
+    events = await run(
+        [{"role": "user", "content": "/library أين أجد FRYE؟"}],
+        attachment_ids=[uuid.uuid4()],
+    )
+
+    rag_tool.execute.assert_awaited_once()
+    args = rag_tool.execute.await_args.kwargs
+    assert args["query"] == "أين أجد FRYE؟"
+    assert args["_attachment_ids"] is None
+    assert "Found in catalog.txt." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"
