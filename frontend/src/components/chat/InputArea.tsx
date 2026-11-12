@@ -89,6 +89,11 @@ export const slashCommands: SlashCommand[] = [
     icon: <List className="w-4 h-4" />,
   },
   {
+    name: "web",
+    descriptionKey: "input.slash.web",
+    icon: <Globe className="w-4 h-4" />,
+  },
+  {
     name: "coder",
     descriptionKey: "input.slash.coder",
     icon: <Code2 className="w-4 h-4" />,
@@ -420,7 +425,7 @@ export function InputArea({
     return slashCommands
       .filter(
         (cmd) =>
-          (!sourceGrounded || cmd.name !== "library") &&
+          (!sourceGrounded || !["library", "web"].includes(cmd.name)) &&
           (canDelegateToCoder || temporary || cmd.name !== "coder") &&
           cmd.name.startsWith(slashFilter),
       )
@@ -515,7 +520,7 @@ export function InputArea({
     });
   };
 
-  const commandNeedsText = ["/library", "/nothink", "/coder"].includes(
+  const commandNeedsText = ["/library", "/nothink", "/coder", "/web"].includes(
     input.trim().toLowerCase(),
   );
   const commandUnavailable =

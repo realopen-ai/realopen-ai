@@ -304,6 +304,7 @@
   "input.slash.nothink": "Turn off thinking for this reply on supported models",
   "input.slash.imagine": "Use image generation model for this message",
   "input.slash.library": "Search your document library",
+  "input.slash.web": "Search the web with your configured providers",
   "input.slash.sources": "Show the sources this chat can search",
   "input.slash.coder": "Send a task directly to Coder",
   "input.slash.coderTemporary": "Coder isn’t available in temporary chats",

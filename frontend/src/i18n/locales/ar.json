@@ -304,6 +304,7 @@
   "input.slash.nothink": "أوقف التفكير لهذا الرد في النماذج المدعومة",
   "input.slash.imagine": "استخدم نموذج توليد الصور لهذه الرسالة",
   "input.slash.library": "ابحث في مكتبة مستنداتك",
+  "input.slash.web": "ابحث في الويب باستخدام مزوّدي البحث الذين أعددتهم",
   "input.slash.sources": "اعرض المصادر المتاحة للبحث في هذه المحادثة",
   "input.slash.coder": "أرسل مهمة مباشرة إلى Coder",
   "input.slash.coderTemporary": "Coder غير متاح في المحادثات المؤقتة",
