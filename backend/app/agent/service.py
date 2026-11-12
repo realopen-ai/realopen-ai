@@ -742,6 +742,19 @@ async def run_agent_stream(
         else:
             library_query = command_parts[1]
             initial_tool = {"name": "rag_search", "arguments": {"query": library_query}}
+    elif command == "/web":
+        if notebook is not None:
+            error = "Web Search is unavailable in notebooks. Use the notebook's selected sources."
+        elif "use_websearch" not in available_tools:
+            error = "Web Search is disabled. Enable it in Brain → Tools to use /web."
+        elif len(command_parts) == 1:
+            error = "Enter a search query after /web."
+        else:
+            initial_tool = {
+                "name": "use_websearch",
+                "arguments": {"query": command_parts[1]},
+            }
+            selected_tools.add("use_websearch")
     elif command == "/coder":
         if temporary or not conversation_id:
             error = "Save this chat before using /coder."
@@ -1037,6 +1050,8 @@ async def run_agent_stream(
         )
     elif coder_task:
         system_prompt += "\nFor /coder, report the delegated workspace task result and its verified checks."
+    elif command == "/web":
+        system_prompt += "\n" + format_prompt("agent_web_command")
     if document_scope is not None:
         system_prompt += (
             "\nDocument Search is scoped to this chat's attachments for this turn. "

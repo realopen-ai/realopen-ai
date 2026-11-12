@@ -20,6 +20,7 @@ from app.agent.tools.artifacts import ReadArtifactTool
 from app.agent.tools.web_search import WebSearchTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.quizzes import CreateQuizTool
+from app.services import web_search
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
 from test_agent_protocol import agent as agent_fixture, script, call, run
@@ -1074,6 +1075,66 @@ async def test_library_command_searches_before_first_model_response(agent, monke
     assert args["query"] == "أين أجد FRYE؟"
     assert args["_attachment_ids"] is None
     assert "Found in catalog.txt." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_web_command_respects_saved_search_preferences(
+    agent, monkeypatch, enabled
+):
+    registry = ToolRegistry()
+    registry.register(WebSearchTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    prefs = {
+        "use_websearch": {
+            "enabled": enabled,
+            "always_load": False,
+            "tags": [],
+            "custom": {
+                "providers": {
+                    "searxng": {"enabled": False},
+                    "wikipedia": {"enabled": True, "language": "fr", "max_results": 2},
+                }
+            },
+        }
+    }
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: prefs)
+    monkeypatch.setattr(config_store, "get_tool_config", prefs.get)
+    wikipedia = AsyncMock(
+        return_value=(
+            "wikipedia",
+            [
+                {
+                    "title": "Paris",
+                    "url": "https://example.org/paris",
+                    "snippet": "France",
+                }
+            ],
+        )
+    )
+    searxng = AsyncMock()
+    monkeypatch.setattr(web_search, "search_wikipedia", wikipedia)
+    monkeypatch.setattr(web_search, "search_searxng", searxng)
+    captured = script(
+        monkeypatch, [[{"content": "Done.", "done": True}]] if enabled else []
+    )
+
+    events = await run([{"role": "user", "content": "/web Paris"}])
+
+    searxng.assert_not_awaited()
+    if enabled:
+        wikipedia.assert_awaited_once_with("Paris", language="fr", max_results=2)
+        assert any(
+            'Web search results for "Paris"' in message.get("content", "")
+            for message in captured[0]["messages"]
+        )
+    else:
+        wikipedia.assert_not_awaited()
+        assert not captured
+        assert any(
+            e.get("error", "").startswith("Web Search is disabled.") for e in events
+        )
     assert events[-1]["event"] == "done"
 
 
