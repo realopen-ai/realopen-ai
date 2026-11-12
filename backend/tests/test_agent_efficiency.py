@@ -1177,3 +1177,42 @@ async def test_sources_lists_current_temporary_attachments_without_inference(
     ]
     assert events[-1] == {"event": "done"}
     assert captured == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temporary", [False, True])
+async def test_coder_command_delegates_directly_only_in_saved_chat(
+    agent, monkeypatch, temporary
+):
+    import uuid
+
+    from app.agent.coder.agent import CoderAgent
+
+    registry = ToolRegistry()
+    coder = CoderAgent()
+    coder.execute = AsyncMock(return_value=ToolResult(True, "Workspace task complete."))
+    registry.register(coder)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    captured = script(
+        monkeypatch, [[{"content": "Done.", "done": True}]] if not temporary else []
+    )
+    ident = str(uuid.uuid4())
+    task = "Implement the health endpoint.\nKeep it public."
+    events = await run(
+        [{"role": "user", "content": f"/coder {task}"}],
+        conversation_id=ident,
+        temporary=temporary,
+    )
+    if temporary:
+        coder.execute.assert_not_awaited()
+        assert not captured
+        assert any(
+            e.get("error") == "Save this chat before using /coder." for e in events
+        )
+    else:
+        coder.execute.assert_awaited_once()
+        args = coder.execute.await_args.kwargs
+        assert args["task"] == args["_user_request"] == task
+        assert args["conversation_id"] == ident
+        assert "Workspace task complete." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"

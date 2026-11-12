@@ -722,8 +722,12 @@ async def run_agent_stream(
             selected_tools.add("rag_search")
 
     command_parts = last_user.strip().split(maxsplit=1)
+    command = command_parts[0].casefold() if command_parts else ""
     library_query = None
-    if command_parts and command_parts[0].casefold() == "/library":
+    coder_task = None
+    initial_tool = None
+    error = None
+    if command == "/library":
         if (
             notebook is not None
             or "rag_search" not in available_tools
@@ -735,11 +739,33 @@ async def run_agent_stream(
                 error = "Document Search is disabled. Enable it in Brain → Tools to use /library."
             else:
                 error = "Enter a search query after /library."
-            observe("finish", "failed", error)
-            yield _sse_event("error", {"error": error})
-            yield _sse_event("done", {})
-            return
-        library_query = command_parts[1]
+        else:
+            library_query = command_parts[1]
+            initial_tool = {"name": "rag_search", "arguments": {"query": library_query}}
+    elif command == "/coder":
+        if temporary or not conversation_id:
+            error = "Save this chat before using /coder."
+        elif notebook is not None:
+            error = (
+                "Use /coder in a regular saved chat. Coder is unavailable in notebooks."
+            )
+        elif "delegate_to_coder" not in available_tools:
+            error = "Coder is unavailable. Check Brain → Tools to use /coder."
+        elif len(command_parts) == 1:
+            error = "Enter a task after /coder."
+        else:
+            coder_task = command_parts[1]
+            initial_tool = {
+                "name": "delegate_to_coder",
+                "arguments": {"task": coder_task},
+            }
+            selected_tools.add("delegate_to_coder")
+
+    if error:
+        observe("finish", "failed", error)
+        yield _sse_event("error", {"error": error})
+        yield _sse_event("done", {})
+        return
 
     document_scope = None
     if notebook is None:
@@ -1009,6 +1035,8 @@ async def run_agent_stream(
             "\nFor the /library command, answer using the Document Search result. "
             "Cite matching excerpts or say that the search returned no relevant documents."
         )
+    elif coder_task:
+        system_prompt += "\nFor /coder, report the delegated workspace task result and its verified checks."
     if document_scope is not None:
         system_prompt += (
             "\nDocument Search is scoped to this chat's attachments for this turn. "
@@ -1136,8 +1164,8 @@ async def run_agent_stream(
             "agent_argument_repair", errors=error, retryable=str(retryable).lower()
         )
 
-    # The command's initial search is application-driven and costs no model round.
-    total_rounds = max_rounds + int(library_query is not None)
+    # The command's initial tool call is application-driven and costs no model round.
+    total_rounds = max_rounds + int(initial_tool is not None)
     for round_number in range(total_rounds):
         if round_number == total_rounds - 1:
             app_metrics.record_agent_rounds(max_rounds)
@@ -1322,14 +1350,11 @@ async def run_agent_stream(
                     },
                 )
 
-            if library_query and round_number == 0:
+            if initial_tool and round_number == 0:
                 native_tool_calls = [
                     {
                         "id": str(uuid.uuid4()),
-                        "function": {
-                            "name": "rag_search",
-                            "arguments": {"query": library_query},
-                        },
+                        "function": initial_tool,
                     }
                 ]
                 break
@@ -2121,7 +2146,7 @@ async def run_agent_stream(
 
             if tool_name == "delegate_to_coder":
                 # Original wording is application-owned, never a model rewrite.
-                exec_args["_user_request"] = last_user
+                exec_args["_user_request"] = coder_task or last_user
             elif tool_name == "create_quiz":
                 # Only application-owned successful source receipts can support
                 # web citations. Never accept model-supplied evidence.
