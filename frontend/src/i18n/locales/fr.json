@@ -305,6 +305,8 @@
   "input.slash.imagine": "Utiliser le modèle de génération d'images pour ce message",
   "input.slash.library": "Rechercher dans votre bibliothèque de documents",
   "input.slash.sources": "Afficher les sources consultables dans cette conversation",
+  "input.slash.coder": "Envoyer une tâche directement à Coder",
+  "input.slash.coderTemporary": "Coder n’est pas disponible dans les conversations temporaires",
   "input.sources.onePage": "1 page",
   "input.sources.pageCount": "{count} pages",
   "input.sources.oneChunk": "1 extrait",

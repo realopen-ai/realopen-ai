@@ -305,6 +305,8 @@
   "input.slash.imagine": "استخدم نموذج توليد الصور لهذه الرسالة",
   "input.slash.library": "ابحث في مكتبة مستنداتك",
   "input.slash.sources": "اعرض المصادر المتاحة للبحث في هذه المحادثة",
+  "input.slash.coder": "أرسل مهمة مباشرة إلى Coder",
+  "input.slash.coderTemporary": "Coder غير متاح في المحادثات المؤقتة",
   "input.sources.onePage": "صفحة واحدة",
   "input.sources.pageCount": "{count} صفحات",
   "input.sources.oneChunk": "مقطع واحد",

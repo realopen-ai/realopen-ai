@@ -23,6 +23,7 @@ import {
   FileText,
   Library,
   List,
+  Code2,
   PhoneCall,
   Square,
   Mic,
@@ -87,16 +88,23 @@ export const slashCommands: SlashCommand[] = [
     descriptionKey: "input.slash.sources",
     icon: <List className="w-4 h-4" />,
   },
+  {
+    name: "coder",
+    descriptionKey: "input.slash.coder",
+    icon: <Code2 className="w-4 h-4" />,
+  },
 ];
 
 // ─── Slash Command Menu ───────────────────────────────────────────
+
+type SlashCommandOption = SlashCommand & { disabledReasonKey?: string };
 
 function SlashCommandMenu({
   commands,
   selectedIndex,
   onSelect,
 }: {
-  commands: SlashCommand[];
+  commands: SlashCommandOption[];
   selectedIndex: number;
   onSelect: (cmd: SlashCommand) => void;
 }) {
@@ -144,17 +152,22 @@ function SlashCommandMenu({
                 key={cmd.name}
                 ref={i === selectedIndex ? selectedCommandRef : undefined}
                 onClick={() => onSelect(cmd)}
+                disabled={!!cmd.disabledReasonKey}
                 className={cn(
                   "w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors",
-                  i === selectedIndex
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  i === selectedIndex && "bg-accent",
+                  cmd.disabledReasonKey
+                    ? "cursor-not-allowed text-muted-foreground"
+                    : "text-foreground",
+                  i !== selectedIndex &&
+                    !cmd.disabledReasonKey &&
+                    "hover:bg-accent/50",
                 )}
               >
                 <div
                   className={cn(
                     "w-7 h-7 rounded-lg flex items-center justify-center shrink-0",
-                    i === selectedIndex
+                    i === selectedIndex && !cmd.disabledReasonKey
                       ? "bg-primary/15 text-primary"
                       : "bg-secondary text-muted-foreground",
                   )}
@@ -163,12 +176,10 @@ function SlashCommandMenu({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-medium text-foreground">
-                      /{cmd.name}
-                    </span>
+                    <span className="text-[13px] font-medium">/{cmd.name}</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground truncate">
-                    {translate(cmd.descriptionKey)}
+                  <p className="text-[11px] text-muted-foreground">
+                    {translate(cmd.disabledReasonKey ?? cmd.descriptionKey)}
                   </p>
                 </div>
               </button>
@@ -265,6 +276,8 @@ export function InputArea({
   onStartVoice,
   onStopResponse,
   sourceGrounded = false,
+  canDelegateToCoder = false,
+  temporary = false,
   taskActivity,
   saving = false,
 }: {
@@ -284,6 +297,8 @@ export function InputArea({
   onStopResponse: () => void;
   /** Notebook attachments are managed through its selected-source panel. */
   sourceGrounded?: boolean;
+  canDelegateToCoder?: boolean;
+  temporary?: boolean;
   taskActivity?: ReactNode;
   saving?: boolean;
 }) {
@@ -402,12 +417,25 @@ export function InputArea({
 
   const filteredCommands = useMemo(() => {
     if (!slashFilter && !showSlashMenu) return [];
-    return slashCommands.filter(
-      (cmd) =>
-        (!sourceGrounded || cmd.name !== "library") &&
-        cmd.name.startsWith(slashFilter),
-    );
-  }, [slashFilter, showSlashMenu, sourceGrounded]);
+    return slashCommands
+      .filter(
+        (cmd) =>
+          (!sourceGrounded || cmd.name !== "library") &&
+          (canDelegateToCoder || temporary || cmd.name !== "coder") &&
+          cmd.name.startsWith(slashFilter),
+      )
+      .map<SlashCommandOption>((cmd) =>
+        temporary && cmd.name === "coder"
+          ? { ...cmd, disabledReasonKey: "input.slash.coderTemporary" }
+          : cmd,
+      );
+  }, [
+    slashFilter,
+    showSlashMenu,
+    sourceGrounded,
+    canDelegateToCoder,
+    temporary,
+  ]);
 
   // Show menu when typing / at start
   useEffect(() => {
@@ -487,9 +515,12 @@ export function InputArea({
     });
   };
 
-  const commandNeedsText = ["/library", "/nothink"].includes(
+  const commandNeedsText = ["/library", "/nothink", "/coder"].includes(
     input.trim().toLowerCase(),
   );
+  const commandUnavailable =
+    !canDelegateToCoder &&
+    input.trimStart().split(/\s+/, 1)[0].toLowerCase() === "/coder";
 
   const handleSend = () => {
     if (dictation !== "idle") return;
@@ -497,7 +528,8 @@ export function InputArea({
     if (
       (!trimmed && (!canAttach || attachments.length === 0)) ||
       isStreaming ||
-      commandNeedsText
+      commandNeedsText ||
+      commandUnavailable
     )
       return;
 
@@ -547,9 +579,11 @@ export function InputArea({
         return;
       }
       if (e.key === "Tab" || e.key === "Enter") {
-        if (filteredCommands[selectedIndex]) {
-          e.preventDefault();
-          handleSlashSelect(filteredCommands[selectedIndex]);
+        const selected = filteredCommands[selectedIndex];
+        if (selected) {
+          if (e.key === "Enter" || !selected.disabledReasonKey)
+            e.preventDefault();
+          if (!selected.disabledReasonKey) handleSlashSelect(selected);
           return;
         }
       }
@@ -857,6 +891,7 @@ export function InputArea({
                 (!isStreaming &&
                   (dictation !== "idle" ||
                     commandNeedsText ||
+                    commandUnavailable ||
                     (!input.trim() &&
                       (!canAttach || attachments.length === 0))))
               }

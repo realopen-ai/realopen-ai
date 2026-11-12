@@ -1158,6 +1158,8 @@ export function ChatArea({
           />
         }
         sourceGrounded={notebookMode}
+        canDelegateToCoder={!temporary && !notebookMode && (home || !!conv)}
+        temporary={temporary}
         saving={conv?.saving}
         onSend={handleSend}
         isStreaming={isStreaming}
