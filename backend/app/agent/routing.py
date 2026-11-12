@@ -53,6 +53,19 @@ def words(text):
     return re.findall(r"[^\W_]+", str(text).casefold(), re.UNICODE)
 
 
+def user_message_content(content: str) -> str:
+    """Remove display prefixes for commands handled by the composer."""
+    parts = content.split(maxsplit=1)
+    if not parts:
+        return content
+    command = parts[0].casefold()
+    if command == "/shrug" and len(parts) == 1:
+        return r"¯\_(ツ)_/¯"
+    if command in {"/shrug", "/think", "/imagine"} and len(parts) == 2:
+        return parts[1]
+    return content
+
+
 def matches(phrase, text):
     """Phrase boundaries, not substrings like 'note' in 'denotes'."""
     parts = words(phrase)

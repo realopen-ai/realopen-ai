@@ -1075,3 +1075,23 @@ async def test_library_command_searches_before_first_model_response(agent, monke
     assert args["_attachment_ids"] is None
     assert "Found in catalog.txt." in json.dumps(captured[0]["messages"])
     assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_composer_command_prefixes_are_removed_from_model_messages(
+    agent, monkeypatch
+):
+    captured = script(monkeypatch, [[{"content": "Done", "done": True}]])
+    command = "/think Explain this code:\n\n    return value"
+    await run(
+        [
+            {"role": "user", "content": "/imagine A forest"},
+            {"role": "assistant", "content": "Done."},
+            {"role": "user", "content": command},
+        ],
+        trace_user_message=command,
+    )
+    contents = [message["content"] for message in captured[0]["messages"]]
+    assert "A forest" in contents
+    assert "Explain this code:\n\n    return value" in contents
+    assert command not in contents

@@ -443,6 +443,9 @@ async def run_agent_stream(
 
     resolved_model = await model_prefs.resolve_chat_request_model(model)
     messages = [dict(m) for m in messages]
+    for message in messages:
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            message["content"] = routing.user_message_content(message["content"])
     use_native_tools = _model_supports_native_tools(resolved_model)
     transient_text_models = set()
     observe("resolved_model", resolved_model)
@@ -468,7 +471,7 @@ async def run_agent_stream(
     # ── Select relevant tools ──
     user_msgs = [m for m in messages if m.get("role") == "user"]
     last_user = (
-        trace_user_message
+        routing.user_message_content(trace_user_message)
         if trace_user_message is not None
         else (user_msgs[-1].get("content", "") if user_msgs else "")
     )
