@@ -208,16 +208,15 @@ export function parseSlashCommand(input: string): ParsedSlashCommand {
   if (!trimmed.startsWith("/"))
     return { command: null, remainingContent: input };
 
-  const parts = trimmed.split(/\s+/);
-  const cmdName = parts[0].slice(1); // remove the /
-  const remaining = parts.slice(1).join(" ");
+  const [prefix] = trimmed.split(/\s+/, 1);
+  const cmdName = prefix.slice(1).toLowerCase();
 
   const cmd = slashCommands.find((c) => c.name === cmdName);
   if (!cmd) return { command: null, remainingContent: input };
 
   return {
     command: cmd,
-    remainingContent: remaining || input.replace(parts[0], "").trim(),
+    remainingContent: trimmed.slice(prefix.length).trimStart(),
   };
 }
 
@@ -463,15 +462,7 @@ export function InputArea({
     )
       return;
 
-    const { command, remainingContent } = parseSlashCommand(trimmed);
-    const contentToSend =
-      command && command.name !== "library"
-        ? remainingContent || trimmed.replace(/^\/\S+\s*/, "").trim() || trimmed
-        : trimmed;
-
-    const finalContent = command?.shrug
-      ? remainingContent || "¯\\_(ツ)_/¯"
-      : contentToSend;
+    const { command } = parseSlashCommand(trimmed);
 
     // Separate attachments into images and documents
     const images = attachments
@@ -481,7 +472,7 @@ export function InputArea({
       .filter((a) => a.type === "document")
       .map((a) => a.file);
 
-    onSend(finalContent || trimmed, {
+    onSend(trimmed, {
       modelOverride: command?.modelOverride,
       shrug: command?.shrug,
       images: canAttach && images.length > 0 ? images : undefined,

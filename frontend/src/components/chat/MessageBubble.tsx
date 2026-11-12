@@ -32,6 +32,7 @@ import { elapsedMilliseconds } from "@/lib/timing";
 import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { WebFetchDetail } from "@/components/chat/WebFetchDetail";
+import { parseSlashCommand } from "@/components/chat/InputArea";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
 import { formatWorkspaceTreeOutput } from "@/lib/workspaceTreeOutput";
@@ -1918,11 +1919,15 @@ export function MessageBubble({
 
   // ─── User Message ─────────────────────────────────────────────
   if (!isAssistant) {
+    const { command, remainingContent } =
+      message.role === "user" && message.modality !== "voice"
+        ? parseSlashCommand(message.content)
+        : { command: null, remainingContent: message.content };
     return (
       <div className="flex justify-end animate-fade-in group">
         <div className="relative max-w-[85%] md:max-w-[75%]">
           {/* Shrug overlay */}
-          {message.shrugOverlay && (
+          {(message.shrugOverlay || command?.shrug) && (
             <div className="text-center mb-1.5">
               <span
                 className="text-[28px] leading-none font-medium select-none"
@@ -1970,13 +1975,31 @@ export function MessageBubble({
           {message.digestProgress && message.digestProgress.length > 0 && (
             <DigestProgressIndicator items={message.digestProgress} />
           )}
-          <div className="rounded-xl bg-secondary px-4 py-2.5">
-            <p
-              className="whitespace-pre-wrap leading-relaxed"
-              style={{ fontSize: "var(--app-font-size)" }}
-            >
-              {message.content}
-            </p>
+          <div
+            className={cn(
+              "rounded-xl bg-secondary px-4 py-2.5",
+              command && "ring-1 ring-inset ring-primary/20",
+            )}
+          >
+            {command && (
+              <span
+                dir="ltr"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs font-medium text-primary [&_svg]:size-3.5"
+              >
+                {command.icon}/{command.name}
+              </span>
+            )}
+            {(!command || remainingContent) && (
+              <p
+                className={cn(
+                  "whitespace-pre-wrap leading-relaxed",
+                  command && "mt-1.5",
+                )}
+                style={{ fontSize: "var(--app-font-size)" }}
+              >
+                {remainingContent}
+              </p>
+            )}
           </div>
           {/* Copy icon */}
           <button

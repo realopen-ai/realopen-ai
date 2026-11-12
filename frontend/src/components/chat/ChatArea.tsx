@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { CoderTaskPanel } from "@/components/chat/CoderTaskPanel";
-import { InputArea } from "@/components/chat/InputArea";
+import { InputArea, parseSlashCommand } from "@/components/chat/InputArea";
 import { VoiceCallPanel } from "@/components/chat/VoiceCallPanel";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import {
@@ -940,7 +940,11 @@ export function ChatArea({
   useEffect(() => {
     const handler = (e: Event) => {
       const { content } = (e as CustomEvent).detail;
-      handleSend(content, { modelOverride: undefined, shrug: false });
+      const { command } = parseSlashCommand(content);
+      handleSend(content, {
+        modelOverride: command?.modelOverride,
+        shrug: command?.shrug,
+      });
     };
     window.addEventListener("regenerate-message", handler);
     return () => window.removeEventListener("regenerate-message", handler);
