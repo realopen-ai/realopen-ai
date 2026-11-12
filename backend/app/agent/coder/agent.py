@@ -45,8 +45,14 @@ from app.agent.protocol import (
     assistant_call_message,
     tool_result_message,
     normalize_native_calls,
+    model_messages,
 )
-from app.services.context_compactor import compact_conversation
+from app.services.context_compactor import (
+    compact_conversation,
+    context_budget,
+    estimate_request_tokens,
+)
+from app.services.coder_tasks import resumable_task
 from app.services.agent_activity import activity_events
 from app.db.models import Conversation, Sandbox, SandboxTask
 from app.db.session import async_session_factory
@@ -163,7 +169,9 @@ async def _record_command(
         logger.warning("Could not persist coder command history: %s", exc)
 
 
-async def _create_task(conversation_id: str, task_id: uuid.UUID, request: str):
+async def _create_task(
+    conversation_id: str, task_id: uuid.UUID, request: str, resume_id=None
+):
     async with async_session_factory() as db:
         conversation_uuid = uuid.UUID(conversation_id)
         conversation = await db.get(Conversation, conversation_uuid)
@@ -176,6 +184,12 @@ async def _create_task(conversation_id: str, task_id: uuid.UUID, request: str):
             {"key": f"conversation-sandbox:{conversation_uuid}"},
         )
         await db.refresh(conversation)
+        if resume_id:
+            previous = await resumable_task(db, resume_id, conversation_uuid)
+            if conversation.sandbox_id != previous.sandbox_id:
+                raise ValueError(
+                    "The original workspace must still be linked to this conversation."
+                )
         if not conversation.sandbox_id:
             workspace_name = f"{conversation.title or 'Coder'} workspace"
             sandbox = await provision_sandbox(
@@ -195,12 +209,19 @@ async def _create_task(conversation_id: str, task_id: uuid.UUID, request: str):
         )
         if active:
             raise ValueError("Another coding task is already active in this sandbox.")
+        if resume_id:
+            previous = await resumable_task(db, resume_id, conversation_uuid)
+            if previous.sandbox_id != sandbox.id:
+                raise ValueError(
+                    "The original workspace must still be linked to this conversation."
+                )
         db.add(
             SandboxTask(
                 id=task_id,
                 sandbox_id=sandbox.id,
                 conversation_id=conversation.id,
                 request=request,
+                resumed_from=resume_id,
                 status="running",
                 worklog=[],
             )
@@ -576,7 +597,20 @@ async def _save_progress(task_id: uuid.UUID, state: RunState) -> None:
         record.files_changed = state.files_changed
         record.tests_run = state.tests_run
         record.context_state = state.checkpoint()
+        record.progress = dict(state.progress)
         await db.commit()
+
+
+async def _pause_requested(task_id):
+    async with async_session_factory() as db:
+        current = await db.get(SandboxTask, task_id)
+        return bool(current and getattr(current, "stop_after_round", False))
+
+
+async def _monitor(task_id, state, **values):
+    state.progress.update(values)
+    state.progress["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    await _save_progress(task_id, state)
 
 
 async def _check_cancellation(task_id):
@@ -664,6 +698,7 @@ class CoderAgent(BaseTool):
         _event_queue=None,
         _parent_tool_call_id: str | None = None,
         _user_request: str | None = None,
+        _resume_task_id: str | None = None,
         **kwargs,
     ) -> ToolResult:
         if not task or not task.strip():
@@ -685,8 +720,54 @@ class CoderAgent(BaseTool):
             )
         task_id = uuid.uuid4()
         state = None
+        paused = False
+        resume_record = None
         try:
-            conversation, sandbox = await _create_task(conversation_id, task_id, task)
+            if _resume_task_id:
+                async with async_session_factory() as db:
+                    resume_record = await resumable_task(
+                        db, uuid.UUID(_resume_task_id), uuid.UUID(conversation_id)
+                    )
+                    task = resume_record.request
+                    _user_request = (
+                        resume_record.context_state.get("run_state") or {}
+                    ).get("original_request") or task
+            conversation, sandbox = await _create_task(
+                conversation_id,
+                task_id,
+                task,
+                **({"resume_id": resume_record.id} if resume_record else {}),
+            )
+            authoritative_request = _user_request or task
+            state = RunState(
+                explicit_constraints=explicit_choices(authoritative_request)
+            )
+            state.original_request = authoritative_request
+            if resume_record:
+                state = RunState.restore(
+                    resume_record.context_state,
+                    worklog=resume_record.worklog,
+                    files_changed=resume_record.files_changed,
+                    tests_run=resume_record.tests_run,
+                )
+                # Historical verification remains in the previous run. Workspace
+                # edits during a pause make it unsafe to claim it still passes.
+                state.validations.clear()
+                state.last_checks.clear()
+                state.memory.api_contract = None
+                state.memory.api_contract_status = None
+                state.successful_validation = False
+                state.preview_started = False
+                state.unverified_changes = bool(state.files_changed)
+                state.progress = {}
+            await _monitor(
+                task_id,
+                state,
+                phase="preparing",
+                action="start_workspace",
+                round=0,
+                max_rounds=coder_settings.effective().max_rounds,
+            )
             observe("coder_identity", task_id, sandbox.id)
             runtime = await sandbox_host.call("start", sandbox)
             sandbox.status = runtime.get("status", "running")
@@ -736,9 +817,15 @@ class CoderAgent(BaseTool):
                         "metadata": {"coder_web_catalog": True},
                     },
                 )
-            state = RunState(
-                explicit_constraints=explicit_choices(authoritative_request)
-            )
+            if resume_record:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": get_prompt("coder_resume"),
+                        "metadata": {"trusted": True, "agent_context": True},
+                    }
+                )
+            await _monitor(task_id, state, model=model)
             automatic_verification = verification_allowed(authoritative_request)
             try:
                 manifest = await sandbox_host.call(
@@ -876,8 +963,22 @@ class CoderAgent(BaseTool):
                 # The previous iteration has fully completed, including all
                 # of its tool calls. Persist it before beginning new work.
                 if last_round:
+                    await _save_progress(task_id, state)
                     checkpoint_round(last_round)
+                await _check_cancellation(task_id)
+                if await _pause_requested(task_id):
+                    paused = True
+                    state.stop_reason = "stop_after_round"
+                    final = "Paused at a round boundary. Workspace, saved plan and execution receipts are retained."
+                    break
                 last_round = _round + 1
+                await _monitor(
+                    task_id,
+                    state,
+                    round=last_round,
+                    phase="preparing",
+                    action="prepare_context",
+                )
                 round_marker = state.round_marker()
                 generated_event = None
                 native_tools = (
@@ -1002,6 +1103,24 @@ class CoderAgent(BaseTool):
                         if compacted:
                             # Save the accepted handoff before the next inference.
                             await _save_progress(task_id, state)
+                budget = context_budget(model, output_limit)
+                await _monitor(
+                    task_id,
+                    state,
+                    phase="checkpoint" if checkpoint_phase else "inference",
+                    action="save_plan" if checkpoint_phase else "generate",
+                    input_tokens=estimate_request_tokens(
+                        model_messages(
+                            inference_messages if checkpoint_phase else messages,
+                            native_tools,
+                        ),
+                        active_tools if native_tools else None,
+                    ),
+                    input_limit=budget.input_limit,
+                    context_window=budget.window,
+                    output_reserve=budget.output,
+                    token_estimate=True,
+                )
                 observe(
                     "begin_round",
                     _round + 1,
@@ -1290,6 +1409,7 @@ class CoderAgent(BaseTool):
                             break
                         continue
                     await _check_cancellation(task_id)
+                    await _monitor(task_id, state, phase="tool", action=name)
                     output, event = await _run_step(
                         sandbox=sandbox,
                         conversation=conversation,
@@ -1376,6 +1496,10 @@ class CoderAgent(BaseTool):
                             )
                         )
                 if not abort_reason:
+                    if automatic_verification and baseline_commands(generated_event):
+                        await _monitor(
+                            task_id, state, phase="tool", action="run_checks"
+                        )
                     abort_reason = await _baseline_verification(
                         generated=generated_event,
                         allowed=automatic_verification,
@@ -1408,7 +1532,12 @@ class CoderAgent(BaseTool):
             # A terminal round has no following iteration to checkpoint it.
             checkpoint_round(last_round)
 
-            if not failed and state.successful_validation and not state.preview_started:
+            if (
+                not paused
+                and not failed
+                and state.successful_validation
+                and not state.preview_started
+            ):
                 inferred = await infer_preview(sandbox)
                 if inferred:
                     command, port = inferred
@@ -1451,11 +1580,17 @@ class CoderAgent(BaseTool):
                         checkpoint_round(last_round)
 
             final = final + "\n\n" + state.verification_summary()
+            if paused:
+                state.progress.update(phase="paused", action="paused")
+            else:
+                state.progress.update(
+                    phase="failed" if failed else "completed", action="finished"
+                )
             await self._finish_task(task_id, state, final, failed)
             observe(
                 "finish",
-                "failed" if failed else "completed",
-                "coder task finished",
+                "paused" if paused else ("failed" if failed else "completed"),
+                "coder task paused" if paused else "coder task finished",
                 response=final if failed else None,
             )
             call.status = "error" if failed else "completed"
@@ -1515,7 +1650,11 @@ class CoderAgent(BaseTool):
                                     state,
                                     sandbox.id,
                                     failed=True,
-                                    reason="execution_error",
+                                    reason=(
+                                        "cancelled"
+                                        if "cancel" in str(exc).lower()
+                                        else "execution_error"
+                                    ),
                                 )
                             }
                             if state is not None
@@ -1532,12 +1671,17 @@ class CoderAgent(BaseTool):
     ) -> None:
         async with async_session_factory() as db:
             record = await db.get(SandboxTask, task_id)
-            record.status = "failed" if failed else "completed"
+            record.status = (
+                "paused"
+                if state.stop_reason == "stop_after_round"
+                else ("failed" if failed else "completed")
+            )
             record.summary, record.completed_at = final, datetime.utcnow()
             record.worklog = state.worklog
             record.files_changed = state.files_changed
             record.tests_run = state.tests_run
             record.context_state = state.checkpoint()
+            record.progress = dict(state.progress)
             await db.commit()
 
     @staticmethod

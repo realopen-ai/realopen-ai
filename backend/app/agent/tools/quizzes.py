@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
+from app.services.temporary_chats import stage_learning_result
 from app.learn.quizzes import QuizInput, QUESTION_SCHEMA, save_quiz
 from app.learn.quiz_sources import (
     validate_web_sources,
@@ -76,6 +77,16 @@ class CreateQuizTool(BaseTool):
                 source_conversation_id=conversation_id,
             )
             validate_web_sources(body.questions, _evidence)
+            if temporary := kwargs.get("_temporary_chat"):
+                return stage_learning_result(
+                    temporary,
+                    call,
+                    body,
+                    save_quiz,
+                    "quiz",
+                    "quiz_id",
+                    question_count=len(body.questions),
+                )
             async with async_session_factory() as db:
                 quiz = await save_quiz(db, body)
                 await attach_generated(db, conversation_id, "quiz", quiz.id)

@@ -122,7 +122,16 @@ def launch(cfg, dev=False, install=True, migrate=False):
                     "Frontend build missing; run start-native setup before --no-install"
                 )
             if dev:
-                command += ["--reload", "--reload-dir", str(cfg.root / "backend/app")]
+                app_dir = cfg.root / "backend/app"
+                command += [
+                    "--reload",
+                    "--reload-dir",
+                    str(app_dir),
+                    "--reload-exclude",
+                    str(app_dir / "agent/coder/starters"),
+                    "--timeout-graceful-shutdown",
+                    "10",
+                ]
             backend = processes.start(
                 "backend", command, cfg.root / "backend", env, port
             )

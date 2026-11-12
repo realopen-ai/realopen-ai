@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
 from app.db.session import async_session_factory
+from app.services.temporary_chats import stage_learning_result
 from app.learn.notes import NoteInput, create_note
 from app.learn.service import check_sources
 from app.db.models import DocumentChunk
@@ -19,6 +20,48 @@ from app.services.artifact_refs import (
 from app.learn.notebooks import attach_generated
 
 logger = logging.getLogger(__name__)
+
+
+async def _normalize_note_sources(db, body):
+    invalid_source = False
+    # Optional model-supplied attribution is best-effort, unlike
+    # the strict manual API. Never drop the trusted conversation,
+    # title/content, or swallow infrastructure/transaction failures.
+    if body.source_document_id:
+        try:
+            await check_sources(db, body)
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404, 422}:
+                raise
+            body.source_document_id = None
+            body.source_chunk_id = None
+            body.source_page = None
+            invalid_source = True
+    if body.source_chunk_id:
+        chunk = await db.get(DocumentChunk, body.source_chunk_id)
+        if chunk is None or chunk.document_id != body.source_document_id:
+            body.source_chunk_id = None
+            body.source_page = None
+            invalid_source = True
+        else:
+            body.source_page = chunk.page_number
+    if body.source_artifact:
+        try:
+            await validate_reference(
+                db, body.source_artifact, body.source_conversation_id
+            )
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404, 422}:
+                raise
+            body.source_artifact = None
+            invalid_source = True
+    return invalid_source
+
+
+async def _save_staged_note(db, body):
+    body = body.model_copy()
+    await _normalize_note_sources(db, body)
+    return await create_note(db, body)
 
 
 class CreateStudyNoteTool(BaseTool):
@@ -111,38 +154,14 @@ class CreateStudyNoteTool(BaseTool):
             )
             if not body.content:
                 raise ValueError("Provide study note content")
+            if temporary := kwargs.get("_temporary_chat"):
+                return stage_learning_result(
+                    temporary, call, body, _save_staged_note, "study_note", "note_id"
+                )
             async with async_session_factory() as db:
-                # Optional model-supplied attribution is best-effort, unlike
-                # the strict manual API. Never drop the trusted conversation,
-                # title/content, or swallow infrastructure/transaction failures.
-                if body.source_document_id:
-                    try:
-                        await check_sources(db, body)
-                    except HTTPException as exc:
-                        if exc.status_code not in {403, 404, 422}:
-                            raise
-                        body.source_document_id = None
-                        body.source_chunk_id = None
-                        body.source_page = None
-                        invalid_source = True
-                if body.source_chunk_id:
-                    chunk = await db.get(DocumentChunk, body.source_chunk_id)
-                    if chunk is None or chunk.document_id != body.source_document_id:
-                        body.source_chunk_id = None
-                        body.source_page = None
-                        invalid_source = True
-                    else:
-                        body.source_page = chunk.page_number
-                if body.source_artifact:
-                    try:
-                        await validate_reference(
-                            db, body.source_artifact, conversation_id
-                        )
-                    except HTTPException as exc:
-                        if exc.status_code not in {403, 404, 422}:
-                            raise
-                        body.source_artifact = None
-                        invalid_source = True
+                invalid_source = (
+                    await _normalize_note_sources(db, body) or invalid_source
+                )
                 note = await create_note(db, body)
                 await attach_generated(db, conversation_id, "note", note.id)
                 await db.commit()

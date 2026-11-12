@@ -213,3 +213,102 @@ async def test_rag_tool_search_exception_returns_error_result():
     assert result.tool_call is not None
     assert result.tool_call.status == "error"
     assert "DB exploded" in result.tool_call.error
+
+
+@pytest.mark.asyncio
+async def test_temporary_exact_search_stays_with_selected_attachment(monkeypatch):
+    from io import BytesIO
+
+    from fastapi import UploadFile
+    from app.services.temporary_chats import TemporaryChat
+
+    chat = TemporaryChat(uuid.uuid4())
+    target, other = await chat.attach(
+        [
+            (UploadFile(BytesIO(b"Morgan\n"), filename="target.txt"), False),
+            (UploadFile(BytesIO(b"FRYE\n"), filename="other.txt"), False),
+        ],
+        message_index=0,
+    )
+    search_library = AsyncMock(side_effect=AssertionError("Library search ran"))
+    monkeypatch.setattr(rag, "search_documents", search_library)
+
+    tool = RagSearchTool()
+    missing = await tool.execute(
+        query="Does the attached file contain FRYE?",
+        exact_text="FRYE",
+        _temporary_chat=chat,
+        _attachment_ids=[target.id],
+    )
+    assert missing.success
+    assert "No exact match" in missing.output
+    assert missing.tool_call.rag_sources == []
+
+    found = await tool.execute(
+        query="Find Frye",
+        exact_text="Frye",
+        _temporary_chat=chat,
+        _attachment_ids=[other.id],
+    )
+    assert found.success
+    assert "FRYE" in found.output
+    assert [source["document_id"] for source in found.tool_call.rag_sources] == [
+        str(other.id)
+    ]
+    search_library.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_saved_exact_search_excludes_other_documents(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.db.models import Document, DocumentChunk
+
+    engine = create_engine("sqlite://")
+    Document.__table__.create(engine)
+    DocumentChunk.__table__.create(engine)
+    target_id, other_id = uuid.uuid4(), uuid.uuid4()
+    with Session(engine) as db:
+        for identifier, filename, content in (
+            (target_id, "target.txt", "Morgan\nDiscount 50%"),
+            (other_id, "other.txt", "FRYE\nDiscount 500"),
+        ):
+            db.add(
+                Document(
+                    id=identifier,
+                    filename=filename,
+                    original_filename=filename,
+                    file_path=filename,
+                    digestion_status="ready",
+                )
+            )
+            db.add(DocumentChunk(document_id=identifier, text=content))
+        db.commit()
+        db_context = AsyncMock()
+        db_context.__aenter__.return_value = AsyncMock(
+            execute=AsyncMock(side_effect=db.execute)
+        )
+        monkeypatch.setattr(
+            "app.agent.tools.rag_search.async_session_factory", lambda: db_context
+        )
+        tool = RagSearchTool()
+        missing = await tool.execute(
+            query="Does the attached file contain FRYE?",
+            exact_text="FRYE",
+            _attachment_ids=[target_id],
+        )
+        assert missing.success
+        assert "No exact match" in missing.output
+        assert not missing.tool_call.rag_sources
+
+        found = await tool.execute(
+            query="Find the discount",
+            exact_text="50%",
+            _attachment_ids=[target_id, other_id],
+        )
+        assert found.success
+        assert "Discount 50%" in found.output
+        assert [source["document_id"] for source in found.tool_call.rag_sources] == [
+            str(target_id)
+        ]

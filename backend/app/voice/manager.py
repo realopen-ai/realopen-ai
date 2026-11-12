@@ -18,9 +18,10 @@ import logging
 import uuid as uuid_mod
 from typing import Dict, Optional
 
-from fastapi import WebSocket
+from fastapi import HTTPException, WebSocket
 
 from app.voice.session import VoiceSession
+from app.services.temporary_chats import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class VoiceSessionManager:
         self._lock = asyncio.Lock()
 
     async def get_or_create(
-        self, conversation_id: str, ws: WebSocket
+        self, conversation_id: str, ws: WebSocket, *, temporary: bool = False
     ) -> Optional[VoiceSession]:
         """Return the session for this conversation, creating it when none
         is live. Returns None when the request must be rejected (a live
@@ -55,7 +56,23 @@ class VoiceSessionManager:
             except (ValueError, TypeError, AttributeError):
                 await self._reject(ws, key, code="invalid_conversation_id")
                 return None
-            session = VoiceSession(conv_uuid, ws)
+            if temporary:
+                try:
+                    chat = get_session(conv_uuid)
+                except HTTPException as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "code": "temporary_chat_limit",
+                            "message": exc.detail,
+                            "fatal": True,
+                        }
+                    )
+                    await ws.close(code=1008)
+                    return None
+                session = VoiceSession(conv_uuid, ws, temporary_chat=chat)
+            else:
+                session = VoiceSession(conv_uuid, ws)
             self._sessions[key] = session
             logger.info(
                 "voice: session created for conversation %s (active=%d)",
@@ -73,8 +90,7 @@ class VoiceSessionManager:
                     "type": "error",
                     "code": code,
                     "message": (
-                        "A voice session is already active for this "
-                        "conversation."
+                        "A voice session is already active for this " "conversation."
                         if code == "session_exists"
                         else f"conversation_id is not a valid UUID: {key}"
                     ),
@@ -110,9 +126,7 @@ class VoiceSessionManager:
 
     @property
     def active_count(self) -> int:
-        return sum(
-            1 for s in self._sessions.values() if not s.closed
-        )
+        return sum(1 for s in self._sessions.values() if not s.closed)
 
 
 # Global singleton wired into app/main.py's /ws/voice endpoint.

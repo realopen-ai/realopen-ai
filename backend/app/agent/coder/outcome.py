@@ -2,8 +2,11 @@
 
 
 def execution_outcome(state, sandbox_id, *, failed, reason=None):
+    paused = state.stop_reason == "stop_after_round"
     reason = reason or (
-        (state.stop_reason or "verification_incomplete") if failed else "completed"
+        "stop_after_round"
+        if paused
+        else (state.stop_reason or "verification_incomplete") if failed else "completed"
     )
     guard = reason in {
         "repeated_available_evidence",
@@ -12,7 +15,11 @@ def execution_outcome(state, sandbox_id, *, failed, reason=None):
         "max_rounds",
     }
     return {
-        "status": "stopped" if guard else ("failed" if failed else "completed"),
+        "status": (
+            "paused"
+            if paused
+            else ("stopped" if guard else ("failed" if failed else "completed"))
+        ),
         "stop_reason": reason,
         "sandbox_id": str(sandbox_id),
         "workspace_retained": True,

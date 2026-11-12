@@ -6,6 +6,7 @@ import {
   updateConversationTitle as apiUpdateConversationTitle,
   updateConversationFlags as apiUpdateConversationFlags,
   fetchConversationMessages,
+  importTemporaryConversation,
   fetchConversationDetail,
   fetchModules as apiFetchModules,
   toggleModule as apiToggleModule,
@@ -197,6 +198,8 @@ export interface Deliverable {
 export interface Conversation {
   id: string;
   isNotebook?: boolean;
+  temporary?: boolean;
+  saving?: boolean;
   title: string;
   messages: Message[];
   model: string;
@@ -235,7 +238,8 @@ interface ChatState {
 
   // Actions
   loadConversations: () => Promise<void>;
-  createConversation: () => Promise<string>;
+  createConversation: (temporary?: boolean) => Promise<string>;
+  saveTemporaryConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   setActiveConversation: (id: string | null) => void;
   loadMessages: (conversationId: string) => Promise<void>;
@@ -480,6 +484,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoadingModules: false,
 
   loadConversations: async () => {
+    const temporaryIds = new Set(
+      get()
+        .conversations.filter((c) => c.temporary)
+        .map((c) => c.id),
+    );
     set({ isLoadingConversations: true });
     try {
       // Fetch active + archived conversations in parallel (the sidebar
@@ -492,14 +501,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const dtos = [...activeDtos, ...archivedDtos];
       const newConvs = dtos.map(dtoToConversation);
       set((s) => ({
-        conversations: newConvs.map((newConv) => {
-          // Preserve messages from existing conversations in store
-          const existing = s.conversations.find((c) => c.id === newConv.id);
-          if (existing && existing.messages.length > 0) {
-            return { ...newConv, messages: existing.messages };
-          }
-          return newConv;
-        }),
+        conversations: [
+          ...s.conversations.filter(
+            (c) =>
+              (c.temporary || temporaryIds.has(c.id)) &&
+              !newConvs.some((remote) => remote.id === c.id),
+          ),
+          ...newConvs.map((newConv) => {
+            // Preserve messages from existing conversations in store
+            const existing = s.conversations.find((c) => c.id === newConv.id);
+            if (existing && existing.messages.length > 0) {
+              return existing.saving
+                ? existing
+                : { ...newConv, messages: existing.messages };
+            }
+            return newConv;
+          }),
+        ],
         isLoadingConversations: false,
       }));
     } catch {
@@ -507,30 +525,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  createConversation: async () => {
-    const state = get();
-    try {
-      const dto = await apiCreateConversation("New Chat", state.selectedModel);
-      if (dto) {
-        const conv = dtoToConversation(dto);
-        set((s) => ({
-          conversations: [conv, ...s.conversations],
-          activeConversationId: conv.id,
-        }));
-        return conv.id;
+  createConversation: async (temporary = false) => {
+    if (!temporary) {
+      try {
+        const dto = await apiCreateConversation(
+          "New Chat",
+          get().selectedModel,
+        );
+        if (dto) {
+          const conv = dtoToConversation(dto);
+          set((s) => ({
+            conversations: [conv, ...s.conversations],
+            activeConversationId: conv.id,
+          }));
+          return conv.id;
+        }
+      } catch {
+        /* fallback below */
       }
-    } catch {
-      /* fallback below */
     }
-    // Fallback: create a local-only conversation
-    const id = `local-${Date.now()}`;
+    const id = temporary ? crypto.randomUUID() : `local-${Date.now()}`;
+    const now = Date.now();
     const conv: Conversation = {
       id,
+      temporary,
       title: "New Chat",
       messages: [],
       model: get().selectedModel,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       pinned: false,
       archived: false,
       pinnedAt: null,
@@ -543,7 +566,75 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return id;
   },
 
+  saveTemporaryConversation: async (id) => {
+    const conversation = get().conversations.find((c) => c.id === id);
+    if (
+      !conversation?.temporary ||
+      conversation.saving ||
+      !conversation.messages.length ||
+      conversation.messages.some((m) => m.isStreaming)
+    )
+      return;
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, saving: true } : c,
+      ),
+    }));
+    try {
+      const saved = await importTemporaryConversation({
+        id,
+        title: conversation.title,
+        model: conversation.model,
+        messages: conversation.messages.flatMap((message) => {
+          if (message.role === "system") return [];
+          return [
+            {
+              role: message.role,
+              content: message.content,
+              model: message.model,
+              modality: message.modality,
+              has_image: message.hasImage,
+              has_document: message.hasDocument,
+              image_count: message.imageCount,
+              document_count: message.documentCount,
+              blocks: message.blocks?.map((block) => ({
+                type: block.type,
+                content: block.content,
+                duration: block.duration,
+                tool_call: block.toolCall ? { ...block.toolCall } : undefined,
+              })),
+              deliverables: message.deliverables,
+              generation_duration: message.generationDuration,
+              completion_status:
+                message.completionStatus === "streaming"
+                  ? "interrupted"
+                  : message.completionStatus,
+            },
+          ];
+        }),
+      });
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id
+            ? {
+                ...dtoToConversation(saved.conversation),
+                messages: saved.messages.map(dtoToMessage),
+              }
+            : c,
+        ),
+      }));
+    } finally {
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id && c.saving ? { ...c, saving: false } : c,
+        ),
+      }));
+    }
+  },
+
   deleteConversation: async (id) => {
+    const conv = get().conversations.find((c) => c.id === id);
+    if (conv?.saving) return;
     // Optimistically remove from local state
     set((s) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
@@ -553,7 +644,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         s.activeConversationId === id ? null : s.activeConversationId,
     }));
     // Delete from backend
-    await apiDeleteConversation(id);
+    if (conv?.temporary) {
+      void fetch(`/api/chat/temporary/${id}/discard`, { method: "POST" }).catch(
+        () => {},
+      );
+    } else {
+      await apiDeleteConversation(id);
+    }
   },
 
   setActiveConversation: (id) => {
@@ -561,13 +658,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Load messages if not yet loaded
     if (id) {
       const conv = get().conversations.find((c) => c.id === id);
-      if (conv && conv.messages.length === 0) {
+      if (conv && !conv.temporary && conv.messages.length === 0) {
         get().loadMessages(id);
       }
     }
   },
 
   loadMessages: async (conversationId) => {
+    if (get().conversations.some((c) => c.id === conversationId && c.temporary))
+      return;
     try {
       const dtos = await fetchConversationMessages(conversationId);
       const messages = dtos.map(dtoToMessage);
@@ -671,13 +770,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const clean = (title ?? "").trim();
     if (!clean) return;
     const conv = get().conversations.find((c) => c.id === id);
-    if (!conv || conv.title === clean) return;
+    if (!conv || conv.saving || conv.title === clean) return;
     // Optimistic local update
     set((s) => ({
       conversations: s.conversations.map((c) =>
         c.id === id ? { ...c, title: clean } : c,
       ),
     }));
+    if (conv.temporary) return;
     const ok = await apiUpdateConversationTitle(id, clean);
     if (!ok) {
       // Revert on failure
@@ -691,7 +791,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   togglePinConversation: async (id) => {
     const conv = get().conversations.find((c) => c.id === id);
-    if (!conv) return;
+    if (!conv || conv.temporary) return;
     const next = !conv.pinned;
     const prev = {
       pinned: conv.pinned,
@@ -726,7 +826,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   toggleArchiveConversation: async (id) => {
     const conv = get().conversations.find((c) => c.id === id);
-    if (!conv) return;
+    if (!conv || conv.temporary) return;
     const next = !conv.archived;
     const prev = {
       pinned: conv.pinned,

@@ -160,6 +160,7 @@ export class VoiceSessionClient {
   // WebSocket
   private ws: WebSocket | null = null;
   private conversationId = "";
+  private temporaryHistory?: { role: string; content: string }[];
   private started = false;
   private stopping = false;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -251,9 +252,13 @@ export class VoiceSessionClient {
    * be called from a user gesture so the AudioContext can start and the
    * mic permission prompt has a click context.
    */
-  async connect(conversationId: string): Promise<void> {
+  async connect(
+    conversationId: string,
+    temporaryHistory?: { role: string; content: string }[],
+  ): Promise<void> {
     if (this.destroyed) throw new Error("client destroyed");
     this.conversationId = conversationId;
+    this.temporaryHistory = temporaryHistory;
     this.stopping = false;
     log(`connect  convId=${conversationId}`);
 
@@ -394,6 +399,7 @@ export class VoiceSessionClient {
       channels: 1,
       format: "pcm_s16le",
       playback_ack: true,
+      history: this.temporaryHistory,
     });
     log("start frame sent");
   }
@@ -451,7 +457,7 @@ export class VoiceSessionClient {
 
   private socketUrl(): string {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${location.host}/ws/voice?conversation_id=${encodeURIComponent(this.conversationId)}`;
+    return `${proto}://${location.host}/ws/voice?conversation_id=${encodeURIComponent(this.conversationId)}${this.temporaryHistory ? "&temporary=true" : ""}`;
   }
 
   private openSocket(): Promise<void> {

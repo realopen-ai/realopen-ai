@@ -14,6 +14,7 @@ import { WorkspacePage } from "@/components/workspace/WorkspacePage";
 import { LearnPage } from "@/components/learn/LearnPage";
 import { MobileTabBar } from "@/components/layout/MobileTabBar";
 import { FileExplorer } from "@/components/file-explorer/FileExplorer";
+import { connectModelManagerEvents } from "@/store/modelManagerStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
@@ -43,6 +44,7 @@ function TerminalLoader() {
 }
 
 export function AppLayout() {
+  useEffect(connectModelManagerEvents, []);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);

@@ -295,6 +295,7 @@ def env(monkeypatch, db_override):
                 "model": model,
                 "images": images,
                 "conversation_id": conversation_id,
+                "attachment_ids": kw.get("attachment_ids"),
             }
         )
         if e.agent_error is not None:
@@ -1134,6 +1135,7 @@ async def test_multipart_document_digestion_with_progress(client, env):
     done = [ev for ev in events if ev.get("event") == "document_digest_done"]
     assert done and done[0]["document_id"] == str(DOC_ID)
     assert done[0]["total_chunks"] == 3
+    assert env.agent_calls[0]["attachment_ids"] == [DOC_ID]
 
     # a system hint about the fresh document was appended for the agent
     agent_messages = env.agent_calls[0]["messages"]
@@ -1677,3 +1679,234 @@ def test_log_helper_falls_back_on_format_mismatch(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[chat] bad %s %s ('onlyone',)" in out
     chat_module.logger.debug.assert_called_once_with("bad %s %s", "onlyone")
+
+
+@pytest.mark.asyncio
+async def test_temporary_stream_is_unlinked_and_can_be_discarded(
+    client, env, monkeypatch
+):
+    from app.services import temporary_chats
+
+    ident = uuid.uuid4()
+    received = {}
+
+    async def agent(**kwargs):
+        received.update(kwargs)
+        yield 'data: {"event":"content","content":"private reply"}\n\n'
+
+    monkeypatch.setattr(chat_module, "run_agent_stream", agent)
+    response = await client.post(
+        "/api/chat/temporary/stream",
+        json={
+            "temporary_id": str(ident),
+            "messages": [{"role": "user", "content": "private request"}],
+        },
+    )
+    assert response.status_code == 200
+    assert "private reply" in response.text
+    assert received["temporary"] is True
+    assert received["temporary_chat"].id == ident
+    assert received["conversation_id"] is None
+    assert env.persists == []
+    assert env.title_calls == []
+    assert env.start_stream_calls == []
+    discarded = await client.post(f"/api/chat/temporary/{ident}/discard")
+    assert discarded.status_code == 204
+    assert temporary_chats.get_session(ident, create=False) is None
+
+
+@pytest.mark.asyncio
+async def test_save_temporary_chat_promotes_staged_output_once(
+    client, env, monkeypatch
+):
+    from app.db.models import Message
+    from app.services import temporary_chats
+
+    ident = uuid.uuid4()
+    session = temporary_chats.get_session(ident)
+    persist = AsyncMock(
+        return_value={"type": "study_note", "note_id": str(uuid.uuid4())}
+    )
+    output_id = session.stage_output("Study note", persist)
+    env.request_db.scalar = AsyncMock(side_effect=[ident, None])
+    env.request_db.flush = AsyncMock()
+    env.request_db.rollback = AsyncMock()
+    rows = []
+
+    async def add_message(db, conversation_id, **values):
+        row = Message(id=uuid.uuid4(), conversation_id=conversation_id, **values)
+        rows.append(row)
+        return row
+
+    monkeypatch.setattr(chat_module.conv_service, "add_message", add_message)
+    monkeypatch.setattr(
+        chat_module.conv_service, "get_messages", AsyncMock(return_value=rows)
+    )
+    monkeypatch.setattr(
+        chat_module.conv_service,
+        "get_conversation",
+        AsyncMock(return_value=make_conv(id=ident)),
+    )
+    monkeypatch.setattr(
+        chat_module.conv_service,
+        "message_to_dict",
+        AsyncMock(side_effect=lambda row: {"blocks": row.blocks}),
+    )
+    body = {
+        "id": str(ident),
+        "title": "Study chat",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "I created a note.",
+                "blocks": [
+                    {
+                        "type": "tool_call",
+                        "tool_call": {
+                            "genResults": [
+                                {
+                                    "type": "temporary_output",
+                                    "temporary_output_id": output_id,
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    for _ in range(2):
+        response = await client.post("/api/conversations/import-temporary", json=body)
+        assert response.status_code == 200, response.text
+        result = response.json()["messages"][0]["blocks"][0]["tool_call"]["genResults"][
+            0
+        ]
+        assert result == persist.return_value
+    persist.assert_awaited_once_with(env.request_db, ident)
+    assert len(rows) == 1
+    assert temporary_chats.get_session(ident, create=False) is None
+
+
+@pytest.mark.asyncio
+async def test_temporary_document_upload_streams_ingestion_progress(client, env):
+    ident = uuid.uuid4()
+    response = await client.post(
+        "/api/chat/temporary/stream/multipart",
+        data={
+            "temporary_id": str(ident),
+            "messages": json.dumps([{"role": "user", "content": "Read my file"}]),
+        },
+        files={"documents": ("friends.txt", b"Frye\nMorgan\n", "text/plain")},
+    )
+    try:
+        assert response.status_code == 200
+        events = sse_events(response.text)
+        start, done = events[:2]
+        assert start["event"] == "document_digest_progress"
+        assert start["filename"] == "friends.txt"
+        assert start["stage"] == "started"
+        assert done["event"] == "document_digest_done"
+        assert done["filename"] == start["filename"]
+        assert done["total_chunks"] > 0
+        assert env.agent_calls[0]["attachment_ids"] == [uuid.UUID(done["document_id"])]
+        assert not env.persists
+    finally:
+        await client.post(f"/api/chat/temporary/{ident}/discard")
+
+
+@pytest.mark.asyncio
+async def test_temporary_report_download_uses_session_file(client, env):
+    from app.services import temporary_chats
+
+    session = temporary_chats.get_session(uuid.uuid4())
+    report_id = uuid.uuid4()
+    path = session.reports_dir() / "generated.pdf"
+    path.write_bytes(b"temporary report")
+    session.reports[str(report_id)] = {
+        "filename": "Report.pdf",
+        "file_path": "reports/generated.pdf",
+    }
+    url = f"/api/chat/temporary/{session.id}/reports/{report_id}"
+    try:
+        response = await client.get(url)
+        assert response.status_code == 200
+        assert response.content == b"temporary report"
+        assert response.headers["cache-control"] == "no-store"
+
+        path.unlink()
+        assert (await client.get(url)).status_code == 404
+    finally:
+        temporary_chats.discard_session(session.id)
+
+
+@pytest.mark.asyncio
+async def test_sources_command_and_reply_are_saved_without_background_generation(
+    client, env
+):
+    content = "**Chat attachments**"
+    tool = {
+        "id": "sources",
+        "type": "file_read",
+        "toolName": "list_search_sources",
+        "status": "completed",
+        "output": json.dumps(
+            [{"id": str(DOC_ID), "kind": "document", "name": "report.txt"}]
+        ),
+    }
+    env.agent_events = [
+        {"event": "message", "message": {"role": "assistant", "content": content}},
+        {"event": "tool_call", "tool_call": tool},
+        {"event": "done"},
+    ]
+    response = await client.post(
+        "/api/chat/stream",
+        json={
+            "conversation_id": str(CONV_ID),
+            "messages": [{"role": "user", "content": "/sources"}],
+        },
+    )
+    assert response.status_code == 200
+    assert content in [
+        e["message"]["content"]
+        for e in sse_events(response.text)
+        if e.get("event") == "message"
+    ]
+    assert [(m["role"], m["content"]) for m in env.persists] == [
+        ("user", "/sources"),
+        ("assistant", content),
+    ]
+    assert env.persists[-1]["blocks"][-1]["tool_call"] == tool
+    assert env.title_calls == []
+    assert env.memory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_temporary_document_thumbnail_stays_with_its_session(client, monkeypatch):
+    from app.services.temporary_chats import Attachment, discard_session, get_session
+
+    session = get_session(uuid.uuid4())
+    other = get_session(uuid.uuid4())
+    attachment = Attachment(uuid.uuid4(), "example.txt", b"example", False, 0, [], 1)
+    session.attachments.append(attachment)
+
+    async def render(path):
+        assert path.suffix == ".txt"
+        assert path.read_bytes() == b"example"
+        return b"jpeg preview"
+
+    preview = AsyncMock(side_effect=render)
+    monkeypatch.setattr(chat_module, "render_document_thumbnail", preview)
+    suffix = f"/documents/{attachment.id}/thumbnail"
+    try:
+        assert (
+            await client.get(f"/api/chat/temporary/{other.id}{suffix}")
+        ).status_code == 404
+        for _ in range(2):
+            response = await client.get(f"/api/chat/temporary/{session.id}{suffix}")
+            assert response.status_code == 200
+            assert response.content == b"jpeg preview"
+            assert response.headers["cache-control"] == "no-store"
+        preview.assert_awaited_once()
+    finally:
+        discard_session(session.id)
+        discard_session(other.id)

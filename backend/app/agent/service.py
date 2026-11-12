@@ -14,9 +14,11 @@ import re
 import time
 import uuid
 from copy import deepcopy
+from datetime import UTC
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
+from sqlalchemy import select
 
 from app.agent.base import ToolCall, ToolType, get_tool_registry
 from app.agent.protocol import (
@@ -60,13 +62,20 @@ from app.services.context_compactor import (
 )
 from app.services import model_prefs
 from app.services import providers
+from app.services.temporary_chats import (
+    READ_TOOLS,
+    STAGED_TOOLS,
+    TemporaryChat,
+    report_output_directory,
+)
 from app.services.report_evidence import evidence_records
 from app.services import skills as skill_store
 from app.services.conversation_memory import build_cross_session_context
 from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
+from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
-from app.learn.notebooks import for_conversation
+from app.learn.notebooks import for_conversation, source_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +423,85 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
     return d
 
 
+async def _list_search_sources(
+    conversation_id, notebook, document_scope, temporary_chat
+):
+    documents = []
+    sources = []
+    if notebook is not None:
+        heading = "Selected notebook sources"
+        async with async_session_factory() as db:
+            page = await source_catalog(db, conversation_id, limit=50)
+            items = page["items"] if page else []
+            document_ids = {
+                uuid.UUID(item["document_id"]) for item in items if item["document_id"]
+            }
+            if document_ids:
+                documents = (
+                    await db.scalars(
+                        select(Document).where(Document.id.in_(document_ids))
+                    )
+                ).all()
+        sources = [
+            {"id": item["id"], "name": item["title"], "kind": "artifact"}
+            for item in items
+            if not item["document_id"]
+        ]
+        has_more = bool(page and page["next_offset"] is not None)
+    elif document_scope is not None and temporary_chat:
+        heading = "Chat attachments"
+        sources = [
+            {
+                "id": str(item.id),
+                "name": item.filename,
+                "kind": "document",
+                "size": len(item.data),
+                "pages": item.pages,
+                "chunks": len(item.chunks),
+                "createdAt": int(
+                    item.created_at.replace(tzinfo=UTC).timestamp() * 1000
+                ),
+            }
+            for item in temporary_chat.attachments
+            if item.id in document_scope
+        ]
+        has_more = False
+    else:
+        heading = (
+            "Chat attachments" if document_scope is not None else "Document library"
+        )
+        query = select(Document).where(Document.digestion_status == "ready")
+        if document_scope is not None:
+            query = query.where(Document.id.in_(document_scope))
+        else:
+            query = query.where(Document.scope == "public")
+        async with async_session_factory() as db:
+            documents = (
+                await db.scalars(
+                    query.order_by(Document.created_at.desc(), Document.id).limit(51)
+                )
+            ).all()
+        has_more = len(documents) > 50
+
+    sources.extend(
+        {
+            "id": str(doc.id),
+            "name": doc.filename,
+            "kind": "document",
+            "size": doc.file_size_bytes,
+            "pages": doc.total_pages,
+            "chunks": doc.total_chunks,
+            "createdAt": (
+                int(doc.created_at.replace(tzinfo=UTC).timestamp() * 1000)
+                if doc.created_at
+                else None
+            ),
+        }
+        for doc in documents[:50]
+    )
+    return heading, sources, has_more
+
+
 # ── Main agent loop ──
 @traced_execution
 @agent_settings.with_snapshot
@@ -429,17 +517,44 @@ async def run_agent_stream(
     interaction_mode: str = "text",
     interaction_instructions: str = "",
     trace_user_message: Optional[str] = None,
+    temporary: bool = False,
+    temporary_chat: TemporaryChat | None = None,
+    attachment_ids: list[uuid.UUID] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
     resolved_model = await model_prefs.resolve_chat_request_model(model)
+    original_user_message = (
+        trace_user_message
+        if trace_user_message is not None
+        else next(
+            (
+                m.get("content", "")
+                for m in reversed(messages)
+                if m.get("role") == "user"
+            ),
+            "",
+        )
+    )
+    if original_user_message.casefold().split(maxsplit=1)[:1] == ["/nothink"]:
+        think = False
     messages = [dict(m) for m in messages]
+    for message in messages:
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            message["content"] = routing.user_message_content(message["content"])
     use_native_tools = _model_supports_native_tools(resolved_model)
     transient_text_models = set()
     observe("resolved_model", resolved_model)
     registry = get_tool_registry()
     configs_snapshot = deepcopy(config_store.get_all_tool_configs())
     available_tools = routing.enabled_tools(registry, configs_snapshot)
+    if temporary:
+        available_tools = {
+            name: tool
+            for name, tool in available_tools.items()
+            if name in READ_TOOLS or (temporary_chat and name in STAGED_TOOLS)
+        }
+        conversation_id = None
     result_store = {}
     result_metadata_store = {}
     research_evidence = []
@@ -450,12 +565,7 @@ async def run_agent_stream(
     resource_context_loaded = set()
 
     # ── Select relevant tools ──
-    user_msgs = [m for m in messages if m.get("role") == "user"]
-    last_user = (
-        trace_user_message
-        if trace_user_message is not None
-        else (user_msgs[-1].get("content", "") if user_msgs else "")
-    )
+    last_user = routing.user_message_content(original_user_message)
     request_index = next(
         (
             i
@@ -480,7 +590,7 @@ async def run_agent_stream(
     selected_tools = _select_tools(last_user)
     selected_tools.intersection_update(available_tools)
     skill_role = "voice" if interaction_mode == "voice" else "general"
-    skill_catalog = skill_store.routing_catalog(skill_role)
+    skill_catalog = "" if temporary else skill_store.routing_catalog(skill_role)
     if skill_catalog and "load_skill" in available_tools:
         selected_tools.add("load_skill")
     _dbg("Selected tools: %s", sorted(selected_tools))
@@ -497,73 +607,75 @@ async def run_agent_stream(
     notebook_instructions = ""
     # Only short metadata; never inject complete documents into the prompt.
     attachments = {"items": []}
-    try:
-        async with async_session_factory() as db:
-            attachments = await catalog(
-                db, conversation_id, scoped=True, limit=8, include_public=False
-            )
-            await db.commit()
-        attachments["items"] = [
-            {
-                key: (value[:120] if key == "title" else value)
-                for key, value in item.items()
-                if key
-                in {
-                    "id",
-                    "title",
-                    "kind",
-                    "version",
-                    "editable",
-                    "export_formats",
-                    "document_id",
-                }
-            }
-            for item in attachments["items"]
-        ]
-        if attachments["items"]:
-            reference_words = {
-                "uploaded",
-                "attached",
-                "chapter",
-                "page",
-                "this",
-                "that",
-                "it",
-                "selected",
-                "source",
-                "joint",
-                "ce",
-                "cette",
-                "chapitre",
-                "هذا",
-                "الفصل",
-                "المرفق",
-            }
-            source_requested = (
-                bool(set(routing.words(last_user)) & reference_words)
-                or any(
-                    item["id"] in last_user
-                    or routing.matches(item.get("title", ""), last_user)
-                    for item in attachments["items"]
+    if not temporary:
+        try:
+            async with async_session_factory() as db:
+                attachments = await catalog(
+                    db, conversation_id, scoped=True, limit=8, include_public=False
                 )
-                or bool(
-                    any(
-                        (m.get("metadata") or {}).get("agent_context") for m in messages
+                await db.commit()
+            attachments["items"] = [
+                {
+                    key: (value[:120] if key == "title" else value)
+                    for key, value in item.items()
+                    if key
+                    in {
+                        "id",
+                        "title",
+                        "kind",
+                        "version",
+                        "editable",
+                        "export_formats",
+                        "document_id",
+                    }
+                }
+                for item in attachments["items"]
+            ]
+            if attachments["items"]:
+                reference_words = {
+                    "uploaded",
+                    "attached",
+                    "chapter",
+                    "page",
+                    "this",
+                    "that",
+                    "it",
+                    "selected",
+                    "source",
+                    "joint",
+                    "ce",
+                    "cette",
+                    "chapitre",
+                    "هذا",
+                    "الفصل",
+                    "المرفق",
+                }
+                source_requested = (
+                    bool(set(routing.words(last_user)) & reference_words)
+                    or any(
+                        item["id"] in last_user
+                        or routing.matches(item.get("title", ""), last_user)
+                        for item in attachments["items"]
+                    )
+                    or bool(
+                        any(
+                            (m.get("metadata") or {}).get("agent_context")
+                            for m in messages
+                        )
                     )
                 )
-            )
-            if source_requested:
-                selected_tools.update(
-                    {"rag_search", "read_artifact"} & available_tools.keys()
+                if source_requested:
+                    selected_tools.update(
+                        {"rag_search", "read_artifact"} & available_tools.keys()
+                    )
+                context_messages.append(
+                    untrusted_context_message(
+                        "accessible file metadata",
+                        json.dumps(attachments, ensure_ascii=False),
+                    )
                 )
-            context_messages.append(
-                untrusted_context_message(
-                    "accessible file metadata",
-                    json.dumps(attachments, ensure_ascii=False),
-                )
-            )
-    except Exception:
-        logger.exception("Could not load artifact metadata")
+        except Exception:
+            logger.exception("Could not load artifact metadata")
 
     notebook = None
     if conversation_id:
@@ -590,6 +702,149 @@ async def run_agent_stream(
             )
         ]
 
+    if temporary_chat and temporary_chat.attachments:
+        context_messages.append(
+            untrusted_context_message(
+                "temporary attachment metadata",
+                json.dumps(
+                    [
+                        {
+                            "id": str(item.id),
+                            "filename": item.filename,
+                            "image": item.image,
+                        }
+                        for item in temporary_chat.attachments
+                    ]
+                ),
+            )
+        )
+        if "rag_search" in available_tools:
+            selected_tools.add("rag_search")
+
+    command_parts = last_user.strip().split(maxsplit=1)
+    command = command_parts[0].casefold() if command_parts else ""
+    library_query = None
+    coder_task = None
+    initial_tool = None
+    error = None
+    if command == "/library":
+        if (
+            notebook is not None
+            or "rag_search" not in available_tools
+            or len(command_parts) == 1
+        ):
+            if notebook is not None:
+                error = "Library search is unavailable in notebooks. Use the notebook's selected sources."
+            elif "rag_search" not in available_tools:
+                error = "Document Search is disabled. Enable it in Brain → Tools to use /library."
+            else:
+                error = "Enter a search query after /library."
+        else:
+            library_query = command_parts[1]
+            initial_tool = {"name": "rag_search", "arguments": {"query": library_query}}
+    elif command == "/web":
+        if notebook is not None:
+            error = "Web Search is unavailable in notebooks. Use the notebook's selected sources."
+        elif "use_websearch" not in available_tools:
+            error = "Web Search is disabled. Enable it in Brain → Tools to use /web."
+        elif len(command_parts) == 1:
+            error = "Enter a search query after /web."
+        else:
+            initial_tool = {
+                "name": "use_websearch",
+                "arguments": {"query": command_parts[1]},
+            }
+            selected_tools.add("use_websearch")
+    elif command == "/coder":
+        if temporary or not conversation_id:
+            error = "Save this chat before using /coder."
+        elif notebook is not None:
+            error = (
+                "Use /coder in a regular saved chat. Coder is unavailable in notebooks."
+            )
+        elif "delegate_to_coder" not in available_tools:
+            error = "Coder is unavailable. Check Brain → Tools to use /coder."
+        elif len(command_parts) == 1:
+            error = "Enter a task after /coder."
+        else:
+            coder_task = command_parts[1]
+            initial_tool = {
+                "name": "delegate_to_coder",
+                "arguments": {"task": coder_task},
+            }
+            selected_tools.add("delegate_to_coder")
+
+    if error:
+        observe("finish", "failed", error)
+        yield _sse_event("error", {"error": error})
+        yield _sse_event("done", {})
+        return
+
+    document_scope = None
+    if notebook is None:
+        if attachment_ids is not None:
+            document_scope = attachment_ids
+        elif temporary_chat:
+            document_scope = [
+                item.id for item in temporary_chat.attachments if not item.image
+            ]
+            document_scope = document_scope or None
+        else:
+            document_scope = [
+                uuid.UUID(item["document_id"])
+                for item in attachments["items"]
+                if item.get("kind") == "upload" and item.get("document_id")
+            ] or None
+        library_requested = (
+            library_query is not None or routing.requests_library_search(last_user)
+        )
+        if library_requested:
+            document_scope = None
+        if document_scope is not None or library_requested:
+            selected_tools.update({"rag_search"} & available_tools.keys())
+
+    if routing.is_sources_command(original_user_message):
+        heading, sources, has_more = await _list_search_sources(
+            conversation_id, notebook, document_scope, temporary_chat
+        )
+        content = f"**{heading}**"
+        if not sources:
+            content += "\n\nNo sources are available."
+        else:
+            names = [
+                re.sub(r"([\\`*_\[\]<>~|])", r"\\\1", " ".join(source["name"].split()))
+                for source in sources
+            ]
+            content += "\n\n- " + "\n- ".join(names)
+            if has_more:
+                content += "\n\nShowing the first 50 sources."
+        yield _sse_event(
+            "message", {"message": {"role": "assistant", "content": content}}
+        )
+        if sources:
+            now = int(time.time() * 1000)
+            yield _sse_event(
+                "tool_call",
+                {
+                    "tool_call": {
+                        "id": str(uuid.uuid4()),
+                        "type": ToolType.FILE_READ.value,
+                        "toolName": "list_search_sources",
+                        "title": heading,
+                        "status": "completed",
+                        "startedAt": now,
+                        "completedAt": now,
+                        "output": json.dumps(
+                            {"sources": sources, "hasMore": has_more},
+                            ensure_ascii=False,
+                        ),
+                    }
+                },
+            )
+        observe("finish", "completed", "listed document sources", content)
+        yield _sse_event("done", {})
+        return
+
     # Memory injection — wrapped as untrusted data (memories are
     # auto-extracted from past conversations and could contain injected
     # content from a malicious document).
@@ -599,6 +854,8 @@ async def run_agent_stream(
                 relevant = await get_relevant_memories(
                     db, last_user, top_k=settings.MEMORY_INJECTION_TOP_K
                 )
+                if temporary_chat:
+                    relevant = temporary_chat.merge_memories(relevant)
                 if relevant:
                     pinned = [m for m in relevant if m.pinned]
                     extended = [
@@ -786,6 +1043,24 @@ async def run_agent_stream(
         tool_schemas=ollama_tools,
     )
     system_prompt += notebook_instructions
+    if library_query:
+        system_prompt += (
+            "\nFor the /library command, answer using the Document Search result. "
+            "Cite matching excerpts or say that the search returned no relevant documents."
+        )
+    elif coder_task:
+        system_prompt += "\nFor /coder, report the delegated workspace task result and its verified checks."
+    elif command == "/web":
+        system_prompt += "\n" + format_prompt("agent_web_command")
+    if document_scope is not None:
+        system_prompt += (
+            "\nDocument Search is scoped to this chat's attachments for this turn. "
+            "Ground answers about the uploaded files in that scope. If there is no "
+            "supporting result, report that instead of substituting other sources. For a specific name or "
+            "phrase, pass only that name or phrase as exact_text and quote a matching "
+            "line with its source. Use attachment_id if the user names a specific "
+            "file and its ID is in the attachment metadata."
+        )
     _dbg("Native tools: %s, count=%d", use_native_tools, len(ollama_tools or []))
 
     request_tools = ollama_tools
@@ -904,9 +1179,11 @@ async def run_agent_stream(
             "agent_argument_repair", errors=error, retryable=str(retryable).lower()
         )
 
-    for round_number in range(max_rounds):
-        if round_number == max_rounds - 1:
-            app_metrics.record_agent_rounds(round_number + 1)
+    # The command's initial tool call is application-driven and costs no model round.
+    total_rounds = max_rounds + int(initial_tool is not None)
+    for round_number in range(total_rounds):
+        if round_number == total_rounds - 1:
+            app_metrics.record_agent_rounds(max_rounds)
         # Build Ollama request messages: stable system prefix + conversation
         # turns + dynamic context messages (memories/cross-session/datetime).
         # Inject once before the current task; later rounds extend this same
@@ -1087,6 +1364,15 @@ async def run_agent_stream(
                         "native_tools": bool(use_native_tools and not repair_schema),
                     },
                 )
+
+            if initial_tool and round_number == 0:
+                native_tool_calls = [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "function": initial_tool,
+                    }
+                ]
+                break
 
             try:
                 # Provider-routed streaming;
@@ -1527,7 +1813,8 @@ async def run_agent_stream(
                     )
                     continue
             tool_args = call.get("args", {})
-            _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
+            if not temporary:
+                _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
 
             tool = registry.get(tool_name)
             if (config_store.get_tool_config(tool_name) or {}).get("enabled") is False:
@@ -1799,13 +2086,6 @@ async def run_agent_stream(
             }:
                 # Trusted context, never a model-supplied conversation identity.
                 tool_args["conversation_id"] = conversation_id
-            if tool_name == "rag_search" and conversation_id:
-                tool_args.setdefault("conversation_id", conversation_id)
-                _dbg(
-                    "   🔎 rag_search: injected conversation_id=%s",
-                    conversation_id,
-                )
-
             # search_past_conversations: inject conversation_id so the
             # tool excludes the current conversation from its results.
             if tool_name == "search_past_conversations" and conversation_id:
@@ -1872,9 +2152,16 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
+            if temporary:
+                exec_args.pop("conversation_id", None)
+                exec_args["_temporary_chat"] = temporary_chat
+            if tool_name == "rag_search":
+                exec_args["conversation_id"] = conversation_id
+                exec_args["_attachment_ids"] = document_scope
+
             if tool_name == "delegate_to_coder":
                 # Original wording is application-owned, never a model rewrite.
-                exec_args["_user_request"] = last_user
+                exec_args["_user_request"] = coder_task or last_user
             elif tool_name == "create_quiz":
                 # Only application-owned successful source receipts can support
                 # web citations. Never accept model-supplied evidence.
@@ -1899,6 +2186,13 @@ async def run_agent_stream(
                 model_override = None
             if model_override:
                 exec_args.setdefault("model", model_override)
+            report_token = None
+            if temporary_chat and tool_name in {
+                "use_report_gen",
+                "use_pptx_gen",
+                "use_excel_gen",
+            }:
+                report_token = report_output_directory.set(temporary_chat.reports_dir())
             try:
                 with app_metrics.track_tool_call(tool_name):
                     if tool_name in {
@@ -1996,6 +2290,10 @@ async def run_agent_stream(
                 )
                 continue
 
+            finally:
+                if report_token is not None:
+                    report_output_directory.reset(report_token)
+
             # Raw results remain in UI/DB/traces. Only the subsequent model
             # transcript receives a loss-aware view, with exact paging access.
             if result.tool_call is None:
@@ -2020,17 +2318,33 @@ async def run_agent_stream(
             ):
                 try:
                     registered = []
-                    async with async_session_factory() as db:
+                    if temporary_chat:
                         for generated in result.tool_call.gen_results:
-                            if generated.get("report_id") and not generated.get(
-                                "artifact_id"
-                            ):
-                                artifact_meta = await register_generated(
-                                    db, generated, conversation_id
+                            if generated.get("report_id"):
+                                ident = generated["report_id"]
+                                if ident not in temporary_chat.reports:
+                                    await temporary_chat.register_report(generated)
+                                generated["download_url"] = (
+                                    f"/api/chat/temporary/{temporary_chat.id}/reports/{ident}"
                                 )
-                                if artifact_meta:
-                                    registered.append((generated, artifact_meta))
-                        await db.commit()
+                                generated.pop("thumbnail_url", None)
+                        for ident in temporary_chat.reports:
+                            result.output = result.output.replace(
+                                f"/api/reports/{ident}/download",
+                                f"/api/chat/temporary/{temporary_chat.id}/reports/{ident}",
+                            )
+                    else:
+                        async with async_session_factory() as db:
+                            for generated in result.tool_call.gen_results:
+                                if generated.get("report_id") and not generated.get(
+                                    "artifact_id"
+                                ):
+                                    artifact_meta = await register_generated(
+                                        db, generated, conversation_id
+                                    )
+                                    if artifact_meta:
+                                        registered.append((generated, artifact_meta))
+                            await db.commit()
                     for generated, artifact_meta in registered:
                         generated["artifact_id"] = artifact_meta["id"]
                         generated["version"] = artifact_meta["version"]

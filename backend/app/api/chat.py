@@ -13,22 +13,34 @@ import base64
 import asyncio
 import json
 import logging
+import shutil
 import time
-from typing import Any, List, Optional
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, List, Literal, Optional
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
+from app.db.models import Conversation
 
 from app.agent.service import run_agent_stream
+from app.agent.routing import is_sources_command
+from app.agent.coder.resume import resume_coder_stream
+from app.services.coder_tasks import resumable_task
 from app.config import settings
 from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
+from app.services import temporary_chats
+from app.services.safe_paths import confined_path
+from app.services.integrations.libreoffice import render_document_thumbnail
 from app.services import model_prefs
 from app.services import providers
 from app.services import rag as rag_service
@@ -96,6 +108,8 @@ class ChatRequest(BaseModel):
     # Slash command options from frontend
     model_override: Optional[str] = None
     shrug: Optional[bool] = None
+    resume_coder_task_id: Optional[uuid.UUID] = None
+    temporary_id: Optional[uuid.UUID] = None
 
 
 class ChatResponse(BaseModel):
@@ -315,22 +329,58 @@ async def _maybe_run_memory_extraction(
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Send a chat completion request with agent tools (streaming via SSE).
+    return await _chat_stream(request)
 
-    The `model` field accepts roles, types, or direct IDs (see /chat).
-    The agent loop will automatically invoke tools when needed.
 
-    IMPORTANT — Database sessions & StreamingResponse:
-    The get_db() dependency commits and closes the session AFTER the route
-    handler returns.  But with StreamingResponse, the route handler returns
-    immediately while the generate() function runs later (during response
-    streaming).  So by the time generate() tries to use the session, it is
-    already committed/closed.
+@router.post("/chat/temporary/stream")
+async def temporary_chat_stream(request: ChatRequest):
+    """Stream a text turn without creating a conversation or saving messages."""
+    if request.conversation_id or request.resume_coder_task_id:
+        raise HTTPException(
+            400, "Temporary chat cannot use a saved conversation or task"
+        )
+    if request.temporary_id is None:
+        raise HTTPException(422, "Temporary chat ID is required")
+    session = temporary_chats.get_session(request.temporary_id)
+    return await _chat_stream(request, temporary=True, session=session)
 
-    Solution: use independent sessions (async_session_factory) with explicit
-    commits for both user and assistant messages in streaming endpoints.
-    We do NOT use Depends(get_db) on streaming endpoints.
-    """
+
+@router.post("/chat/temporary/stream/multipart")
+async def temporary_chat_with_files(
+    temporary_id: uuid.UUID = Form(...),
+    messages: str = Form(...),
+    model: str | None = Form(None),
+    model_override: str | None = Form(None),
+    images: list[UploadFile] = File(default=[]),
+    documents: list[UploadFile] = File(default=[]),
+):
+    try:
+        request = ChatRequest(
+            messages=json.loads(messages), model=model, model_override=model_override
+        )
+    except ValueError:
+        raise HTTPException(422, "Invalid chat messages") from None
+    if not request.messages or request.messages[-1].role != "user":
+        raise HTTPException(422, "Attachments require a user message")
+    session = temporary_chats.get_session(temporary_id)
+    return await _chat_stream(
+        request,
+        temporary=True,
+        session=session,
+        files=[
+            *((file, True) for file in images),
+            *((file, False) for file in documents),
+        ],
+    )
+
+
+async def _chat_stream(
+    request: ChatRequest,
+    *,
+    temporary: bool = False,
+    session: temporary_chats.TemporaryChat | None = None,
+    files=(),
+):
     _log(
         "🔵 POST /chat/stream  model=%s  model_override=%s  stream=%s  "
         "conv_id=%s  messages_count=%d",
@@ -340,10 +390,11 @@ async def chat_stream(request: ChatRequest):
         request.conversation_id,
         len(request.messages),
     )
-    _log(
-        "   messages=%s",
-        [{"role": m.role, "content": m.content[:100]} for m in request.messages],
-    )
+    if not temporary:
+        _log(
+            "   messages=%s",
+            [{"role": m.role, "content": m.content[:100]} for m in request.messages],
+        )
 
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
@@ -360,6 +411,21 @@ async def chat_stream(request: ChatRequest):
             _log("   parsed conversation_id=%s", conv_id)
         except ValueError:
             _log("   ⚠️  invalid conversation_id=%s", request.conversation_id)
+
+    if request.resume_coder_task_id:
+        if not conv_id:
+            raise HTTPException(400, "A conversation is required to resume coding.")
+        current_stream = get_stream(str(conv_id))
+        if current_stream and not current_stream.done:
+            raise HTTPException(
+                409, "Wait for the current response to finish before resuming."
+            )
+        async with async_session_factory() as db:
+            try:
+                await resumable_task(db, request.resume_coder_task_id, conv_id)
+            except ValueError as error:
+                raise HTTPException(409, str(error)) from None
+        resolved_model = await model_prefs.resolve_task_model("coder")
 
     # Persist the user message EAGERLY using an independent session.
     # We must commit before returning the StreamingResponse because there
@@ -381,6 +447,7 @@ async def chat_stream(request: ChatRequest):
     # titler always sees the original text (not anything the agent loop
     # may have appended to the messages list).
     _user_msg_for_title = messages[-1]["content"] if messages else ""
+    listing_sources = is_sources_command(_user_msg_for_title)
 
     async def generate():
         _log("   🔄 generate() started — preparing conversation")
@@ -397,7 +464,7 @@ async def chat_stream(request: ChatRequest):
         # Title the conversation before the agent loop. This generator is
         # already owned by the buffered server-side stream, so the work keeps
         # running and remains reconnectable if the browser reloads here.
-        if _conv_id and _user_msg_for_title:
+        if _conv_id and _user_msg_for_title and not listing_sources:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -413,14 +480,81 @@ async def chat_stream(request: ChatRequest):
 
         _log("   🤖 entering agent loop")
         try:
-            async for chunk in run_agent_stream(
-                messages=messages,
-                model=_resolved_model,
-                images=None,
-                conversation_id=str(_conv_id) if _conv_id else None,
-            ):
+            attachments = []
+            if files:
+                filenames = [
+                    temporary_chats.attachment_filename(upload.filename)
+                    for upload, image in files
+                    if not image
+                ]
+                for filename in filenames:
+                    yield "data: " + json.dumps(
+                        {
+                            "event": "document_digest_progress",
+                            "filename": filename,
+                            "stage": "started",
+                            "percent": 0,
+                            "details": "Processing document",
+                        }
+                    ) + "\n\n"
+                try:
+                    attachments = await session.attach(files, len(messages) - 1)
+                except Exception as exc:
+                    for filename in filenames:
+                        yield "data: " + json.dumps(
+                            {
+                                "event": "document_digest_error",
+                                "filename": filename,
+                                "error": (
+                                    exc.detail
+                                    if isinstance(exc, HTTPException)
+                                    else "Document processing failed."
+                                ),
+                            }
+                        ) + "\n\n"
+                    raise
+                for item in attachments:
+                    if not item.image:
+                        yield "data: " + json.dumps(
+                            {
+                                "event": "document_digest_done",
+                                "filename": item.filename,
+                                "document_id": str(item.id),
+                                "total_chunks": len(item.chunks),
+                                "total_images": 0,
+                            }
+                        ) + "\n\n"
+            image_data = [
+                base64.b64encode(item.data).decode("ascii")
+                for item in attachments
+                if item.image
+            ]
+            source = (
+                resume_coder_stream(str(_conv_id), str(request.resume_coder_task_id))
+                if request.resume_coder_task_id
+                else run_agent_stream(
+                    messages=messages,
+                    model=_resolved_model,
+                    images=image_data or None,
+                    **(
+                        {
+                            "temporary": True,
+                            "temporary_chat": session,
+                            "attachment_ids": (
+                                [item.id for item in attachments if not item.image]
+                                if any(not image for _, image in files)
+                                else None
+                            ),
+                        }
+                        if temporary
+                        else {}
+                    ),
+                    conversation_id=str(_conv_id) if _conv_id else None,
+                )
+            )
+            async for chunk in source:
                 chunk_count += 1
-                if is_debug() and chunk_count <= 5:
+                if not temporary and is_debug() and chunk_count <= 5:
                     _log(
                         "   📦 yielding chunk #%d: %s",
                         chunk_count,
@@ -529,6 +663,7 @@ async def chat_stream(request: ChatRequest):
                 completion_status,
             )
 
+        if _conv_id and builder.blocks and not listing_sources:
             # Memory extraction — watermark check is inline (fast DB read),
             # the actual LLM extraction is enqueued to the background queue
             # which waits for stream idle before running. See
@@ -614,9 +749,24 @@ async def chat_stream(request: ChatRequest):
             yield "data: " + json.dumps({"event": "interrupted"}) + "\n\n"
         yield "data: [DONE]\n\n"
 
+    async def temporary_source():
+        if session.discarded or session.lock.locked():
+            yield "data: " + json.dumps(
+                {"event": "error", "error": "This temporary chat is busy."}
+            ) + "\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        async with session.lock:
+            try:
+                async for chunk in generate():
+                    yield chunk
+            finally:
+                if session.discarded:
+                    temporary_chats.discard_session(session.id)
+
     if not _conv_id:
         return StreamingResponse(
-            generate(),
+            temporary_source() if session else generate(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -624,7 +774,11 @@ async def chat_stream(request: ChatRequest):
                 "X-Accel-Buffering": "no",
             },
         )
-    active_stream = await start_stream(str(_conv_id), generate())
+    active_stream = await start_stream(
+        str(_conv_id),
+        generate(),
+        **({"replace_existing": False} if request.resume_coder_task_id else {}),
+    )
     return StreamingResponse(
         active_stream.subscribe(),
         media_type="text/event-stream",
@@ -756,6 +910,7 @@ async def chat_stream_multipart(
     # document-digestion step appends a system hint to parsed_messages
     # inside the generator (which would otherwise become the last message).
     _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
+    listing_sources = is_sources_command(trace_user_message)
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — preparing conversation")
@@ -767,7 +922,7 @@ async def chat_stream_multipart(
         builder = _BlockBuilder()
         assistant_message_id: uuid.UUID | None = None
         completion_status = "completed"
-        digested_doc_ids: List[str] = []  # for DB link to user message
+        digested_doc_ids: list[uuid.UUID] = []
         # Track digested document filenames so we can inject a system
         # hint into the agent's messages telling it these files are now
         # searchable via rag_search. Without this hint the LLM doesn't
@@ -776,7 +931,7 @@ async def chat_stream_multipart(
 
         # Keep the first-message lifecycle consistent with the JSON stream:
         # persist user → title conversation → process inputs → run agent.
-        if _conv_id and _user_msg_for_title:
+        if _conv_id and _user_msg_for_title and not listing_sources:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -889,7 +1044,7 @@ async def chat_stream_multipart(
 
                 if digestion_doc[0] is not None:
                     doc = digestion_doc[0]
-                    digested_doc_ids.append(str(doc.id))
+                    digested_doc_ids.append(doc.id)
                     digested_doc_filenames.append(doc.filename)
                     yield "data: " + json.dumps(
                         {
@@ -925,6 +1080,7 @@ async def chat_stream_multipart(
                 images=image_b64_list if image_b64_list else None,
                 conversation_id=str(_conv_id) if _conv_id else None,
                 trace_user_message=trace_user_message,
+                attachment_ids=digested_doc_ids if documents else None,
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
@@ -1034,6 +1190,7 @@ async def chat_stream_multipart(
                 completion_status,
             )
 
+        if _conv_id and builder.blocks and not listing_sources:
             # Memory extraction — watermark check inline, LLM extraction
             # enqueued to background queue (KV-cache protection).
             try:
@@ -1220,6 +1377,197 @@ async def create_conversation(
     result = await conv_service.conversation_to_dict(conv)
     dbg("   created conversation id=%s", result.get("id"))
     return result
+
+
+@router.post("/chat/temporary/{temporary_id}/discard", status_code=204)
+async def discard_temporary_chat(temporary_id: uuid.UUID):
+    session = temporary_chats.get_session(temporary_id, create=False)
+    if session:
+        session.discarded = True
+        if not session.lock.locked():
+            temporary_chats.discard_session(temporary_id)
+    return Response(status_code=204)
+
+
+@router.get("/chat/temporary/{temporary_id}/documents/{document_id}/thumbnail")
+async def temporary_document_thumbnail(temporary_id: uuid.UUID, document_id: uuid.UUID):
+    session = temporary_chats.get_session(temporary_id, create=False)
+    attachment = (
+        next(
+            (
+                item
+                for item in session.attachments
+                if item.id == document_id and not item.image
+            ),
+            None,
+        )
+        if session and not session.discarded
+        else None
+    )
+    if attachment is None:
+        raise HTTPException(404, "Temporary document not found")
+
+    if attachment.thumbnail is None:
+        # Preview work uses its own scratch directory so saving or discarding
+        # the chat can safely proceed while the thumbnail renders.
+        with TemporaryDirectory(prefix="realopen-document-preview-") as directory:
+            path = confined_path(
+                Path(directory), "document" + Path(attachment.filename).suffix
+            )
+            await asyncio.to_thread(path.write_bytes, attachment.data)
+            attachment.thumbnail = await render_document_thumbnail(path)
+    if attachment.thumbnail is None:
+        raise HTTPException(404, "Document thumbnail unavailable")
+    return Response(
+        attachment.thumbnail,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/chat/temporary/{temporary_id}/reports/{report_id}")
+async def temporary_report_download(temporary_id: uuid.UUID, report_id: uuid.UUID):
+    session = temporary_chats.get_session(temporary_id, create=False)
+    report = session.reports.get(str(report_id)) if session else None
+    if not report:
+        raise HTTPException(404, "Temporary report not found")
+    try:
+        path = confined_path(session.reports_dir(), Path(report["file_path"]).name)
+    except ValueError:
+        raise HTTPException(404, "Temporary report file not found") from None
+    if not path.is_file():
+        raise HTTPException(404, "Temporary report file not found")
+    return FileResponse(
+        path, filename=report["filename"], headers={"Cache-Control": "no-store"}
+    )
+
+
+class TemporaryChatBlock(BaseModel):
+    type: Literal["thinking", "text", "error", "tool_call"]
+    content: str | None = None
+    tool_call: dict[str, Any] | None = None
+    duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class TemporaryChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    model: str | None = Field(default=None, max_length=100)
+    modality: Literal["voice", "text"] | None = None
+    has_image: bool = False
+    has_document: bool = False
+    image_count: int = Field(default=0, ge=0)
+    document_count: int = Field(default=0, ge=0)
+    blocks: list[TemporaryChatBlock] | None = None
+    deliverables: list[dict[str, Any]] | None = None
+    generation_duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    completion_status: Literal["completed", "interrupted", "error"] = "completed"
+
+
+class SaveTemporaryChat(BaseModel):
+    id: uuid.UUID
+    title: str = Field(min_length=1, max_length=255)
+    model: str | None = Field(default=None, max_length=100)
+    messages: list[TemporaryChatMessage] = Field(min_length=1)
+
+
+@router.post("/conversations/import-temporary")
+async def save_temporary_chat(
+    body: SaveTemporaryChat, db: AsyncSession = Depends(get_db)
+):
+    """Save the entire transcript in one transaction. Retrying the same ID is safe."""
+    session = temporary_chats.get_session(body.id, create=False)
+    if session and session.lock.locked():
+        raise HTTPException(409, "Finish the current turn before saving this chat")
+
+    async def save():
+        written = []
+        written_files = []
+        try:
+            created = await db.scalar(
+                insert(Conversation)
+                .values(id=body.id, title=body.title, model=body.model)
+                .on_conflict_do_nothing(index_elements=[Conversation.id])
+                .returning(Conversation.id)
+            )
+            if created:
+                if session is None or session.discarded:
+                    raise HTTPException(
+                        410, "Temporary chat staging is no longer available"
+                    )
+                rows = []
+                message_ids = {}
+                for index, message in enumerate(body.messages):
+                    row = await conv_service.add_message(
+                        db, body.id, **message.model_dump()
+                    )
+                    message_ids[index] = row.id
+                    rows.append(row)
+                if session:
+                    await session.save_attachments(db, message_ids, written)
+                    await session.save_memories(db)
+                    reports = await session.save_reports(db, written_files)
+                    outputs = await session.save_outputs(db)
+
+                    def saved_text(content):
+                        if isinstance(content, str):
+                            for report_id, report in reports.items():
+                                content = content.replace(
+                                    f"/api/chat/temporary/{body.id}/reports/{report_id}",
+                                    report["download_url"],
+                                )
+                        return content
+
+                    for row in rows:
+                        row.content = saved_text(row.content)
+                        for block in row.blocks or []:
+                            if block.get("content"):
+                                block["content"] = saved_text(block["content"])
+                            tool = block.get("tool_call") or {}
+                            if tool.get("output"):
+                                tool["output"] = saved_text(tool["output"])
+                            if "genResults" in tool:
+                                tool["genResults"] = [
+                                    outputs.get(
+                                        item.get("temporary_output_id"),
+                                        reports.get(item.get("report_id"), item),
+                                    )
+                                    for item in tool["genResults"]
+                                ]
+                        if row.blocks:
+                            flag_modified(row, "blocks")
+                        if row.deliverables:
+                            row.deliverables = [
+                                reports.get(item.get("report_id"), item)
+                                for item in row.deliverables
+                            ]
+            conversation = await conv_service.get_conversation(db, body.id)
+            result = {
+                "conversation": await conv_service.conversation_to_dict(conversation),
+                "messages": [
+                    await conv_service.message_to_dict(row)
+                    for row in await conv_service.get_messages(
+                        db, body.id, limit=len(body.messages)
+                    )
+                ],
+            }
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            for ident in written:
+                await asyncio.to_thread(
+                    shutil.rmtree, rag_service.get_document_dir(ident), True
+                )
+            for path in written_files:
+                await asyncio.to_thread(path.unlink, missing_ok=True)
+            raise
+        temporary_chats.discard_session(body.id)
+        return result
+
+    if session:
+        async with session.lock:
+            return await save()
+    return await save()
 
 
 @router.get("/conversations/{conversation_id}")

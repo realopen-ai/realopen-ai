@@ -45,7 +45,7 @@ test("voice sessions are ended explicitly, not by conversation navigation", () =
 
 test("new text and voice conversations become addressable before streaming", () => {
   const creation = chatArea.indexOf(
-    "convId = await store.createConversation()",
+    "convId = await store.createConversation(temporary)",
   );
   const route = chatArea.indexOf(
     "navigate(`/${convId}`, { replace: true })",
@@ -58,7 +58,7 @@ test("new text and voice conversations become addressable before streaming", () 
   assert.ok(stream > route);
   assert.match(
     chatArea,
-    /onConversationCreated: \(convId\) => \{\s*setPendingConvId\(convId\);\s*navigate\(`\/\$\{convId\}`/,
+    /onConversationCreated: \(convId\) => \{\s*setTemporaryMode\(false\);\s*setPendingConvId\(convId\);\s*navigate\(`\/\$\{convId\}`/,
   );
 });
 

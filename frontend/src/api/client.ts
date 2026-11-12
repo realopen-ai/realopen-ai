@@ -528,6 +528,39 @@ export async function createConversation(
   return null;
 }
 
+export async function importTemporaryConversation(body: {
+  id: string;
+  title: string;
+  model: string;
+  messages: {
+    role: "user" | "assistant";
+    content: string;
+    model?: string;
+    modality?: "voice" | "text";
+    has_image?: boolean;
+    has_document?: boolean;
+    image_count?: number;
+    document_count?: number;
+    blocks?: {
+      type: string;
+      content?: string;
+      duration?: number | null;
+      tool_call?: Record<string, unknown>;
+    }[];
+    deliverables?: BackendDeliverable[];
+    generation_duration?: number;
+    completion_status?: "completed" | "interrupted" | "error";
+  }[];
+}): Promise<{ conversation: ConversationDTO; messages: MessageDTO[] }> {
+  const response = await fetch("/api/conversations/import-temporary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function fetchConversationMessages(
   conversationId: string,
 ): Promise<MessageDTO[]> {
