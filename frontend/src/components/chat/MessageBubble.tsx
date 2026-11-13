@@ -33,6 +33,7 @@ import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { WebFetchDetail } from "@/components/chat/WebFetchDetail";
 import { SearchSourceCards } from "@/components/chat/SearchSourceCards";
+import { SelectedCommandSources } from "@/components/chat/SelectedCommandSources";
 import { parseSlashCommand } from "@/components/chat/InputArea";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
@@ -1946,7 +1947,12 @@ export function MessageBubble({
     // Find and trigger the InputArea's send — we'll dispatch a custom event
     window.dispatchEvent(
       new CustomEvent("regenerate-message", {
-        detail: { content: userMsg.content, conversationId },
+        detail: {
+          content: userMsg.content,
+          conversationId,
+          selectedSourceIds: userMsg.selectedSourceIds,
+          selectedSourceTitles: userMsg.selectedSourceTitles,
+        },
       }),
     );
   }, [conversationId, message.id]);
@@ -2032,6 +2038,13 @@ export function MessageBubble({
               >
                 {command.icon}/{command.name}
               </span>
+            )}
+            {!!message.selectedSourceIds?.length && (
+              <SelectedCommandSources
+                ids={message.selectedSourceIds}
+                titles={message.selectedSourceTitles}
+                conversationId={conversationId}
+              />
             )}
             {(!command || remainingContent) && (
               <p

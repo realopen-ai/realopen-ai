@@ -664,6 +664,8 @@ export function ChatArea({
         shrug?: boolean;
         images?: File[];
         documents?: File[];
+        selectedSourceIds?: string[];
+        selectedSourceTitles?: Record<string, string>;
       },
     ) => {
       const store = useChatStore.getState();
@@ -718,6 +720,8 @@ export function ChatArea({
         hasDocument: !!(options?.documents && options.documents.length > 0),
         imageCount: options?.images?.length ?? 0,
         documentCount: options?.documents?.length ?? 0,
+        selectedSourceIds: options?.selectedSourceIds,
+        selectedSourceTitles: options?.selectedSourceTitles,
       });
       const assistantMsgId = store.addMessage(convId, {
         role: "assistant",
@@ -769,6 +773,7 @@ export function ChatArea({
         modelOverride: options?.modelOverride,
         shrug: options?.shrug,
         resumeCoderTaskId: options?.resumeCoderTaskId,
+        selectedSourceIds: options?.selectedSourceIds,
       };
 
       try {
@@ -939,16 +944,24 @@ export function ChatArea({
   // Listen for regenerate events from MessageBubble
   useEffect(() => {
     const handler = (e: Event) => {
-      const { content } = (e as CustomEvent).detail;
+      const {
+        content,
+        conversationId,
+        selectedSourceIds,
+        selectedSourceTitles,
+      } = (e as CustomEvent).detail;
+      if (conversationId !== effectiveConvId) return;
       const { command } = parseSlashCommand(content);
       handleSend(content, {
         modelOverride: command?.modelOverride,
         shrug: command?.shrug,
+        selectedSourceIds,
+        selectedSourceTitles,
       });
     };
     window.addEventListener("regenerate-message", handler);
     return () => window.removeEventListener("regenerate-message", handler);
-  }, [handleSend]);
+  }, [effectiveConvId, handleSend]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -1158,6 +1171,7 @@ export function ChatArea({
           />
         }
         sourceGrounded={notebookMode}
+        conversationId={effectiveConvId}
         canDelegateToCoder={!temporary && !notebookMode && (home || !!conv)}
         temporary={temporary}
         saving={conv?.saving}
