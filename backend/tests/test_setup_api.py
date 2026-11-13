@@ -553,7 +553,7 @@ def test_get_models_to_pull_unknown_profile_still_adds_voice(monkeypatch):
     assert [m["id"] for m in models] == ["pip-x"]
 
 
-def test_voice_entries_omitted_when_voice_module_disabled(monkeypatch):
+def test_voice_entries_omitted_when_voice_module_disabled(monkeypatch, settings_guard):
     fake_modules = dict(settings.get_modules())
 
     class _DisabledModule:
@@ -563,14 +563,13 @@ def test_voice_entries_omitted_when_voice_module_disabled(monkeypatch):
             return False
 
     fake_modules["voice"] = _DisabledModule()
-    monkeypatch.setattr(settings, "_modules", fake_modules)
-    monkeypatch.setattr(settings, "_enabled_modules_set", {"assistant"})
-    monkeypatch.setattr(vmi, "voice_runtime_entries", lambda profile: [])
-    monkeypatch.setattr(vmi, "voice_model_entries", lambda profile: [])
-    # voice_enabled_for_profile consults get_modules() itself; patch the gate
+    # settings_guard restores Pydantic private attributes in their own storage.
+    settings._modules = fake_modules
+    settings._enabled_modules_set = {"assistant"}
     monkeypatch.setattr(
-        vmi, "voice_enabled_for_profile", lambda profile, modules=None: False
+        vmi, "voice_runtime_entries", lambda profile: [{"kind": "voice_runtime"}]
     )
+    monkeypatch.setattr(vmi, "voice_model_entries", lambda profile: [{"kind": "voice_model"}])
     models = setup_api._get_models_to_pull("cpu_small", [])
     assert all(m.get("kind") == "ollama" for m in models)
 
