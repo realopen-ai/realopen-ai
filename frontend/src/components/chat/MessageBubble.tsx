@@ -90,8 +90,35 @@ function SourceImage({ chunkId }: { chunkId: string }) {
   );
 }
 
-function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
+function highlightExactText(text: string, query?: string) {
+  if (!query) return text;
+  const literal = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.split(new RegExp(`(${literal})`, "giu")).map((part, index) =>
+    index % 2 === 0 ? (
+      part
+    ) : (
+      <mark key={index} className="rounded-sm bg-amber-300/40 text-foreground">
+        {part}
+      </mark>
+    ),
+  );
+}
+
+function SourceCards({
+  sources,
+  conversationId,
+  exactText,
+}: {
+  sources: RetrievedSourceDTO[];
+  conversationId: string;
+  exactText?: string;
+}) {
   const translate = useT();
+  const temporary = useChatStore((store) =>
+    store.conversations.some(
+      (chat) => chat.id === conversationId && chat.temporary,
+    ),
+  );
   const [expanded, setExpanded] = useState(true);
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
@@ -173,16 +200,18 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
                 {isOpen && (
                   <div className="px-2.5 pb-2 pt-0.5">
                     <p className="text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                      {s.text}
+                      {highlightExactText(s.text, exactText)}
                     </p>
                     {isImage && <SourceImage chunkId={s.chunk_id} />}
-                    <SourceAction
-                      documentId={s.document_id}
-                      page={s.page_number}
-                      chunk={s.chunk_id}
-                      excerpt={s.text}
-                      title={s.document_filename}
-                    />
+                    {!temporary && (
+                      <SourceAction
+                        documentId={s.document_id}
+                        page={s.page_number}
+                        chunk={s.chunk_id}
+                        excerpt={s.text}
+                        title={s.document_filename}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -381,10 +410,12 @@ function StatusDot({ status }: { status: string }) {
 
 function ToolCallBlockView({
   block,
+  conversationId,
   canViewPptx,
   onViewPptx,
 }: {
   block: MessageBlock;
+  conversationId: string;
   isStreaming: boolean;
   canViewPptx: boolean;
   onViewPptx: (
@@ -742,7 +773,16 @@ function ToolCallBlockView({
           )}
           {/* RAG sources inside the tool call block */}
           {tc.sources && tc.sources.length > 0 && (
-            <SourceCards sources={tc.sources} />
+            <SourceCards
+              sources={tc.sources}
+              conversationId={conversationId}
+              exactText={
+                tc.toolName === "find_attachment_text" ||
+                tc.title === "Finding exact text"
+                  ? tc.query
+                  : undefined
+              }
+            />
           )}
         </div>
       )}
@@ -1762,11 +1802,13 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
 
 function BlockView({
   block,
+  conversationId,
   isStreaming,
   canViewPptx,
   onViewPptx,
 }: {
   block: MessageBlock;
+  conversationId: string;
   isStreaming: boolean;
   canViewPptx: boolean;
   onViewPptx: (
@@ -1785,6 +1827,7 @@ function BlockView({
       return (
         <ToolCallBlockView
           block={block}
+          conversationId={conversationId}
           isStreaming={isStreaming}
           canViewPptx={canViewPptx}
           onViewPptx={onViewPptx}
@@ -2041,6 +2084,7 @@ export function MessageBubble({
           <BlockView
             key={block.id}
             block={block}
+            conversationId={conversationId}
             isStreaming={message.isStreaming}
             canViewPptx={libreOfficeAvailable}
             onViewPptx={(reportId, filename, downloadUrl, format) =>

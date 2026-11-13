@@ -199,7 +199,10 @@ class TemporaryChat:
             if item.id not in document_ids:
                 continue
             for chunk_id, chunk in item.chunks:
-                if exact_text and exact_text.casefold() not in chunk.text.casefold():
+                if exact_text and (
+                    chunk.chunk_type != "text"
+                    or exact_text.casefold() not in chunk.text.casefold()
+                ):
                     continue
                 score = len(terms.intersection(chunk.text.casefold().split()))
                 matches.append(
