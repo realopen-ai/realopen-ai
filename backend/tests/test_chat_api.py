@@ -1840,8 +1840,9 @@ async def test_temporary_report_download_uses_session_file(client, env):
 
 
 @pytest.mark.asyncio
-async def test_sources_command_and_reply_are_saved_without_background_generation(
-    client, env
+@pytest.mark.parametrize("command", ["/sources", "/find FRYE"])
+async def test_lookup_command_and_reply_are_saved_without_background_generation(
+    client, env, command
 ):
     content = "**Chat attachments**"
     tool = {
@@ -1862,7 +1863,7 @@ async def test_sources_command_and_reply_are_saved_without_background_generation
         "/api/chat/stream",
         json={
             "conversation_id": str(CONV_ID),
-            "messages": [{"role": "user", "content": "/sources"}],
+            "messages": [{"role": "user", "content": command}],
         },
     )
     assert response.status_code == 200
@@ -1872,7 +1873,7 @@ async def test_sources_command_and_reply_are_saved_without_background_generation
         if e.get("event") == "message"
     ]
     assert [(m["role"], m["content"]) for m in env.persists] == [
-        ("user", "/sources"),
+        ("user", command),
         ("assistant", content),
     ]
     assert env.persists[-1]["blocks"][-1]["tool_call"] == tool

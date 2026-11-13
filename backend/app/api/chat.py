@@ -31,7 +31,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.models import Conversation
 
 from app.agent.service import run_agent_stream
-from app.agent.routing import is_sources_command
+from app.agent.routing import is_find_command, is_sources_command
 from app.agent.coder.resume import resume_coder_stream
 from app.services.coder_tasks import resumable_task
 from app.config import settings
@@ -447,7 +447,9 @@ async def _chat_stream(
     # titler always sees the original text (not anything the agent loop
     # may have appended to the messages list).
     _user_msg_for_title = messages[-1]["content"] if messages else ""
-    listing_sources = is_sources_command(_user_msg_for_title)
+    local_lookup = is_sources_command(_user_msg_for_title) or is_find_command(
+        _user_msg_for_title
+    )
 
     async def generate():
         _log("   🔄 generate() started — preparing conversation")
@@ -464,7 +466,7 @@ async def _chat_stream(
         # Title the conversation before the agent loop. This generator is
         # already owned by the buffered server-side stream, so the work keeps
         # running and remains reconnectable if the browser reloads here.
-        if _conv_id and _user_msg_for_title and not listing_sources:
+        if _conv_id and _user_msg_for_title and not local_lookup:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -663,7 +665,7 @@ async def _chat_stream(
                 completion_status,
             )
 
-        if _conv_id and builder.blocks and not listing_sources:
+        if _conv_id and builder.blocks and not local_lookup:
             # Memory extraction — watermark check is inline (fast DB read),
             # the actual LLM extraction is enqueued to the background queue
             # which waits for stream idle before running. See
@@ -910,7 +912,9 @@ async def chat_stream_multipart(
     # document-digestion step appends a system hint to parsed_messages
     # inside the generator (which would otherwise become the last message).
     _user_msg_for_title = parsed_messages[-1]["content"] if parsed_messages else ""
-    listing_sources = is_sources_command(trace_user_message)
+    local_lookup = is_sources_command(trace_user_message) or is_find_command(
+        trace_user_message
+    )
 
     async def generate():
         dbg("   🔄 generate() started (multipart) — preparing conversation")
@@ -931,7 +935,7 @@ async def chat_stream_multipart(
 
         # Keep the first-message lifecycle consistent with the JSON stream:
         # persist user → title conversation → process inputs → run agent.
-        if _conv_id and _user_msg_for_title and not listing_sources:
+        if _conv_id and _user_msg_for_title and not local_lookup:
             try:
                 new_title = await maybe_generate_and_save_title(
                     _conv_id,
@@ -1190,7 +1194,7 @@ async def chat_stream_multipart(
                 completion_status,
             )
 
-        if _conv_id and builder.blocks and not listing_sources:
+        if _conv_id and builder.blocks and not local_lookup:
             # Memory extraction — watermark check inline, LLM extraction
             # enqueued to background queue (KV-cache protection).
             try:
