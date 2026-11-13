@@ -139,6 +139,8 @@ export interface Message {
   hasDocument?: boolean;
   imageCount?: number;
   documentCount?: number;
+  selectedSourceIds?: string[];
+  selectedSourceTitles?: Record<string, string>;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
   completionStatus?: "streaming" | "completed" | "interrupted" | "error";
@@ -458,6 +460,8 @@ export function dtoToMessage(dto: MessageDTO): Message {
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
+    selectedSourceIds: dto.selectedSourceIds,
+    selectedSourceTitles: dto.selectedSourceTitles,
     generationDuration: dto.generationDuration,
     completionStatus: dto.completionStatus ?? "completed",
     deliverables: (dto.deliverables ?? undefined)?.map((d) => ({
@@ -597,6 +601,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               has_document: message.hasDocument,
               image_count: message.imageCount,
               document_count: message.documentCount,
+              selected_source_ids: message.selectedSourceIds,
               blocks: message.blocks?.map((block) => ({
                 type: block.type,
                 content: block.content,

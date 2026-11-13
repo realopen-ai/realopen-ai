@@ -121,6 +121,7 @@ export async function streamChat(
     modelOverride?: string;
     shrug?: boolean;
     resumeCoderTaskId?: string;
+    selectedSourceIds?: string[];
   },
 ): Promise<void> {
   const controller = new AbortController();
@@ -157,6 +158,7 @@ export async function streamChat(
       model_override: options?.modelOverride,
       shrug: options?.shrug,
       resume_coder_task_id: options?.resumeCoderTaskId,
+      selected_source_ids: options?.selectedSourceIds,
     };
     log(
       `   request body: messages=${messages.length}  model=${model}  stream=true  convId=${options?.conversationId ?? "none"}  modelOverride=${options?.modelOverride ?? "none"}`,
@@ -232,6 +234,7 @@ export async function streamChatWithFiles(
     conversationId?: string;
     temporary?: boolean;
     modelOverride?: string;
+    selectedSourceIds?: string[];
   },
 ): Promise<void> {
   const controller = new AbortController();
@@ -264,6 +267,8 @@ export async function streamChatWithFiles(
       formData.append("conversation_id", options.conversationId);
     if (options?.modelOverride)
       formData.append("model_override", options.modelOverride);
+    for (const id of options?.selectedSourceIds ?? [])
+      formData.append("selected_source_ids", id);
 
     // Attach image files
     if (files.images) {
