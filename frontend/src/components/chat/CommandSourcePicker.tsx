@@ -75,16 +75,14 @@ export function CommandSourcePicker({
     void fetchChatCommandSources(conversationId, temporary, controller.signal)
       .then((items) => {
         if (controller.signal.aborted) return;
-        setSources(
-          command === "find" ? items.filter((item) => item.document_id) : items,
-        );
+        setSources(items);
         setStatus("loaded");
       })
       .catch(() => {
         if (!controller.signal.aborted) setStatus("error");
       });
     return () => controller.abort();
-  }, [command, conversationId, open, temporary]);
+  }, [conversationId, open, temporary]);
 
   const single = command === "summarize";
   return (

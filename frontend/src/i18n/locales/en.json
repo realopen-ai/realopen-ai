@@ -305,7 +305,7 @@
   "input.slash.imagine": "Use image generation model for this message",
   "input.slash.library": "Search your document library",
   "input.slash.web": "Search the web with your configured providers",
-  "input.slash.find": "Find exact text in attached documents or selected notebook sources",
+  "input.slash.find": "Find exact text in attached or generated files and notebook sources",
   "input.slash.note": "Create a study note from this chat or your sources",
   "input.slash.flashcards": "Create flashcards from this chat or your sources",
   "input.slash.quiz": "Create a quiz on a topic or from your sources",
