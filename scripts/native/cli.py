@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import signal
+import sys
 import threading
 import urllib.request
 import uuid
@@ -122,13 +123,14 @@ def launch(cfg, dev=False, install=True, migrate=False):
                     "Frontend build missing; run start-native setup before --no-install"
                 )
             if dev:
-                app_dir = cfg.root / "backend/app"
+                # On macOS, filesystem notifications can report metadata-only
+                # changes to Python files as reloads. Poll for file changes.
+                if sys.platform == "darwin":
+                    env.setdefault("WATCHFILES_FORCE_POLLING", "true")
                 command += [
                     "--reload",
                     "--reload-dir",
-                    str(app_dir),
-                    "--reload-exclude",
-                    str(app_dir / "agent/coder/starters"),
+                    str(cfg.root / "backend/app"),
                     "--timeout-graceful-shutdown",
                     "10",
                 ]
