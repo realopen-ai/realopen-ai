@@ -170,7 +170,7 @@ async def add_message(
     For assistant messages, `blocks` is the ordered array of rendering
     blocks (thinking / text / tool_call / error) and `content` is the
     concatenation of text blocks (for tsvector search). For user messages,
-    `blocks` is None and `content` is the user's text.
+    `blocks` may store the command source selection and `content` is the user's text.
 
     `deliverables` is an optional array of file metadata for generated
     deliverables (reports, etc.) — persisted so the frontend can render
@@ -379,10 +379,17 @@ async def message_to_dict(msg: Message) -> dict:
         "createdAt": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
     }
 
-    # blocks — ordered rendering blocks for assistant messages.
-    # NULL for user/system messages. The frontend renders these in order
+    # User command selections share the JSONB column with assistant blocks.
+    # The frontend renders assistant blocks in order
     # to preserve the chronological flow of multi-round agent turns.
-    if msg.blocks is not None:
+    if msg.role == "user":
+        result["blocks"] = None
+        for block in msg.blocks or []:
+            if block.get("type") == "selected_sources":
+                result["selectedSourceIds"] = block["ids"]
+                result["selectedSourceTitles"] = block.get("titles", {})
+                break
+    elif msg.blocks is not None:
         result["blocks"] = msg.blocks
     else:
         result["blocks"] = None

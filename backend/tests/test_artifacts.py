@@ -498,6 +498,33 @@ async def test_scope_enforcement_and_reference_validation(store):
 
 
 @pytest.mark.asyncio
+async def test_scoped_artifact_lookup_accepts_chat_id_from_stream(store):
+    conversation = uuid.uuid4()
+    with store.engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO conversations (id) VALUES (:id)"),
+            {"id": conversation.hex},
+        )
+    artifact = await generated(
+        store,
+        kind="presentation",
+        source="# Introduction\n---\n# Artificial Intelligence\nExact slide text.",
+        conversation_id=conversation,
+    )
+    identifier = uuid.UUID(artifact["id"])
+    async with store.factory() as db:
+        owned = await service.get_artifact(
+            db, identifier, str(conversation), scoped=True
+        )
+        assert owned.id == identifier
+        with pytest.raises(HTTPException) as error:
+            await service.get_artifact(
+                db, identifier, str(uuid.uuid4()), scoped=True
+            )
+        assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_summary_is_explicit_hierarchical_and_reports_missing_sections():
     calls = []
 

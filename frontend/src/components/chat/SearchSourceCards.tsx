@@ -41,7 +41,7 @@ function parseSources(output: string): {
   return { sources: [], hasMore: false };
 }
 
-function SourceThumbnail({ url }: { url?: string }) {
+export function SourceThumbnail({ url }: { url?: string }) {
   const [failed, setFailed] = useState(false);
   return (
     <div className="flex aspect-4/3 items-center justify-center overflow-hidden bg-secondary">
@@ -60,6 +60,16 @@ function SourceThumbnail({ url }: { url?: string }) {
       )}
     </div>
   );
+}
+
+export function chatSourceThumbnailUrl(
+  documentId: string,
+  conversationId: string,
+  temporary: boolean,
+) {
+  return temporary
+    ? `/api/chat/temporary/${encodeURIComponent(conversationId)}/documents/${encodeURIComponent(documentId)}/thumbnail`
+    : documentThumbnailUrl(documentId);
 }
 
 export function SearchSourceCards({
@@ -96,11 +106,9 @@ export function SearchSourceCards({
         {sources.map((source) => {
           const document = source.kind === "document";
           const id = encodeURIComponent(source.id);
-          const thumbnail = !document
-            ? undefined
-            : temporary
-              ? `/api/chat/temporary/${encodeURIComponent(conversationId)}/documents/${id}/thumbnail`
-              : documentThumbnailUrl(id);
+          const thumbnail = document
+            ? chatSourceThumbnailUrl(source.id, conversationId, temporary)
+            : undefined;
           const extension = source.name.includes(".")
             ? source.name.split(".").pop()?.toUpperCase()
             : undefined;

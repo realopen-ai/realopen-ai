@@ -296,6 +296,7 @@ def env(monkeypatch, db_override):
                 "images": images,
                 "conversation_id": conversation_id,
                 "attachment_ids": kw.get("attachment_ids"),
+                "selected_source_ids": kw.get("selected_source_ids"),
             }
         )
         if e.agent_error is not None:
@@ -781,6 +782,34 @@ async def test_stream_with_conversation_full_lifecycle(client, env):
     for chunk_event in env.agent_events:
         assert json.dumps(chunk_event) in body
     assert body.rstrip().endswith("data: [DONE]")
+
+
+@pytest.mark.asyncio
+async def test_temporary_command_source_inventory_is_session_scoped(client):
+    from app.services.temporary_chats import Attachment, discard_session, get_session
+
+    session = get_session(uuid.uuid4())
+    other = get_session(uuid.uuid4())
+    session.attachments.extend(
+        [
+            Attachment(DOC_ID, "source.txt", b"text", False, 0, [], 1),
+            Attachment(uuid.uuid4(), "image.png", b"image", True, 0, [], 0),
+        ]
+    )
+    try:
+        response = await client.get(
+            f"/api/chat/{session.id}/command-sources?temporary=true"
+        )
+        assert response.json() == [
+            {"id": str(DOC_ID), "title": "source.txt", "document_id": str(DOC_ID)}
+        ]
+        response = await client.get(
+            f"/api/chat/{other.id}/command-sources?temporary=true"
+        )
+        assert response.json() == []
+    finally:
+        discard_session(session.id)
+        discard_session(other.id)
 
 
 @pytest.mark.asyncio
@@ -1837,6 +1866,37 @@ async def test_temporary_report_download_uses_session_file(client, env):
         assert (await client.get(url)).status_code == 404
     finally:
         temporary_chats.discard_session(session.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_chat_forwards_and_persists_explicit_sources(
+    client, env, multipart, monkeypatch
+):
+    from app.services import chat_command_sources
+    from app.services.conversations import message_to_dict
+
+    monkeypatch.setattr(
+        chat_command_sources,
+        "list_sources",
+        AsyncMock(return_value=[{"id": str(DOC_ID), "title": "Case Study.pptx"}]),
+    )
+    messages = [{"role": "user", "content": "/find FRYE"}]
+    path = "/api/chat/stream"
+    fields = {"conversation_id": str(CONV_ID), "selected_source_ids": [str(DOC_ID)]}
+    if multipart:
+        response = await client.post(
+            path + "/multipart",
+            data={**fields, "messages": json.dumps(messages)},
+        )
+    else:
+        response = await client.post(path, json={**fields, "messages": messages})
+    assert response.status_code == 200
+    assert env.agent_calls[0]["selected_source_ids"] == [DOC_ID]
+    message = await message_to_dict(make_msg(blocks=env.persists[0]["blocks"]))
+    assert message["selectedSourceIds"] == [str(DOC_ID)]
+    assert message["selectedSourceTitles"] == {str(DOC_ID): "Case Study.pptx"}
+    assert message["blocks"] is None
 
 
 @pytest.mark.asyncio

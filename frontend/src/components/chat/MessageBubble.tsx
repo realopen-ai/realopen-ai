@@ -33,6 +33,7 @@ import { toolAccessDetails } from "@/lib/toolAccessDetails";
 import { toolOutputDetails } from "@/lib/toolOutputDetails";
 import { WebFetchDetail } from "@/components/chat/WebFetchDetail";
 import { SearchSourceCards } from "@/components/chat/SearchSourceCards";
+import { SelectedCommandSources } from "@/components/chat/SelectedCommandSources";
 import { parseSlashCommand } from "@/components/chat/InputArea";
 import { HighlightedCode } from "@/components/ui/HighlightedCode";
 import type { Message, ToolCallResult, MessageBlock } from "@/store/chatStore";
@@ -155,6 +156,8 @@ function SourceCards({
             const locationParts: string[] = [];
             if (s.page_number != null)
               locationParts.push(`p. ${s.page_number}`);
+            if (s.artifact && s.section_title)
+              locationParts.push(s.section_title);
             if (s.line_start != null && s.line_end != null) {
               if (s.line_start === s.line_end) {
                 locationParts.push(`L${s.line_start}`);
@@ -188,7 +191,10 @@ function SourceCards({
                     <Image className="w-3 h-3 text-muted-foreground/80 shrink-0" />
                   )}
                   {location && (
-                    <span className="text-[11px] text-muted-foreground/70 shrink-0">
+                    <span
+                      className="max-w-[40%] shrink-0 truncate text-[11px] text-muted-foreground/70"
+                      title={location}
+                    >
                       {location}
                     </span>
                   )}
@@ -205,7 +211,8 @@ function SourceCards({
                     {isImage && <SourceImage chunkId={s.chunk_id} />}
                     {!temporary && (
                       <SourceAction
-                        documentId={s.document_id}
+                        documentId={s.artifact ? undefined : s.document_id}
+                        artifact={s.artifact}
                         page={s.page_number}
                         chunk={s.chunk_id}
                         excerpt={s.text}
@@ -1946,7 +1953,12 @@ export function MessageBubble({
     // Find and trigger the InputArea's send — we'll dispatch a custom event
     window.dispatchEvent(
       new CustomEvent("regenerate-message", {
-        detail: { content: userMsg.content, conversationId },
+        detail: {
+          content: userMsg.content,
+          conversationId,
+          selectedSourceIds: userMsg.selectedSourceIds,
+          selectedSourceTitles: userMsg.selectedSourceTitles,
+        },
       }),
     );
   }, [conversationId, message.id]);
@@ -2032,6 +2044,13 @@ export function MessageBubble({
               >
                 {command.icon}/{command.name}
               </span>
+            )}
+            {!!message.selectedSourceIds?.length && (
+              <SelectedCommandSources
+                ids={message.selectedSourceIds}
+                titles={message.selectedSourceTitles}
+                conversationId={conversationId}
+              />
             )}
             {(!command || remainingContent) && (
               <p

@@ -189,6 +189,15 @@ class Trace:
                     )
                 ),
                 "image_count": len(request.get("images") or []),
+                **(
+                    {
+                        "selected_source_ids": [
+                            str(ident) for ident in request["selected_source_ids"]
+                        ]
+                    }
+                    if request.get("selected_source_ids")
+                    else {}
+                ),
                 "interaction_mode": request.get("interaction_mode", "text"),
             },
             "rounds": [],

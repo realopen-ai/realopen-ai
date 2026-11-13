@@ -66,7 +66,7 @@ export interface DocumentDTO {
 }
 
 export interface RetrievedSourceDTO {
-  document_id: string;
+  document_id: string | null;
   document_filename: string;
   chunk_id: string;
   text: string;
@@ -83,6 +83,8 @@ export interface RetrievedSourceDTO {
    *  actual bytes via /api/documents/chunks/{chunk_id}/image. */
   image_path?: string | null;
   has_image?: boolean;
+  artifact?: import("./artifactsClient").ArtifactReference;
+  section_title?: string;
 }
 
 // ─── Digestion progress (SSE event payload) ──────────────────────────

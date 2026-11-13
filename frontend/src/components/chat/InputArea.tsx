@@ -45,6 +45,16 @@ import { useVoiceStore } from "@/voice/voiceStore";
 import { cn } from "@/lib/utils";
 import { DictationRecorder, appendDictation } from "@/voice/dictation";
 import { DictationWaveform, WAVEFORM_BARS } from "./DictationWaveform";
+import { CommandSourcePicker } from "./CommandSourcePicker";
+import { SelectedCommandSources } from "./SelectedCommandSources";
+
+const sourceCommands = new Set([
+  "find",
+  "note",
+  "flashcards",
+  "quiz",
+  "summarize",
+]);
 
 // ─── Slash Command Definitions ────────────────────────────────────
 
@@ -317,6 +327,7 @@ export function InputArea({
   onStartVoice,
   onStopResponse,
   sourceGrounded = false,
+  conversationId = null,
   canDelegateToCoder = false,
   temporary = false,
   taskActivity,
@@ -329,6 +340,8 @@ export function InputArea({
       shrug?: boolean;
       images?: File[];
       documents?: File[];
+      selectedSourceIds?: string[];
+      selectedSourceTitles?: Record<string, string>;
     },
   ) => void;
   isStreaming: boolean;
@@ -338,6 +351,7 @@ export function InputArea({
   onStopResponse: () => void;
   /** Notebook attachments are managed through its selected-source panel. */
   sourceGrounded?: boolean;
+  conversationId?: string | null;
   canDelegateToCoder?: boolean;
   temporary?: boolean;
   taskActivity?: ReactNode;
@@ -345,6 +359,12 @@ export function InputArea({
 }) {
   const canAttach = !sourceGrounded;
   const [input, setInput] = useState("");
+  const [sourceSelection, setSourceSelection] = useState<{
+    conversationId: string;
+    command: string;
+    ids: string[];
+    titles: Record<string, string>;
+  }>();
   const dictationConversation = useChatStore((s) => s.activeConversationId);
   const [dictation, setDictation] = useState<
     "idle" | "starting" | "recording" | "transcribing"
@@ -443,6 +463,7 @@ export function InputArea({
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const sourcePickerRef = useRef<{ openFromComposer: () => void }>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
@@ -557,6 +578,13 @@ export function InputArea({
   };
 
   const { command, remainingContent } = parseSlashCommand(input);
+  const sourceCommand =
+    command && sourceCommands.has(command.name) ? command.name : null;
+  const selectedSourceIds =
+    sourceSelection?.conversationId === conversationId &&
+    sourceSelection.command === sourceCommand
+      ? sourceSelection.ids
+      : [];
   const commandNeedsText = command?.requiresText && !remainingContent;
   const commandUnavailable = !canDelegateToCoder && command?.name === "coder";
 
@@ -584,6 +612,12 @@ export function InputArea({
       shrug: command?.shrug,
       images: canAttach && images.length > 0 ? images : undefined,
       documents: canAttach && documents.length > 0 ? documents : undefined,
+      selectedSourceIds: selectedSourceIds.length
+        ? selectedSourceIds
+        : undefined,
+      selectedSourceTitles: selectedSourceIds.length
+        ? sourceSelection?.titles
+        : undefined,
     });
 
     // Cleanup preview URLs
@@ -592,12 +626,28 @@ export function InputArea({
     }
 
     setInput("");
+    setSourceSelection(undefined);
     setAttachments([]);
     setShowSlashMenu(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (
+      e.key === "ArrowUp" &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.nativeEvent.isComposing &&
+      sourcePickerRef.current
+    ) {
+      e.preventDefault();
+      setShowSlashMenu(false);
+      sourcePickerRef.current.openFromComposer();
+      return;
+    }
+
     // Slash menu navigation
     if (showSlashMenu && filteredCommands.length > 0) {
       if (e.key === "ArrowUp") {
@@ -715,6 +765,48 @@ export function InputArea({
                   onRemove={() => removeAttachment(i)}
                 />
               ))}
+            </div>
+          )}
+
+          {sourceCommand && conversationId && !isStreaming && (
+            <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
+              <CommandSourcePicker
+                ref={sourcePickerRef}
+                key={`${conversationId}:${sourceCommand}`}
+                conversationId={conversationId}
+                temporary={temporary}
+                command={sourceCommand}
+                selected={selectedSourceIds}
+                onReturnToComposer={() => textareaRef.current?.focus()}
+                onChange={(ids, titles) =>
+                  setSourceSelection({
+                    conversationId,
+                    command: sourceCommand,
+                    ids,
+                    titles,
+                  })
+                }
+              />
+              {selectedSourceIds.length > 0 && (
+                <SelectedCommandSources
+                  ids={selectedSourceIds}
+                  titles={sourceSelection?.titles}
+                  conversationId={conversationId}
+                  className="mt-0"
+                  onRemove={(id) => {
+                    setSourceSelection(
+                      (selection) =>
+                        selection && {
+                          ...selection,
+                          ids: selection.ids.filter(
+                            (sourceId) => sourceId !== id,
+                          ),
+                        },
+                    );
+                    textareaRef.current?.focus();
+                  }}
+                />
+              )}
             </div>
           )}
 

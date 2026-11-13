@@ -39,6 +39,12 @@ from app.core.logger import get_debug_logger, RequestTimer, is_debug
 from app.db.session import get_db, async_session_factory
 from app.services import conversations as conv_service
 from app.services import temporary_chats
+from app.services.chat_command_sources import (
+    MAX_SELECTION,
+    list_sources,
+    saved_selection_blocks,
+    selection_blocks,
+)
 from app.services.safe_paths import confined_path
 from app.services.integrations.libreoffice import render_document_thumbnail
 from app.services import model_prefs
@@ -110,6 +116,9 @@ class ChatRequest(BaseModel):
     shrug: Optional[bool] = None
     resume_coder_task_id: Optional[uuid.UUID] = None
     temporary_id: Optional[uuid.UUID] = None
+    selected_source_ids: list[uuid.UUID] = Field(
+        default_factory=list, max_length=MAX_SELECTION
+    )
 
 
 class ChatResponse(BaseModel):
@@ -353,10 +362,14 @@ async def temporary_chat_with_files(
     model_override: str | None = Form(None),
     images: list[UploadFile] = File(default=[]),
     documents: list[UploadFile] = File(default=[]),
+    selected_source_ids: list[uuid.UUID] = Form(default=[], max_length=MAX_SELECTION),
 ):
     try:
         request = ChatRequest(
-            messages=json.loads(messages), model=model, model_override=model_override
+            messages=json.loads(messages),
+            model=model,
+            model_override=model_override,
+            selected_source_ids=selected_source_ids,
         )
     except ValueError:
         raise HTTPException(422, "Invalid chat messages") from None
@@ -437,6 +450,15 @@ async def _chat_stream(
             messages[-1]["content"],
             has_image=False,
             has_document=False,
+            **(
+                {
+                    "blocks": await saved_selection_blocks(
+                        conv_id, request.selected_source_ids, async_session_factory
+                    )
+                }
+                if request.selected_source_ids
+                else {}
+            ),
         )
 
     # Capture for closure — these are used inside generate() which runs
@@ -552,6 +574,11 @@ async def _chat_stream(
                         else {}
                     ),
                     conversation_id=str(_conv_id) if _conv_id else None,
+                    **(
+                        {"selected_source_ids": request.selected_source_ids}
+                        if request.selected_source_ids
+                        else {}
+                    ),
                 )
             )
             async for chunk in source:
@@ -801,6 +828,7 @@ async def chat_stream_multipart(
     conversation_id: Optional[str] = Form(None),
     images: List[UploadFile] = File(default=[]),
     documents: List[UploadFile] = File(default=[]),
+    selected_source_ids: list[uuid.UUID] = Form(default=[], max_length=MAX_SELECTION),
 ):
     """Stream chat with optional image and document uploads.
 
@@ -903,6 +931,15 @@ async def chat_stream_multipart(
             has_document=len(documents) > 0,
             image_count=len(images),
             document_count=len(documents),
+            **(
+                {
+                    "blocks": await saved_selection_blocks(
+                        conv_id, selected_source_ids, async_session_factory
+                    )
+                }
+                if selected_source_ids
+                else {}
+            ),
         )
 
     # Capture for closure
@@ -1085,6 +1122,11 @@ async def chat_stream_multipart(
                 conversation_id=str(_conv_id) if _conv_id else None,
                 trace_user_message=trace_user_message,
                 attachment_ids=digested_doc_ids if documents else None,
+                **(
+                    {"selected_source_ids": selected_source_ids}
+                    if selected_source_ids
+                    else {}
+                ),
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:
@@ -1393,6 +1435,19 @@ async def discard_temporary_chat(temporary_id: uuid.UUID):
     return Response(status_code=204)
 
 
+@router.get("/chat/{conversation_id}/command-sources")
+async def chat_command_sources(conversation_id: uuid.UUID, temporary: bool = False):
+    if temporary:
+        session = temporary_chats.get_session(conversation_id, create=False)
+        return (
+            await list_sources(None, None, session)
+            if session and not session.discarded
+            else []
+        )
+    async with async_session_factory() as db:
+        return await list_sources(db, conversation_id)
+
+
 @router.get("/chat/temporary/{temporary_id}/documents/{document_id}/thumbnail")
 async def temporary_document_thumbnail(temporary_id: uuid.UUID, document_id: uuid.UUID):
     session = temporary_chats.get_session(temporary_id, create=False)
@@ -1463,6 +1518,9 @@ class TemporaryChatMessage(BaseModel):
     image_count: int = Field(default=0, ge=0)
     document_count: int = Field(default=0, ge=0)
     blocks: list[TemporaryChatBlock] | None = None
+    selected_source_ids: list[uuid.UUID] = Field(
+        default_factory=list, max_length=MAX_SELECTION
+    )
     deliverables: list[dict[str, Any]] | None = None
     generation_duration: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     completion_status: Literal["completed", "interrupted", "error"] = "completed"
@@ -1501,10 +1559,18 @@ async def save_temporary_chat(
                     )
                 rows = []
                 message_ids = {}
+                sources = (
+                    await list_sources(None, None, session)
+                    if any(message.selected_source_ids for message in body.messages)
+                    else []
+                )
                 for index, message in enumerate(body.messages):
-                    row = await conv_service.add_message(
-                        db, body.id, **message.model_dump()
-                    )
+                    values = message.model_dump(exclude={"selected_source_ids"})
+                    if message.role == "user" and message.selected_source_ids:
+                        values["blocks"] = selection_blocks(
+                            message.selected_source_ids, sources
+                        )
+                    row = await conv_service.add_message(db, body.id, **values)
                     message_ids[index] = row.id
                     rows.append(row)
                 if session:

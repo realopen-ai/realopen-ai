@@ -76,6 +76,19 @@ function activeMessages() {
 
 // ── dtoToMessage: pure backend → frontend conversion ───────────────────
 
+test("dtoToMessage restores the command source IDs and filenames", () => {
+  const titles = { "source-a": "Case Study.pptx", "source-b": "Notes.pdf" };
+  const message = dtoToMessage(
+    messageDTO({
+      role: "user",
+      selectedSourceIds: ["source-a", "source-b"],
+      selectedSourceTitles: titles,
+    }),
+  );
+  assert.deepEqual(message.selectedSourceIds, ["source-a", "source-b"]);
+  assert.deepEqual(message.selectedSourceTitles, titles);
+});
+
 test("dtoToMessage maps plain thinking/text blocks with stable ids", () => {
   const message = dtoToMessage(
     messageDTO({

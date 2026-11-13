@@ -52,6 +52,11 @@ def file_path(relative):
 
 async def get_artifact(db, artifact_id, conversation_id=None, *, scoped=False):
     if scoped:
+        if isinstance(conversation_id, str):
+            try:
+                conversation_id = uuid.UUID(conversation_id)
+            except ValueError as exc:
+                raise HTTPException(422, "Invalid conversation ID") from exc
         allowed = await permits_artifact(db, conversation_id, artifact_id)
         if allowed is False:
             raise HTTPException(403, "Artifact is not a selected notebook source")

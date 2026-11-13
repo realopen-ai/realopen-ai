@@ -68,6 +68,13 @@ def evidence_records(result_ref, tool, arguments, result):
             "metadata": {
                 **reference_metadata(value),
                 **(
+                    {"source_references": value["source_references"]}
+                    if tool.name == "summarize_artifact"
+                    and isinstance(value, dict)
+                    and isinstance(value.get("source_references"), list)
+                    else {}
+                ),
+                **(
                     {"url": call.query}
                     if tool.name == "use_webfetch" and getattr(call, "query", None)
                     else {}

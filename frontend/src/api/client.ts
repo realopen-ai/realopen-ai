@@ -435,6 +435,26 @@ export interface ConversationDTO {
   summaryAt?: number | null;
 }
 
+export type ChatCommandSource = {
+  id: string;
+  title: string;
+  document_id: string | null;
+};
+
+export async function fetchChatCommandSources(
+  conversationId: string,
+  temporary: boolean,
+  signal: AbortSignal,
+): Promise<ChatCommandSource[]> {
+  const id = encodeURIComponent(conversationId);
+  const response = await fetch(
+    `/api/chat/${id}/command-sources?temporary=${temporary}`,
+    { signal },
+  );
+  if (!response.ok) throw new Error("Could not load chat sources");
+  return response.json();
+}
+
 export interface MessageDTO {
   id: string;
   conversationId: string;
@@ -446,6 +466,8 @@ export interface MessageDTO {
   hasDocument: boolean;
   imageCount: number;
   documentCount: number;
+  selectedSourceIds?: string[];
+  selectedSourceTitles?: Record<string, string>;
   createdAt: number;
   /** How the message was produced: spoken ("voice") or typed ("text").
    * Null for messages created before the voice feature. */
@@ -541,6 +563,7 @@ export async function importTemporaryConversation(body: {
     has_document?: boolean;
     image_count?: number;
     document_count?: number;
+    selected_source_ids?: string[];
     blocks?: {
       type: string;
       content?: string;

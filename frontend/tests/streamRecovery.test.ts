@@ -150,11 +150,12 @@ for (const multipart of [false, true]) {
           "coder",
           received.callbacks,
           {},
-          { conversationId: "qa" },
+          { conversationId: "qa", selectedSourceIds: ["source-a", "source-b"] },
         );
       else
         await streamChat([], "coder", received.callbacks, {
           conversationId: "qa",
+          selectedSourceIds: ["source-a", "source-b"],
         });
       assert.deepEqual(received.tokens, ["before", "continued"]);
       assert.deepEqual(received.activities, [true, false]);
@@ -165,6 +166,12 @@ for (const multipart of [false, true]) {
         1,
       );
       assert.equal(mock.calls[1].url, "/api/chat/stream/qa/events?after=2");
+      const body = mock.calls[0].init?.body;
+      const ids =
+        body instanceof FormData
+          ? body.getAll("selected_source_ids")
+          : JSON.parse(String(body)).selected_source_ids;
+      assert.deepEqual(ids, ["source-a", "source-b"]);
     } finally {
       mock.restore();
     }
