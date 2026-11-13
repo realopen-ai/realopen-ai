@@ -533,6 +533,7 @@ async def _find_attachment_text(
         call = {
             "id": call_id,
             "type": tool.tool_type.value,
+            "toolName": "find_attachment_text",
             "title": "Finding exact text",
             "query": query,
             "status": "running",

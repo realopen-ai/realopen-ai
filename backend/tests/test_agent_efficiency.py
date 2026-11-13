@@ -1134,6 +1134,8 @@ async def test_find_returns_literal_temporary_matches_without_inference(
         (str(current), 2)
     ]
     assert source_event["tool_call_id"] == events[0]["tool_call"]["id"]
+    assert events[0]["tool_call"]["toolName"] == "find_attachment_text"
+    assert events[0]["tool_call"]["query"] == "50%"
     assert not captured
     assert events[-1]["event"] == "done"
 

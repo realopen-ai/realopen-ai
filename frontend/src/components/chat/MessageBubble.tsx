@@ -90,12 +90,28 @@ function SourceImage({ chunkId }: { chunkId: string }) {
   );
 }
 
+function highlightExactText(text: string, query?: string) {
+  if (!query) return text;
+  const literal = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.split(new RegExp(`(${literal})`, "giu")).map((part, index) =>
+    index % 2 === 0 ? (
+      part
+    ) : (
+      <mark key={index} className="rounded-sm bg-amber-300/40 text-foreground">
+        {part}
+      </mark>
+    ),
+  );
+}
+
 function SourceCards({
   sources,
   conversationId,
+  exactText,
 }: {
   sources: RetrievedSourceDTO[];
   conversationId: string;
+  exactText?: string;
 }) {
   const translate = useT();
   const temporary = useChatStore((store) =>
@@ -184,7 +200,7 @@ function SourceCards({
                 {isOpen && (
                   <div className="px-2.5 pb-2 pt-0.5">
                     <p className="text-[11.5px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                      {s.text}
+                      {highlightExactText(s.text, exactText)}
                     </p>
                     {isImage && <SourceImage chunkId={s.chunk_id} />}
                     {!temporary && (
@@ -757,7 +773,16 @@ function ToolCallBlockView({
           )}
           {/* RAG sources inside the tool call block */}
           {tc.sources && tc.sources.length > 0 && (
-            <SourceCards sources={tc.sources} conversationId={conversationId} />
+            <SourceCards
+              sources={tc.sources}
+              conversationId={conversationId}
+              exactText={
+                tc.toolName === "find_attachment_text" ||
+                tc.title === "Finding exact text"
+                  ? tc.query
+                  : undefined
+              }
+            />
           )}
         </div>
       )}
