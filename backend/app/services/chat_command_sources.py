@@ -1,12 +1,13 @@
 """Source inventory shared by the composer and command execution."""
 
+import re
 import uuid
 
 from sqlalchemy import select
 
 from app.db.models import Artifact, Document
 from app.learn.notebooks import source_catalog
-from app.services.artifacts import metadata
+from app.services.artifacts import get_artifact, get_version, metadata
 
 
 COMMANDS = frozenset({"/find", "/summarize", "/note", "/flashcards", "/quiz"})
@@ -76,8 +77,93 @@ async def list_sources(db, conversation_id, temporary_chat=None):
     ] + [metadata(artifact) for artifact in artifacts]
 
 
-def restrict_citations(arguments, document_ids, artifact_ids):
+async def find_artifact_text(db, conversation_id, temporary_chat, ids, query, limit):
+    """Return exact matches with references to the searched artifact version."""
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    matches = []
+    for ident in ids:
+        if temporary_chat is not None:
+            _, title, version = temporary_chat.artifact_version(ident, None)
+        else:
+            artifact = await get_artifact(db, ident, conversation_id, scoped=True)
+            title = artifact.title
+            version = await get_version(db, artifact)
+        for section in version.sections:
+            content = section["content"]
+            match = pattern.search(content)
+            if match is None:
+                continue
+            start = max(0, match.start() - 250)
+            end = min(len(content), max(start + 750, match.end() + 250))
+            excerpt = ("…" if start else "") + content[start:end]
+            if end < len(content):
+                excerpt += "…"
+            matches.append(
+                {
+                    "document_id": None,
+                    "document_filename": title,
+                    "chunk_id": f"{ident}:{section['id']}",
+                    "text": excerpt,
+                    "snippet": excerpt,
+                    "chunk_type": "text",
+                    "page_number": section.get("page"),
+                    "line_start": None,
+                    "line_end": None,
+                    "score": 1.0,
+                    "vector_sim": 0.0,
+                    "bm25_score": 0.0,
+                    "artifact": {
+                        "artifact_id": str(ident),
+                        "version": version.number,
+                        "section_id": section["id"],
+                        **{
+                            key: section[key]
+                            for key in ("page", "slide", "sheet")
+                            if section.get(key) is not None
+                        },
+                    },
+                    "section_title": section["title"],
+                }
+            )
+            if len(matches) == limit:
+                return matches
+    return matches
+
+
+def restrict_citations(arguments, document_ids, artifact_ids, evidence):
     """Drop model-supplied references outside the explicitly selected files."""
+    # A single retrieved section can supply provenance without guessing which
+    # of several sections supports a particular note, card, or question.
+    sections = {
+        (
+            record["metadata"].get("artifact_id"),
+            record["metadata"].get("version"),
+            record["request"].get("section_id"),
+        )
+        for record in evidence
+        if record["tool"] == "read_artifact"
+        and record["metadata"].get("artifact_id") in artifact_ids
+        and record["metadata"].get("version")
+        and record["request"].get("section_id")
+        and record.get("evidence_kind") != "outline_only"
+    }
+    for record in evidence:
+        metadata = record["metadata"]
+        ident, version = metadata.get("artifact_id"), metadata.get("version")
+        if record["tool"] == "summarize_artifact" and ident in artifact_ids and version:
+            sections.update(
+                (ident, version, reference["id"])
+                for reference in metadata.get("source_references", [])
+                if isinstance(reference, dict) and isinstance(reference.get("id"), str)
+            )
+    default_reference = None
+    if len(sections) == 1 and len(artifact_ids) == 1 and not document_ids:
+        ident, version, section = next(iter(sections))
+        default_reference = {
+            "artifact_id": ident,
+            "version": version,
+            "section_id": section,
+        }
 
     def restrict(item):
         if str(item.get("source_document_id")) not in document_ids:
@@ -92,9 +178,15 @@ def restrict_citations(arguments, document_ids, artifact_ids):
             item.pop("source_artifact", None)
 
     restrict(arguments)
+    if default_reference and "questions" not in arguments:
+        arguments["source_artifact"] = (
+            arguments.get("source_artifact") or default_reference
+        )
     for question in arguments.get("questions") or []:
         if isinstance(question, dict):
             restrict(question)
+            if default_reference and not question.get("source_artifact"):
+                question["source_artifact"] = default_reference
             question.pop("source_urls", None)
     for card in arguments.get("cards") or []:
         if not isinstance(card, dict):

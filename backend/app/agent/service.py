@@ -18,6 +18,7 @@ from datetime import UTC
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.agent.base import ToolCall, ToolType, get_tool_registry
@@ -43,6 +44,7 @@ from app.agent.argument_repair import (
     without_rejected_calls,
 )
 from app.agent.tools import config_store
+from app.agent.tools.rag_search import configured_retrieval
 from app.agent.tools.report_gen import generation_key as report_generation_key
 from app.agent.artifact_edit_state import ArtifactEditState
 from app.agent import routing
@@ -75,7 +77,12 @@ from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
 from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
-from app.services.chat_command_sources import COMMANDS, list_sources, restrict_citations
+from app.services.chat_command_sources import (
+    COMMANDS,
+    find_artifact_text,
+    list_sources,
+    restrict_citations,
+)
 from app.learn.notebooks import for_conversation, selected_document_ids, source_catalog
 
 logger = logging.getLogger(__name__)
@@ -504,7 +511,13 @@ async def _list_search_sources(
 
 
 async def _find_attachment_text(
-    tool, query, conversation_id, notebook, temporary_chat, attachment_ids
+    tool,
+    query,
+    conversation_id,
+    notebook,
+    temporary_chat,
+    attachment_ids,
+    artifact_ids=(),
 ):
     if notebook is not None and attachment_ids is None:
         async with async_session_factory() as db:
@@ -523,7 +536,7 @@ async def _find_attachment_text(
                 )
             ).all()
 
-    if not attachment_ids:
+    if not attachment_ids and not artifact_ids:
         content = (
             "No documents are selected in this notebook."
             if notebook is not None
@@ -543,32 +556,56 @@ async def _find_attachment_text(
         yield _sse_event("tool_call", {"tool_call": call})
         observe("begin_tool", tool.name, {"query": query, "exact_text": query})
         observe("tool_identity", call_id)
-        result = await tool.execute(
-            query=query,
-            exact_text=query,
-            conversation_id=conversation_id,
-            _attachment_ids=attachment_ids,
-            _temporary_chat=temporary_chat,
-        )
+        sources = []
+        error = None
+        output = None
+        if attachment_ids:
+            result = await tool.execute(
+                query=query,
+                exact_text=query,
+                conversation_id=conversation_id,
+                _attachment_ids=attachment_ids,
+                _temporary_chat=temporary_chat,
+            )
+            if result.tool_call:
+                call.update(_tool_call_to_update_dict(result.tool_call))
+                sources.extend(getattr(result.tool_call, "rag_sources", None) or [])
+            output = result.output
+            if not result.success:
+                error = result.output
+        if artifact_ids and error is None:
+            _, limit, _ = configured_retrieval()
+            try:
+                if temporary_chat is not None:
+                    matches = await find_artifact_text(
+                        None, None, temporary_chat, artifact_ids, query, limit
+                    )
+                else:
+                    async with async_session_factory() as db:
+                        matches = await find_artifact_text(
+                            db, conversation_id, None, artifact_ids, query, limit
+                        )
+                        await db.commit()
+                sources.extend(matches)
+                output = sources
+            except HTTPException as exc:
+                error = str(exc.detail)
         observe(
             "end_tool",
-            "completed" if result.success else "failed",
-            result.output,
-            result.tool_call.error if result.tool_call else None,
+            "failed" if error else "completed",
+            output,
+            error,
         )
-        if result.tool_call:
-            call.update(_tool_call_to_update_dict(result.tool_call))
-        if not result.success:
-            call.update(status="error", error=result.output)
+        if error:
+            call.update(status="error", error=error)
             yield _sse_event("tool_call", {"tool_call": call})
             observe("finish", "failed", "exact text search failed")
-            yield _sse_event("error", {"error": result.output})
+            yield _sse_event("error", {"error": error})
             yield _sse_event("done", {})
             return
 
-        call["status"] = "completed"
+        call.update(status="completed", completedAt=int(time.time() * 1000))
         yield _sse_event("tool_call", {"tool_call": call})
-        sources = getattr(result.tool_call, "rag_sources", None) or []
         if sources:
             yield _sse_event(
                 "rag_sources", {"sources": sources, "tool_call_id": call_id}
@@ -840,8 +877,6 @@ async def run_agent_stream(
             source_documents = {
                 item["document_id"] for item in chosen if item["document_id"]
             }
-            if command == "/find" and any(not item["document_id"] for item in chosen):
-                error = "/find supports document sources. Select a document to search."
             available_tools = {
                 name: tool
                 for name, tool in available_tools.items()
@@ -853,6 +888,7 @@ async def run_agent_stream(
                     "summarize_artifact",
                     "read_tool_result",
                 }
+                and (name != "rag_search" or source_documents or command == "/find")
             }
             selected_tools.intersection_update(available_tools)
             context_messages = [
@@ -925,9 +961,12 @@ async def run_agent_stream(
         elif command == "/quiz" and not command_text:
             error = "Enter a topic or instructions after /quiz."
         else:
-            selected_tools.update(
-                {learn_tool, "rag_search", "read_artifact"} & available_tools.keys()
-            )
+            readers = {"rag_search", "read_artifact"} & available_tools.keys()
+            if explicit_sources and source_artifacts - source_documents:
+                readers.update({"summarize_artifact"} & available_tools.keys())
+            if explicit_sources and not readers:
+                error = "Enable a source reading tool in Brain → Tools to use the selected files."
+            selected_tools.update({learn_tool} | readers)
     elif command == "/summarize":
         if "summarize_artifact" not in available_tools:
             error = "Summarize Artifact is unavailable. Check Brain → Tools."
@@ -993,6 +1032,11 @@ async def run_agent_stream(
                 [uuid.UUID(ident) for ident in source_documents]
                 if explicit_sources
                 else None if notebook is not None else attachment_ids
+            ),
+            (
+                [uuid.UUID(item["id"]) for item in chosen if not item["document_id"]]
+                if explicit_sources
+                else ()
             ),
         ):
             yield event
@@ -2439,7 +2483,9 @@ async def run_agent_stream(
             exec_args = dict(tool_args)
             if explicit_sources and tool_name == learn_tool:
                 exec_args = deepcopy(exec_args)
-                restrict_citations(exec_args, source_documents, source_artifacts)
+                restrict_citations(
+                    exec_args, source_documents, source_artifacts, research_evidence
+                )
             if temporary:
                 exec_args.pop("conversation_id", None)
                 exec_args["_temporary_chat"] = temporary_chat

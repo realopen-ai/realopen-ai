@@ -169,7 +169,7 @@ class RagSearchTool(BaseTool):
             # Retrieval knobs come from the persisted tool configuration
             # (Brain ▸ Tools ▸ Document Search); defaults mirror the
             # global RAG_* env settings.
-            top_k_per_doc, top_k_total, cutoff = _configured_retrieval()
+            top_k_per_doc, top_k_total, cutoff = configured_retrieval()
             if attachment_ids == []:
                 sources = []
             elif temporary and attachment_ids is not None:
@@ -249,7 +249,7 @@ class RagSearchTool(BaseTool):
 # ── Configuration definition (Brain ▸ Tools ▸ Document Search) ────
 
 
-def _configured_retrieval() -> tuple:
+def configured_retrieval() -> tuple:
     """The persisted retrieval settings, or the global defaults.
 
     Returns (top_k_per_doc, top_k_total, similarity_cutoff) — any of
