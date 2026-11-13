@@ -17,6 +17,10 @@ import {
   Sparkles,
   Brain,
   BrainCircuit,
+  Search,
+  Layers,
+  ClipboardList,
+  AlignLeft,
   SmilePlus,
   X,
   Image as ImageIcon,
@@ -52,6 +56,7 @@ export interface SlashCommand {
   modelOverride?: string;
   /** If true, this command adds the shrug overlay */
   shrug?: boolean;
+  requiresText?: boolean;
 }
 
 export const slashCommands: SlashCommand[] = [
@@ -71,6 +76,7 @@ export const slashCommands: SlashCommand[] = [
     name: "nothink",
     descriptionKey: "input.slash.nothink",
     icon: <BrainCircuit className="w-4 h-4" />,
+    requiresText: true,
   },
   {
     name: "imagine",
@@ -82,6 +88,7 @@ export const slashCommands: SlashCommand[] = [
     name: "library",
     descriptionKey: "input.slash.library",
     icon: <Library className="w-4 h-4" />,
+    requiresText: true,
   },
   {
     name: "sources",
@@ -92,11 +99,40 @@ export const slashCommands: SlashCommand[] = [
     name: "web",
     descriptionKey: "input.slash.web",
     icon: <Globe className="w-4 h-4" />,
+    requiresText: true,
   },
   {
     name: "coder",
     descriptionKey: "input.slash.coder",
     icon: <Code2 className="w-4 h-4" />,
+    requiresText: true,
+  },
+  {
+    name: "find",
+    descriptionKey: "input.slash.find",
+    icon: <Search className="w-4 h-4" />,
+    requiresText: true,
+  },
+  {
+    name: "note",
+    descriptionKey: "input.slash.note",
+    icon: <FileText className="w-4 h-4" />,
+  },
+  {
+    name: "flashcards",
+    descriptionKey: "input.slash.flashcards",
+    icon: <Layers className="w-4 h-4" />,
+  },
+  {
+    name: "quiz",
+    descriptionKey: "input.slash.quiz",
+    icon: <ClipboardList className="w-4 h-4" />,
+    requiresText: true,
+  },
+  {
+    name: "summarize",
+    descriptionKey: "input.slash.summarize",
+    icon: <AlignLeft className="w-4 h-4" />,
   },
 ];
 
@@ -520,12 +556,9 @@ export function InputArea({
     });
   };
 
-  const commandNeedsText = ["/library", "/nothink", "/coder", "/web"].includes(
-    input.trim().toLowerCase(),
-  );
-  const commandUnavailable =
-    !canDelegateToCoder &&
-    input.trimStart().split(/\s+/, 1)[0].toLowerCase() === "/coder";
+  const { command, remainingContent } = parseSlashCommand(input);
+  const commandNeedsText = command?.requiresText && !remainingContent;
+  const commandUnavailable = !canDelegateToCoder && command?.name === "coder";
 
   const handleSend = () => {
     if (dictation !== "idle") return;
@@ -537,8 +570,6 @@ export function InputArea({
       commandUnavailable
     )
       return;
-
-    const { command } = parseSlashCommand(trimmed);
 
     // Separate attachments into images and documents
     const images = attachments
