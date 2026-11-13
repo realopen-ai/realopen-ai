@@ -126,9 +126,9 @@ async def source_catalog(db, conversation_id, *, offset=0, limit=30):
                     }
                 )
     return {
-        "items": items[offset : offset + limit],
+        "items": items[offset:] if limit is None else items[offset : offset + limit],
         "offset": offset,
-        "next_offset": offset + limit if len(items) > offset + limit else None,
+        "next_offset": offset + limit if limit is not None and len(items) > offset + limit else None,
     }
 
 

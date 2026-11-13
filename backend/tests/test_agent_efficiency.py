@@ -1156,6 +1156,132 @@ async def test_find_does_not_fall_back_to_the_library(agent, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("available", [True, False])
+async def test_find_enforces_explicit_temporary_selection(
+    agent, monkeypatch, available
+):
+    registry = ToolRegistry()
+    tool = RagSearchTool()
+    tool.execute = AsyncMock(return_value=ToolResult(True, "No exact match"))
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    chat = TemporaryChat(uuid.uuid4())
+    selected = uuid.uuid4()
+    for ident in [uuid.uuid4(), *([selected] if available else [])]:
+        chat.attachments.append(Attachment(ident, "file.txt", b"", False, 0, [], 1))
+    captured = script(monkeypatch, [])
+    events = await run(
+        [{"role": "user", "content": "/find FRYE"}],
+        temporary=True,
+        temporary_chat=chat,
+        selected_source_ids=[selected],
+    )
+    if available:
+        assert tool.execute.await_args.kwargs["_attachment_ids"] == [selected]
+    else:
+        tool.execute.assert_not_awaited()
+        assert events[0]["event"] == "error"
+    assert not captured
+
+
+@pytest.mark.asyncio
+async def test_selected_summary_uses_exact_file_and_instructions(agent, monkeypatch):
+    registry = ToolRegistry()
+    tool = SummarizeArtifactTool()
+    tool.execute = AsyncMock(
+        return_value=ToolResult(True, "Summary from selected file.")
+    )
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: None)
+    chat = TemporaryChat(uuid.uuid4())
+    selected = uuid.uuid4()
+    for ident in [uuid.uuid4(), selected]:
+        chat.attachments.append(Attachment(ident, "file.txt", b"", False, 0, [], 1))
+    captured = script(monkeypatch, [[{"content": "Done.", "done": True}]])
+    await run(
+        [{"role": "user", "content": "/summarize Focus on chapter 2"}],
+        temporary=True,
+        temporary_chat=chat,
+        selected_source_ids=[selected],
+    )
+    tool.execute.assert_awaited_once()
+    args = tool.execute.await_args.kwargs
+    assert args["artifact_id"] == str(selected)
+    assert args["question"] == "Focus on chapter 2"
+    assert "Summary from selected file." in json.dumps(captured[0]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_selected_quiz_retrieves_only_selected_content_and_limits_citations(
+    agent, monkeypatch
+):
+    registry = ToolRegistry()
+    for tool in (RagSearchTool(), CreateQuizTool(), WebSearchTool()):
+        registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"use_websearch"})
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: None)
+    chat = TemporaryChat(uuid.uuid4())
+    selected, excluded = uuid.uuid4(), uuid.uuid4()
+    for ident, text in [
+        (selected, "Addition combines numbers."),
+        (excluded, "Unselected text."),
+    ]:
+        chat.attachments.append(
+            Attachment(
+                ident, "file.txt", b"", False, 0, [(uuid.uuid4(), Chunk(text, 0, 1))], 1
+            )
+        )
+    args = {
+        "title": "Addition",
+        "questions": [
+            {
+                "type": "short_answer",
+                "prompt": "What combines numbers?",
+                "answer": "Addition",
+                "explanation": "Addition combines numbers.",
+                "source_document_id": str(excluded),
+            }
+        ],
+    }
+    quiz = registry.get("create_quiz")
+    quiz.execute = AsyncMock(wraps=quiz.execute)
+    captured = script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call(args, name="create_quiz")], "done": True}],
+            [
+                {
+                    "tool_calls": [call({"query": "Addition"}, name="rag_search")],
+                    "done": True,
+                }
+            ],
+            [{"tool_calls": [call(args, name="create_quiz")], "done": True}],
+            [{"content": "Done.", "done": True}],
+        ],
+    )
+    events = await run(
+        [{"role": "user", "content": "/quiz about arithmetic"}],
+        temporary=True,
+        temporary_chat=chat,
+        selected_source_ids=[selected],
+    )
+    source_event = next(event for event in events if event["event"] == "rag_sources")
+    assert [item["document_id"] for item in source_event["sources"]] == [str(selected)]
+    quiz.execute.assert_awaited_once()
+    assert "source_document_id" not in quiz.execute.await_args.kwargs["questions"][0]
+    assert all(
+        schema["function"]["name"] != "use_websearch"
+        for round_ in captured
+        for schema in round_["tools"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_find_in_notebook_uses_only_selected_documents(agent, monkeypatch):
     registry = ToolRegistry()
     tool = RagSearchTool()

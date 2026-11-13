@@ -75,6 +75,7 @@ from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
 from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
+from app.services.chat_command_sources import COMMANDS, list_sources, restrict_citations
 from app.learn.notebooks import for_conversation, selected_document_ids, source_catalog
 
 logger = logging.getLogger(__name__)
@@ -505,7 +506,7 @@ async def _list_search_sources(
 async def _find_attachment_text(
     tool, query, conversation_id, notebook, temporary_chat, attachment_ids
 ):
-    if notebook is not None:
+    if notebook is not None and attachment_ids is None:
         async with async_session_factory() as db:
             attachment_ids = await selected_document_ids(db, conversation_id)
     elif attachment_ids is None and temporary_chat:
@@ -599,6 +600,7 @@ async def run_agent_stream(
     temporary: bool = False,
     temporary_chat: TemporaryChat | None = None,
     attachment_ids: list[uuid.UUID] | None = None,
+    selected_source_ids: list[uuid.UUID] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
@@ -645,6 +647,10 @@ async def run_agent_stream(
 
     # ── Select relevant tools ──
     last_user = routing.user_message_content(original_user_message)
+    command_parts = last_user.strip().split(maxsplit=1)
+    command = command_parts[0].casefold() if command_parts else ""
+    command_text = command_parts[1] if len(command_parts) == 2 else ""
+    explicit_sources = bool(selected_source_ids) and command in COMMANDS
     request_index = next(
         (
             i
@@ -686,7 +692,11 @@ async def run_agent_stream(
     notebook_instructions = ""
     # Only short metadata; never inject complete documents into the prompt.
     attachments = {"items": []}
-    if not temporary and not routing.is_find_command(last_user):
+    if (
+        not temporary
+        and not explicit_sources
+        and not routing.is_find_command(last_user)
+    ):
         try:
             async with async_session_factory() as db:
                 attachments = await catalog(
@@ -781,7 +791,7 @@ async def run_agent_stream(
             )
         ]
 
-    if temporary_chat and temporary_chat.attachments:
+    if temporary_chat and temporary_chat.attachments and not explicit_sources:
         context_messages.append(
             untrusted_context_message(
                 "temporary attachment metadata",
@@ -800,9 +810,6 @@ async def run_agent_stream(
         if "rag_search" in available_tools:
             selected_tools.add("rag_search")
 
-    command_parts = last_user.strip().split(maxsplit=1)
-    command = command_parts[0].casefold() if command_parts else ""
-    command_text = command_parts[1] if len(command_parts) == 2 else ""
     learn_tool = {
         "/note": "create_study_note",
         "/flashcards": "create_flashcard_deck",
@@ -812,6 +819,53 @@ async def run_agent_stream(
     coder_task = None
     initial_tool = None
     error = None
+    source_artifacts = set()
+    source_documents = set()
+    if explicit_sources:
+        if temporary:
+            inventory = await list_sources(None, None, temporary_chat)
+        else:
+            async with async_session_factory() as db:
+                inventory = await list_sources(db, conversation_id)
+        by_id = {item["id"]: item for item in inventory}
+        source_artifacts = {str(ident) for ident in selected_source_ids}
+        if source_artifacts - by_id.keys():
+            error = "A selected source is no longer available in this chat. Select the sources again."
+        elif command == "/summarize" and len(source_artifacts) != 1:
+            error = "Select one file for /summarize."
+        else:
+            chosen = [
+                by_id[ident] for ident in dict.fromkeys(map(str, selected_source_ids))
+            ]
+            source_documents = {
+                item["document_id"] for item in chosen if item["document_id"]
+            }
+            if command == "/find" and any(not item["document_id"] for item in chosen):
+                error = "/find supports document sources. Select a document to search."
+            available_tools = {
+                name: tool
+                for name, tool in available_tools.items()
+                if name
+                in {
+                    learn_tool,
+                    "rag_search",
+                    "read_artifact",
+                    "summarize_artifact",
+                    "read_tool_result",
+                }
+            }
+            selected_tools.intersection_update(available_tools)
+            context_messages = [
+                untrusted_context_message(
+                    "user-selected files", json.dumps(chosen, ensure_ascii=False)
+                )
+            ]
+
+    if error:
+        observe("finish", "failed", error)
+        yield _sse_event("error", {"error": error})
+        yield _sse_event("done", {})
+        return
     if command == "/library":
         if (
             notebook is not None
@@ -879,6 +933,15 @@ async def run_agent_stream(
             error = "Summarize Artifact is unavailable. Check Brain → Tools."
         elif len(command_text) > 1000:
             error = "Summary instructions must be 1,000 characters or fewer."
+        elif explicit_sources:
+            initial_tool = {
+                "name": "summarize_artifact",
+                "arguments": {
+                    "artifact_id": next(iter(source_artifacts)),
+                    **({"question": command_text} if command_text else {}),
+                },
+            }
+            selected_tools.add("summarize_artifact")
         else:
             if temporary_chat:
                 candidates = temporary_chat.artifact_catalog(0)
@@ -926,13 +989,19 @@ async def run_agent_stream(
             conversation_id,
             notebook,
             temporary_chat,
-            attachment_ids,
+            (
+                [uuid.UUID(ident) for ident in source_documents]
+                if explicit_sources
+                else None if notebook is not None else attachment_ids
+            ),
         ):
             yield event
         return
 
     document_scope = None
-    if notebook is None:
+    if explicit_sources:
+        document_scope = sorted(map(uuid.UUID, source_documents))
+    elif notebook is None:
         if attachment_ids is not None:
             document_scope = attachment_ids
         elif temporary_chat:
@@ -1000,7 +1069,7 @@ async def run_agent_stream(
     # auto-extracted from past conversations and could contain injected
     # content from a malicious document).
     try:
-        if notebook is None and last_user.strip():
+        if notebook is None and not explicit_sources and last_user.strip():
             async with async_session_factory() as db:
                 relevant = await get_relevant_memories(
                     db, last_user, top_k=settings.MEMORY_INJECTION_TOP_K
@@ -1047,7 +1116,12 @@ async def run_agent_stream(
 
     # Cross-session context from past conversations.
     try:
-        if notebook is None and last_user.strip() and conversation_id:
+        if (
+            notebook is None
+            and not explicit_sources
+            and last_user.strip()
+            and conversation_id
+        ):
             async with async_session_factory() as db:
                 cross_ctx = await build_cross_session_context(
                     db,
@@ -1084,7 +1158,12 @@ async def run_agent_stream(
     )
 
     # ── Auto-vision for image attachments ──
-    if images and notebook is None and "use_vision" in available_tools:
+    if (
+        images
+        and not explicit_sources
+        and notebook is None
+        and "use_vision" in available_tools
+    ):
         vision_tool = registry.get("use_vision")
         if vision_tool:
             for i, img_b64 in enumerate(images):
@@ -1207,7 +1286,9 @@ async def run_agent_stream(
         system_prompt += "\n" + format_prompt("agent_learn_command", tool=learn_tool)
     elif command == "/summarize":
         system_prompt += "\n" + format_prompt("agent_summarize_command")
-    if document_scope is not None:
+    if explicit_sources:
+        system_prompt += "\n" + format_prompt("agent_selected_sources")
+    elif document_scope is not None:
         system_prompt += (
             "\nDocument Search is scoped to this chat's attachments for this turn. "
             "Ground answers about the uploaded files in that scope. If there is no "
@@ -1971,10 +2052,15 @@ async def run_agent_stream(
             if not temporary:
                 _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
 
-            if tool_name == learn_tool and any(
-                item["tool"] == learn_tool for item in execution_state.successes
-            ):
-                reason = "The requested Learn item was already created in this turn."
+            if (
+                tool_name == learn_tool
+                or (
+                    explicit_sources
+                    and command == "/summarize"
+                    and tool_name == "summarize_artifact"
+                )
+            ) and any(item["tool"] == tool_name for item in execution_state.successes):
+                reason = "The requested action already completed in this turn."
                 execution_state.record_skipped(call, reason)
                 observe("end_tool", "skipped", error=reason)
                 messages.append(
@@ -2099,6 +2185,39 @@ async def run_agent_stream(
             tool_args = normalize_structured_arguments(tool_args, schema)
             tool_args = tool.normalize_arguments(tool_args)
             repair_arguments = deepcopy(tool_args)
+
+            if explicit_sources and tool_name in {
+                "read_artifact",
+                "summarize_artifact",
+            }:
+                if str(tool_args.get("artifact_id")) not in source_artifacts:
+                    reason = "Choose an artifact ID from the user-selected files."
+                    observe("end_tool", "failed", error=reason, validation_error=True)
+                    messages.append(
+                        tool_result_message(call, reason, application_feedback=True)
+                    )
+                    continue
+
+            if (
+                explicit_sources
+                and tool_name == learn_tool
+                and not any(
+                    record["metadata"].get("chunk_id")
+                    or (
+                        record["request"].get("section_id")
+                        and record.get("evidence_kind") != "outline_only"
+                    )
+                    or record["tool"] == "summarize_artifact"
+                    for record in research_evidence
+                )
+            ):
+                reason = "Retrieve content from the selected files before creating the Learn item."
+                execution_state.record_skipped(call, reason)
+                observe("end_tool", "skipped", error=reason)
+                messages.append(
+                    tool_result_message(call, reason, application_feedback=True)
+                )
+                continue
 
             if tool_name == "update_artifact":
                 reason = artifact_edits.missing_read(tool_args)
@@ -2318,6 +2437,9 @@ async def run_agent_stream(
             # applied to the agent loop so the model that processes this
             # tool's results is the overridden one.
             exec_args = dict(tool_args)
+            if explicit_sources and tool_name == learn_tool:
+                exec_args = deepcopy(exec_args)
+                restrict_citations(exec_args, source_documents, source_artifacts)
             if temporary:
                 exec_args.pop("conversation_id", None)
                 exec_args["_temporary_chat"] = temporary_chat
