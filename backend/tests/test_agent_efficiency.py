@@ -1,6 +1,7 @@
 """Settings-aware routing, recoverable result views and stable prefixes."""
 
 import json
+import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -16,13 +17,18 @@ from app.agent.tools.config_base import definition_for_tool
 from app.agent.tools.discovery import DiscoverToolsTool, ReadToolResultTool
 from app.agent.tools.report_gen import ReportGenTool
 from app.agent.tools import report_gen as report_tool
-from app.agent.tools.artifacts import ReadArtifactTool
+from app.agent.tools.artifacts import ReadArtifactTool, SummarizeArtifactTool
+from app.agent.tools.flashcards import CreateFlashcardDeckTool
+from app.agent.tools.notes import CreateStudyNoteTool
+from app.agent.tools.rag_search import RagSearchTool
 from app.agent.tools.web_search import WebSearchTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.quizzes import CreateQuizTool
 from app.services import web_search
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
+from app.services.rag import Chunk
+from app.services.temporary_chats import Attachment, TemporaryChat
 from test_agent_protocol import agent as agent_fixture, script, call, run
 
 
@@ -1076,6 +1082,227 @@ async def test_library_command_searches_before_first_model_response(agent, monke
     assert args["_attachment_ids"] is None
     assert "Found in catalog.txt." in json.dumps(captured[0]["messages"])
     assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_find_returns_literal_temporary_matches_without_inference(
+    agent, monkeypatch
+):
+    registry = ToolRegistry()
+    registry.register(RagSearchTool())
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: None)
+    captured = script(monkeypatch, [])
+    chat = TemporaryChat(uuid.uuid4())
+    older, current = uuid.uuid4(), uuid.uuid4()
+    chat.attachments = [
+        Attachment(
+            older,
+            "older.txt",
+            b"",
+            False,
+            0,
+            [(uuid.uuid4(), Chunk("Rate: 50%", 0, 1))],
+            1,
+        ),
+        Attachment(
+            current,
+            "current.txt",
+            b"",
+            False,
+            1,
+            [
+                (uuid.uuid4(), Chunk("Rate: 50%", 0, 2)),
+                (uuid.uuid4(), Chunk("Rate: 500", 1, 3)),
+                (
+                    uuid.uuid4(),
+                    Chunk("Rate: 50%", 2, 4, chunk_type="image_description"),
+                ),
+            ],
+            4,
+        ),
+    ]
+    events = await run(
+        [{"role": "user", "content": "/FIND 50%"}],
+        temporary=True,
+        temporary_chat=chat,
+        attachment_ids=[current],
+    )
+    source_event = next(event for event in events if event["event"] == "rag_sources")
+    assert [(s["document_id"], s["page_number"]) for s in source_event["sources"]] == [
+        (str(current), 2)
+    ]
+    assert source_event["tool_call_id"] == events[0]["tool_call"]["id"]
+    assert not captured
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_find_does_not_fall_back_to_the_library(agent, monkeypatch):
+    registry = ToolRegistry()
+    tool = RagSearchTool()
+    tool.execute = AsyncMock()
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    captured = script(monkeypatch, [])
+    events = await run([{"role": "user", "content": "/find FRYE"}], attachment_ids=[])
+    assert events[0]["message"]["content"] == "Attach a document to use /find."
+    tool.execute.assert_not_awaited()
+    assert not captured
+
+
+@pytest.mark.asyncio
+async def test_find_in_notebook_uses_only_selected_documents(agent, monkeypatch):
+    registry = ToolRegistry()
+    tool = RagSearchTool()
+    tool.execute = AsyncMock(return_value=ToolResult(True, "No exact match"))
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(service, "for_conversation", AsyncMock(return_value=object()))
+    selected = uuid.uuid4()
+    monkeypatch.setattr(
+        service, "selected_document_ids", AsyncMock(return_value=[selected])
+    )
+    captured = script(monkeypatch, [])
+    ident = str(uuid.uuid4())
+    events = await run(
+        [{"role": "user", "content": "/find FRYE"}],
+        conversation_id=ident,
+        attachment_ids=[uuid.uuid4()],
+    )
+    assert tool.execute.await_args.kwargs["_attachment_ids"] == [selected]
+    assert (
+        events[-2]["message"]["content"]
+        == "No exact match found in the extracted text."
+    )
+    assert not captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "tool_class", "fields"),
+    [
+        ("/note", CreateStudyNoteTool, {"content": "## Addition\nCombine numbers."}),
+        (
+            "/flashcards",
+            CreateFlashcardDeckTool,
+            {"cards": [{"front": "What is 1 + 1?", "back": "2"}]},
+        ),
+        (
+            "/quiz Basic arithmetic",
+            CreateQuizTool,
+            {
+                "questions": [
+                    {
+                        "type": "short_answer",
+                        "prompt": "What is 1 + 1?",
+                        "answer": "2",
+                        "explanation": "One plus one makes two.",
+                    }
+                ]
+            },
+        ),
+    ],
+)
+async def test_learn_commands_stage_one_item_in_temporary_chat_without_tags(
+    agent, monkeypatch, command, tool_class, fields
+):
+    registry = ToolRegistry()
+    tool = tool_class()
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(service, "_select_tools", lambda _: set())
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: None)
+    args = {"title": "Addition", **fields}
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [
+                        call(args, name=tool.name),
+                        call(args, name=tool.name, id="duplicate"),
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done.", "done": True}],
+        ],
+    )
+    events = await run(
+        [{"role": "user", "content": command}],
+        temporary=True,
+        temporary_chat=TemporaryChat(uuid.uuid4()),
+    )
+    assert tool.name in {schema["function"]["name"] for schema in captured[0]["tools"]}
+    assert f"Use the {tool.name} tool" in captured[0]["messages"][0]["content"]
+    outputs = [
+        result
+        for event in events
+        for result in event.get("tool_call", {}).get("genResults", [])
+    ]
+    assert [item["type"] for item in outputs] == ["temporary_output"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multiple", [False, True])
+async def test_bare_summarize_needs_one_unambiguous_file(agent, monkeypatch, multiple):
+    registry = ToolRegistry()
+    tool = SummarizeArtifactTool()
+    tool.execute = AsyncMock(return_value=ToolResult(True, "Summary from the file."))
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: None)
+    captured = script(
+        monkeypatch, [] if multiple else [[{"content": "Done.", "done": True}]]
+    )
+    ident = uuid.uuid4()
+    events = await run(
+        [{"role": "user", "content": "/summarize"}],
+        attachment_ids=[ident, uuid.uuid4()] if multiple else [ident],
+    )
+    if multiple:
+        assert events[0]["error"] == "Specify which file to summarize after /summarize."
+        tool.execute.assert_not_awaited()
+        assert not captured
+    else:
+        tool.execute.assert_awaited_once()
+        assert tool.execute.await_args.kwargs["artifact_id"] == str(ident)
+        assert "Summary from the file." in json.dumps(captured[0]["messages"])
+    assert events[-1]["event"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "tool_class"),
+    [
+        ("/find FRYE", RagSearchTool),
+        ("/note", CreateStudyNoteTool),
+        ("/flashcards", CreateFlashcardDeckTool),
+        ("/quiz Arithmetic", CreateQuizTool),
+        ("/summarize", SummarizeArtifactTool),
+    ],
+)
+async def test_new_slash_commands_honor_disabled_tools(
+    agent, monkeypatch, command, tool_class
+):
+    registry = ToolRegistry()
+    tool = tool_class()
+    registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(
+        config_store, "get_all_tool_configs", lambda: {tool.name: {"enabled": False}}
+    )
+    captured = script(monkeypatch, [])
+    events = await run([{"role": "user", "content": command}])
+    assert "Brain → Tools" in events[0]["error"]
+    assert events[-1]["event"] == "done"
+    assert not captured
 
 
 @pytest.mark.asyncio

@@ -57,6 +57,10 @@ def is_sources_command(content: str) -> bool:
     return content.strip().casefold() == "/sources"
 
 
+def is_find_command(content: str) -> bool:
+    return content.casefold().split(maxsplit=1)[:1] == ["/find"]
+
+
 def user_message_content(content: str) -> str:
     """Remove display prefixes for commands handled by the composer."""
     parts = content.split(maxsplit=1)

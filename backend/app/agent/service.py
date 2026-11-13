@@ -75,7 +75,7 @@ from app.core import metrics as app_metrics
 from app.db.session import async_session_factory
 from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
-from app.learn.notebooks import for_conversation, source_catalog
+from app.learn.notebooks import for_conversation, selected_document_ids, source_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +502,84 @@ async def _list_search_sources(
     return heading, sources, has_more
 
 
+async def _find_attachment_text(
+    tool, query, conversation_id, notebook, temporary_chat, attachment_ids
+):
+    if notebook is not None:
+        async with async_session_factory() as db:
+            attachment_ids = await selected_document_ids(db, conversation_id)
+    elif attachment_ids is None and temporary_chat:
+        attachment_ids = [
+            item.id for item in temporary_chat.attachments if not item.image
+        ]
+    elif attachment_ids is None and conversation_id:
+        async with async_session_factory() as db:
+            attachment_ids = (
+                await db.scalars(
+                    select(Document.id).where(
+                        Document.conversation_id == uuid.UUID(str(conversation_id))
+                    )
+                )
+            ).all()
+
+    if not attachment_ids:
+        content = (
+            "No documents are selected in this notebook."
+            if notebook is not None
+            else "Attach a document to use /find."
+        )
+    else:
+        call_id = str(uuid.uuid4())
+        call = {
+            "id": call_id,
+            "type": tool.tool_type.value,
+            "title": "Finding exact text",
+            "query": query,
+            "status": "running",
+            "startedAt": int(time.time() * 1000),
+        }
+        yield _sse_event("tool_call", {"tool_call": call})
+        observe("begin_tool", tool.name, {"query": query, "exact_text": query})
+        observe("tool_identity", call_id)
+        result = await tool.execute(
+            query=query,
+            exact_text=query,
+            conversation_id=conversation_id,
+            _attachment_ids=attachment_ids,
+            _temporary_chat=temporary_chat,
+        )
+        observe(
+            "end_tool",
+            "completed" if result.success else "failed",
+            result.output,
+            result.tool_call.error if result.tool_call else None,
+        )
+        if result.tool_call:
+            call.update(_tool_call_to_update_dict(result.tool_call))
+        if not result.success:
+            call.update(status="error", error=result.output)
+            yield _sse_event("tool_call", {"tool_call": call})
+            observe("finish", "failed", "exact text search failed")
+            yield _sse_event("error", {"error": result.output})
+            yield _sse_event("done", {})
+            return
+
+        call["status"] = "completed"
+        yield _sse_event("tool_call", {"tool_call": call})
+        sources = getattr(result.tool_call, "rag_sources", None) or []
+        if sources:
+            yield _sse_event(
+                "rag_sources", {"sources": sources, "tool_call_id": call_id}
+            )
+            content = "Exact text found in the excerpts above."
+        else:
+            content = "No exact match found in the extracted text."
+
+    yield _sse_event("message", {"message": {"role": "assistant", "content": content}})
+    observe("finish", "completed", "exact text search", content)
+    yield _sse_event("done", {})
+
+
 # ── Main agent loop ──
 @traced_execution
 @agent_settings.with_snapshot
@@ -607,7 +685,7 @@ async def run_agent_stream(
     notebook_instructions = ""
     # Only short metadata; never inject complete documents into the prompt.
     attachments = {"items": []}
-    if not temporary:
+    if not temporary and not routing.is_find_command(last_user):
         try:
             async with async_session_factory() as db:
                 attachments = await catalog(
@@ -723,6 +801,12 @@ async def run_agent_stream(
 
     command_parts = last_user.strip().split(maxsplit=1)
     command = command_parts[0].casefold() if command_parts else ""
+    command_text = command_parts[1] if len(command_parts) == 2 else ""
+    learn_tool = {
+        "/note": "create_study_note",
+        "/flashcards": "create_flashcard_deck",
+        "/quiz": "create_quiz",
+    }.get(command)
     library_query = None
     coder_task = None
     initial_tool = None
@@ -773,11 +857,77 @@ async def run_agent_stream(
                 "arguments": {"task": coder_task},
             }
             selected_tools.add("delegate_to_coder")
+    elif command == "/find":
+        if "rag_search" not in available_tools:
+            error = (
+                "Document Search is disabled. Enable it in Brain → Tools to use /find."
+            )
+        elif not command_text or len(command_text) > 300:
+            error = "Enter between 1 and 300 characters of exact text after /find."
+    elif learn_tool:
+        if learn_tool not in available_tools:
+            error = f"{command} is unavailable. Check Brain → Tools."
+        elif command == "/quiz" and not command_text:
+            error = "Enter a topic or instructions after /quiz."
+        else:
+            selected_tools.update(
+                {learn_tool, "rag_search", "read_artifact"} & available_tools.keys()
+            )
+    elif command == "/summarize":
+        if "summarize_artifact" not in available_tools:
+            error = "Summarize Artifact is unavailable. Check Brain → Tools."
+        elif len(command_text) > 1000:
+            error = "Summary instructions must be 1,000 characters or fewer."
+        else:
+            if temporary_chat:
+                candidates = temporary_chat.artifact_catalog(0)
+                items, more = candidates["artifacts"], candidates["next_offset"]
+            else:
+                items, more = attachments["items"], attachments.get("next_offset")
+            if attachment_ids is not None and notebook is None:
+                if attachment_ids:
+                    context_messages.append(
+                        untrusted_context_message(
+                            "documents attached to the current request",
+                            json.dumps([str(ident) for ident in attachment_ids]),
+                        )
+                    )
+                items = [{"id": str(ident)} for ident in attachment_ids]
+                more = None
+            # A bare command can select the sole in-scope file. A request
+            # with text may name a different file or include summary guidance.
+            if len(items) == 1 and more is None and not command_text:
+                initial_tool = {
+                    "name": "summarize_artifact",
+                    "arguments": {"artifact_id": items[0]["id"]},
+                }
+            elif not command_text:
+                error = (
+                    "Specify which file to summarize after /summarize."
+                    if items or more is not None
+                    else "Attach a document or specify an artifact after /summarize."
+                )
+            selected_tools.update(
+                {"summarize_artifact", "list_artifacts", "read_artifact"}
+                & available_tools.keys()
+            )
 
     if error:
         observe("finish", "failed", error)
         yield _sse_event("error", {"error": error})
         yield _sse_event("done", {})
+        return
+
+    if command == "/find":
+        async for event in _find_attachment_text(
+            available_tools["rag_search"],
+            command_text,
+            conversation_id,
+            notebook,
+            temporary_chat,
+            attachment_ids,
+        ):
+            yield event
         return
 
     document_scope = None
@@ -1052,6 +1202,10 @@ async def run_agent_stream(
         system_prompt += "\nFor /coder, report the delegated workspace task result and its verified checks."
     elif command == "/web":
         system_prompt += "\n" + format_prompt("agent_web_command")
+    elif learn_tool:
+        system_prompt += "\n" + format_prompt("agent_learn_command", tool=learn_tool)
+    elif command == "/summarize":
+        system_prompt += "\n" + format_prompt("agent_summarize_command")
     if document_scope is not None:
         system_prompt += (
             "\nDocument Search is scoped to this chat's attachments for this turn. "
@@ -1815,6 +1969,17 @@ async def run_agent_stream(
             tool_args = call.get("args", {})
             if not temporary:
                 _dbg("🤖 Tool call: name=%s  args=%s", tool_name, str(tool_args)[:200])
+
+            if tool_name == learn_tool and any(
+                item["tool"] == learn_tool for item in execution_state.successes
+            ):
+                reason = "The requested Learn item was already created in this turn."
+                execution_state.record_skipped(call, reason)
+                observe("end_tool", "skipped", error=reason)
+                messages.append(
+                    tool_result_message(call, reason, application_feedback=True)
+                )
+                continue
 
             tool = registry.get(tool_name)
             if (config_store.get_tool_config(tool_name) or {}).get("enabled") is False:
