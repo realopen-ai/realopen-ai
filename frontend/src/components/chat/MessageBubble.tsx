@@ -90,8 +90,19 @@ function SourceImage({ chunkId }: { chunkId: string }) {
   );
 }
 
-function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
+function SourceCards({
+  sources,
+  conversationId,
+}: {
+  sources: RetrievedSourceDTO[];
+  conversationId: string;
+}) {
   const translate = useT();
+  const temporary = useChatStore((store) =>
+    store.conversations.some(
+      (chat) => chat.id === conversationId && chat.temporary,
+    ),
+  );
   const [expanded, setExpanded] = useState(true);
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
@@ -176,13 +187,15 @@ function SourceCards({ sources }: { sources: RetrievedSourceDTO[] }) {
                       {s.text}
                     </p>
                     {isImage && <SourceImage chunkId={s.chunk_id} />}
-                    <SourceAction
-                      documentId={s.document_id}
-                      page={s.page_number}
-                      chunk={s.chunk_id}
-                      excerpt={s.text}
-                      title={s.document_filename}
-                    />
+                    {!temporary && (
+                      <SourceAction
+                        documentId={s.document_id}
+                        page={s.page_number}
+                        chunk={s.chunk_id}
+                        excerpt={s.text}
+                        title={s.document_filename}
+                      />
+                    )}
                   </div>
                 )}
               </div>
@@ -381,10 +394,12 @@ function StatusDot({ status }: { status: string }) {
 
 function ToolCallBlockView({
   block,
+  conversationId,
   canViewPptx,
   onViewPptx,
 }: {
   block: MessageBlock;
+  conversationId: string;
   isStreaming: boolean;
   canViewPptx: boolean;
   onViewPptx: (
@@ -742,7 +757,7 @@ function ToolCallBlockView({
           )}
           {/* RAG sources inside the tool call block */}
           {tc.sources && tc.sources.length > 0 && (
-            <SourceCards sources={tc.sources} />
+            <SourceCards sources={tc.sources} conversationId={conversationId} />
           )}
         </div>
       )}
@@ -1762,11 +1777,13 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
 
 function BlockView({
   block,
+  conversationId,
   isStreaming,
   canViewPptx,
   onViewPptx,
 }: {
   block: MessageBlock;
+  conversationId: string;
   isStreaming: boolean;
   canViewPptx: boolean;
   onViewPptx: (
@@ -1785,6 +1802,7 @@ function BlockView({
       return (
         <ToolCallBlockView
           block={block}
+          conversationId={conversationId}
           isStreaming={isStreaming}
           canViewPptx={canViewPptx}
           onViewPptx={onViewPptx}
@@ -2041,6 +2059,7 @@ export function MessageBubble({
           <BlockView
             key={block.id}
             block={block}
+            conversationId={conversationId}
             isStreaming={message.isStreaming}
             canViewPptx={libreOfficeAvailable}
             onViewPptx={(reportId, filename, downloadUrl, format) =>
