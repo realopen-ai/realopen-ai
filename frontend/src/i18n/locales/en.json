@@ -61,6 +61,7 @@
   "notebooks.noReadableContent": "No readable sections are available yet.",
   "notebooks.startSection": "Back to section start",
   "notebooks.continueReading": "Continue reading",
+  "sources.openFullFile": "Open full file",
   "notebooks.openSource": "Open source",
   "notebooks.sourceFailed": "Source processing failed",
   "notebooks.items": "{count} linked items",

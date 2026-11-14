@@ -75,6 +75,22 @@ test("state changes are persisted under the realopen-ai-ui key", () => {
   assert.equal(typeof parsed.state.toggleSidebar, "undefined");
 });
 
+test("citation previews stay in memory without persisting their contents", () => {
+  const preview = {
+    routeKey: "chat",
+    source: { documentId: "document", page: 4, excerpt: "Source text" },
+  };
+  const { rightPanelOpen, rightPanelTab, setCitationPreview } =
+    useUIStore.getState();
+  setCitationPreview(preview);
+  assert.deepEqual(useUIStore.getState().citationPreview, preview);
+  assert.equal(useUIStore.getState().rightPanelOpen, rightPanelOpen);
+  assert.equal(useUIStore.getState().rightPanelTab, rightPanelTab);
+  const persisted = JSON.parse(storage.get("realopen-ai-ui")!);
+  assert.equal("citationPreview" in persisted.state, false);
+  setCitationPreview(null);
+});
+
 test("a reload rehydrates the persisted layout and keeps actions working", async () => {
   storage.set(
     "realopen-ai-ui",

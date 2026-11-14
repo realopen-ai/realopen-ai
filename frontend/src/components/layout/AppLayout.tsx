@@ -25,6 +25,10 @@ import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
 import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 import { rightPanelVisibilityAfterResize } from "@/lib/panelLayout";
+import {
+  CitationPreview,
+  CitationPreviewDialog,
+} from "@/components/learn/CitationPreview";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -48,9 +52,20 @@ export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
-  const { pathname } = useLocation();
+  const { pathname, key: routeKey } = useLocation();
   const { notebookId } = useParams();
   const showNotebook = !!notebookId && pathname.startsWith("/learn/notebooks/");
+  const citationPreview = useUIStore((s) => s.citationPreview);
+  const setCitationPreview = useUIStore((s) => s.setCitationPreview);
+  const citation =
+    !showNotebook && citationPreview?.routeKey === routeKey
+      ? citationPreview.source
+      : null;
+  const closeCitation = () => setCitationPreview(null);
+  useEffect(() => {
+    if (citationPreview && citationPreview.routeKey !== routeKey)
+      setCitationPreview(null);
+  }, [citationPreview, routeKey, setCitationPreview]);
   const notebook = useNotebookStore((s) => s.notebook);
   const notebookConversationId =
     notebook && notebook.id === notebookId
@@ -143,6 +158,8 @@ export function AppLayout() {
   }, [fetchFileTree]);
 
   // Sync right panel open/close with imperative handle
+  const desktopCitation = desktop ? citation : null;
+  const panelOpen = rightPanelOpen || !!desktopCitation;
   useEffect(() => {
     const panel = rightPanelRef.current;
     if (!panel) return;
@@ -157,20 +174,20 @@ export function AppLayout() {
     if (!initialSyncDone.current) {
       initialSyncDone.current = true;
       // On initial mount, sync without animation
-      if (!rightPanelOpen && !panel.isCollapsed()) {
+      if (!panelOpen && !panel.isCollapsed()) {
         panel.collapse();
-      } else if (rightPanelOpen && panel.isCollapsed()) {
+      } else if (panelOpen && panel.isCollapsed()) {
         panel.expand();
       }
       return;
     }
 
-    if (rightPanelOpen && panel.isCollapsed()) {
+    if (panelOpen && panel.isCollapsed()) {
       panel.expand();
-    } else if (!rightPanelOpen && !panel.isCollapsed()) {
+    } else if (!panelOpen && !panel.isCollapsed()) {
       panel.collapse();
     }
-  }, [rightPanelOpen, showNotebook]);
+  }, [panelOpen, showNotebook]);
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-background">
@@ -258,19 +275,31 @@ export function AppLayout() {
                   previousSize?.asPercentage,
                   showNotebook,
                 );
-                if (open !== null) setRightPanelOpen(open);
+                if (open !== null) {
+                  if (!desktopCitation) setRightPanelOpen(open);
+                  else if (!open) closeCitation();
+                }
               }}
             >
               <div
                 className={showNotebook ? "hidden" : "h-full overflow-hidden"}
                 inert={showNotebook}
               >
-                <RightPanel />
+                <div className={desktopCitation ? "hidden" : "h-full"}>
+                  <RightPanel />
+                </div>
+                {desktopCitation && (
+                  <CitationPreview
+                    key={JSON.stringify(desktopCitation)}
+                    source={desktopCitation}
+                    onClose={closeCitation}
+                  />
+                )}
               </div>
             </Panel>
           </Group>
 
-          {!rightPanelOpen && !showNotebook && (
+          {!panelOpen && !showNotebook && (
             <div className="flex shrink-0 items-start justify-center pt-2 pr-1 pl-0.5">
               <RightPanelToggle />
             </div>
@@ -360,6 +389,13 @@ export function AppLayout() {
             <MobileTabBar />
           )}
         </div>
+        {!desktop && citation && (
+          <CitationPreviewDialog
+            key={JSON.stringify(citation)}
+            source={citation}
+            onClose={closeCitation}
+          />
+        )}
       </div>
     </div>
   );

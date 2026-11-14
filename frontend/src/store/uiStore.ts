@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { SourceLocation } from "@/lib/sourceNavigation";
 
 interface UIState {
   sidebarCollapsed: boolean;
@@ -7,6 +8,7 @@ interface UIState {
   rightPanelOpen: boolean;
   rightPanelTab: "code" | "preview";
   mobileTab: "chat" | "files" | "terminal" | "preview";
+  citationPreview: { source: SourceLocation; routeKey: string } | null;
 
   // Actions
   toggleSidebar: () => void;
@@ -16,6 +18,7 @@ interface UIState {
   setRightPanelOpen: (open: boolean) => void;
   setRightPanelTab: (tab: "code" | "preview") => void;
   setMobileTab: (tab: "chat" | "files" | "terminal" | "preview") => void;
+  setCitationPreview: (preview: UIState["citationPreview"]) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -26,6 +29,7 @@ export const useUIStore = create<UIState>()(
       rightPanelOpen: false,
       rightPanelTab: "code",
       mobileTab: "chat",
+      citationPreview: null,
 
       toggleSidebar: () =>
         set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -36,10 +40,12 @@ export const useUIStore = create<UIState>()(
       setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
       setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
       setMobileTab: (tab) => set({ mobileTab: tab }),
+      setCitationPreview: (preview) => set({ citationPreview: preview }),
     }),
     {
       name: "realopen-ai-ui",
       version: 1,
+      partialize: ({ citationPreview: _citationPreview, ...state }) => state,
       migrate: (persisted) => {
         const state = persisted as Partial<UIState>;
         return {

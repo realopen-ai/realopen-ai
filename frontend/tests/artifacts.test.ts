@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   artifactsApi,
-  artifactSourceUrl,
   artifactSelectionSearch,
 } from "../src/api/artifactsClient.ts";
 
@@ -45,14 +44,6 @@ test("artifact client preserves exact versions, targeted edits and grounded link
     });
     assert.deepEqual(requests[3].body, { expected_version: 3, version: 1 });
     assert.ok(requests[4].url.endsWith("/id/export/pdf?version=1"));
-    assert.equal(
-      artifactSourceUrl({
-        artifact_id: "id",
-        version: 2,
-        section_id: "slide-4",
-      }),
-      "/workspace/artifacts/id?version=2&section=slide-4",
-    );
     globalThis.fetch = async () =>
       new Response(JSON.stringify({ detail: "Version conflict" }), {
         status: 409,

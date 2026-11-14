@@ -61,6 +61,7 @@
   "notebooks.noReadableContent": "لا توجد أقسام قابلة للقراءة حتى الآن.",
   "notebooks.startSection": "العودة إلى بداية القسم",
   "notebooks.continueReading": "متابعة القراءة",
+  "sources.openFullFile": "فتح الملف بالكامل",
   "notebooks.openSource": "فتح المصدر",
   "notebooks.sourceFailed": "فشلت معالجة المصدر",
   "notebooks.items": "{count} عناصر مرتبطة",

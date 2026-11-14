@@ -60,7 +60,7 @@ import { DeckArtifact } from "@/components/learn/DeckArtifact";
 import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
-import { artifactReadLocation } from "@/lib/sourceNavigation";
+import { artifactCitationLocations } from "@/lib/sourceNavigation";
 import { Link } from "react-router-dom";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
@@ -1752,6 +1752,11 @@ function ReportGenDetail({
 
 function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
+  const temporary = useChatStore((state) =>
+    state.conversations.some(
+      (chat) => chat.id === state.activeConversationId && chat.temporary,
+    ),
+  );
   if (tc.type === "artifact" && tc.status === "running" && tc.progress) {
     const progress = tc.progress;
     return (
@@ -1772,7 +1777,7 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
     );
   }
   if (tc.type === "artifact" && tc.output) {
-    const location = artifactReadLocation(tc.output);
+    const citations = temporary ? [] : artifactCitationLocations(tc.output);
     let output = tc.output;
     try {
       output = JSON.stringify(JSON.parse(output), null, 2);
@@ -1782,7 +1787,15 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
         <div className="max-h-80 overflow-auto">
           <HighlightedCode code={output} language="json" />
         </div>
-        {location && <SourceAction {...location} />}
+        {citations.length > 0 && (
+          <ul className="flex max-h-48 flex-col items-start gap-1 overflow-y-auto">
+            {citations.map((source) => (
+              <li key={source.artifact?.section_id} className="max-w-full">
+                <SourceAction {...source} label={source.title} />
+              </li>
+            ))}
+          </ul>
+        )}
         {tc.genResults
           ?.filter((r) => r.artifact_id)
           .map((r) =>

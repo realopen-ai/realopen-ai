@@ -34,25 +34,34 @@ export function openNotebookSource(notebookId: string, source: SourceLocation) {
   );
 }
 
-export function artifactReadLocation(output: string): SourceLocation | null {
+export function artifactCitationLocations(output: string): SourceLocation[] {
   try {
     const value = JSON.parse(output);
     if (
       typeof value.artifact_id !== "string" ||
       !Number.isSafeInteger(value.version) ||
-      value.version < 1 ||
-      typeof value.id !== "string"
+      value.version < 1
     )
-      return null;
-    return {
-      artifact: {
-        artifact_id: value.artifact_id,
-        version: value.version,
-        section_id: value.id,
-      },
-      title: typeof value.title === "string" ? value.title : undefined,
-    };
+      return [];
+    const references = Array.isArray(value.source_references)
+      ? value.source_references
+      : [value];
+    const seen = new Set<string>();
+    const sources: SourceLocation[] = [];
+    for (const ref of references) {
+      if (typeof ref?.id !== "string" || !ref.id || seen.has(ref.id)) continue;
+      seen.add(ref.id);
+      sources.push({
+        artifact: {
+          artifact_id: value.artifact_id,
+          version: value.version,
+          section_id: ref.id,
+        },
+        title: typeof ref.title === "string" ? ref.title : undefined,
+      });
+    }
+    return sources;
   } catch {
-    return null;
+    return [];
   }
 }

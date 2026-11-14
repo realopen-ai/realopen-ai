@@ -61,6 +61,7 @@
   "notebooks.noReadableContent": "Aucune section lisible n’est encore disponible.",
   "notebooks.startSection": "Revenir au début de la section",
   "notebooks.continueReading": "Continuer la lecture",
+  "sources.openFullFile": "Ouvrir le fichier complet",
   "notebooks.openSource": "Ouvrir la source",
   "notebooks.sourceFailed": "Échec du traitement de la source",
   "notebooks.items": "{count} éléments liés",

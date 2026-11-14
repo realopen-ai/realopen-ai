@@ -9,12 +9,13 @@ import {
 } from "@/api/artifactsClient";
 import { useT } from "@/store/settingsStore";
 import { Button } from "@/components/ui/button";
+import { sourceLocationUrl } from "@/lib/sourceNavigation";
+import { documentPageUrl, getDocumentPages } from "@/api/documentsClient";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { CardMarkdown } from "./CardMarkdown";
 import { fieldClass } from "./LearnDialogs";
@@ -24,13 +25,13 @@ export function NotebookSourcePreview({
   title,
   onClose,
   location,
-  inline = false,
+  embedded = false,
 }: {
   id: string;
   title: string;
   onClose: () => void;
   location?: ArtifactReference;
-  inline?: boolean;
+  embedded?: boolean;
 }) {
   const t = useT();
   const [detail, setDetail] = useState<ArtifactDetail | null>(null);
@@ -39,6 +40,9 @@ export function NotebookSourcePreview({
   const [read, setRead] = useState<ArtifactRead | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [image, setImage] = useState<{ section: string; url: string } | null>(
+    null,
+  );
   useEffect(() => {
     const controller = new AbortController();
     artifactsApi
@@ -98,21 +102,89 @@ export function NotebookSourcePreview({
       });
     return () => controller.abort();
   }, [detail, section, offset]);
+  const selected = detail?.outline.sections.find((item) => item.id === section);
+  const slide = selected?.slide;
+  const page = selected?.page;
+  const presentationId =
+    detail?.kind === "presentation" ? detail.previews.pptx : undefined;
+  const documentId = detail?.document_id;
+  useEffect(() => {
+    setImage(null);
+    if (!embedded || !section) return;
+    const controller = new AbortController();
+    const showImage = (url: string) => {
+      if (!controller.signal.aborted) setImage({ section, url });
+    };
+    if (presentationId && slide) {
+      void fetch(
+        `/api/reports/${encodeURIComponent(presentationId)}/slides?format=pptx`,
+        {
+          signal: controller.signal,
+        },
+      )
+        .then(async (response) => {
+          if (!response.ok) return;
+          const manifest: { slides: { index: number; url: string }[] } =
+            await response.json();
+          const match = manifest.slides.find((item) => item.index === slide);
+          if (match) showImage(match.url);
+        })
+        .catch(() => {});
+    } else if (documentId && (slide || page)) {
+      const number = (slide ?? page)!;
+      void getDocumentPages(documentId, controller.signal).then((manifest) => {
+        if (manifest && number <= manifest.count)
+          showImage(
+            documentPageUrl(documentId, number, "full", manifest.source_mtime),
+          );
+      });
+    }
+    return () => controller.abort();
+  }, [embedded, section, presentationId, slide, page, documentId]);
+  const href =
+    sourceLocationUrl({
+      artifact:
+        section && detail
+          ? {
+              artifact_id: id,
+              version: detail.selected_version,
+              section_id: section,
+            }
+          : location,
+    }) ?? `/workspace/artifacts/${encodeURIComponent(id)}`;
   const content = (
     <>
-      {inline ? (
+      {embedded ? (
         <header className="flex items-center gap-3">
           <h2 dir="auto" className="font-medium truncate flex-1 min-w-0">
-            {title}
+            {detail?.title ?? title}
           </h2>
-          <button onClick={onClose} aria-label={t("common.close")}>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onClose}
+            aria-label={t("common.close")}
+          >
             <X className="size-4" />
-          </button>
+          </Button>
         </header>
       ) : (
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
+      )}
+      {detail && (
+        <p className="text-xs text-muted-foreground">
+          {t("artifacts.version", { number: detail.selected_version })}
+        </p>
+      )}
+      {image?.section === section && (
+        <img
+          src={image.url}
+          alt={selected?.title ?? title}
+          className="w-full rounded-lg border border-border object-contain"
+          onError={() => setImage(null)}
+        />
       )}
       {detail && (
         <select
@@ -152,7 +224,7 @@ export function NotebookSourcePreview({
           </p>
         )}
       </div>
-      <DialogFooter>
+      <div className="flex flex-wrap justify-end gap-2">
         {offset > 0 && (
           <Button variant="outline" onClick={() => setOffset(0)}>
             {t("notebooks.startSection")}
@@ -167,23 +239,18 @@ export function NotebookSourcePreview({
           </Button>
         )}
         <Button asChild variant="outline">
-          <Link
-            to={`/workspace/artifacts/${detail?.id ?? id}${detail && section ? `?version=${detail.selected_version}&section=${encodeURIComponent(section)}` : ""}`}
-          >
+          <Link to={href} onClick={onClose}>
             <ExternalLink className="size-4" />
-            {t("notebooks.openSource")}
+            {t("sources.openFullFile")}
           </Link>
         </Button>
-      </DialogFooter>
+      </div>
     </>
   );
-  return inline ? (
-    <aside
-      aria-label={t("learn.viewSource")}
-      className="pointer-events-auto absolute inset-y-24 xl:inset-y-14 end-0 z-30 w-full xl:w-[min(50%,40rem)] bg-card border-s border-border shadow-xl p-4 flex flex-col gap-4 overflow-y-auto"
-    >
+  return embedded ? (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
       {content}
-    </aside>
+    </div>
   ) : (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-3xl">{content}</DialogContent>

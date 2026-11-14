@@ -2,15 +2,14 @@ import { Link, useLocation } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
 import { useT } from "@/store/settingsStore";
 import { useNotebookStore } from "@/store/notebookStore";
+import { useUIStore } from "@/store/uiStore";
 import { cn } from "@/lib/utils";
 import {
   openNotebookSource,
   isNotebookSourceRoute,
+  sourceLocationUrl,
 } from "@/lib/sourceNavigation";
-import {
-  artifactSourceUrl,
-  type ArtifactReference,
-} from "@/api/artifactsClient";
+import type { ArtifactReference } from "@/api/artifactsClient";
 
 export function SourceAction({
   documentId,
@@ -20,6 +19,7 @@ export function SourceAction({
   artifact,
   excerpt,
   title,
+  label,
   className,
 }: {
   documentId?: string | null;
@@ -29,44 +29,33 @@ export function SourceAction({
   artifact?: ArtifactReference | null;
   excerpt?: string;
   title?: string;
+  label?: string;
   className?: string;
 }) {
   const t = useT();
   const notebook = useNotebookStore((s) => s.notebook);
-  const { pathname } = useLocation();
-  const query = new URLSearchParams();
-  if (documentId) query.set("document", documentId);
-  if (page) query.set("page", String(page));
-  if (chunk) query.set("chunk", chunk);
-  const href = artifact
-    ? artifactSourceUrl(artifact)
-    : documentId
-      ? `/workspace/documents?${query}`
-      : conversationId
-        ? `/${conversationId}`
-        : null;
+  const { pathname, key } = useLocation();
+  const source = { documentId, artifact, page, chunk, excerpt, title };
+  const previewHref = sourceLocationUrl(source);
+  const href = previewHref ?? (conversationId ? `/${conversationId}` : null);
   return href ? (
     <Link
       to={href}
       onClick={(event) => {
         if (
-          notebook &&
-          isNotebookSourceRoute(pathname, notebook.id) &&
-          (artifact || documentId) &&
+          previewHref &&
+          !event.defaultPrevented &&
+          event.button === 0 &&
           !event.metaKey &&
           !event.ctrlKey &&
           !event.shiftKey &&
           !event.altKey
         ) {
           event.preventDefault();
-          openNotebookSource(notebook.id, {
-            documentId,
-            artifact,
-            page,
-            chunk,
-            excerpt,
-            title,
-          });
+          if (notebook && isNotebookSourceRoute(pathname, notebook.id))
+            openNotebookSource(notebook.id, source);
+          else
+            useUIStore.getState().setCitationPreview({ source, routeKey: key });
         }
       }}
       className={cn(
@@ -75,7 +64,7 @@ export function SourceAction({
       )}
     >
       <ExternalLink className="size-3" />
-      {t("learn.viewSource")}
+      {label ?? t("learn.viewSource")}
       {page ? ` · ${page}` : ""}
     </Link>
   ) : null;

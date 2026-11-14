@@ -132,14 +132,19 @@ export async function listDocuments(
   return [];
 }
 
-export async function getDocument(id: string): Promise<DocumentDTO | null> {
+export async function getDocument(
+  id: string,
+  signal?: AbortSignal,
+): Promise<DocumentDTO | null> {
   log(`➡️  getDocument  id=${id}`);
   try {
-    const res = await fetch(`/api/documents/${id}`);
+    const res = await fetch(`/api/documents/${encodeURIComponent(id)}`, {
+      signal,
+    });
     if (res.ok) return await res.json();
     dbgError(`   ❌ getDocument status=${res.status}`);
   } catch (err) {
-    dbgError(`   ❌ getDocument error: ${err}`);
+    if (!signal?.aborted) dbgError(`   ❌ getDocument error: ${err}`);
   }
   return null;
 }
@@ -374,14 +379,17 @@ export interface DocumentPagesManifest {
  *  server-side: LibreOffice / PyMuPDF / PIL depending on the format). */
 export async function getDocumentPages(
   id: string,
+  signal?: AbortSignal,
 ): Promise<DocumentPagesManifest | null> {
   log(`➡️  getDocumentPages  id=${id}`);
   try {
-    const res = await fetch(`/api/documents/${id}/pages`);
+    const res = await fetch(`/api/documents/${encodeURIComponent(id)}/pages`, {
+      signal,
+    });
     if (res.ok) return await res.json();
     dbgError(`   ❌ getDocumentPages status=${res.status}`);
   } catch (err) {
-    dbgError(`   ❌ getDocumentPages error: ${err}`);
+    if (!signal?.aborted) dbgError(`   ❌ getDocumentPages error: ${err}`);
   }
   return null;
 }
@@ -397,7 +405,7 @@ export function documentPageUrl(
 ): string {
   const qs = new URLSearchParams({ variant });
   if (v) qs.set("v", String(v));
-  return `/api/documents/${id}/pages/${page}?${qs.toString()}`;
+  return `/api/documents/${encodeURIComponent(id)}/pages/${page}?${qs.toString()}`;
 }
 
 // ─── AI knowledge management ─────────────────────────────────────────
