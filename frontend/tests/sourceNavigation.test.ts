@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   sourceLocationUrl,
-  artifactReadLocation,
+  artifactCitationLocations,
   isNotebookSourceRoute,
 } from "../src/lib/sourceNavigation.ts";
 
@@ -20,7 +20,7 @@ test("cached notebook state cannot intercept links outside its active route", ()
 
 test("read citations use structured IDs, never titles or model prose", () => {
   assert.deepEqual(
-    artifactReadLocation(
+    artifactCitationLocations(
       JSON.stringify({
         artifact_id: "a",
         version: 3,
@@ -28,23 +28,25 @@ test("read citations use structured IDs, never titles or model prose", () => {
         title: "Holdings",
       }),
     ),
-    {
-      artifact: { artifact_id: "a", version: 3, section_id: "sheet-2" },
-      title: "Holdings",
-    },
+    [
+      {
+        artifact: { artifact_id: "a", version: 3, section_id: "sheet-2" },
+        title: "Holdings",
+      },
+    ],
   );
-  assert.equal(artifactReadLocation("Page 3 of a document"), null);
-  assert.equal(
-    artifactReadLocation(
+  assert.deepEqual(artifactCitationLocations("Page 3 of a document"), []);
+  assert.deepEqual(
+    artifactCitationLocations(
       JSON.stringify({ artifact_id: "a", version: 2, sections: [] }),
     ),
-    null,
+    [],
   );
-  assert.equal(
-    artifactReadLocation(
+  assert.deepEqual(
+    artifactCitationLocations(
       JSON.stringify({ artifact_id: "a", version: -1, id: "part" }),
     ),
-    null,
+    [],
   );
 });
 
@@ -66,4 +68,23 @@ test("artifact citations retain exact version and encode section IDs", () => {
     }),
     "/workspace/artifacts/id?version=2&section=sheet+%26+one",
   );
+});
+
+test("summary citations retain the summarized version and deduplicate sections", () => {
+  const citations = artifactCitationLocations(
+    JSON.stringify({
+      artifact_id: "presentation",
+      version: 2,
+      source_references: [
+        { id: "slide-4", title: "Findings", version: 9 },
+        { id: "slide-4", title: "Findings" },
+        null,
+        { id: "slide-5", title: "Conclusions" },
+      ],
+    }),
+  );
+  assert.deepEqual(citations.map(sourceLocationUrl), [
+    "/workspace/artifacts/presentation?version=2&section=slide-4",
+    "/workspace/artifacts/presentation?version=2&section=slide-5",
+  ]);
 });

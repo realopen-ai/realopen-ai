@@ -143,6 +143,3 @@ export const artifactsApi = {
       "POST",
     ),
 };
-export function artifactSourceUrl(source: ArtifactReference) {
-  return `/workspace/artifacts/${encodeURIComponent(source.artifact_id)}?version=${source.version}&section=${encodeURIComponent(source.section_id)}`;
-}

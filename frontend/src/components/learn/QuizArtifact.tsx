@@ -1,7 +1,7 @@
+import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { BookOpen, Play } from "lucide-react";
 import { useT } from "@/store/settingsStore";
-import { useLearnStore } from "@/store/learnStore";
 import { useUIStore } from "@/store/uiStore";
 import { Button } from "@/components/ui/button";
 
@@ -16,7 +16,8 @@ export function QuizArtifact({
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   function take() {
     const notebook = pathname.match(/^\/learn\/notebooks\/([^/]+)$/);
     if (notebook) {
@@ -28,8 +29,9 @@ export function QuizArtifact({
       return;
     }
     if (window.innerWidth >= 768) {
-      useLearnStore.getState().setQuiz(id);
-      useUIStore.getState().setRightPanelOpen(true);
+      useUIStore
+        .getState()
+        .openSideTab({ kind: "quiz", id, title }, sideTabRouteKey(location));
     } else navigate(`/learn/quizzes/${id}/take`);
   }
   return (
