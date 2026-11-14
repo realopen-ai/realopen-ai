@@ -17,14 +17,14 @@ import shutil
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, List, Literal, Optional
+from typing import Annotated, Any, List, Literal, Optional
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, Json
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -41,6 +41,7 @@ from app.services import conversations as conv_service
 from app.services import temporary_chats
 from app.services.chat_command_sources import (
     MAX_SELECTION,
+    PinnedArtifact,
     list_sources,
     saved_selection_blocks,
     selection_blocks,
@@ -119,6 +120,7 @@ class ChatRequest(BaseModel):
     selected_source_ids: list[uuid.UUID] = Field(
         default_factory=list, max_length=MAX_SELECTION
     )
+    pinned_artifact: PinnedArtifact | None = None
 
 
 class ChatResponse(BaseModel):
@@ -344,6 +346,8 @@ async def chat_stream(request: ChatRequest):
 @router.post("/chat/temporary/stream")
 async def temporary_chat_stream(request: ChatRequest):
     """Stream a text turn without creating a conversation or saving messages."""
+    if request.pinned_artifact:
+        raise HTTPException(422, "Pinned artifact previews require a saved chat")
     if request.conversation_id or request.resume_coder_task_id:
         raise HTTPException(
             400, "Temporary chat cannot use a saved conversation or task"
@@ -453,7 +457,10 @@ async def _chat_stream(
             **(
                 {
                     "blocks": await saved_selection_blocks(
-                        conv_id, request.selected_source_ids, async_session_factory
+                        conv_id,
+                        request.selected_source_ids,
+                        async_session_factory,
+                        request.pinned_artifact,
                     )
                 }
                 if request.selected_source_ids
@@ -577,6 +584,11 @@ async def _chat_stream(
                     **(
                         {"selected_source_ids": request.selected_source_ids}
                         if request.selected_source_ids
+                        else {}
+                    ),
+                    **(
+                        {"pinned_artifact": request.pinned_artifact}
+                        if request.pinned_artifact
                         else {}
                     ),
                 )
@@ -829,6 +841,7 @@ async def chat_stream_multipart(
     images: List[UploadFile] = File(default=[]),
     documents: List[UploadFile] = File(default=[]),
     selected_source_ids: list[uuid.UUID] = Form(default=[], max_length=MAX_SELECTION),
+    pinned_artifact: Annotated[Json[PinnedArtifact] | None, Form()] = None,
 ):
     """Stream chat with optional image and document uploads.
 
@@ -934,7 +947,10 @@ async def chat_stream_multipart(
             **(
                 {
                     "blocks": await saved_selection_blocks(
-                        conv_id, selected_source_ids, async_session_factory
+                        conv_id,
+                        selected_source_ids,
+                        async_session_factory,
+                        pinned_artifact,
                     )
                 }
                 if selected_source_ids
@@ -1127,6 +1143,7 @@ async def chat_stream_multipart(
                     if selected_source_ids
                     else {}
                 ),
+                **({"pinned_artifact": pinned_artifact} if pinned_artifact else {}),
             ):
                 chunk_count += 1
                 if is_debug() and chunk_count <= 5:

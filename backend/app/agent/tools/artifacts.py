@@ -109,6 +109,8 @@ class ArtifactTool(BaseTool):
             )
         elif self.operation == "summarize":
             parameters["question"] = {"type": "string", "maxLength": 1000}
+            parameters["version"] = {"type": "integer", "minimum": 1}
+            parameters["section_id"] = {"type": "string", "maxLength": 128}
         return parameters
 
     def get_required_params(self):
@@ -144,6 +146,9 @@ class ArtifactTool(BaseTool):
                 progress,
                 model=await config_store.tool_model_override(self.name),
                 cache_dir=chat.reports_dir() / "summaries",
+                **(
+                    {"section_id": args["section_id"]} if args.get("section_id") else {}
+                ),
             )
             return {
                 **result,
@@ -328,6 +333,11 @@ class ArtifactTool(BaseTool):
                                     progress,
                                     model=await config_store.tool_model_override(
                                         self.name
+                                    ),
+                                    **(
+                                        {"section_id": args["section_id"]}
+                                        if args.get("section_id")
+                                        else {}
                                     ),
                                 ),
                             }
