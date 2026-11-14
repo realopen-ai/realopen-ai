@@ -28,6 +28,7 @@ from app.services import web_search
 from app.services.inference_stats import runtime_usage
 from app.services.blocks import BlockBuilder
 from app.services.artifact_sources import sections_for
+from app.services.chat_command_sources import PinnedArtifact
 from app.db.models import ArtifactVersion
 from app.services.rag import Chunk
 from app.services.temporary_chats import Attachment, TemporaryChat
@@ -1412,6 +1413,85 @@ async def test_learn_commands_keep_generated_slide_provenance(
         result["type"] == "temporary_output"
         for event in events
         for result in event.get("tool_call", {}).get("genResults", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_learn_command_pins_reads_and_citations_to_preview_section(
+    agent, monkeypatch
+):
+    selected = uuid.uuid4()
+    pin = PinnedArtifact(artifact_id=selected, version=2, section_id="slide-4")
+    reader = ReadArtifactTool()
+    reader.execute = AsyncMock(
+        return_value=ToolResult(
+            True,
+            json.dumps(
+                {
+                    "artifact_id": str(selected),
+                    "version": 2,
+                    "id": "slide-4",
+                    "slide": 4,
+                    "content": "Training data is used to fit a model.",
+                }
+            ),
+        )
+    )
+    note = CreateStudyNoteTool()
+    note.execute = AsyncMock(return_value=ToolResult(True, "Saved note."))
+    registry = ToolRegistry()
+    for tool in (reader, note, RagSearchTool()):
+        registry.register(tool)
+    monkeypatch.setattr(service, "get_tool_registry", lambda: registry)
+    monkeypatch.setattr(config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(
+        service,
+        "pinned_source",
+        AsyncMock(
+            return_value={
+                "id": str(selected),
+                "document_id": str(selected),
+                "title": "Training.pptx",
+                **pin.model_dump(mode="json"),
+            }
+        ),
+    )
+    wrong = {"artifact_id": str(selected), "version": 3, "section_id": "slide-1"}
+    script(
+        monkeypatch,
+        [
+            [{"tool_calls": [call(wrong, name=reader.name)], "done": True}],
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {
+                                "title": "Training",
+                                "content": "Training data is used to fit a model.",
+                                "source_artifact": wrong,
+                            },
+                            name=note.name,
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "Done.", "done": True}],
+        ],
+    )
+    await run(
+        [{"role": "user", "content": "/note"}],
+        conversation_id=str(uuid.uuid4()),
+        selected_source_ids=[selected],
+        pinned_artifact=pin,
+    )
+    assert reader.execute.await_count >= 1
+    for attempt in reader.execute.await_args_list:
+        assert attempt.kwargs["version"] == 2
+        assert attempt.kwargs["section_id"] == "slide-4"
+    note.execute.assert_awaited_once()
+    assert note.execute.await_args.kwargs["source_artifact"] == pin.model_dump(
+        mode="json"
     )
 
 

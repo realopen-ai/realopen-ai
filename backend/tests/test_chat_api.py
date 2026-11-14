@@ -297,6 +297,7 @@ def env(monkeypatch, db_override):
                 "conversation_id": conversation_id,
                 "attachment_ids": kw.get("attachment_ids"),
                 "selected_source_ids": kw.get("selected_source_ids"),
+                "pinned_artifact": kw.get("pinned_artifact"),
             }
         )
         if e.agent_error is not None:
@@ -1897,6 +1898,47 @@ async def test_chat_forwards_and_persists_explicit_sources(
     assert message["selectedSourceIds"] == [str(DOC_ID)]
     assert message["selectedSourceTitles"] == {str(DOC_ID): "Case Study.pptx"}
     assert message["blocks"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_chat_forwards_and_persists_versioned_preview_source(
+    client, env, multipart, monkeypatch
+):
+    from app.services import chat_command_sources
+    from app.services.conversations import message_to_dict
+
+    title = "Case Study.pptx · v2 · Findings"
+    monkeypatch.setattr(
+        chat_command_sources, "list_sources", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        chat_command_sources,
+        "pinned_source",
+        AsyncMock(return_value={"id": str(DOC_ID), "title": title}),
+    )
+    source = {"artifact_id": str(DOC_ID), "version": 2, "section_id": "slide-4"}
+    messages = [{"role": "user", "content": "/find findings"}]
+    fields = {"conversation_id": str(CONV_ID), "selected_source_ids": [str(DOC_ID)]}
+    path = "/api/chat/stream"
+    if multipart:
+        response = await client.post(
+            path + "/multipart",
+            data={
+                **fields,
+                "messages": json.dumps(messages),
+                "pinned_artifact": json.dumps(source),
+            },
+        )
+    else:
+        response = await client.post(
+            path, json={**fields, "messages": messages, "pinned_artifact": source}
+        )
+    assert response.status_code == 200, response.text
+    assert env.agent_calls[0]["pinned_artifact"].model_dump(mode="json") == source
+    message = await message_to_dict(make_msg(blocks=env.persists[0]["blocks"]))
+    assert message["pinnedArtifact"] == source
+    assert message["selectedSourceTitles"] == {str(DOC_ID): title}
 
 
 @pytest.mark.asyncio
