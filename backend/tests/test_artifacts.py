@@ -25,6 +25,7 @@ from app.services.artifact_sources import (
 )
 from app.services.artifact_summary import summarize_sections
 from app.services.artifact_refs import ArtifactReference, validate_reference
+from app.services.chat_command_sources import PinnedArtifact, find_artifact_text
 from app.api import artifacts as api
 from test_flashcards import AsyncAdapter
 
@@ -123,6 +124,71 @@ async def generated(
         )
         await db.commit()
     return result
+
+
+@pytest.mark.asyncio
+async def test_preview_commands_read_only_the_pinned_historical_slide(
+    store, monkeypatch
+):
+    from app.agent.tools.artifacts import SummarizeArtifactTool
+
+    conversation = uuid.uuid4()
+    with store.engine.begin() as db:
+        db.execute(
+            text("INSERT INTO conversations (id) VALUES (:id)"),
+            {"id": conversation.hex},
+        )
+    artifact = await generated(
+        store,
+        "presentation",
+        "# First\nmarker outside\n\n---\n\n# Second\nmarker original",
+        conversation,
+    )
+    identifier = uuid.UUID(artifact["id"])
+    updated = store.client.put(
+        f"/api/artifacts/{identifier}",
+        json={
+            "expected_version": 1,
+            "changes": [
+                {"section_id": "slide-2", "content": "# Second\nmarker updated"}
+            ],
+        },
+    )
+    assert updated.status_code == 200
+    pin = PinnedArtifact(artifact_id=identifier, version=1, section_id="slide-2")
+    async with store.factory() as db:
+        matches = await find_artifact_text(
+            db, conversation, None, [identifier], "marker", 10, pinned=pin
+        )
+    assert len(matches) == 1
+    assert matches[0]["artifact"]["version"] == 1
+    assert matches[0]["artifact"]["slide"] == 2
+    assert "marker original" in matches[0]["text"]
+
+    prompts = []
+
+    async def stream(_model, messages, **_options):
+        prompts.append(messages[-1]["content"])
+        yield {"content": "[slide-2] Original finding."}
+
+    monkeypatch.setattr(service.providers, "stream_chat", stream)
+
+    async def model(_task):
+        return "local-test"
+
+    monkeypatch.setattr(service.model_prefs, "resolve_task_model", model)
+
+    tool = SummarizeArtifactTool()
+    result = await tool.execute(
+        **pin.model_dump(mode="json"), conversation_id=str(conversation)
+    )
+    assert result.success, result.output
+    assert "marker original" in prompts[0]
+    assert "marker outside" not in prompts[0]
+    assert "marker updated" not in prompts[0]
+    summary = json.loads(result.output)
+    assert summary["version"] == 1
+    assert [ref["id"] for ref in summary["source_references"]] == ["slide-2"]
 
 
 @pytest.mark.asyncio
@@ -468,7 +534,6 @@ async def test_public_documents_remain_explicitly_accessible_but_not_auto_inject
         explicit = await service.catalog(db, conversation, scoped=True)
     assert {item["id"] for item in automatic["items"]} == {str(attached_id)}
     assert {item["id"] for item in explicit["items"]} == {str(public_id), str(attached_id)}
-
 
 
 @pytest.mark.asyncio

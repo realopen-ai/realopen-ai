@@ -16,6 +16,7 @@ import test from "node:test";
 
 // ── Fake localStorage (must exist before the store evaluates) ─────────
 const storage = new Map<string, string>();
+const session = new Map<string, string>();
 const g = globalThis as typeof globalThis & { window?: unknown };
 g.window = {
   localStorage: {
@@ -23,9 +24,15 @@ g.window = {
     setItem: (key: string, value: string) => void storage.set(key, value),
     removeItem: (key: string) => void storage.delete(key),
   },
+  sessionStorage: {
+    getItem: (key: string) => session.get(key) ?? null,
+    setItem: (key: string, value: string) => void session.set(key, value),
+    removeItem: (key: string) => void session.delete(key),
+  },
 };
 
 const { useUIStore } = await import("../src/store/uiStore.ts");
+const { useSandboxStore } = await import("../src/store/sandboxStore.ts");
 
 test("fresh store starts from the documented defaults", () => {
   const s = useUIStore.getState();
@@ -75,6 +82,101 @@ test("state changes are persisted under the realopen-ai-ui key", () => {
   assert.equal(typeof parsed.state.toggleSidebar, "undefined");
 });
 
+test("side tabs stack, survive collapse and restore the preceding activity on close", () => {
+  const ui = useUIStore.getState();
+  ui.setRightPanelOpen(false);
+  ui.openSideTab({ kind: "quiz", id: "math", title: "Math" }, "chat");
+  assert.equal(useUIStore.getState().rightPanelOpen, true);
+  assert.equal(useUIStore.getState().activeSideTab, "quiz:math");
+  ui.toggleRightPanel();
+  ui.toggleRightPanel();
+  assert.equal(useUIStore.getState().activeSideTab, "quiz:math");
+  ui.openSideTab(
+    { kind: "citation", source: { documentId: "doc", page: 5 } },
+    "chat",
+  );
+  const citation = useUIStore.getState().activeSideTab!;
+  assert.deepEqual(
+    useUIStore.getState().sideTabs.map((tab) => tab.key),
+    ["quiz:math", citation],
+  );
+  ui.closeSideTab(citation);
+  assert.equal(useUIStore.getState().activeSideTab, "quiz:math");
+  useSandboxStore.getState().setPreviewUrl("http://localhost:6767");
+  ui.closeSideTab("quiz:math");
+  assert.equal(useUIStore.getState().activeSideTab, null);
+  assert.equal(useUIStore.getState().rightPanelTab, "preview");
+  useSandboxStore.getState().setPreviewUrl(null);
+  ui.openSideTab({ kind: "flashcards", id: "deck", title: "Deck" }, "chat");
+  ui.closeSideTab("flashcards:deck");
+  assert.equal(useUIStore.getState().rightPanelTab, "code");
+});
+
+test("side tabs reopen existing content and clear on route change", () => {
+  const ui = useUIStore.getState();
+  const activity = {
+    kind: "citation",
+    source: { documentId: "doc", excerpt: "Source text" },
+  } as const;
+  ui.setRightPanelOpen(false);
+  ui.openSideTab(activity, "chat", false);
+  assert.equal(useUIStore.getState().rightPanelOpen, false);
+  ui.openSideTab(activity, "chat");
+  assert.equal(useUIStore.getState().sideTabs.length, 1);
+  ui.setRightPanelTab("preview", true);
+  assert.equal(useUIStore.getState().activeSideTab, "document:doc::");
+  ui.setRightPanelTab("code");
+  assert.equal(useUIStore.getState().activeSideTab, null);
+  ui.selectSideTab("document:doc::");
+  assert.equal(useUIStore.getState().activeSideTab, "document:doc::");
+  const persisted = JSON.parse(storage.get("realopen-ai-ui")!);
+  assert.equal("sideTabs" in persisted.state, false);
+  assert.equal("activeSideTab" in persisted.state, false);
+  ui.clearSideTabs("other-chat");
+  assert.deepEqual(useUIStore.getState().sideTabs, []);
+  assert.equal(useUIStore.getState().activeSideTab, null);
+  assert.equal(session.has("realopen-ai-side-tabs"), false);
+});
+
+test("reload restores the tab order, selection, collapsed panel and quiz attempt", async () => {
+  const ui = useUIStore.getState();
+  ui.openSideTab({ kind: "quiz", id: "math", title: "Math" }, "/chat:default");
+  ui.rememberQuizAttempt("quiz:math", "attempt-1");
+  ui.openSideTab(
+    {
+      kind: "citation",
+      source: {
+        artifact: { artifact_id: "slides", version: 2, section_id: "slide-4" },
+      },
+    },
+    "/chat:default",
+  );
+  ui.setRightPanelOpen(false);
+  // A fresh module instance creates a new store against the same browser storage.
+  const moduleUrl = new URL("../src/store/uiStore.ts?reload", import.meta.url);
+  const { useUIStore: restored }: { useUIStore: typeof useUIStore } =
+    await import(moduleUrl.href);
+  const state = restored.getState();
+  assert.equal(state.rightPanelOpen, false);
+  assert.equal(state.activeSideTab, "artifact:slides:2:slide-4");
+  assert.deepEqual(
+    state.sideTabs.map((tab) => tab.key),
+    ["quiz:math", "artifact:slides:2:slide-4"],
+  );
+  assert.deepEqual(state.sideTabs[0].activity, {
+    kind: "quiz",
+    id: "math",
+    title: "Math",
+    attemptId: "attempt-1",
+  });
+  state.clearSideTabs("/chat:default");
+  state.closeSideTab("artifact:slides:2:slide-4");
+  assert.equal(restored.getState().activeSideTab, "quiz:math");
+  state.closeSideTab("quiz:math");
+  assert.equal(session.has("realopen-ai-side-tabs"), false);
+  ui.clearSideTabs("/other:default");
+});
+
 test("a reload rehydrates the persisted layout and keeps actions working", async () => {
   storage.set(
     "realopen-ai-ui",
@@ -96,6 +198,22 @@ test("a reload rehydrates the persisted layout and keeps actions working", async
   // Rehydration merges over the live store — actions survive.
   s.toggleSidebar();
   assert.equal(useUIStore.getState().sidebarCollapsed, false);
+});
+
+test("a collapsed panel retains its last positive width after reload", async () => {
+  const ui = useUIStore.getState();
+  ui.setRightPanelOpen(true);
+  ui.setRightPanelWidth(48.25);
+  ui.setRightPanelOpen(false);
+  ui.setRightPanelWidth(0);
+  const moduleUrl = new URL(
+    "../src/store/uiStore.ts?width-reload",
+    import.meta.url,
+  );
+  const { useUIStore: restored }: { useUIStore: typeof useUIStore } =
+    await import(moduleUrl.href);
+  assert.equal(restored.getState().rightPanelOpen, false);
+  assert.equal(restored.getState().rightPanelWidth, 48.25);
 });
 
 test("legacy persisted state is migrated to the current version", async () => {

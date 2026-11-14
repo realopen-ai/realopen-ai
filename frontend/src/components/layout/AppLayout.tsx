@@ -1,3 +1,4 @@
+import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import {
   Panel,
@@ -19,12 +20,12 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
-import { useLearnStore } from "@/store/learnStore";
 import { useLocation, useParams } from "react-router-dom";
 import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
 import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 import { rightPanelVisibilityAfterResize } from "@/lib/panelLayout";
+import { CitationPreviewDialog } from "@/components/learn/CitationPreview";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -48,9 +49,19 @@ export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
+  const routeKey = sideTabRouteKey(location);
   const { notebookId } = useParams();
   const showNotebook = !!notebookId && pathname.startsWith("/learn/notebooks/");
+  const sideTabs = useUIStore((s) => s.sideTabs);
+  const activeSideTab = useUIStore((s) => s.activeSideTab);
+  const clearSideTabs = useUIStore((s) => s.clearSideTabs);
+  const closeSideTab = useUIStore((s) => s.closeSideTab);
+  const mobileCitation = sideTabs.find(
+    (tab) => tab.routeKey === routeKey && tab.key === activeSideTab,
+  );
+  useEffect(() => clearSideTabs(routeKey), [clearSideTabs, routeKey]);
   const notebook = useNotebookStore((s) => s.notebook);
   const notebookConversationId =
     notebook && notebook.id === notebookId
@@ -91,10 +102,6 @@ export function AppLayout() {
     query.addEventListener("change", listener);
     return () => query.removeEventListener("change", listener);
   }, []);
-  useEffect(() => {
-    if (showLearnPage || !rightPanelOpen || !desktop)
-      useLearnStore.getState().setStudyDeck(null);
-  }, [showLearnPage, rightPanelOpen, desktop]);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
@@ -103,7 +110,6 @@ export function AppLayout() {
     id: "main-layout",
     panelIds: ["main-content", "main-workspace"],
   });
-  const initialSyncDone = useRef(false);
 
   // Track whether the user is actively dragging the resize handle.
   // When NOT dragging, apply CSS transition for smooth expand/collapse.
@@ -143,6 +149,7 @@ export function AppLayout() {
   }, [fetchFileTree]);
 
   // Sync right panel open/close with imperative handle
+  const panelOpen = rightPanelOpen;
   useEffect(() => {
     const panel = rightPanelRef.current;
     if (!panel) return;
@@ -154,23 +161,15 @@ export function AppLayout() {
       return;
     }
 
-    if (!initialSyncDone.current) {
-      initialSyncDone.current = true;
-      // On initial mount, sync without animation
-      if (!rightPanelOpen && !panel.isCollapsed()) {
-        panel.collapse();
-      } else if (rightPanelOpen && panel.isCollapsed()) {
-        panel.expand();
-      }
-      return;
-    }
-
-    if (rightPanelOpen && panel.isCollapsed()) {
-      panel.expand();
-    } else if (!rightPanelOpen && !panel.isCollapsed()) {
+    const { rightPanelWidth, setRightPanelWidth } = useUIStore.getState();
+    if (panelOpen && panel.isCollapsed()) {
+      panel.resize(`${rightPanelWidth ?? 40}%`);
+    } else if (!panelOpen && !panel.isCollapsed()) {
+      if (rightPanelWidth === null)
+        setRightPanelWidth(panel.getSize().asPercentage);
       panel.collapse();
     }
-  }, [rightPanelOpen, showNotebook]);
+  }, [panelOpen, showNotebook]);
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-background">
@@ -183,6 +182,14 @@ export function AppLayout() {
             orientation="horizontal"
             data-animate-panels={!isResizing}
             {...mainLayout}
+            onLayoutChanged={(layout, meta) => {
+              mainLayout.onLayoutChanged(layout, meta);
+              if (meta.isUserInteraction && !showNotebook) {
+                useUIStore
+                  .getState()
+                  .setRightPanelWidth(layout["main-workspace"]);
+              }
+            }}
           >
             <Panel id="main-content" defaultSize="60%" minSize="35%">
               <div className="relative h-full overflow-hidden">
@@ -265,12 +272,15 @@ export function AppLayout() {
                 className={showNotebook ? "hidden" : "h-full overflow-hidden"}
                 inert={showNotebook}
               >
-                <RightPanel />
+                <RightPanel
+                  routeKey={routeKey}
+                  visible={desktop && rightPanelOpen && !showNotebook}
+                />
               </div>
             </Panel>
           </Group>
 
-          {!rightPanelOpen && !showNotebook && (
+          {!panelOpen && !showNotebook && (
             <div className="flex shrink-0 items-start justify-center pt-2 pr-1 pl-0.5">
               <RightPanelToggle />
             </div>
@@ -360,6 +370,15 @@ export function AppLayout() {
             <MobileTabBar />
           )}
         </div>
+        {!desktop &&
+          !showNotebook &&
+          mobileCitation?.activity.kind === "citation" && (
+            <CitationPreviewDialog
+              key={mobileCitation.key}
+              source={mobileCitation.activity.source}
+              onClose={() => closeSideTab(mobileCitation.key)}
+            />
+          )}
       </div>
     </div>
   );

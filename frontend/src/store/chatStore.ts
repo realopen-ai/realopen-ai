@@ -1,3 +1,4 @@
+import type { PinnedArtifact } from "@/api/artifactsClient";
 import { create } from "zustand";
 import {
   fetchConversations,
@@ -140,6 +141,7 @@ export interface Message {
   imageCount?: number;
   documentCount?: number;
   selectedSourceIds?: string[];
+  pinnedArtifact?: PinnedArtifact;
   selectedSourceTitles?: Record<string, string>;
   // Total generation duration across all agent rounds (seconds).
   generationDuration?: number;
@@ -194,6 +196,8 @@ export interface Deliverable {
   download_url: string;
   thumbnail_url?: string;
   report_id?: string;
+  artifact_id?: string;
+  version?: number;
   created_at?: number;
 }
 
@@ -461,6 +465,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
     imageCount: dto.imageCount,
     documentCount: dto.documentCount,
     selectedSourceIds: dto.selectedSourceIds,
+    pinnedArtifact: dto.pinnedArtifact,
     selectedSourceTitles: dto.selectedSourceTitles,
     generationDuration: dto.generationDuration,
     completionStatus: dto.completionStatus ?? "completed",

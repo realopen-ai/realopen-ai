@@ -1,9 +1,10 @@
+import type { PinnedArtifact } from "@/api/artifactsClient";
 import type { ToolCallResult, AgentActivity } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
 import { persistedToolCallDetails } from "@/store/toolCallPersistence";
 import { epochMilliseconds } from "@/lib/timing";
-import type { ThinkingContext } from "@/api/client";
+import type { BackendDeliverable, ThinkingContext } from "@/api/client";
 
 const log = createDebugLogger("stream");
 
@@ -37,15 +38,7 @@ export interface StreamCallbacks {
   onRagSources?: (sources: RetrievedSourceDTO[], toolCallId: string) => void;
   /** Deliverables — fired when a tool produces a downloadable file (report, presentation) */
   onDeliverables?: (
-    deliverables: Array<{
-      type: string;
-      format: string;
-      filename: string;
-      file_path: string;
-      download_url: string;
-      report_id?: string;
-      created_at?: number;
-    }>,
+    deliverables: BackendDeliverable[],
     toolCallId: string,
   ) => void;
   /** Document digestion progress — fired during chat-upload doc digestion */
@@ -122,6 +115,7 @@ export async function streamChat(
     shrug?: boolean;
     resumeCoderTaskId?: string;
     selectedSourceIds?: string[];
+    pinnedArtifact?: PinnedArtifact;
   },
 ): Promise<void> {
   const controller = new AbortController();
@@ -159,6 +153,7 @@ export async function streamChat(
       shrug: options?.shrug,
       resume_coder_task_id: options?.resumeCoderTaskId,
       selected_source_ids: options?.selectedSourceIds,
+      pinned_artifact: options?.pinnedArtifact,
     };
     log(
       `   request body: messages=${messages.length}  model=${model}  stream=true  convId=${options?.conversationId ?? "none"}  modelOverride=${options?.modelOverride ?? "none"}`,
@@ -235,6 +230,7 @@ export async function streamChatWithFiles(
     temporary?: boolean;
     modelOverride?: string;
     selectedSourceIds?: string[];
+    pinnedArtifact?: PinnedArtifact;
   },
 ): Promise<void> {
   const controller = new AbortController();
@@ -269,6 +265,11 @@ export async function streamChatWithFiles(
       formData.append("model_override", options.modelOverride);
     for (const id of options?.selectedSourceIds ?? [])
       formData.append("selected_source_ids", id);
+    if (options?.pinnedArtifact)
+      formData.append(
+        "pinned_artifact",
+        JSON.stringify(options.pinnedArtifact),
+      );
 
     // Attach image files
     if (files.images) {
@@ -683,15 +684,7 @@ export function dispatchAgentEvent(
 
   // ── Deliverables (reports, presentations) ──
   if (eventType === "deliverables" && p.deliverables) {
-    const deliverables = p.deliverables as Array<{
-      type: string;
-      format: string;
-      filename: string;
-      file_path: string;
-      download_url: string;
-      report_id?: string;
-      created_at?: number;
-    }>;
+    const deliverables = p.deliverables as BackendDeliverable[];
     const tcId = p.tool_call_id as string | undefined;
     log(
       `   📦 deliverables event received  count=${deliverables.length}  tool_call_id=${tcId ?? "(none)"}`,

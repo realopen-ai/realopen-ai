@@ -1,3 +1,4 @@
+import type { PinnedArtifact } from "@/api/artifactsClient";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Brain,
@@ -59,8 +60,9 @@ import { DeckArtifact } from "@/components/learn/DeckArtifact";
 import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
-import { artifactReadLocation } from "@/lib/sourceNavigation";
-import { Link } from "react-router-dom";
+import { artifactCitationLocations } from "@/lib/sourceNavigation";
+import { Link, useLocation } from "react-router-dom";
+import { sideTabRouteKey, type FilePreview } from "@/lib/rightPanelTabs";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -430,6 +432,7 @@ function ToolCallBlockView({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const translate = useT();
@@ -809,6 +812,7 @@ function ToolCallDetail({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const coderPresentation =
@@ -1641,6 +1645,7 @@ function ReportGenDetail({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const translate = useT();
@@ -1707,6 +1712,12 @@ function ReportGenDetail({
                             r.filename ?? `report.${fmt}`,
                             r.download_url ?? "#",
                             fmt,
+                            r.artifact_id && r.version
+                              ? {
+                                  artifact_id: r.artifact_id,
+                                  version: r.version,
+                                }
+                              : undefined,
                           )
                       : undefined
                   }
@@ -1714,7 +1725,7 @@ function ReportGenDetail({
                 {r.artifact_id && !temporary && (
                   <Link
                     className="inline-flex text-xs text-primary hover:underline"
-                    to={`/workspace/artifacts/${r.artifact_id}`}
+                    to={`/workspace/artifacts/${r.artifact_id}${r.version ? `?version=${r.version}` : ""}`}
                   >
                     {translate("artifacts.open")}
                   </Link>
@@ -1742,6 +1753,11 @@ function ReportGenDetail({
 
 function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
   const translate = useT();
+  const temporary = useChatStore((state) =>
+    state.conversations.some(
+      (chat) => chat.id === state.activeConversationId && chat.temporary,
+    ),
+  );
   if (tc.type === "artifact" && tc.status === "running" && tc.progress) {
     const progress = tc.progress;
     return (
@@ -1762,7 +1778,7 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
     );
   }
   if (tc.type === "artifact" && tc.output) {
-    const location = artifactReadLocation(tc.output);
+    const citations = temporary ? [] : artifactCitationLocations(tc.output);
     let output = tc.output;
     try {
       output = JSON.stringify(JSON.parse(output), null, 2);
@@ -1772,7 +1788,15 @@ function GenericToolDetail({ tc }: { tc: ToolCallResult }) {
         <div className="max-h-80 overflow-auto">
           <HighlightedCode code={output} language="json" />
         </div>
-        {location && <SourceAction {...location} />}
+        {citations.length > 0 && (
+          <ul className="flex max-h-48 flex-col items-start gap-1 overflow-y-auto">
+            {citations.map((source) => (
+              <li key={source.artifact?.section_id} className="max-w-full">
+                <SourceAction {...source} label={source.title} />
+              </li>
+            ))}
+          </ul>
+        )}
         {tc.genResults
           ?.filter((r) => r.artifact_id)
           .map((r) =>
@@ -1823,6 +1847,7 @@ function BlockView({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   switch (block.type) {
@@ -1881,14 +1906,20 @@ export function MessageBubble({
   useEffect(() => () => speechRef.current?.stop(), []);
   const isAssistant = message.role === "assistant";
 
-  // PPTX viewer modal state
+  const location = useLocation();
+  const { pathname } = location;
   const [libreOfficeAvailable, setLibreOfficeAvailable] = useState(false);
-  const [viewingPptx, setViewingPptx] = useState<{
-    reportId: string;
-    filename: string;
-    downloadUrl: string;
-    format: ViewerFormat;
-  } | null>(null);
+  const [viewingPptx, setViewingPptx] = useState<FilePreview | null>(null);
+  const openFilePreview = (file: FilePreview) => {
+    if (
+      window.matchMedia("(min-width: 768px)").matches &&
+      !pathname.startsWith("/learn/notebooks/")
+    ) {
+      useUIStore
+        .getState()
+        .openSideTab({ kind: "file", file }, sideTabRouteKey(location));
+    } else setViewingPptx(file);
+  };
 
   // Check if LibreOffice is installed (cached in depsClient)
   useEffect(() => {
@@ -1957,6 +1988,7 @@ export function MessageBubble({
           content: userMsg.content,
           conversationId,
           selectedSourceIds: userMsg.selectedSourceIds,
+          pinnedArtifact: userMsg.pinnedArtifact,
           selectedSourceTitles: userMsg.selectedSourceTitles,
         },
       }),
@@ -2106,8 +2138,20 @@ export function MessageBubble({
             conversationId={conversationId}
             isStreaming={message.isStreaming}
             canViewPptx={libreOfficeAvailable}
-            onViewPptx={(reportId, filename, downloadUrl, format) =>
-              setViewingPptx({ reportId, filename, downloadUrl, format })
+            onViewPptx={(
+              reportId,
+              filename,
+              downloadUrl,
+              format,
+              artifactVersion,
+            ) =>
+              openFilePreview({
+                reportId,
+                filename,
+                downloadUrl,
+                format,
+                artifactVersion,
+              })
             }
           />
         ))
@@ -2181,11 +2225,15 @@ export function MessageBubble({
                 ["pdf", "docx", "pptx", "xlsx"].includes(d.format) &&
                 (d.format === "pdf" || libreOfficeAvailable)
                   ? () =>
-                      setViewingPptx({
+                      openFilePreview({
                         reportId: d.report_id!,
                         filename: d.filename,
                         downloadUrl: d.download_url,
                         format: (d.format as ViewerFormat) || "pptx",
+                        artifactVersion:
+                          d.artifact_id && d.version
+                            ? { artifact_id: d.artifact_id, version: d.version }
+                            : undefined,
                       })
                   : undefined
               }
@@ -2342,6 +2390,7 @@ export function MessageBubble({
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}
           format={viewingPptx.format}
+          artifactVersion={viewingPptx.artifactVersion}
           onClose={() => setViewingPptx(null)}
         />
       )}

@@ -1,3 +1,4 @@
+import type { PinnedArtifact } from "@/api/artifactsClient";
 import type { ModelOption } from "@/store/chatStore";
 import type { RetrievedSourceDTO } from "@/api/documentsClient";
 import { dbgError, createDebugLogger } from "@/lib/debug";
@@ -467,6 +468,7 @@ export interface MessageDTO {
   imageCount: number;
   documentCount: number;
   selectedSourceIds?: string[];
+  pinnedArtifact?: PinnedArtifact;
   selectedSourceTitles?: Record<string, string>;
   createdAt: number;
   /** How the message was produced: spoken ("voice") or typed ("text").
@@ -491,6 +493,8 @@ export interface BackendDeliverable {
   file_path: string;
   download_url: string;
   report_id?: string;
+  artifact_id?: string;
+  version?: number;
   thumbnail_url?: string;
   created_at?: number;
 }
@@ -564,6 +568,7 @@ export async function importTemporaryConversation(body: {
     image_count?: number;
     document_count?: number;
     selected_source_ids?: string[];
+    pinned_artifact?: PinnedArtifact;
     blocks?: {
       type: string;
       content?: string;

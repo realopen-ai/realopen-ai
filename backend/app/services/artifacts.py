@@ -375,6 +375,15 @@ async def import_recent(db, conversation_id=None, *, scoped=False):
         await db.flush()
 
 
+def select_sections(version, section_id):
+    if section_id is None:
+        return version.sections
+    for section in version.sections:
+        if section["id"] == section_id:
+            return [section]
+    raise HTTPException(404, "Artifact section not found in the selected version")
+
+
 def read(version, section_id=None, offset=0, limit=MAX_READ):
     refs = {"artifact_id": str(version.artifact_id), "version": version.number}
     if section_id is None:
@@ -388,11 +397,7 @@ def read(version, section_id=None, offset=0, limit=MAX_READ):
             "warnings": version.settings.get("warnings", []),
             "images": version.settings.get("images", []),
         }
-    section = next(
-        (section for section in version.sections if section["id"] == section_id), None
-    )
-    if section is None:
-        raise HTTPException(404, "Artifact section not found")
+    section = select_sections(version, section_id)[0]
     content = section["content"]
     limit = min(max(1, limit), MAX_READ)
     return {
@@ -624,7 +629,9 @@ async def summarize(
     model=None,
     *,
     cache_dir=None,
+    section_id=None,
 ):
+    sections = select_sections(version, section_id)
     model = model or await model_prefs.resolve_task_model("chat")
     key = hashlib.sha256(
         json.dumps(
@@ -635,7 +642,8 @@ async def summarize(
                 version.source,
                 model,
                 question,
-            ],
+            ]
+            + ([section_id] if section_id else []),
             ensure_ascii=False,
         ).encode()
     ).hexdigest()
@@ -697,7 +705,7 @@ async def summarize(
             await asyncio.to_thread(save_snapshot, batch_cache, {"summary": summary})
         return summary
 
-    result = await summarize_sections(version.sections, question, ask, progress)
+    result = await summarize_sections(sections, question, ask, progress)
     result["warnings"] = list(version.settings.get("warnings", []))
     if (
         abbreviated
