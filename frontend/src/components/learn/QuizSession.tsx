@@ -32,16 +32,20 @@ export function QuizSession({
   quizId,
   initial,
   onClose,
+  resumeAttemptId,
+  onAttemptChange,
 }: {
   quizId: string;
   initial?: QuizAttempt;
   onClose: () => void;
+  resumeAttemptId?: string;
+  onAttemptChange?: (id: string) => void;
 }) {
   const t = useT();
   const { pathname } = useLocation();
   const [params, setParams] = useSearchParams();
   const fullPage = pathname === `/learn/quizzes/${quizId}/take`;
-  const requested = fullPage ? params.get("attempt") : null;
+  const requested = fullPage ? params.get("attempt") : resumeAttemptId;
   const [attempt, setAttempt] = useState<QuizAttempt | null>(initial ?? null);
   const [answers, setAnswers] = useState<QuizAttempt["answers"]>(
     initial?.answers ?? {},
@@ -78,6 +82,9 @@ export function QuizSession({
       alive = false;
     };
   }, [quizId, initial, requested]);
+  useEffect(() => {
+    if (attempt) onAttemptChange?.(attempt.id);
+  }, [attempt?.id, onAttemptChange]);
   useEffect(() => {
     if (fullPage && attempt && params.get("attempt") !== attempt.id) {
       setParams(

@@ -1,3 +1,4 @@
+import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import {
   Panel,
@@ -19,16 +20,12 @@ import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useChatStore } from "@/store/chatStore";
 import { useT } from "@/store/settingsStore";
-import { useLearnStore } from "@/store/learnStore";
 import { useLocation, useParams } from "react-router-dom";
 import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
 import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 import { rightPanelVisibilityAfterResize } from "@/lib/panelLayout";
-import {
-  CitationPreview,
-  CitationPreviewDialog,
-} from "@/components/learn/CitationPreview";
+import { CitationPreviewDialog } from "@/components/learn/CitationPreview";
 
 const TerminalPane = lazy(() =>
   import("@/components/terminal/TerminalPane").then((m) => ({
@@ -52,20 +49,19 @@ export function AppLayout() {
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
   const mobileTab = useUIStore((s) => s.mobileTab);
-  const { pathname, key: routeKey } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
+  const routeKey = sideTabRouteKey(location);
   const { notebookId } = useParams();
   const showNotebook = !!notebookId && pathname.startsWith("/learn/notebooks/");
-  const citationPreview = useUIStore((s) => s.citationPreview);
-  const setCitationPreview = useUIStore((s) => s.setCitationPreview);
-  const citation =
-    !showNotebook && citationPreview?.routeKey === routeKey
-      ? citationPreview.source
-      : null;
-  const closeCitation = () => setCitationPreview(null);
-  useEffect(() => {
-    if (citationPreview && citationPreview.routeKey !== routeKey)
-      setCitationPreview(null);
-  }, [citationPreview, routeKey, setCitationPreview]);
+  const sideTabs = useUIStore((s) => s.sideTabs);
+  const activeSideTab = useUIStore((s) => s.activeSideTab);
+  const clearSideTabs = useUIStore((s) => s.clearSideTabs);
+  const closeSideTab = useUIStore((s) => s.closeSideTab);
+  const mobileCitation = sideTabs.find(
+    (tab) => tab.routeKey === routeKey && tab.key === activeSideTab,
+  );
+  useEffect(() => clearSideTabs(routeKey), [clearSideTabs, routeKey]);
   const notebook = useNotebookStore((s) => s.notebook);
   const notebookConversationId =
     notebook && notebook.id === notebookId
@@ -106,10 +102,6 @@ export function AppLayout() {
     query.addEventListener("change", listener);
     return () => query.removeEventListener("change", listener);
   }, []);
-  useEffect(() => {
-    if (showLearnPage || !rightPanelOpen || !desktop)
-      useLearnStore.getState().setStudyDeck(null);
-  }, [showLearnPage, rightPanelOpen, desktop]);
   const fetchFileTree = useSandboxStore((s) => s.fetchFileTree);
   const t = useT();
 
@@ -118,7 +110,6 @@ export function AppLayout() {
     id: "main-layout",
     panelIds: ["main-content", "main-workspace"],
   });
-  const initialSyncDone = useRef(false);
 
   // Track whether the user is actively dragging the resize handle.
   // When NOT dragging, apply CSS transition for smooth expand/collapse.
@@ -158,8 +149,7 @@ export function AppLayout() {
   }, [fetchFileTree]);
 
   // Sync right panel open/close with imperative handle
-  const desktopCitation = desktop ? citation : null;
-  const panelOpen = rightPanelOpen || !!desktopCitation;
+  const panelOpen = rightPanelOpen;
   useEffect(() => {
     const panel = rightPanelRef.current;
     if (!panel) return;
@@ -171,20 +161,12 @@ export function AppLayout() {
       return;
     }
 
-    if (!initialSyncDone.current) {
-      initialSyncDone.current = true;
-      // On initial mount, sync without animation
-      if (!panelOpen && !panel.isCollapsed()) {
-        panel.collapse();
-      } else if (panelOpen && panel.isCollapsed()) {
-        panel.expand();
-      }
-      return;
-    }
-
+    const { rightPanelWidth, setRightPanelWidth } = useUIStore.getState();
     if (panelOpen && panel.isCollapsed()) {
-      panel.expand();
+      panel.resize(`${rightPanelWidth ?? 40}%`);
     } else if (!panelOpen && !panel.isCollapsed()) {
+      if (rightPanelWidth === null)
+        setRightPanelWidth(panel.getSize().asPercentage);
       panel.collapse();
     }
   }, [panelOpen, showNotebook]);
@@ -200,6 +182,14 @@ export function AppLayout() {
             orientation="horizontal"
             data-animate-panels={!isResizing}
             {...mainLayout}
+            onLayoutChanged={(layout, meta) => {
+              mainLayout.onLayoutChanged(layout, meta);
+              if (meta.isUserInteraction && !showNotebook) {
+                useUIStore
+                  .getState()
+                  .setRightPanelWidth(layout["main-workspace"]);
+              }
+            }}
           >
             <Panel id="main-content" defaultSize="60%" minSize="35%">
               <div className="relative h-full overflow-hidden">
@@ -275,26 +265,17 @@ export function AppLayout() {
                   previousSize?.asPercentage,
                   showNotebook,
                 );
-                if (open !== null) {
-                  if (!desktopCitation) setRightPanelOpen(open);
-                  else if (!open) closeCitation();
-                }
+                if (open !== null) setRightPanelOpen(open);
               }}
             >
               <div
                 className={showNotebook ? "hidden" : "h-full overflow-hidden"}
                 inert={showNotebook}
               >
-                <div className={desktopCitation ? "hidden" : "h-full"}>
-                  <RightPanel />
-                </div>
-                {desktopCitation && (
-                  <CitationPreview
-                    key={JSON.stringify(desktopCitation)}
-                    source={desktopCitation}
-                    onClose={closeCitation}
-                  />
-                )}
+                <RightPanel
+                  routeKey={routeKey}
+                  visible={desktop && rightPanelOpen && !showNotebook}
+                />
               </div>
             </Panel>
           </Group>
@@ -389,13 +370,15 @@ export function AppLayout() {
             <MobileTabBar />
           )}
         </div>
-        {!desktop && citation && (
-          <CitationPreviewDialog
-            key={JSON.stringify(citation)}
-            source={citation}
-            onClose={closeCitation}
-          />
-        )}
+        {!desktop &&
+          !showNotebook &&
+          mobileCitation?.activity.kind === "citation" && (
+            <CitationPreviewDialog
+              key={mobileCitation.key}
+              source={mobileCitation.activity.source}
+              onClose={() => closeSideTab(mobileCitation.key)}
+            />
+          )}
       </div>
     </div>
   );

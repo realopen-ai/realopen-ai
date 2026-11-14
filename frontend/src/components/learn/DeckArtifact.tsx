@@ -1,8 +1,8 @@
+import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { Layers, Play } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/store/settingsStore";
-import { useLearnStore } from "@/store/learnStore";
 import { useUIStore } from "@/store/uiStore";
 
 export function DeckArtifact({
@@ -16,7 +16,8 @@ export function DeckArtifact({
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const study = () => {
     const notebookRoute = pathname.match(/^\/learn\/notebooks\/([^/]+)$/);
     if (notebookRoute) {
@@ -28,8 +29,12 @@ export function DeckArtifact({
       return;
     }
     if (window.matchMedia("(min-width: 768px)").matches) {
-      useLearnStore.getState().setStudyDeck(id);
-      useUIStore.getState().setRightPanelOpen(true);
+      useUIStore
+        .getState()
+        .openSideTab(
+          { kind: "flashcards", id, title },
+          sideTabRouteKey(location),
+        );
     } else navigate(`/learn/flashcards/${id}/study`);
   };
   return (

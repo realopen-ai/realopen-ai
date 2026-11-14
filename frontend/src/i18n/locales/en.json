@@ -700,6 +700,8 @@
   "panel.newWorkspace": "New workspace…",
   "panel.stopWorkspace": "Stop workspace",
   "panel.startWorkspace": "Start workspace",
+  "panel.tabs": "Right panel tabs",
+  "panel.closeTab": "Close {title} tab",
   "panel.close": "Close panel",
   "panel.open": "Open workspace panel",
   "panel.linkedWorkspace": "Linked workspace",

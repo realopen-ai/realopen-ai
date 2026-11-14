@@ -44,11 +44,13 @@ export function CitationPreview({
   onClose,
   className,
   inDialog = false,
+  shortcutsEnabled = true,
 }: {
   source: SourceLocation;
   onClose: () => void;
   className?: string;
   inDialog?: boolean;
+  shortcutsEnabled?: boolean;
 }) {
   const t = useT();
   const [page, setPage] = useState<number | null>(source.page ?? null);
@@ -59,13 +61,13 @@ export function CitationPreview({
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    if (inDialog) return;
+    if (inDialog || !shortcutsEnabled) return;
     const listener = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) onClose();
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [inDialog, onClose]);
+  }, [inDialog, onClose, shortcutsEnabled]);
   useEffect(() => {
     if (!source.documentId || source.artifact) return;
     const controller = new AbortController();

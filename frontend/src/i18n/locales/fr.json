@@ -700,6 +700,8 @@
   "panel.newWorkspace": "Nouvel espace…",
   "panel.stopWorkspace": "Arrêter l’espace",
   "panel.startWorkspace": "Démarrer l’espace",
+  "panel.tabs": "Onglets du panneau latéral",
+  "panel.closeTab": "Fermer l’onglet {title}",
   "panel.close": "Fermer le panneau",
   "panel.open": "Ouvrir le panneau de l’espace",
   "panel.linkedWorkspace": "Espace lié",

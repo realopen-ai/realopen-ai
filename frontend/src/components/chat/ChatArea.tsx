@@ -498,19 +498,19 @@ export function ChatArea({
                 .loadForConversation(capturedConvId);
             }
             terminalToolIds.add(toolCall.id);
-            setRightPanelOpen(true);
-            setRightPanelTab("code");
+            if (!useUIStore.getState().activeSideTab) setRightPanelOpen(true);
+            setRightPanelTab("code", true);
             if (toolCall.language === "shell" && toolCall.code) {
               addTerminalLine(`$ ${toolCall.code}`);
             } else {
               addTerminalLine(generalCodeExecCommand(toolCall.id));
             }
           } else if (toolCall.type === "preview") {
-            setRightPanelOpen(true);
-            setRightPanelTab("preview");
+            if (!useUIStore.getState().activeSideTab) setRightPanelOpen(true);
+            setRightPanelTab("preview", true);
           } else if (toolCall.type === "sandbox") {
-            setRightPanelOpen(true);
-            setRightPanelTab("code");
+            if (!useUIStore.getState().activeSideTab) setRightPanelOpen(true);
+            setRightPanelTab("code", true);
           }
         },
         onToolCallUpdate: (
@@ -545,8 +545,8 @@ export function ChatArea({
           }
           if (updates.previewUrl) {
             selectPreview(updates.previewUrl, updates.previewPort);
-            setRightPanelOpen(true);
-            setRightPanelTab("preview");
+            if (!useUIStore.getState().activeSideTab) setRightPanelOpen(true);
+            setRightPanelTab("preview", true);
           }
           if (
             updates.refreshFiles ||

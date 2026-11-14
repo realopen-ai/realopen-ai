@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { StudySession } from "@/components/learn/StudySession";
 import { QuizSession } from "@/components/learn/QuizSession";
-import { useLearnStore } from "@/store/learnStore";
+import { CitationPreview } from "@/components/learn/CitationPreview";
+import { FileViewerModal } from "@/components/chat/FileViewerModal";
 import {
   PanelRightClose,
   PanelRightOpen,
@@ -14,9 +15,10 @@ import {
   ExternalLink,
   ChevronDown,
   MoreHorizontal,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -111,7 +113,13 @@ function TerminalTab({
   );
 }
 
-export function RightPanel() {
+export function RightPanel({
+  routeKey,
+  visible,
+}: {
+  routeKey: string;
+  visible: boolean;
+}) {
   const columnsLayout = useDefaultLayout({
     id: "sandbox-code-columns",
     panelIds: ["sandbox-tree", "sandbox-editor"],
@@ -120,8 +128,6 @@ export function RightPanel() {
     id: "sandbox-code-rows",
     panelIds: ["sandbox-file", "sandbox-terminal"],
   });
-  const studyDeckId = useLearnStore((s) => s.studyDeckId);
-  const quizId = useLearnStore((s) => s.quizId);
   const t = useT();
   const [previewKey, setPreviewKey] = useState(0);
   const [createSandboxOpen, setCreateSandboxOpen] = useState(false);
@@ -179,57 +185,110 @@ export function RightPanel() {
   const activeLifecycle = active ? lifecyclePending[active.id] : undefined;
   const activeTone = active ? sandboxStatusTone(active.status) : null;
 
-  if (quizId)
-    return (
-      <QuizSession
-        key={quizId}
-        quizId={quizId}
-        onClose={() => {
-          toggleRightPanel();
-          useLearnStore.getState().setQuiz(null);
-        }}
-      />
+  const sideTabs = useUIStore((s) => s.sideTabs).filter(
+    (tab) => tab.routeKey === routeKey,
+  );
+  const activeSideTab = useUIStore((s) => s.activeSideTab);
+  const selectSideTab = useUIStore((s) => s.selectSideTab);
+  const closeSideTab = useUIStore((s) => s.closeSideTab);
+  const rememberQuizAttempt = useUIStore((s) => s.rememberQuizAttempt);
+  const activeTab =
+    sideTabs.find((tab) => tab.key === activeSideTab)?.key ?? rightPanelTab;
+  const tabStrip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!visible) return;
+    const selected = tabStrip.current?.querySelector(
+      '[role="tab"][aria-selected="true"]',
     );
-  if (studyDeckId)
-    return (
-      <StudySession
-        key={studyDeckId}
-        deckId={studyDeckId}
-        onClose={() => {
-          toggleRightPanel();
-          useLearnStore.getState().setStudyDeck(null);
-        }}
-      />
-    );
+    (selected?.closest("[data-side-tab]") ?? selected)?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeTab, visible]);
+  const tabClass =
+    "h-7 gap-1.5 rounded-md px-2.5 text-[13.5px] font-medium hover:text-foreground data-[state=active]:bg-surface-selected data-[state=active]:text-foreground data-[state=active]:shadow-none";
 
   return (
-    <div className="flex flex-col h-full bg-card">
-      {/* Panel header — quiet view tabs + icon actions, then the sandbox line.
-          A single hairline separates the header from the content. */}
+    <Tabs
+      className="flex h-full flex-col bg-card"
+      value={activeTab}
+      onValueChange={(value) => {
+        if (value === "code" || value === "preview") setRightPanelTab(value);
+        else selectSideTab(value);
+      }}
+    >
       <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1.5">
-        <Tabs
-          value={rightPanelTab}
-          onValueChange={(v) => setRightPanelTab(v as "code" | "preview")}
-        >
-          <TabsList className="h-8 gap-0.5 bg-transparent p-0">
-            <TabsTrigger
-              value="code"
-              className="h-7 gap-1.5 rounded-md px-2.5 text-[13.5px] font-medium hover:text-foreground data-[state=active]:bg-surface-selected data-[state=active]:text-foreground data-[state=active]:shadow-none"
-            >
+        <div ref={tabStrip} className="min-w-0 flex-1 overflow-x-auto">
+          <TabsList
+            className="h-8 gap-0.5 bg-transparent p-0"
+            aria-label={t("panel.tabs")}
+          >
+            <TabsTrigger value="code" className={tabClass}>
               <Code2 className="size-3.5" />
               {t("panel.code")}
             </TabsTrigger>
-            <TabsTrigger
-              value="preview"
-              className="h-7 gap-1.5 rounded-md px-2.5 text-[13.5px] font-medium hover:text-foreground data-[state=active]:bg-surface-selected data-[state=active]:text-foreground data-[state=active]:shadow-none"
-            >
+            <TabsTrigger value="preview" className={tabClass}>
               <MonitorPlay className="size-3.5" />
               {t("panel.preview")}
             </TabsTrigger>
+            {sideTabs.map(({ key, activity }) => {
+              const label =
+                activity.kind === "quiz"
+                  ? t("learn.quizzes")
+                  : activity.kind === "flashcards"
+                    ? t("learn.flashcards")
+                    : activity.kind === "file"
+                      ? activity.file.filename
+                      : t("learn.viewSource");
+              const title =
+                activity.kind === "quiz" || activity.kind === "flashcards"
+                  ? activity.title
+                  : activity.kind === "citation"
+                    ? activity.source.title
+                    : undefined;
+              return (
+                <div
+                  key={key}
+                  data-side-tab=""
+                  className={cn(
+                    "flex h-7 shrink-0 items-center rounded-md pe-1",
+                    key === activeTab && "bg-surface-selected",
+                  )}
+                  role="presentation"
+                >
+                  <TabsTrigger
+                    value={key}
+                    title={title ?? label}
+                    className={cn(
+                      tabClass,
+                      "max-w-40 px-0 ps-2.5 pe-1 data-[state=active]:bg-transparent",
+                    )}
+                    onKeyDown={(event) => {
+                      if (event.key === "Delete") {
+                        event.preventDefault();
+                        closeSideTab(key);
+                      }
+                    }}
+                  >
+                    <span className="truncate">{label}</span>
+                  </TabsTrigger>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="size-5 shrink-0 [&_svg]:size-3"
+                    onClick={() => closeSideTab(key)}
+                    aria-label={t("panel.closeTab", { title: title ?? label })}
+                    title={t("panel.closeTab", { title: title ?? label })}
+                  >
+                    <X aria-hidden="true" />
+                  </Button>
+                </div>
+              );
+            })}
           </TabsList>
-        </Tabs>
+        </div>
         <div className="flex items-center gap-0.5">
-          {rightPanelTab === "code" && (
+          {activeTab === "code" && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -298,7 +357,10 @@ export function RightPanel() {
           </Button>
         </div>
       </div>
-      <div className="flex items-center gap-1.5 border-b border-border/60 px-2 pb-1.5 pt-0.5">
+      <div
+        hidden={activeTab !== "code" && activeTab !== "preview"}
+        className="flex items-center gap-1.5 border-b border-border/60 px-2 pb-1.5 pt-0.5"
+      >
         <span className="shrink-0 text-[12px] text-muted-foreground/80">
           {t("workspace.title")}
         </span>
@@ -337,8 +399,13 @@ export function RightPanel() {
         )}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-hidden min-h-0">
+      <TabsContent
+        key={rightPanelTab}
+        value={rightPanelTab}
+        forceMount
+        hidden={activeTab !== rightPanelTab}
+        className="mt-0 min-h-0 flex-1 overflow-hidden"
+      >
         {rightPanelTab === "code" ? (
           <Group orientation="horizontal" {...columnsLayout} className="h-full">
             <Panel
@@ -478,13 +545,57 @@ export function RightPanel() {
             className="h-full"
           />
         )}
-      </div>
+      </TabsContent>
+      {sideTabs.map(({ key, activity }) => {
+        const selected = activeTab === key;
+        const onClose = () => closeSideTab(key);
+        return (
+          <TabsContent
+            key={key}
+            value={key}
+            forceMount
+            hidden={!selected}
+            className="mt-0 min-h-0 flex-1 overflow-hidden"
+          >
+            {activity.kind === "quiz" && (
+              <QuizSession
+                quizId={activity.id}
+                onClose={onClose}
+                resumeAttemptId={activity.attemptId}
+                onAttemptChange={(id) => rememberQuizAttempt(key, id)}
+              />
+            )}
+            {activity.kind === "flashcards" && (
+              <StudySession
+                deckId={activity.id}
+                onClose={onClose}
+                shortcutsEnabled={selected && visible}
+              />
+            )}
+            {activity.kind === "citation" && (
+              <CitationPreview
+                source={activity.source}
+                onClose={onClose}
+                shortcutsEnabled={selected && visible}
+              />
+            )}
+            {activity.kind === "file" && (
+              <FileViewerModal
+                {...activity.file}
+                onClose={onClose}
+                embedded
+                shortcutsEnabled={selected && visible}
+              />
+            )}
+          </TabsContent>
+        );
+      })}
       <CreateSandboxDialog
         open={createSandboxOpen}
         onOpenChange={setCreateSandboxOpen}
         conversationId={conversationId}
       />
-    </div>
+    </Tabs>
   );
 }
 

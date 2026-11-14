@@ -61,7 +61,8 @@ import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
 import { artifactCitationLocations } from "@/lib/sourceNavigation";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { sideTabRouteKey, type FilePreview } from "@/lib/rightPanelTabs";
 
 // ─── Source Cards (RAG citations — rendered inside a tool_call block) ──
 
@@ -1905,15 +1906,20 @@ export function MessageBubble({
   useEffect(() => () => speechRef.current?.stop(), []);
   const isAssistant = message.role === "assistant";
 
-  // PPTX viewer modal state
+  const location = useLocation();
+  const { pathname } = location;
   const [libreOfficeAvailable, setLibreOfficeAvailable] = useState(false);
-  const [viewingPptx, setViewingPptx] = useState<{
-    reportId: string;
-    filename: string;
-    downloadUrl: string;
-    format: ViewerFormat;
-    artifactVersion?: PinnedArtifact;
-  } | null>(null);
+  const [viewingPptx, setViewingPptx] = useState<FilePreview | null>(null);
+  const openFilePreview = (file: FilePreview) => {
+    if (
+      window.matchMedia("(min-width: 768px)").matches &&
+      !pathname.startsWith("/learn/notebooks/")
+    ) {
+      useUIStore
+        .getState()
+        .openSideTab({ kind: "file", file }, sideTabRouteKey(location));
+    } else setViewingPptx(file);
+  };
 
   // Check if LibreOffice is installed (cached in depsClient)
   useEffect(() => {
@@ -2139,7 +2145,7 @@ export function MessageBubble({
               format,
               artifactVersion,
             ) =>
-              setViewingPptx({
+              openFilePreview({
                 reportId,
                 filename,
                 downloadUrl,
@@ -2219,7 +2225,7 @@ export function MessageBubble({
                 ["pdf", "docx", "pptx", "xlsx"].includes(d.format) &&
                 (d.format === "pdf" || libreOfficeAvailable)
                   ? () =>
-                      setViewingPptx({
+                      openFilePreview({
                         reportId: d.report_id!,
                         filename: d.filename,
                         downloadUrl: d.download_url,

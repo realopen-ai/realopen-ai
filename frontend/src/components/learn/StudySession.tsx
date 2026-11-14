@@ -18,9 +18,11 @@ import { SourceAction } from "./SourceAction";
 export function StudySession({
   deckId,
   onClose,
+  shortcutsEnabled = true,
 }: {
   deckId: string;
   onClose?: () => void;
+  shortcutsEnabled?: boolean;
 }) {
   const t = useT();
   const navigate = useNavigate();
@@ -119,6 +121,7 @@ export function StudySession({
     [card, revealed, editing, cardDeckId, t],
   );
   useEffect(() => {
+    if (!shortcutsEnabled) return;
     const listener = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (
@@ -146,7 +149,7 @@ export function StudySession({
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [card, revealed, busy, editing, rate]);
+  }, [card, revealed, busy, editing, rate, shortcutsEnabled]);
   const errorView = error && (
     <p role="alert" className="text-sm text-destructive my-3">
       {error}

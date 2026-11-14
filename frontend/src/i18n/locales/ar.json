@@ -700,6 +700,8 @@
   "panel.newWorkspace": "مساحة عمل جديدة…",
   "panel.stopWorkspace": "إيقاف مساحة العمل",
   "panel.startWorkspace": "تشغيل مساحة العمل",
+  "panel.tabs": "علامات تبويب اللوحة الجانبية",
+  "panel.closeTab": "إغلاق علامة التبويب {title}",
   "panel.close": "إغلاق اللوحة",
   "panel.open": "فتح لوحة مساحة العمل",
   "panel.linkedWorkspace": "مساحة العمل المرتبطة",

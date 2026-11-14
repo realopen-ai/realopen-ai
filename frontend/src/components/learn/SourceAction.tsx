@@ -1,3 +1,4 @@
+import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { Link, useLocation } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
 import { useT } from "@/store/settingsStore";
@@ -34,7 +35,8 @@ export function SourceAction({
 }) {
   const t = useT();
   const notebook = useNotebookStore((s) => s.notebook);
-  const { pathname, key } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const source = { documentId, artifact, page, chunk, excerpt, title };
   const previewHref = sourceLocationUrl(source);
   const href = previewHref ?? (conversationId ? `/${conversationId}` : null);
@@ -55,7 +57,13 @@ export function SourceAction({
           if (notebook && isNotebookSourceRoute(pathname, notebook.id))
             openNotebookSource(notebook.id, source);
           else
-            useUIStore.getState().setCitationPreview({ source, routeKey: key });
+            useUIStore
+              .getState()
+              .openSideTab(
+                { kind: "citation", source },
+                sideTabRouteKey(location),
+                window.matchMedia("(min-width: 768px)").matches,
+              );
         }
       }}
       className={cn(
