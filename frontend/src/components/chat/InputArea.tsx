@@ -473,8 +473,15 @@ export function InputArea({
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
+    if (!artifactDraft) {
+      if (consumedDraft.current !== null) {
+        consumedDraft.current = null;
+        setInput("");
+        setSourceSelection(undefined);
+      }
+      return;
+    }
     if (
-      !artifactDraft ||
       temporary ||
       sourceGrounded ||
       artifactDraft.conversationId !== (conversationId ?? null) ||

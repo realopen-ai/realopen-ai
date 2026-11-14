@@ -665,7 +665,17 @@ export function ChatArea({
       if (store.isStreaming || conv?.saving) return;
       const isFromHomePage = !urlConvId && !pendingConvId;
 
-      if (!convId) {
+      if (convId && artifactDraft?.conversationId === convId) {
+        // History state survives reloads. Discard the composer draft when
+        // sending, while the message below keeps its pinned source.
+        const { pathname, search, hash, state } = location;
+        const nextState = { ...state };
+        delete nextState.artifactChatDraft;
+        navigate(
+          { pathname, search, hash },
+          { replace: true, state: nextState },
+        );
+      } else if (!convId) {
         log("No active conversation — creating one...");
         convId = await store.createConversation(temporary);
         if (temporary) setTemporaryMode(false);
@@ -822,6 +832,8 @@ export function ChatArea({
       conv?.saving,
       urlConvId,
       pendingConvId,
+      artifactDraft,
+      location,
       navigate,
       addTerminalLine,
       setRightPanelOpen,
