@@ -15,6 +15,13 @@ import {
   StickyNote,
   X,
 } from "lucide-react";
+import {
+  artifactsApi,
+  type ArtifactDetail,
+  type PinnedArtifact,
+} from "@/api/artifactsClient";
+import { ArtifactChatMenu } from "@/components/workspace/ArtifactChatMenu";
+import { cn } from "@/lib/utils";
 
 /** Formats the in-app document viewer supports. */
 export type ViewerFormat = "pptx" | "pdf" | "docx" | "xlsx";
@@ -60,14 +67,24 @@ export function FileViewerModal({
   filename,
   downloadUrl,
   format = "pptx",
+  artifact,
+  artifactVersion,
+  beforeUseInChat,
   onClose,
+  embedded = false,
+  shortcutsEnabled = true,
 }: {
   reportId: string;
   filename: string;
   downloadUrl: string;
   /** Deliverable format — selects the backend rendering pipeline. */
   format?: ViewerFormat;
+  artifact?: ArtifactDetail;
+  artifactVersion?: PinnedArtifact;
+  beforeUseInChat?: () => boolean;
   onClose: () => void;
+  embedded?: boolean;
+  shortcutsEnabled?: boolean;
 }) {
   const [manifest, setManifest] = useState<SlidesManifest | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,6 +94,36 @@ export function FileViewerModal({
   const [showThumbs, setShowThumbs] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
+  const [loadedArtifact, setLoadedArtifact] = useState<ArtifactDetail>();
+  const artifactId = artifactVersion?.artifact_id;
+  const version = artifactVersion?.version;
+  useEffect(() => {
+    if (!artifactId || !version) return;
+    const controller = new AbortController();
+    void artifactsApi
+      .detail(artifactId, version, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) setLoadedArtifact(detail);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [artifactId, version]);
+  const source =
+    artifact ??
+    (loadedArtifact?.id === artifactId &&
+    loadedArtifact?.selected_version === version
+      ? loadedArtifact
+      : undefined);
+  const sourceSection =
+    (manifest &&
+      source?.outline.sections.find(
+        (part) =>
+          (format === "pptx" && part.slide === current) ||
+          (source.kind === "upload" &&
+            format === "pdf" &&
+            part.page === current),
+      )) ||
+    undefined;
 
   const filmstripRef = useRef<HTMLDivElement>(null);
   const touchStartX = useRef<number | null>(null);
@@ -158,7 +205,19 @@ export function FileViewerModal({
 
   // ── Keyboard controls ───────────────────────────────────────────────
   useEffect(() => {
+    if (!shortcutsEnabled) return;
     const handleKey = (e: KeyboardEvent) => {
+      if (
+        e.defaultPrevented ||
+        (embedded &&
+          e.key !== "Escape" &&
+          !(
+            e.target instanceof Element &&
+            e.target.closest("[data-file-viewer]")
+          )) ||
+        (e.target instanceof Element && e.target.closest('[role="menu"]'))
+      )
+        return;
       if (e.key === "Escape") {
         onClose();
       } else if (
@@ -186,7 +245,7 @@ export function FileViewerModal({
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [next, prev, goTo, onClose, count]);
+  }, [next, prev, goTo, onClose, count, embedded, shortcutsEnabled]);
 
   // ── Keep the active thumbnail visible in the filmstrip ─────────────
   useEffect(() => {
@@ -222,20 +281,39 @@ export function FileViewerModal({
   const atLast = current >= count;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div
+      className={
+        embedded
+          ? "h-full"
+          : "fixed inset-0 z-50 flex items-center justify-center"
+      }
+      data-file-viewer
+    >
       {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      {!embedded && (
+        <div
+          className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          onClick={onClose}
+        />
+      )}
 
       {/* Modal */}
       <div
-        className="relative w-full max-w-5xl h-[90vh] mx-4 bg-card border border-border/60 rounded-xl shadow-[0_24px_70px_-12px_var(--color-shadow-strong)] overflow-hidden flex flex-col animate-modal-in"
+        className={cn(
+          "relative flex w-full flex-col overflow-hidden bg-card",
+          embedded
+            ? "h-full"
+            : "mx-4 h-[90vh] max-w-5xl rounded-xl border border-border/60 shadow-[0_24px_70px_-12px_var(--color-shadow-strong)] animate-modal-in",
+        )}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border/60 shrink-0">
+        <div
+          className={cn(
+            "flex items-center gap-3 px-4 py-2.5 border-b border-border/60 shrink-0",
+            embedded && "flex-wrap",
+          )}
+        >
           <p className="text-[13.5px] font-medium text-foreground truncate flex-1">
             {filename}
           </p>
@@ -288,6 +366,17 @@ export function FileViewerModal({
             </button>
           )}
 
+          {source && (
+            <ArtifactChatMenu
+              artifact={source}
+              section={sourceSection}
+              beforeChoose={() => {
+                if (beforeUseInChat && !beforeUseInChat()) return false;
+                onClose();
+                return true;
+              }}
+            />
+          )}
           {/* Download button */}
           <a
             href={downloadUrl}
@@ -300,14 +389,16 @@ export function FileViewerModal({
           </a>
 
           {/* Close button */}
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-            aria-label="Close (Esc)"
-            title="Close (Esc)"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!embedded && (
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-hover transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              aria-label="Close (Esc)"
+              title="Close (Esc)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* Body — slide stage */}

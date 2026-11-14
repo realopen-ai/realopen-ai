@@ -67,7 +67,7 @@ test("notebooks collapse ordinary workspace panes and use tabs below wide deskto
     appLayout,
     /if \(showNotebook\) \{\s*if \(!panel.isCollapsed\(\)\) panel.collapse\(\);\s*return;/,
   );
-  assert.match(appLayout, /\[rightPanelOpen, showNotebook\]/);
+  assert.match(appLayout, /\[panelOpen, showNotebook\]/);
   assert.match(appLayout, /min-width: 1280px/);
   assert.match(appLayout, /xl:ms-64 xl:me-72/);
 });

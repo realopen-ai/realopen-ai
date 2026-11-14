@@ -193,12 +193,10 @@ function DeckDetail({ id }: { id: string }) {
           </Link>
         )}
         {deck.source_artifact && (
-          <Link
-            className="text-xs text-primary hover:underline"
-            to={artifactSourceUrl(deck.source_artifact)}
-          >
-            {t("artifacts.viewSource")}
-          </Link>
+          <SourceAction
+            artifact={deck.source_artifact}
+            label={t("artifacts.viewSource")}
+          />
         )}
         <span>{t("learn.cardCount", { count: deck.card_count })}</span>
         <span>{t("learn.dueCount", { count: deck.due_count })}</span>
@@ -211,12 +209,10 @@ function DeckDetail({ id }: { id: string }) {
           </Link>
         )}
         {deck.source_document_id && (
-          <Link
-            className="text-primary hover:underline"
-            to={`/workspace/documents?document=${deck.source_document_id}`}
-          >
-            {t("learn.sourceDocument")}
-          </Link>
+          <SourceAction
+            documentId={deck.source_document_id}
+            label={t("learn.sourceDocument")}
+          />
         )}
       </div>
       <div className="flex justify-between items-center mb-4">
@@ -537,4 +533,3 @@ function FlashcardsPage() {
     </div>
   );
 }
-import { artifactSourceUrl } from "@/api/artifactsClient";

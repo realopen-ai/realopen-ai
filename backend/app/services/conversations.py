@@ -388,6 +388,8 @@ async def message_to_dict(msg: Message) -> dict:
             if block.get("type") == "selected_sources":
                 result["selectedSourceIds"] = block["ids"]
                 result["selectedSourceTitles"] = block.get("titles", {})
+                if block.get("pinned_artifact"):
+                    result["pinnedArtifact"] = block["pinned_artifact"]
                 break
     elif msg.blocks is not None:
         result["blocks"] = msg.blocks

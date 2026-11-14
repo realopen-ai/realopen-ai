@@ -41,7 +41,7 @@ import { CardMarkdown } from "./CardMarkdown";
 import { StudySession } from "./StudySession";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { NotebookSourcePreview } from "./NotebookSourcePreview";
-import { NotebookCitationPreview } from "./NotebookCitationPreview";
+import { CitationPreview, CitationPreviewDialog } from "./CitationPreview";
 import type { SourceLocation } from "@/lib/sourceNavigation";
 import { SourceAction } from "./SourceAction";
 
@@ -120,9 +120,6 @@ export function NotebookWorkspace({ id }: { id: string }) {
         (detail.source?.documentId || detail.source?.artifact)
       ) {
         setCitation(detail.source);
-        setPreview(null);
-        setStudy(null);
-        setQuiz(null);
       }
     };
     window.addEventListener("notebook-source", listener);
@@ -633,10 +630,11 @@ export function NotebookWorkspace({ id }: { id: string }) {
           </DialogContent>
         </Dialog>
       )}
-      {citation && (
-        <NotebookCitationPreview
+      {citation && !preview && !quiz && !study && (
+        <CitationPreview
           key={JSON.stringify(citation)}
           source={citation}
+          className="pointer-events-auto absolute inset-y-24 end-0 z-30 h-auto w-full border-s shadow-xl xl:inset-y-14 xl:w-[min(50%,40rem)]"
           onClose={() => setCitation(null)}
         />
       )}
@@ -688,6 +686,13 @@ export function NotebookWorkspace({ id }: { id: string }) {
             <StudySession deckId={study} onClose={() => setStudy(null)} />
           </DialogContent>
         </Dialog>
+      )}
+      {citation && (preview || quiz || study) && (
+        <CitationPreviewDialog
+          key={JSON.stringify(citation)}
+          source={citation}
+          onClose={() => setCitation(null)}
+        />
       )}
       {editing && (
         <Dialog open onOpenChange={setEditing}>
