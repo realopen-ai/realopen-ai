@@ -15,6 +15,12 @@ import {
   StickyNote,
   X,
 } from "lucide-react";
+import {
+  artifactsApi,
+  type ArtifactDetail,
+  type PinnedArtifact,
+} from "@/api/artifactsClient";
+import { ArtifactChatMenu } from "@/components/workspace/ArtifactChatMenu";
 
 /** Formats the in-app document viewer supports. */
 export type ViewerFormat = "pptx" | "pdf" | "docx" | "xlsx";
@@ -60,6 +66,9 @@ export function FileViewerModal({
   filename,
   downloadUrl,
   format = "pptx",
+  artifact,
+  artifactVersion,
+  beforeUseInChat,
   onClose,
 }: {
   reportId: string;
@@ -67,6 +76,9 @@ export function FileViewerModal({
   downloadUrl: string;
   /** Deliverable format — selects the backend rendering pipeline. */
   format?: ViewerFormat;
+  artifact?: ArtifactDetail;
+  artifactVersion?: PinnedArtifact;
+  beforeUseInChat?: () => boolean;
   onClose: () => void;
 }) {
   const [manifest, setManifest] = useState<SlidesManifest | null>(null);
@@ -77,6 +89,36 @@ export function FileViewerModal({
   const [showThumbs, setShowThumbs] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
+  const [loadedArtifact, setLoadedArtifact] = useState<ArtifactDetail>();
+  const artifactId = artifactVersion?.artifact_id;
+  const version = artifactVersion?.version;
+  useEffect(() => {
+    if (!artifactId || !version) return;
+    const controller = new AbortController();
+    void artifactsApi
+      .detail(artifactId, version, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) setLoadedArtifact(detail);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [artifactId, version]);
+  const source =
+    artifact ??
+    (loadedArtifact?.id === artifactId &&
+    loadedArtifact?.selected_version === version
+      ? loadedArtifact
+      : undefined);
+  const sourceSection =
+    (manifest &&
+      source?.outline.sections.find(
+        (part) =>
+          (format === "pptx" && part.slide === current) ||
+          (source.kind === "upload" &&
+            format === "pdf" &&
+            part.page === current),
+      )) ||
+    undefined;
 
   const filmstripRef = useRef<HTMLDivElement>(null);
   const touchStartX = useRef<number | null>(null);
@@ -159,6 +201,11 @@ export function FileViewerModal({
   // ── Keyboard controls ───────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      if (
+        e.defaultPrevented ||
+        (e.target instanceof Element && e.target.closest('[role="menu"]'))
+      )
+        return;
       if (e.key === "Escape") {
         onClose();
       } else if (
@@ -288,6 +335,17 @@ export function FileViewerModal({
             </button>
           )}
 
+          {source && (
+            <ArtifactChatMenu
+              artifact={source}
+              section={sourceSection}
+              beforeChoose={() => {
+                if (beforeUseInChat && !beforeUseInChat()) return false;
+                onClose();
+                return true;
+              }}
+            />
+          )}
           {/* Download button */}
           <a
             href={downloadUrl}

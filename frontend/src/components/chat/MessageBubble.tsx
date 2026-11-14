@@ -1,3 +1,4 @@
+import type { PinnedArtifact } from "@/api/artifactsClient";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Brain,
@@ -430,6 +431,7 @@ function ToolCallBlockView({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const translate = useT();
@@ -809,6 +811,7 @@ function ToolCallDetail({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const coderPresentation =
@@ -1641,6 +1644,7 @@ function ReportGenDetail({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   const translate = useT();
@@ -1707,6 +1711,12 @@ function ReportGenDetail({
                             r.filename ?? `report.${fmt}`,
                             r.download_url ?? "#",
                             fmt,
+                            r.artifact_id && r.version
+                              ? {
+                                  artifact_id: r.artifact_id,
+                                  version: r.version,
+                                }
+                              : undefined,
                           )
                       : undefined
                   }
@@ -1714,7 +1724,7 @@ function ReportGenDetail({
                 {r.artifact_id && !temporary && (
                   <Link
                     className="inline-flex text-xs text-primary hover:underline"
-                    to={`/workspace/artifacts/${r.artifact_id}`}
+                    to={`/workspace/artifacts/${r.artifact_id}${r.version ? `?version=${r.version}` : ""}`}
                   >
                     {translate("artifacts.open")}
                   </Link>
@@ -1823,6 +1833,7 @@ function BlockView({
     filename: string,
     downloadUrl: string,
     format: ViewerFormat,
+    artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
   switch (block.type) {
@@ -1888,6 +1899,7 @@ export function MessageBubble({
     filename: string;
     downloadUrl: string;
     format: ViewerFormat;
+    artifactVersion?: PinnedArtifact;
   } | null>(null);
 
   // Check if LibreOffice is installed (cached in depsClient)
@@ -1957,6 +1969,7 @@ export function MessageBubble({
           content: userMsg.content,
           conversationId,
           selectedSourceIds: userMsg.selectedSourceIds,
+          pinnedArtifact: userMsg.pinnedArtifact,
           selectedSourceTitles: userMsg.selectedSourceTitles,
         },
       }),
@@ -2106,8 +2119,20 @@ export function MessageBubble({
             conversationId={conversationId}
             isStreaming={message.isStreaming}
             canViewPptx={libreOfficeAvailable}
-            onViewPptx={(reportId, filename, downloadUrl, format) =>
-              setViewingPptx({ reportId, filename, downloadUrl, format })
+            onViewPptx={(
+              reportId,
+              filename,
+              downloadUrl,
+              format,
+              artifactVersion,
+            ) =>
+              setViewingPptx({
+                reportId,
+                filename,
+                downloadUrl,
+                format,
+                artifactVersion,
+              })
             }
           />
         ))
@@ -2186,6 +2211,10 @@ export function MessageBubble({
                         filename: d.filename,
                         downloadUrl: d.download_url,
                         format: (d.format as ViewerFormat) || "pptx",
+                        artifactVersion:
+                          d.artifact_id && d.version
+                            ? { artifact_id: d.artifact_id, version: d.version }
+                            : undefined,
                       })
                   : undefined
               }
@@ -2342,6 +2371,7 @@ export function MessageBubble({
           filename={viewingPptx.filename}
           downloadUrl={viewingPptx.downloadUrl}
           format={viewingPptx.format}
+          artifactVersion={viewingPptx.artifactVersion}
           onClose={() => setViewingPptx(null)}
         />
       )}

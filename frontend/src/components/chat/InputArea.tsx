@@ -1,3 +1,4 @@
+import type { ArtifactChatDraft, PinnedArtifact } from "@/api/artifactsClient";
 import {
   useState,
   useRef,
@@ -33,6 +34,7 @@ import {
   Mic,
   Loader2,
 } from "lucide-react";
+import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -341,6 +343,7 @@ export function InputArea({
       images?: File[];
       documents?: File[];
       selectedSourceIds?: string[];
+      pinnedArtifact?: PinnedArtifact;
       selectedSourceTitles?: Record<string, string>;
     },
   ) => void;
@@ -358,9 +361,15 @@ export function InputArea({
   saving?: boolean;
 }) {
   const canAttach = !sourceGrounded;
+  const location = useLocation();
+  const consumedDraft = useRef<string | null>(null);
+  const artifactDraft = (
+    location.state as { artifactChatDraft?: ArtifactChatDraft } | null
+  )?.artifactChatDraft;
   const [input, setInput] = useState("");
   const [sourceSelection, setSourceSelection] = useState<{
-    conversationId: string;
+    conversationId: string | null;
+    pinnedArtifact?: PinnedArtifact;
     command: string;
     ids: string[];
     titles: Record<string, string>;
@@ -463,6 +472,27 @@ export function InputArea({
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (
+      !artifactDraft ||
+      temporary ||
+      sourceGrounded ||
+      artifactDraft.conversationId !== (conversationId ?? null) ||
+      location.key === consumedDraft.current
+    )
+      return;
+    consumedDraft.current = location.key;
+    const { command, source, title } = artifactDraft;
+    setInput(`/${command} `);
+    setSourceSelection({
+      conversationId: artifactDraft.conversationId,
+      command,
+      ids: [source.artifact_id],
+      titles: { [source.artifact_id]: title },
+      pinnedArtifact: source,
+    });
+    textareaRef.current?.focus();
+  }, [artifactDraft, conversationId, location.key, sourceGrounded, temporary]);
   const sourcePickerRef = useRef<{ openFromComposer: () => void }>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -581,11 +611,19 @@ export function InputArea({
   const sourceCommand =
     command && sourceCommands.has(command.name) ? command.name : null;
   const selectedSourceIds =
-    sourceSelection?.conversationId === conversationId &&
+    sourceSelection &&
+    !(temporary && sourceSelection.pinnedArtifact) &&
+    sourceSelection.conversationId === (conversationId ?? null) &&
     sourceSelection.command === sourceCommand
       ? sourceSelection.ids
       : [];
-  const commandNeedsText = command?.requiresText && !remainingContent;
+  const pinnedArtifact = selectedSourceIds.length
+    ? sourceSelection?.pinnedArtifact
+    : undefined;
+  const commandNeedsText =
+    command?.requiresText &&
+    !remainingContent &&
+    !(command.name === "quiz" && pinnedArtifact);
   const commandUnavailable = !canDelegateToCoder && command?.name === "coder";
 
   const handleSend = () => {
@@ -612,6 +650,7 @@ export function InputArea({
       shrug: command?.shrug,
       images: canAttach && images.length > 0 ? images : undefined,
       documents: canAttach && documents.length > 0 ? documents : undefined,
+      pinnedArtifact,
       selectedSourceIds: selectedSourceIds.length
         ? selectedSourceIds
         : undefined,
@@ -768,47 +807,51 @@ export function InputArea({
             </div>
           )}
 
-          {sourceCommand && conversationId && !isStreaming && (
-            <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
-              <CommandSourcePicker
-                ref={sourcePickerRef}
-                key={`${conversationId}:${sourceCommand}`}
-                conversationId={conversationId}
-                temporary={temporary}
-                command={sourceCommand}
-                selected={selectedSourceIds}
-                onReturnToComposer={() => textareaRef.current?.focus()}
-                onChange={(ids, titles) =>
-                  setSourceSelection({
-                    conversationId,
-                    command: sourceCommand,
-                    ids,
-                    titles,
-                  })
-                }
-              />
-              {selectedSourceIds.length > 0 && (
-                <SelectedCommandSources
-                  ids={selectedSourceIds}
-                  titles={sourceSelection?.titles}
-                  conversationId={conversationId}
-                  className="mt-0"
-                  onRemove={(id) => {
-                    setSourceSelection(
-                      (selection) =>
-                        selection && {
-                          ...selection,
-                          ids: selection.ids.filter(
-                            (sourceId) => sourceId !== id,
-                          ),
-                        },
-                    );
-                    textareaRef.current?.focus();
-                  }}
-                />
-              )}
-            </div>
-          )}
+          {sourceCommand &&
+            (conversationId || pinnedArtifact) &&
+            !isStreaming && (
+              <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
+                {conversationId && !pinnedArtifact && (
+                  <CommandSourcePicker
+                    ref={sourcePickerRef}
+                    key={`${conversationId}:${sourceCommand}`}
+                    conversationId={conversationId}
+                    temporary={temporary}
+                    command={sourceCommand}
+                    selected={selectedSourceIds}
+                    onReturnToComposer={() => textareaRef.current?.focus()}
+                    onChange={(ids, titles) =>
+                      setSourceSelection({
+                        conversationId,
+                        command: sourceCommand,
+                        ids,
+                        titles,
+                      })
+                    }
+                  />
+                )}
+                {selectedSourceIds.length > 0 && (
+                  <SelectedCommandSources
+                    ids={selectedSourceIds}
+                    titles={sourceSelection?.titles}
+                    conversationId={conversationId ?? null}
+                    className="mt-0"
+                    onRemove={(id) => {
+                      setSourceSelection(
+                        (selection) =>
+                          selection && {
+                            ...selection,
+                            ids: selection.ids.filter(
+                              (sourceId) => sourceId !== id,
+                            ),
+                          },
+                      );
+                      textareaRef.current?.focus();
+                    }}
+                  />
+                )}
+              </div>
+            )}
 
           {/* Textarea — comfortable padding, autosizing */}
           {dictation === "recording" || dictation === "transcribing" ? (

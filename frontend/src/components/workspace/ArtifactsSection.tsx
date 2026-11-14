@@ -22,6 +22,7 @@ import {
   type ViewerFormat,
 } from "@/components/chat/FileViewerModal";
 import { useT } from "@/store/settingsStore";
+import { ArtifactChatMenu } from "./ArtifactChatMenu";
 
 export function ArtifactsSection() {
   const { artifactId } = useParams();
@@ -276,6 +277,12 @@ function ArtifactEditor({ id }: { id: string }) {
             </option>
           ))}
         </select>
+        <ArtifactChatMenu
+          artifact={detail}
+          section={selected}
+          disabled={busy}
+          beforeChoose={canLeave}
+        />
         {detail.editable && detail.selected_version === detail.version && (
           <Button
             variant="outline"
@@ -442,6 +449,8 @@ function ArtifactEditor({ id }: { id: string }) {
           filename={detail.title}
           downloadUrl={viewer.url}
           format={viewer.format}
+          artifact={detail}
+          beforeUseInChat={canLeave}
           onClose={() => setViewer(null)}
         />
       )}

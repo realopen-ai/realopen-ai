@@ -19,6 +19,8 @@ import {
   BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { artifactsApi, type ArtifactDetail } from "@/api/artifactsClient";
+import { ArtifactChatMenu } from "./ArtifactChatMenu";
 import { cn } from "@/lib/utils";
 import { t, useT } from "@/store/settingsStore";
 import {
@@ -100,6 +102,20 @@ export function DocumentDetailModal({
   const [currentPage, setCurrentPage] = useState(
     Number.isSafeInteger(initialPage) && initialPage > 0 ? initialPage : 1,
   );
+  const [artifact, setArtifact] = useState<ArtifactDetail>();
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [artifactError, setArtifactError] = useState(false);
+  const loadArtifact = async () => {
+    setArtifactLoading(true);
+    setArtifactError(false);
+    try {
+      setArtifact(await artifactsApi.detail(doc.id, 1));
+    } catch {
+      setArtifactError(true);
+    } finally {
+      setArtifactLoading(false);
+    }
+  };
 
   // ── Knowledge state ───────────────────────────────────────────────
   const [action, setAction] = useState<KnowledgeAction>(null);
@@ -144,6 +160,11 @@ export function DocumentDetailModal({
   // Keyboard: left/right arrows navigate pages, Escape closes
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (
+        e.defaultPrevented ||
+        (e.target instanceof Element && e.target.closest('[role="menu"]'))
+      )
+        return;
       if (e.key === "Escape") onClose();
       if (pages && e.key === "ArrowLeft")
         setCurrentPage((p) => Math.max(1, p - 1));
@@ -310,9 +331,47 @@ export function DocumentDetailModal({
           <div className="grid md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
             {/* ── Preview column ─────────────────────────────────── */}
             <div className="border-b border-border/60 p-5 md:border-b-0 md:border-r">
-              <p className={sectionLabelClass}>
-                {t("workspace.documents.preview")}
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className={sectionLabelClass}>
+                  {t("workspace.documents.preview")}
+                </p>
+                {artifact ? (
+                  <ArtifactChatMenu
+                    artifact={artifact}
+                    defaultOpen
+                    section={
+                      pages && ["pdf", "pptx"].includes(fileExt(doc.filename))
+                        ? artifact.outline.sections.find(
+                            (part) =>
+                              part.page === currentPage ||
+                              part.slide === currentPage,
+                          )
+                        : undefined
+                    }
+                    beforeChoose={() => {
+                      onClose();
+                      return true;
+                    }}
+                  />
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={artifactLoading}
+                    onClick={() => void loadArtifact()}
+                  >
+                    {artifactLoading && (
+                      <Loader2 className="size-4 animate-spin" />
+                    )}
+                    {t("artifacts.useInChat")}
+                  </Button>
+                )}
+              </div>
+              {artifactError && (
+                <p role="alert" className="mt-2 text-xs text-danger">
+                  {t("artifacts.useInChatUnavailable")}
+                </p>
+              )}
 
               {pages ? (
                 <div>

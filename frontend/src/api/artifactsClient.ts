@@ -1,3 +1,24 @@
+export interface PinnedArtifact {
+  artifact_id: string;
+  version: number;
+  section_id?: string;
+}
+
+export const artifactChatCommands = [
+  "find",
+  "summarize",
+  "note",
+  "flashcards",
+  "quiz",
+] as const;
+
+export interface ArtifactChatDraft {
+  conversationId: string | null;
+  command: (typeof artifactChatCommands)[number];
+  title: string;
+  source: PinnedArtifact;
+}
+
 export interface ArtifactReference {
   artifact_id: string;
   version: number;
