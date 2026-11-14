@@ -79,8 +79,10 @@ from app.db.models import Document
 from app.services.artifacts import catalog, register_generated
 from app.services.chat_command_sources import (
     COMMANDS,
+    PinnedArtifact,
     find_artifact_text,
     list_sources,
+    pinned_source,
     restrict_citations,
 )
 from app.learn.notebooks import for_conversation, selected_document_ids, source_catalog
@@ -518,6 +520,8 @@ async def _find_attachment_text(
     temporary_chat,
     attachment_ids,
     artifact_ids=(),
+    *,
+    pinned=None,
 ):
     if notebook is not None and attachment_ids is None:
         async with async_session_factory() as db:
@@ -583,7 +587,13 @@ async def _find_attachment_text(
                 else:
                     async with async_session_factory() as db:
                         matches = await find_artifact_text(
-                            db, conversation_id, None, artifact_ids, query, limit
+                            db,
+                            conversation_id,
+                            None,
+                            artifact_ids,
+                            query,
+                            limit,
+                            **({"pinned": pinned} if pinned else {}),
                         )
                         await db.commit()
                 sources.extend(matches)
@@ -638,6 +648,7 @@ async def run_agent_stream(
     temporary_chat: TemporaryChat | None = None,
     attachment_ids: list[uuid.UUID] | None = None,
     selected_source_ids: list[uuid.UUID] | None = None,
+    pinned_artifact: PinnedArtifact | None = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop with native tool calling and multi-format fallback."""
 
@@ -858,12 +869,27 @@ async def run_agent_stream(
     error = None
     source_artifacts = set()
     source_documents = set()
-    if explicit_sources:
+    if pinned_artifact and (
+        temporary
+        or not explicit_sources
+        or set(map(str, selected_source_ids)) != {str(pinned_artifact.artifact_id)}
+    ):
+        error = "Choose a single artifact from its preview to use this version in chat."
+    if explicit_sources and not error:
         if temporary:
             inventory = await list_sources(None, None, temporary_chat)
         else:
             async with async_session_factory() as db:
-                inventory = await list_sources(db, conversation_id)
+                if pinned_artifact:
+                    try:
+                        inventory = [
+                            await pinned_source(db, conversation_id, pinned_artifact)
+                        ]
+                        await db.commit()
+                    except HTTPException:
+                        inventory = []
+                else:
+                    inventory = await list_sources(db, conversation_id)
         by_id = {item["id"]: item for item in inventory}
         source_artifacts = {str(ident) for ident in selected_source_ids}
         if source_artifacts - by_id.keys():
@@ -875,7 +901,9 @@ async def run_agent_stream(
                 by_id[ident] for ident in dict.fromkeys(map(str, selected_source_ids))
             ]
             source_documents = {
-                item["document_id"] for item in chosen if item["document_id"]
+                item["document_id"]
+                for item in chosen
+                if item["document_id"] and pinned_artifact is None
             }
             available_tools = {
                 name: tool
@@ -958,7 +986,7 @@ async def run_agent_stream(
     elif learn_tool:
         if learn_tool not in available_tools:
             error = f"{command} is unavailable. Check Brain → Tools."
-        elif command == "/quiz" and not command_text:
+        elif command == "/quiz" and not command_text and not pinned_artifact:
             error = "Enter a topic or instructions after /quiz."
         else:
             readers = {"rag_search", "read_artifact"} & available_tools.keys()
@@ -967,6 +995,15 @@ async def run_agent_stream(
             if explicit_sources and not readers:
                 error = "Enable a source reading tool in Brain → Tools to use the selected files."
             selected_tools.update({learn_tool} | readers)
+            if (
+                pinned_artifact
+                and pinned_artifact.section_id
+                and "read_artifact" in readers
+            ):
+                initial_tool = {
+                    "name": "read_artifact",
+                    "arguments": pinned_artifact.model_dump(mode="json"),
+                }
     elif command == "/summarize":
         if "summarize_artifact" not in available_tools:
             error = "Summarize Artifact is unavailable. Check Brain → Tools."
@@ -1034,10 +1071,15 @@ async def run_agent_stream(
                 else None if notebook is not None else attachment_ids
             ),
             (
-                [uuid.UUID(item["id"]) for item in chosen if not item["document_id"]]
+                [
+                    uuid.UUID(item["id"])
+                    for item in chosen
+                    if pinned_artifact or not item["document_id"]
+                ]
                 if explicit_sources
                 else ()
             ),
+            **({"pinned": pinned_artifact} if pinned_artifact else {}),
         ):
             yield event
         return
@@ -2241,6 +2283,10 @@ async def run_agent_stream(
                         tool_result_message(call, reason, application_feedback=True)
                     )
                     continue
+                if pinned_artifact:
+                    tool_args["version"] = pinned_artifact.version
+                    if pinned_artifact.section_id:
+                        tool_args["section_id"] = pinned_artifact.section_id
 
             if (
                 explicit_sources
@@ -2484,7 +2530,11 @@ async def run_agent_stream(
             if explicit_sources and tool_name == learn_tool:
                 exec_args = deepcopy(exec_args)
                 restrict_citations(
-                    exec_args, source_documents, source_artifacts, research_evidence
+                    exec_args,
+                    source_documents,
+                    source_artifacts,
+                    research_evidence,
+                    pinned_artifact,
                 )
             if temporary:
                 exec_args.pop("conversation_id", None)

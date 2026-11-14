@@ -1,16 +1,13 @@
+import type { ArtifactChatDraft, PinnedArtifact } from "@/api/artifactsClient";
 import { useRef, useEffect, useCallback, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useLocation, useParams, useNavigate } from "react-router-dom";
 import { MobileMenuButton } from "@/components/layout/Sidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { CoderTaskPanel } from "@/components/chat/CoderTaskPanel";
 import { InputArea, parseSlashCommand } from "@/components/chat/InputArea";
 import { VoiceCallPanel } from "@/components/chat/VoiceCallPanel";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
-import {
-  useChatStore,
-  type ToolCallResult,
-  type Deliverable as DelivType,
-} from "@/store/chatStore";
+import { useChatStore, type ToolCallResult } from "@/store/chatStore";
 import { useUIStore } from "@/store/uiStore";
 import { useSandboxStore } from "@/store/sandboxStore";
 import { useMemoryStore } from "@/store/memoryStore";
@@ -113,6 +110,13 @@ export function ChatArea({
     return () => window.removeEventListener("pagehide", discardTemporaryChats);
   }, []);
   const [temporaryMode, setTemporaryMode] = useState(false);
+  const location = useLocation();
+  const artifactDraft = (
+    location.state as { artifactChatDraft?: ArtifactChatDraft } | null
+  )?.artifactChatDraft;
+  useEffect(() => {
+    if (artifactDraft) setTemporaryMode(false);
+  }, [artifactDraft]);
   const [saveErrorId, setSaveErrorId] = useState<string | null>(null);
   const home = !notebookMode && !effectiveConvId;
   const temporary = conv?.temporary === true || (home && temporaryMode);
@@ -387,25 +391,10 @@ export function ChatArea({
         },
         // Deliverables — add to the message's deliverables array so the
         // download badges show up immediately (without page refresh).
-        onDeliverables: (
-          deliverables: Array<{
-            type: string;
-            format: string;
-            filename: string;
-            file_path: string;
-            download_url: string;
-            report_id?: string;
-            created_at?: number;
-          }>,
-          _toolCallId: string,
-        ) => {
+        onDeliverables: (deliverables) => {
           useChatStore
             .getState()
-            .addDeliverables(
-              capturedConvId,
-              assistantMsgId,
-              deliverables as DelivType[],
-            );
+            .addDeliverables(capturedConvId, assistantMsgId, deliverables);
         },
         // Document digestion progress — emitted while chat-uploaded
         // documents are being extracted/chunked/embedded. Surface it
@@ -665,6 +654,7 @@ export function ChatArea({
         images?: File[];
         documents?: File[];
         selectedSourceIds?: string[];
+        pinnedArtifact?: PinnedArtifact;
         selectedSourceTitles?: Record<string, string>;
       },
     ) => {
@@ -675,7 +665,17 @@ export function ChatArea({
       if (store.isStreaming || conv?.saving) return;
       const isFromHomePage = !urlConvId && !pendingConvId;
 
-      if (!convId) {
+      if (convId && artifactDraft?.conversationId === convId) {
+        // History state survives reloads. Discard the composer draft when
+        // sending, while the message below keeps its pinned source.
+        const { pathname, search, hash, state } = location;
+        const nextState = { ...state };
+        delete nextState.artifactChatDraft;
+        navigate(
+          { pathname, search, hash },
+          { replace: true, state: nextState },
+        );
+      } else if (!convId) {
         log("No active conversation — creating one...");
         convId = await store.createConversation(temporary);
         if (temporary) setTemporaryMode(false);
@@ -721,6 +721,7 @@ export function ChatArea({
         imageCount: options?.images?.length ?? 0,
         documentCount: options?.documents?.length ?? 0,
         selectedSourceIds: options?.selectedSourceIds,
+        pinnedArtifact: options?.pinnedArtifact,
         selectedSourceTitles: options?.selectedSourceTitles,
       });
       const assistantMsgId = store.addMessage(convId, {
@@ -774,6 +775,7 @@ export function ChatArea({
         shrug: options?.shrug,
         resumeCoderTaskId: options?.resumeCoderTaskId,
         selectedSourceIds: options?.selectedSourceIds,
+        pinnedArtifact: options?.pinnedArtifact,
       };
 
       try {
@@ -830,6 +832,8 @@ export function ChatArea({
       conv?.saving,
       urlConvId,
       pendingConvId,
+      artifactDraft,
+      location,
       navigate,
       addTerminalLine,
       setRightPanelOpen,
@@ -948,6 +952,7 @@ export function ChatArea({
         content,
         conversationId,
         selectedSourceIds,
+        pinnedArtifact,
         selectedSourceTitles,
       } = (e as CustomEvent).detail;
       if (conversationId !== effectiveConvId) return;
@@ -956,6 +961,7 @@ export function ChatArea({
         modelOverride: command?.modelOverride,
         shrug: command?.shrug,
         selectedSourceIds,
+        pinnedArtifact,
         selectedSourceTitles,
       });
     };

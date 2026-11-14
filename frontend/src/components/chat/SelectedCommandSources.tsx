@@ -19,7 +19,7 @@ export function SelectedCommandSources({
 }: {
   ids: string[];
   titles?: Record<string, string>;
-  conversationId: string;
+  conversationId: string | null;
   className?: string;
   onRemove?: (id: string) => void;
 }) {
@@ -35,7 +35,7 @@ export function SelectedCommandSources({
   // Earlier messages only stored IDs. Resolve names from the chat inventory
   // when opening those messages.
   useEffect(() => {
-    if (!needsLookup) return;
+    if (!needsLookup || !conversationId) return;
     const controller = new AbortController();
     void fetchChatCommandSources(conversationId, temporary, controller.signal)
       .then((items) => {

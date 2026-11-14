@@ -3,18 +3,26 @@
 import re
 import uuid
 
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.db.models import Artifact, Document
 from app.learn.notebooks import source_catalog
-from app.services.artifacts import get_artifact, get_version, metadata
+from app.services.artifacts import get_artifact, get_version, metadata, select_sections
 
 
 COMMANDS = frozenset({"/find", "/summarize", "/note", "/flashcards", "/quiz"})
 MAX_SELECTION = 20
 
 
-def selection_blocks(ids, sources):
+class PinnedArtifact(BaseModel):
+    artifact_id: uuid.UUID
+    version: int = Field(ge=1)
+    section_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+def selection_blocks(ids, sources, pinned=None):
     ids = list(dict.fromkeys(map(str, ids)))
     titles = {source["id"]: source["title"] for source in sources}
     return [
@@ -22,13 +30,33 @@ def selection_blocks(ids, sources):
             "type": "selected_sources",
             "ids": ids,
             "titles": {ident: titles[ident] for ident in ids if ident in titles},
+            **({"pinned_artifact": pinned.model_dump(mode="json")} if pinned else {}),
         }
     ]
 
 
-async def saved_selection_blocks(conversation_id, ids, session_factory):
+async def saved_selection_blocks(conversation_id, ids, session_factory, pinned=None):
     async with session_factory() as db:
-        return selection_blocks(ids, await list_sources(db, conversation_id))
+        if pinned:
+            try:
+                sources = [await pinned_source(db, conversation_id, pinned)]
+            except HTTPException:
+                # Execution reports an unavailable source without exposing its title.
+                sources = []
+        else:
+            sources = await list_sources(db, conversation_id)
+        return selection_blocks(ids, sources, pinned)
+
+
+async def pinned_source(db, conversation_id, pinned):
+    artifact = await get_artifact(db, pinned.artifact_id, conversation_id, scoped=True)
+    version = await get_version(db, artifact, pinned.version)
+    sections = select_sections(version, pinned.section_id)
+    source = metadata(artifact)
+    title = f"{artifact.title} · v{version.number}"
+    if pinned.section_id:
+        title += f" · {sections[0]['title']}"
+    return {**source, "title": title, **pinned.model_dump(mode="json")}
 
 
 async def list_sources(db, conversation_id, temporary_chat=None):
@@ -77,7 +105,9 @@ async def list_sources(db, conversation_id, temporary_chat=None):
     ] + [metadata(artifact) for artifact in artifacts]
 
 
-async def find_artifact_text(db, conversation_id, temporary_chat, ids, query, limit):
+async def find_artifact_text(
+    db, conversation_id, temporary_chat, ids, query, limit, *, pinned=None
+):
     """Return exact matches with references to the searched artifact version."""
     pattern = re.compile(re.escape(query), re.IGNORECASE)
     matches = []
@@ -87,8 +117,11 @@ async def find_artifact_text(db, conversation_id, temporary_chat, ids, query, li
         else:
             artifact = await get_artifact(db, ident, conversation_id, scoped=True)
             title = artifact.title
-            version = await get_version(db, artifact)
-        for section in version.sections:
+            version = await get_version(
+                db, artifact, pinned.version if pinned else None
+            )
+        sections = select_sections(version, pinned.section_id if pinned else None)
+        for section in sections:
             content = section["content"]
             match = pattern.search(content)
             if match is None:
@@ -130,7 +163,7 @@ async def find_artifact_text(db, conversation_id, temporary_chat, ids, query, li
     return matches
 
 
-def restrict_citations(arguments, document_ids, artifact_ids, evidence):
+def restrict_citations(arguments, document_ids, artifact_ids, evidence, pinned=None):
     """Drop model-supplied references outside the explicitly selected files."""
     # A single retrieved section can supply provenance without guessing which
     # of several sections supports a particular note, card, or question.
@@ -165,17 +198,25 @@ def restrict_citations(arguments, document_ids, artifact_ids, evidence):
             "section_id": section,
         }
 
+    def restrict_artifact(item):
+        reference = item.get("source_artifact")
+        if isinstance(reference, dict) and (
+            str(reference.get("artifact_id")) not in artifact_ids
+            or pinned
+            and (
+                reference.get("version") != pinned.version
+                or pinned.section_id
+                and reference.get("section_id") != pinned.section_id
+            )
+        ):
+            item.pop("source_artifact", None)
+
     def restrict(item):
         if str(item.get("source_document_id")) not in document_ids:
             item.pop("source_document_id", None)
             item.pop("source_page", None)
             item.pop("source_chunk_id", None)
-        reference = item.get("source_artifact")
-        if (
-            isinstance(reference, dict)
-            and str(reference.get("artifact_id")) not in artifact_ids
-        ):
-            item.pop("source_artifact", None)
+        restrict_artifact(item)
 
     restrict(arguments)
     if default_reference and "questions" not in arguments:
@@ -191,12 +232,7 @@ def restrict_citations(arguments, document_ids, artifact_ids, evidence):
     for card in arguments.get("cards") or []:
         if not isinstance(card, dict):
             continue
-        reference = card.get("source_artifact")
-        if (
-            isinstance(reference, dict)
-            and str(reference.get("artifact_id")) not in artifact_ids
-        ):
-            card.pop("source_artifact", None)
+        restrict_artifact(card)
         if not arguments.get("source_document_id"):
             card.pop("source_page", None)
             card.pop("source_chunk_id", None)
