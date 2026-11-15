@@ -61,6 +61,7 @@ export interface ToolCallResult {
   exitCode?: number;
   // Vision
   imageDescription?: string;
+  ocrText?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
   progress?: { stage: string; completed: number; total: number };
@@ -429,6 +430,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
               exitCode: b.tool_call.exitCode,
               ...persistedToolCallDetails(b.tool_call),
               imageDescription: b.tool_call.imageDescription,
+              ocrText: b.tool_call.ocrText,
               error: b.tool_call.error,
               sources: b.tool_call.sources,
             },

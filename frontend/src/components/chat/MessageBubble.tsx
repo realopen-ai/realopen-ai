@@ -815,6 +815,7 @@ function ToolCallDetail({
     artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
+  if (tc.type === "vision") return <VisionDetail tc={tc} />;
   const coderPresentation =
     tc.agent === "coder" || Boolean(tc.toolName) || tc.type === "sandbox"
       ? presentCoderToolOutput(tc.output, {
@@ -845,7 +846,6 @@ function ToolCallDetail({
   if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "webfetch") return <WebFetchDetail tc={tc} />;
-  if (tc.type === "vision") return <VisionDetail tc={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "file_read" || tc.type === "file_write")
     return <FileToolDetail tc={tc} />;
@@ -1221,7 +1221,27 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
           </p>
         </div>
       )}
-      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
+      {tc.ocrText && (
+        <div>
+          <p className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground/70">
+            {translate("artifacts.ocr")}
+          </p>
+          <p
+            dir="auto"
+            className="whitespace-pre-wrap break-words rounded-md bg-background/60 px-2.5 py-2 text-[12.5px] leading-relaxed text-foreground/85"
+          >
+            {tc.ocrText}
+          </p>
+        </div>
+      )}
+      {tc.status === "error" && (
+        <p
+          role="alert"
+          className="whitespace-pre-wrap text-[11.5px] text-danger"
+        >
+          {tc.error || tc.output || tc.title}
+        </p>
+      )}
     </div>
   );
 }

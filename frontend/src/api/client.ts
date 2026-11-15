@@ -376,6 +376,7 @@ export interface BackendToolCall {
     card_count?: number;
   }[];
   imageDescription?: string;
+  ocrText?: string;
   filePath?: string;
   fileContent?: string;
   diff?: string;

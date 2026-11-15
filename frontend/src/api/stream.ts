@@ -762,6 +762,7 @@ export function dispatchAgentEvent(
         language: tc.language,
         code: tc.code,
         imageDescription: tc.imageDescription,
+        ocrText: tc.ocrText,
         webResults: tc.webResults,
         genResults: tc.genResults,
         output: tc.output,
@@ -823,6 +824,7 @@ export function dispatchAgentEvent(
       if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;
       if (tc.refreshFiles === true) updates.refreshFiles = true;
       if (tc.imageDescription) updates.imageDescription = tc.imageDescription;
+      if (tc.ocrText) updates.ocrText = tc.ocrText;
       Object.assign(updates, persistedToolCallDetails(tc));
       if (tc.error) updates.error = tc.error;
 

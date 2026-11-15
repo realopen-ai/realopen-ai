@@ -62,7 +62,7 @@ from app.services.context_compactor import (
     compact_conversation,
     context_budget,
 )
-from app.services import model_prefs
+from app.services import model_prefs, ocr
 from app.services import providers
 from app.services.temporary_chats import (
     READ_TOOLS,
@@ -88,6 +88,7 @@ from app.services.chat_command_sources import (
 from app.learn.notebooks import for_conversation, selected_document_ids, source_catalog
 
 logger = logging.getLogger(__name__)
+MAX_ATTACHMENT_OCR_CHARS = 3000
 
 
 def _dbg(msg: str, *args) -> None:
@@ -403,6 +404,8 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["skillResource"] = tc.skill_resource
     if tc.image_description:
         d["imageDescription"] = tc.image_description
+    if tc.ocr_text:
+        d["ocrText"] = tc.ocr_text
     if tc.error:
         d["error"] = tc.error
     return d
@@ -428,6 +431,8 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["skillResource"] = tc.skill_resource
     if tc.image_description:
         d["imageDescription"] = tc.image_description
+    if tc.ocr_text:
+        d["ocrText"] = tc.ocr_text
     if tc.error:
         d["error"] = tc.error
     return d
@@ -1258,6 +1263,7 @@ async def run_agent_stream(
             vision_model = await config_store.resolve_tool_model(
                 "use_vision", fallback_role="default_vision"
             )
+            ocr_language = None
             for i, img_b64 in enumerate(images):
                 prompt = format_prompt(
                     "vision_attachment",
@@ -1274,15 +1280,32 @@ async def run_agent_stream(
                     started_at=time.time(),
                 )
 
+                if on_tool_call_start:
+                    on_tool_call_start(_tool_call_to_dict(tc))
+                yield _sse_event("tool_call", {"tool_call": _tool_call_to_dict(tc)})
+
+                ocr_text = ""
+                try:
+                    if ocr_language is None:
+                        ocr_language = await asyncio.to_thread(ocr.default_language)
+                    extracted = await ocr.recognize_attachment(img_b64, ocr_language)
+                    ocr_text = extracted.text.strip()
+                except Exception as exc:
+                    logger.debug("Attachment OCR skipped (%s)", type(exc).__name__)
+                if len(ocr_text) > MAX_ATTACHMENT_OCR_CHARS:
+                    ocr_text = ocr_text[: MAX_ATTACHMENT_OCR_CHARS - 1] + "…"
+                if ocr_text:
+                    evidence = untrusted_context_message(
+                        f"image {i + 1} of {len(images)} OCR text", ocr_text
+                    )
+                    context_messages.append(evidence)
+                    prompt += "\n\n" + evidence["content"]
+
                 observe(
                     "begin_tool",
                     "use_vision",
                     {"image_index": i, "prompt": prompt},
                 )
-                if on_tool_call_start:
-                    on_tool_call_start(_tool_call_to_dict(tc))
-                yield _sse_event("tool_call", {"tool_call": _tool_call_to_dict(tc)})
-
                 result = await vision_tool.execute(
                     image_base64=img_b64,
                     prompt=prompt,
@@ -1297,6 +1320,8 @@ async def run_agent_stream(
 
                 if result.tool_call:
                     result.tool_call.id = tc.id
+                    result.tool_call.started_at = tc.started_at
+                    result.tool_call.ocr_text = ocr_text or None
                     if on_tool_call_update:
                         on_tool_call_update(
                             result.tool_call.id,

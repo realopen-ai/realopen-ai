@@ -6,6 +6,7 @@ import io
 import shutil
 import subprocess
 import tempfile
+from base64 import b64decode
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -100,10 +101,21 @@ class TesseractEngine:
 
 _slots = asyncio.Semaphore(2)
 default_engine: OCREngine = TesseractEngine()
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 async def recognize(image: bytes, language="eng", *, engine: OCREngine | None = None):
-    if len(image) > 20 * 1024 * 1024:
+    if len(image) > MAX_IMAGE_BYTES:
         raise ValueError("OCR image exceeds byte limit")
     async with _slots:
         return await asyncio.to_thread((engine or default_engine).recognize, image, language)
+
+
+async def recognize_attachment(image_base64: str, language: str) -> OCRResult:
+    """Recognize a chat attachment with or without a data URI prefix."""
+    if image_base64.startswith("data:"):
+        image_base64 = image_base64.partition(",")[2]
+    if len(image_base64) > ((MAX_IMAGE_BYTES + 2) // 3) * 4:
+        raise ValueError("OCR image exceeds byte limit")
+    image = await asyncio.to_thread(b64decode, image_base64, validate=True)
+    return await recognize(image, language)

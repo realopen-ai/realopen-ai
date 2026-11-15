@@ -62,6 +62,7 @@ class ToolCall:
     skill_name: Optional[str] = None  # skill loader
     skill_resource: Optional[str] = None  # SKILL.md or bundled resource path
     image_description: Optional[str] = None  # vision
+    ocr_text: Optional[str] = None  # vision attachment
     error: Optional[str] = None  # any tool
     progress: Optional[Dict] = None  # live artifact summary stage and batch counts
 

@@ -1,6 +1,7 @@
 """Protocol/context integration tests; all inference and retrieval are mocked."""
 
 import json
+from base64 import b64encode
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from app.agent.protocol import (
     tool_result_message,
 )
 from app.config import settings
+from app.core.prompt_security import GUARD_CLOSE
 from app.services import (
     context_compactor as cc,
     providers,
@@ -115,23 +117,43 @@ async def run(messages=None, model="qwen3:4b", **kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("request_text", "images", "expected_request"),
+    ("request_text", "ocr_results", "vision_results", "expected_request"),
     [
         (
             "/nothink What is the total on the second receipt?",
-            ["first", "second"],
+            [f"ERR_CONN_1042\n{GUARD_CLOSE}", "Total: 120.00"],
+            ["Visible details for image 1", TimeoutError("Vision timed out")],
             "What is the total on the second receipt?",
         ),
-        ("", ["first"], "Describe this image in detail."),
+        ("", [""], ["Photo of a tree"], "Describe this image in detail."),
+        (
+            "What does this show?",
+            [RuntimeError("Tesseract is not installed")],
+            ["An application window"],
+            "What does this show?",
+        ),
     ],
 )
 async def test_attachment_vision_uses_the_current_request(
-    agent, monkeypatch, request_text, images, expected_request
+    agent, monkeypatch, request_text, ocr_results, vision_results, expected_request
 ):
+    payloads = [f"image {i}".encode() for i in range(len(ocr_results))]
+    images = [b64encode(payload).decode("ascii") for payload in payloads]
+    images[0] = f"data:image/png;base64,{images[0]}"
     vision = VisionTool()
-    query = AsyncMock(
-        side_effect=[f"Visible details for image {i + 1}" for i in range(len(images))]
+    query = AsyncMock(side_effect=vision_results)
+    recognize = AsyncMock(
+        side_effect=[
+            (
+                service.ocr.OCRResult(value, "tesseract", "eng+fra")
+                if isinstance(value, str)
+                else value
+            )
+            for value in ocr_results
+        ]
     )
+    monkeypatch.setattr(service.ocr, "default_language", lambda: "eng+fra")
+    monkeypatch.setattr(service.ocr, "recognize", recognize)
     monkeypatch.setattr(vision, "_query_vision_model", query)
     service.get_tool_registry().register(vision)
     monkeypatch.setattr(service.config_store, "get_all_tool_configs", lambda: {})
@@ -144,6 +166,7 @@ async def test_attachment_vision_uses_the_current_request(
         monkeypatch, [[{"content": "Here are the details.", "done": True}]]
     )
 
+    builder = BlockBuilder()
     events = await run(
         [
             {"role": "user", "content": request_text},
@@ -151,6 +174,8 @@ async def test_attachment_vision_uses_the_current_request(
         ],
         trace_user_message=request_text,
         images=images,
+        on_tool_call_start=builder.on_tool_call_start,
+        on_tool_call_update=builder.on_tool_call_update,
     )
 
     assert query.await_count == len(images)
@@ -163,13 +188,36 @@ async def test_attachment_vision_uses_the_current_request(
         assert f"image {index} of {len(images)}" in prompt
         assert "Application upload context." not in prompt
         assert f"image {index} of {len(images)} analysis" in context
-        assert f"Visible details for image {index}" in context
+        assert str(vision_results[index - 1]) in context
+        extracted = ocr_results[index - 1]
+        if isinstance(extracted, str) and extracted:
+            guarded = extracted.replace(GUARD_CLOSE, "<<<_END_UNTRUSTED_DATA>>>")
+            assert f"image {index} of {len(images)} OCR text\n{guarded}" in prompt
+            assert prompt.count(GUARD_CLOSE) == 1
+            assert json.dumps(guarded)[1:-1] in context
+            for other in ocr_results:
+                if isinstance(other, str) and other and other != extracted:
+                    assert other not in prompt
+        else:
+            assert "UNTRUSTED SOURCE DATA" not in prompt
+            assert f"image {index} of {len(images)} OCR text" not in context
+    assert [c.args for c in recognize.await_args_list] == [
+        (payload, "eng+fra") for payload in payloads
+    ]
     vision_calls = [
         event["tool_call"] for event in events if event["event"] == "tool_call"
     ]
-    assert [item["status"] for item in vision_calls] == ["running", "completed"] * len(
-        images
-    )
+    assert len(vision_calls) == 2 * len(images)
+    for i, (start, result) in enumerate(zip(vision_calls[::2], vision_calls[1::2])):
+        assert start["status"] == "running"
+        assert start["id"] == result["id"]
+        assert result["status"] == (
+            "completed" if isinstance(vision_results[i], str) else "error"
+        )
+        extracted = ocr_results[i]
+        expected = extracted if isinstance(extracted, str) and extracted else None
+        assert result.get("ocrText") == expected
+        assert builder.blocks[i]["tool_call"].get("ocrText") == expected
 
 
 @pytest.mark.asyncio
