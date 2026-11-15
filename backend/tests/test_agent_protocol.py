@@ -15,6 +15,7 @@ from app.agent.tools.quizzes import CreateQuizTool
 from app.agent.tools.flashcards import CreateFlashcardDeckTool
 from app.agent.tools.notes import CreateStudyNoteTool
 from app.agent.tools.web_search import WebSearchTool, web_search_service
+from app.agent.tools.vision import VisionTool
 from app.services.blocks import BlockBuilder
 from app.agent.protocol import (
     assistant_call_message,
@@ -110,6 +111,65 @@ async def run(messages=None, model="qwen3:4b", **kwargs):
             messages or [{"role": "user", "content": "Use echo"}], model=model, **kwargs
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_text", "images", "expected_request"),
+    [
+        (
+            "/nothink What is the total on the second receipt?",
+            ["first", "second"],
+            "What is the total on the second receipt?",
+        ),
+        ("", ["first"], "Describe this image in detail."),
+    ],
+)
+async def test_attachment_vision_uses_the_current_request(
+    agent, monkeypatch, request_text, images, expected_request
+):
+    vision = VisionTool()
+    query = AsyncMock(
+        side_effect=[f"Visible details for image {i + 1}" for i in range(len(images))]
+    )
+    monkeypatch.setattr(vision, "_query_vision_model", query)
+    service.get_tool_registry().register(vision)
+    monkeypatch.setattr(service.config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(
+        service.config_store,
+        "resolve_tool_model",
+        AsyncMock(return_value="local-vision"),
+    )
+    captured = script(
+        monkeypatch, [[{"content": "Here are the details.", "done": True}]]
+    )
+
+    events = await run(
+        [
+            {"role": "user", "content": request_text},
+            {"role": "user", "content": "Application upload context."},
+        ],
+        trace_user_message=request_text,
+        images=images,
+    )
+
+    assert query.await_count == len(images)
+    context = json.dumps(captured[0]["messages"])
+    for index, (call_args, image) in enumerate(zip(query.await_args_list, images), 1):
+        model, payload, prompt = call_args.args
+        assert model == "local-vision"
+        assert payload == image
+        assert expected_request in prompt
+        assert f"image {index} of {len(images)}" in prompt
+        assert "Application upload context." not in prompt
+        assert f"image {index} of {len(images)} analysis" in context
+        assert f"Visible details for image {index}" in context
+    vision_calls = [
+        event["tool_call"] for event in events if event["event"] == "tool_call"
+    ]
+    assert [item["status"] for item in vision_calls] == ["running", "completed"] * len(
+        images
+    )
 
 
 @pytest.mark.asyncio

@@ -1252,7 +1252,19 @@ async def run_agent_stream(
     ):
         vision_tool = registry.get("use_vision")
         if vision_tool:
+            vision_request = (
+                last_user.strip() or format_prompt("vision_default").strip()
+            )
+            vision_model = await config_store.resolve_tool_model(
+                "use_vision", fallback_role="default_vision"
+            )
             for i, img_b64 in enumerate(images):
+                prompt = format_prompt(
+                    "vision_attachment",
+                    image_number=i + 1,
+                    image_count=len(images),
+                    request=vision_request,
+                )
                 tc = ToolCall(
                     id=f"tc-vision-{int(time.time() * 1000)}-{i}",
                     type=vision_tool.tool_type,
@@ -1265,7 +1277,7 @@ async def run_agent_stream(
                 observe(
                     "begin_tool",
                     "use_vision",
-                    {"image_index": i, "prompt": format_prompt("vision_default")},
+                    {"image_index": i, "prompt": prompt},
                 )
                 if on_tool_call_start:
                     on_tool_call_start(_tool_call_to_dict(tc))
@@ -1273,12 +1285,8 @@ async def run_agent_stream(
 
                 result = await vision_tool.execute(
                     image_base64=img_b64,
-                    prompt=format_prompt("vision_default"),
-                    # Vision model: tool-level override (Brain ▸ Tools)
-                    # when set, else the profile default role.
-                    model=await config_store.resolve_tool_model(
-                        "use_vision", fallback_role="default_vision"
-                    ),
+                    prompt=prompt,
+                    model=vision_model,
                 )
                 observe(
                     "end_tool",
@@ -1307,7 +1315,9 @@ async def run_agent_stream(
                     )
 
                     context_messages.append(
-                        untrusted_context_message("image analysis", result.output)
+                        untrusted_context_message(
+                            f"image {i + 1} of {len(images)} analysis", result.output
+                        )
                     )
 
     if skill_catalog:
