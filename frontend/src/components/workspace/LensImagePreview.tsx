@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { lensClient, type LensImage } from "@/api/lensClient";
+import { lensClient, lensPageKind, type LensImage } from "@/api/lensClient";
+import { sourceLocationUrl } from "@/lib/sourceNavigation";
 import { useT } from "@/store/settingsStore";
 
 export function LensImagePreview({ id }: { id: string }) {
@@ -34,6 +35,11 @@ export function LensImagePreview({ id }: { id: string }) {
         className="m-4 size-5 animate-spin"
       />
     );
+  const documentUrl = sourceLocationUrl({
+    documentId: image.document_id,
+    page: image.page_number,
+    chunk: image.document_chunk_id,
+  });
   return (
     <section className="h-full space-y-4 overflow-y-auto p-4">
       <header className="space-y-1">
@@ -46,12 +52,16 @@ export function LensImagePreview({ id }: { id: string }) {
             {t("lens.sourceChat")}
           </Link>
         )}
-        {!image.conversation_id && image.document_id && (
+        {documentUrl && (image.document_chunk_id || !image.conversation_id) && (
           <Link
-            to={`/workspace/documents?document=${image.document_id}`}
-            className="text-xs text-muted-foreground underline underline-offset-4"
+            to={documentUrl}
+            className="block text-xs text-muted-foreground underline underline-offset-4"
           >
-            {t("learn.viewSource")}
+            {image.page_number
+              ? t(`lens.source.${lensPageKind(image.filename)}`, {
+                  number: image.page_number,
+                })
+              : t("learn.viewSource")}
           </Link>
         )}
       </header>

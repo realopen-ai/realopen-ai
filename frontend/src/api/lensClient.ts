@@ -3,8 +3,21 @@ export interface LensImage {
   filename: string;
   conversation_id: string | null;
   document_id: string | null;
+  document_chunk_id?: string | null;
+  page_number?: number | null;
   created_at: string;
   ocr_text?: string | null;
+}
+
+export interface LensMatch {
+  id: string;
+  filename: string;
+  excerpt: string;
+  page_number?: number;
+}
+
+export function lensPageKind(filename: string) {
+  return /\.pptx?$/i.test(filename) ? "slide" : "page";
 }
 
 interface LensState {

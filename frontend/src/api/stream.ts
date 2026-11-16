@@ -819,6 +819,7 @@ export function dispatchAgentEvent(
         updates.durationMs = tc.durationMs;
       }
       if (tc.webResults) updates.webResults = tc.webResults;
+      if (tc.query) updates.query = tc.query;
       if (tc.genResults) updates.genResults = tc.genResults;
       if (tc.output) updates.output = tc.output;
       if (tc.exitCode !== undefined) updates.exitCode = tc.exitCode;

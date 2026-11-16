@@ -28,6 +28,7 @@ export interface ToolCallResult {
   type:
     | "websearch"
     | "webfetch"
+    | "image_search"
     | "vision"
     | "code_exec"
     | "skill"
@@ -54,6 +55,7 @@ export interface ToolCallResult {
   // Web search
   query?: string;
   webResults?: { title: string; url: string; snippet: string }[];
+  imageResults?: import("@/api/lensClient").LensMatch[];
   // Code exec
   language?: string;
   code?: string;

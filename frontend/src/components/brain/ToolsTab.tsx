@@ -71,6 +71,7 @@ function ToolIcon({
     case "use_webfetch":
       return <Zap className={className} />;
     case "use_image_gen":
+    case "search_images":
       return <ImageIcon className={className} />;
     case "rag_search":
       return <FileSearch className={className} />;

@@ -61,6 +61,7 @@ import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
 import { artifactCitationLocations } from "@/lib/sourceNavigation";
+import { LensSearchDetail } from "@/components/chat/LensSearchDetail";
 import { Link, useLocation } from "react-router-dom";
 import { sideTabRouteKey, type FilePreview } from "@/lib/rightPanelTabs";
 
@@ -436,7 +437,7 @@ function ToolCallBlockView({
   ) => void;
 }) {
   const translate = useT();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState<boolean | null>(null);
   const tc = block.toolCall;
   if (!tc) return null;
   const stagedOutputs = tc.genResults?.filter(
@@ -558,6 +559,10 @@ function ToolCallBlockView({
       label: translate("tool.webfetch.done"),
       runningLabel: translate("tool.webfetch.running"),
     },
+    image_search: {
+      label: translate("tool.lens.done"),
+      runningLabel: translate("tool.lens.running"),
+    },
     vision: {
       label: translate("tool.vision.done"),
       runningLabel: translate("tool.vision.running"),
@@ -672,11 +677,13 @@ function ToolCallBlockView({
           ? tc.filePath
           : tc.type === "websearch" ||
               tc.type === "webfetch" ||
+              tc.type === "image_search" ||
               tc.type === "deepsearch"
             ? tc.query
             : undefined;
 
-  const resultCount = tc.webResults?.length || tc.genResults?.length;
+  const resultCount =
+    tc.imageResults?.length || tc.webResults?.length || tc.genResults?.length;
   const elapsed =
     Number.isFinite(tc.durationMs) && (tc.durationMs ?? -1) >= 0
       ? tc.durationMs!
@@ -689,18 +696,19 @@ function ToolCallBlockView({
     tc.type !== "tool_access" &&
     tc.type !== "tool_output" &&
     (tc.status === "error" ||
+      (tc.type === "image_search" && tc.status === "completed") ||
       tc.status === "running" ||
       ((tc.type === "file_read" || tc.type === "file_write") &&
         tc.status === "completed") ||
       ((isReportTool || isPresentationTool || isExcelTool) &&
         tc.status === "completed"));
-  const isExpanded = expanded || autoExpand;
+  const isExpanded = expanded ?? autoExpand;
 
   return (
     <div className="my-1">
       {/* Activity row — click to toggle details */}
       <button
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setExpanded(!isExpanded)}
         className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         aria-expanded={isExpanded}
       >
@@ -846,6 +854,7 @@ function ToolCallDetail({
   if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "webfetch") return <WebFetchDetail tc={tc} />;
+  if (tc.type === "image_search") return <LensSearchDetail call={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "file_read" || tc.type === "file_write")
     return <FileToolDetail tc={tc} />;

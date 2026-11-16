@@ -69,3 +69,11 @@ test("interrupted assistant messages render a durable badge", () => {
     /onInterrupted: \(\) => \{\s*finishInterruptedThinking\(\)/,
   );
 });
+
+test("Lens matches stay attached to a hydrated and streamed tool call", async () => {
+  const { persistedToolCallDetails } = await import(
+    "../src/store/toolCallPersistence.ts"
+  );
+  const imageResults = [{ id: "saved-image", filename: "screen.png", excerpt: "ERR_CONN_1042" }];
+  assert.deepEqual(persistedToolCallDetails({ imageResults }), { imageResults });
+});
