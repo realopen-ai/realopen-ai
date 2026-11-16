@@ -9,11 +9,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     CheckConstraint,
+    text,
 )
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -445,6 +448,15 @@ class SandboxCommand(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index(
+            "ix_messages_lens_image_outputs",
+            "id",
+            postgresql_where=text(
+                """role = 'assistant' AND blocks @? '$[*].tool_call.genResults[*] ? (@.type == "image")'"""
+            ),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     conversation_id = Column(
@@ -760,3 +772,44 @@ class Template(Base):
     )  # relative path: "research_template.pptx"
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LensImage(Base):
+    """Derived index data. Original bytes belong to the document or message."""
+
+    __tablename__ = "lens_images"
+    __table_args__ = (
+        CheckConstraint(
+            "(document_id IS NOT NULL AND message_id IS NULL AND output_index IS NULL)"
+            " OR (document_id IS NULL AND message_id IS NOT NULL AND output_index >= 0"
+            " AND output_index IS NOT NULL)",
+            name="lens_image_one_source",
+        ),
+        UniqueConstraint("message_id", "output_index"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    document_id = Column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
+    )
+    message_id = Column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE")
+    )
+    output_index = Column(Integer)
+    thumbnail = Column(LargeBinary)
+    retry_at = Column(DateTime(timezone=True))
+    error = Column(Text)
+    ocr_text = Column(Text)
+    visual_version = Column(String(128))
+    visual_embedding = Column(Vector(768))
+    semantic_version = Column(String(128))
+
+
+class LensPassage(Base):
+    __tablename__ = "lens_passages"
+
+    image_id = Column(
+        UUID(as_uuid=True), ForeignKey("lens_images.id", ondelete="CASCADE"), primary_key=True
+    )
+    position = Column(Integer, primary_key=True)
+    embedding = Column(Vector(384), nullable=False)

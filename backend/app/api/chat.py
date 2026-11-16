@@ -49,6 +49,7 @@ from app.services.chat_command_sources import (
 from app.services.safe_paths import confined_path
 from app.services.integrations.libreoffice import render_document_thumbnail
 from app.services import model_prefs
+from app.services.lens.attachments import save_images
 from app.services import providers
 from app.services import rag as rag_service
 from app.services.blocks import BlockBuilder as _BlockBuilder
@@ -900,10 +901,12 @@ async def chat_stream_multipart(
 
     # Encode images to base64
     image_b64_list = []
+    image_buffers = []
     for img_file in images:
         content = await img_file.read()
         b64 = base64.b64encode(content).decode("utf-8")
         image_b64_list.append(b64)
+        image_buffers.append((img_file.filename, content))
         _log(
             "   encoded image: %s (%d bytes, %d b64 chars)",
             img_file.filename,
@@ -936,7 +939,7 @@ async def chat_stream_multipart(
 
     # Persist the user message EAGERLY using an independent session
     if conv_id and parsed_messages:
-        await _persist_message(
+        message_id = await _persist_message(
             conv_id,
             "user",
             parsed_messages[-1]["content"],
@@ -957,6 +960,10 @@ async def chat_stream_multipart(
                 else {}
             ),
         )
+
+        if message_id and image_buffers:
+            await save_images(conv_id, message_id, image_buffers)
+    del image_buffers
 
     # Capture for closure
     _conv_id = conv_id

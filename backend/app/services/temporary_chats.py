@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from app.db.models import Artifact, ArtifactVersion, Document, DocumentChunk, Memory
 from app.services.artifact_sources import sections_for
+from app.services.lens.encoders import image_mime
 from app.services.memory import MemoryManager
 from app.services import rag
 
@@ -228,6 +229,9 @@ class TemporaryChat:
 
     async def save_attachments(self, db, message_ids, written):
         for item in self.attachments:
+            mime = (
+                await asyncio.to_thread(image_mime, item.data) if item.image else None
+            ) or rag.guess_mime_type(item.filename)
             written.append(item.id)
             path = await rag.save_uploaded_file(item.data, item.filename, item.id)
             db.add(
@@ -235,7 +239,7 @@ class TemporaryChat:
                     id=item.id,
                     filename=item.filename,
                     original_filename=item.filename,
-                    mime_type=rag.guess_mime_type(item.filename),
+                    mime_type=mime,
                     file_path=path,
                     file_size_bytes=len(item.data),
                     content_hash=hashlib.sha256(item.data).hexdigest(),

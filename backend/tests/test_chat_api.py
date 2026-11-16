@@ -1114,13 +1114,16 @@ async def test_stream_persist_failure_is_survived(client, env):
 
 
 @pytest.mark.asyncio
-async def test_multipart_images_encoded_to_base64(client, env):
+@pytest.mark.parametrize("saved", [False, True])
+async def test_multipart_images_encoded_to_base64(client, env, saved, monkeypatch):
+    save = AsyncMock()
+    monkeypatch.setattr(chat_module, "save_images", save)
     image_bytes = b"PNGDATA-fake-image-bytes"
     r = await client.post(
         "/api/chat/stream/multipart",
         data={
             "messages": json.dumps([{"role": "user", "content": "see this"}]),
-            "conversation_id": str(CONV_ID),
+            **({"conversation_id": str(CONV_ID)} if saved else {}),
         },
         files={"images": ("photo.png", image_bytes, "image/png")},
     )
@@ -1128,6 +1131,12 @@ async def test_multipart_images_encoded_to_base64(client, env):
     expected_b64 = base64.b64encode(image_bytes).decode("utf-8")
     assert env.agent_calls[0]["images"] == [expected_b64]
 
+    if not saved:
+        save.assert_not_awaited()
+        assert not env.persists
+        return
+
+    save.assert_awaited_once_with(CONV_ID, MSG_ID, [("photo.png", image_bytes)])
     # eager user persist records image metadata
     user_calls = [c for c in env.persists if c["role"] == "user"]
     assert user_calls[0]["has_image"] is True
