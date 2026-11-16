@@ -40,6 +40,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.api import setup as setup_api  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.services import voice_model_installer as vmi  # noqa: E402
+from app.services.lens import install as lens_install  # noqa: E402
 from app.voice import models_store as voice_models_store  # noqa: E402
 
 app = FastAPI()
@@ -306,6 +307,8 @@ async def test_profiles_lists_all_valid_profiles(client):
         assert profile["label"]
         assert profile["engine"]
         assert isinstance(profile["models"], list)
+        assert len(profile["lens_models"]) == 2
+        assert all(item["size"] > 0 for item in profile["lens_models"])
         for model in profile["models"]:
             assert {"id", "type", "role", "description", "size"} <= set(model)
 
@@ -516,7 +519,11 @@ def test_get_models_to_pull_includes_profile_and_voice_entries(monkeypatch):
     assert kinds.count("voice_model") == 2
     # Sequential plan: ollama first, then voice runtime, then voice models
     assert kinds[0] == "ollama"
-    assert kinds[-1] == "voice_model"
+    assert kinds[-3:] == ["voice_model", "lens_model", "lens_model"]
+    assert [m["install"]["name"] for m in models if m["kind"] == "lens_model"] == [
+        "siglip2:int8",
+        "e5:int8",
+    ]
 
 
 def test_get_models_to_pull_includes_available_optional_module(monkeypatch):
@@ -571,7 +578,7 @@ def test_voice_entries_omitted_when_voice_module_disabled(monkeypatch, settings_
     )
     monkeypatch.setattr(vmi, "voice_model_entries", lambda profile: [{"kind": "voice_model"}])
     models = setup_api._get_models_to_pull("cpu_small", [])
-    assert all(m.get("kind") == "ollama" for m in models)
+    assert {m["kind"] for m in models} == {"ollama", "lens_model"}
 
 
 # ── POST /setup/pull-models (SSE) ─────────────────────────────────────
@@ -814,6 +821,54 @@ async def test_pull_models_voice_stream_receives_index_offset(
 
 
 # ── POST /setup/complete ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_setup_streams_lens_progress_skips_existing_model_and_keeps_profile(
+    client, monkeypatch, fake_ollama
+):
+    entries = lens_install.lens_setup_entries("apple_large")
+    monkeypatch.setattr(setup_api, "_get_models_to_pull", lambda *_: entries)
+    monkeypatch.setattr(
+        lens_install, "model_paths", lambda ident, precision: {"e5": "cached"} if ident == "e5" else {}
+    )
+    downloaded = []
+
+    async def fake_download(self, model, variant):
+        downloaded.append((model.id, variant.id))
+        yield {"completed": 25, "total": 100, "message": "Downloading weights"}
+        yield {"files": {"weights": "verified"}}
+
+    async def fake_install(self, model, variant, name, files):
+        assert name == "siglip2:fp32"
+        assert files == {"weights": "verified"}
+        yield {"message": "Verified files"}
+
+    monkeypatch.setattr(lens_install.LensCatalog, "download", fake_download)
+    monkeypatch.setattr(lens_install.LensRuntime, "install", fake_install)
+    response = await client.post(
+        "/api/setup/pull-models",
+        json={"profile": "apple_large", "enabled_modules": []},
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert [
+        (event["event"], event.get("index")) for event in events
+    ] == [
+        ("pull_start_all", None),
+        ("pull_start", 0),
+        ("pull_progress", 0),
+        ("pull_status", 0),
+        ("pull_done", 0),
+        ("pull_start", 1),
+        ("pull_done", 1),
+        ("pull_all_done", None),
+    ]
+    assert events[2]["percent"] == 25
+    assert events[2]["provider"] == "lens-onnx"
+    assert events[6]["already_installed"] is True
+    assert downloaded == [(entries[0]["install"]["model"], "fp32")]
+    assert FakeAsyncClient.seen_urls == []
 
 
 @pytest.mark.asyncio

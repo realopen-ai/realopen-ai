@@ -28,6 +28,7 @@ import {
 import type { SetupModule } from "@/api/setupClient";
 import { t } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
+import { modelBytes } from "@/lib/modelManager";
 
 // ─── Step indicator ──────────────────────────────────────────────
 
@@ -105,7 +106,7 @@ function WelcomeStep() {
       </p>
       <p className="text-muted-foreground/80 text-[12px] max-w-sm leading-relaxed mb-8">
         Everything runs locally on your machine — no data is sent to the cloud.
-        All models are downloaded from Ollama and run entirely offline.
+        Models run offline after setup downloads them.
       </p>
       <button
         onClick={() => setStep("prerequisites")}
@@ -837,6 +838,15 @@ function ReviewStep() {
                 </span>
               </div>
             ))}
+          {profile?.lens_models?.map((model) => (
+            <div key={model.id} className="flex items-center gap-2">
+              <Image className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <span className="text-[12px] text-foreground">{model.id}</span>
+              <span className="text-[11px] text-muted-foreground/70 ml-auto">
+                {modelBytes(model.size)}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -892,6 +902,9 @@ function ReviewStep() {
  *  (ASR = speaker, TTS = waveform, runtime = package); ollama models keep
  *  the previous neutral look. */
 function PullRowIcon({ row }: { row: PullRow }) {
+  if (row.kind === "lens_model") {
+    return <Image className="w-3.5 h-3.5 text-primary shrink-0" />;
+  }
   if (row.kind === "voice_model" || row.provider === "qwen3-asr") {
     return <Volume2 className="w-3.5 h-3.5 text-primary shrink-0" />;
   }
@@ -906,6 +919,7 @@ function PullRowIcon({ row }: { row: PullRow }) {
 
 /** Provider label for voice rows (ASR model / TTS model / Voice runtime). */
 function pullRowProviderLabel(row: PullRow): string | null {
+  if (row.kind === "lens_model") return "Lens";
   if (row.provider === "qwen3-asr" || row.kind === "voice_model") {
     // Distinguish ASR vs TTS by provider when possible.
     if (row.provider === "pocket-tts") return t("setup.voice.provider.tts");
@@ -1166,8 +1180,8 @@ function DoneStep() {
         Setup Complete!
       </h3>
       <p className="text-[13px] text-muted-foreground mb-6 max-w-sm">
-        Your RealOpen-AI is ready. All models have been downloaded and your
-        configuration has been applied. You can start chatting now!
+        Your RealOpen-AI configuration has been applied. You can start chatting
+        now.
       </p>
       <p className="text-[12px] text-muted-foreground/70 mb-4">
         This page will reload automatically...

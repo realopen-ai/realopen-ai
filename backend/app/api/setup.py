@@ -29,12 +29,12 @@ SSE event protocol (identical names for every provider; every event carries
 - pull_all_done {total}
 - setup_error  {error}
 
-`kind` is "ollama" | "voice_runtime" | "voice_model"; `provider` is
-"ollama" | "pip" | "qwen3-asr" | "pocket-tts" (from profiles.yml).
+`kind` identifies Ollama, voice runtime, voice model, or Lens model events.
 """
 
 import json
 import logging
+from contextlib import aclosing
 from pathlib import Path
 from typing import List, Optional
 
@@ -47,6 +47,7 @@ from app.agent.base import get_tool_registry
 from app.config import settings, VALID_PROFILES
 from app.services import voice_model_installer
 from app.services import search_services
+from app.services.lens.install import lens_setup_entries, stream_install_lens
 from app.agent.tools import config_store
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,7 @@ def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
       1. Ollama models (profile + optional modules)   — kind "ollama"
       2. Voice runtime pip packages (missing only)     — kind "voice_runtime"
       3. Voice ASR + TTS models (from profiles.yml)    — kind "voice_model"
+      4. Lens image search models (from profiles.yml) — kind "lens_model"
 
     Voice entries are appended when voice is enabled for the profile (see
     voice_model_installer.voice_enabled_for_profile — with no `voice` module
@@ -255,6 +257,9 @@ def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
     if voice_model_installer.voice_enabled_for_profile(profile, enabled_modules):
         models.extend(voice_model_installer.voice_runtime_entries(profile))
         models.extend(voice_model_installer.voice_model_entries(profile))
+
+    if profile_config:
+        models.extend(lens_setup_entries(profile))
 
     return models
 
@@ -344,6 +349,9 @@ async def get_setup_profiles():
             "label": p.label,
             "engine": p.engine,
             "models": [m.to_dict() for m in p.models],
+            "lens_models": [
+                {k: item[k] for k in ("id", "size")} for item in lens_setup_entries(name)
+            ],
         }
     return result
 
@@ -498,12 +506,13 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
 
     Streams SSE events with real-time progress for each model being pulled.
     This is the same streaming mechanism used by /modules/install but pulls
-    ALL models (profile + module + voice) in sequence.
+    ALL models (profile + module + voice + Lens) in sequence.
 
     Single sequential, provider-aware plan with consistent indexing:
       1. Ollama models          (kind "ollama",      provider "ollama")
       2. Voice runtime packages (kind "voice_runtime", provider "pip")
       3. Voice ASR + TTS models (kind "voice_model",  provider from profiles.yml)
+      4. Lens models           (kind "lens_model", provider "lens-onnx")
 
     Event names are unchanged from the original Ollama-only stream so the
     current frontend keeps working; every event now also carries
@@ -522,9 +531,10 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
         return {"status": "no_models", "message": "No models to pull"}
 
     ollama_models = [m for m in models_to_pull if m.get("kind", "ollama") == "ollama"]
-    has_voice_entries = any(
+    voice_count = sum(
         m.get("kind") in ("voice_model", "voice_runtime") for m in models_to_pull
     )
+    lens_models = [m for m in models_to_pull if m.get("kind") == "lens_model"]
 
     async def _stream_pull():
         """Stream model pull progress as SSE events (Ollama + voice)."""
@@ -692,7 +702,7 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
         # Voice dependencies (runtime pip packages + ASR/TTS models).
         # The installer yields the same event dicts (with provider/kind);
         # indexes continue after the Ollama entries for one sequential plan.
-        if has_voice_entries:
+        if voice_count:
             voice_stream = voice_model_installer.stream_install_voice_dependencies(
                 request.profile,
                 request.enabled_modules,
@@ -706,6 +716,17 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 # Client disconnect → close the inner generator (kills pip
                 # subprocesses and closes HTTP download streams).
                 await voice_stream.aclose()
+
+        if lens_models:
+            async with aclosing(
+                stream_install_lens(
+                    lens_models,
+                    index_offset=len(ollama_models) + voice_count,
+                    total_models=total_models,
+                )
+            ) as lens_stream:
+                async for event in lens_stream:
+                    yield f"data: {json.dumps(event)}\n\n"
 
         # All models done
         yield f"data: {json.dumps({'event': 'pull_all_done', 'total': total_models})}\n\n"
