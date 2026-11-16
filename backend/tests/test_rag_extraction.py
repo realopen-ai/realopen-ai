@@ -215,3 +215,24 @@ def test_extract_empty_txt():
     result = rag.extract_content(b"", "empty.txt")
     assert len(result.pages) == 1
     assert result.pages[0].text == ""
+
+
+def test_extract_pptx_preserves_picture_and_slide_number():
+    from PIL import Image
+    from pptx import Presentation
+
+    image_buffer = io.BytesIO()
+    with Image.new("RGB", (32, 32), "white") as image:
+        image.save(image_buffer, "PNG")
+    picture_bytes = image_buffer.getvalue()
+    presentation = Presentation()
+    presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_picture(io.BytesIO(picture_bytes), 0, 0)
+    presentation_buffer = io.BytesIO()
+    presentation.save(presentation_buffer)
+
+    result = rag.extract_content(presentation_buffer.getvalue(), "slides.pptx")
+    assert len(result.images) == 1
+    assert result.images[0].page_number == 2
+    assert result.images[0].image_bytes == picture_bytes

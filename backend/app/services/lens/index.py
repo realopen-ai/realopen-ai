@@ -4,12 +4,13 @@ import asyncio
 import base64
 from datetime import UTC, datetime, timedelta
 import logging
+from pathlib import Path
 
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
-from app.db.models import Document, LensImage, LensPassage
+from app.db.models import Document, DocumentChunk, LensImage, LensPassage
 from app.db.session import async_session_factory
 from app.services import ocr
 from app.services.safe_paths import confined_path
@@ -38,6 +39,23 @@ async def discover(db):
         .from_select(["document_id"], documents, include_defaults=False)
         .on_conflict_do_nothing()
     )
+    chunks = (
+        select(DocumentChunk.id)
+        .where(
+            DocumentChunk.chunk_type == "image_description",
+            DocumentChunk.image_path.is_not(None),
+            ~select(LensImage.id)
+            .where(LensImage.document_chunk_id == DocumentChunk.id)
+            .exists(),
+        )
+        .order_by(DocumentChunk.id)
+        .limit(32)
+    )
+    await db.execute(
+        insert(LensImage)
+        .from_select(["document_chunk_id"], chunks, include_defaults=False)
+        .on_conflict_do_nothing()
+    )
     # Derive image identities from the position in a terminal message's immutable
     # result list. Old image-generation outputs use the same JSON structure.
     await db.execute(
@@ -64,21 +82,33 @@ async def discover(db):
     await db.commit()
 
 
+def _read_image(relative_path: str, document_id) -> bytes:
+    root = settings.get_data_dir()
+    path = confined_path(root, relative_path)
+    document_dir = confined_path(
+        root, Path(settings.RAG_DOCUMENTS_DIR) / str(document_id)
+    )
+    if not path.is_relative_to(document_dir):
+        raise ValueError("Image is outside its document directory.")
+    with path.open("rb") as file:
+        data = file.read(ocr.MAX_IMAGE_BYTES + 1)
+    if len(data) > ocr.MAX_IMAGE_BYTES:
+        raise ValueError("Image exceeds 20 MiB.")
+    return data
+
+
 async def source_bytes(db, image: LensImage) -> bytes:
+    if image.document_chunk_id is not None:
+        chunk = await db.get(DocumentChunk, image.document_chunk_id)
+        if not chunk or chunk.chunk_type != "image_description" or not chunk.image_path:
+            raise FileNotFoundError("Extracted image was removed.")
+        return await asyncio.to_thread(_read_image, chunk.image_path, chunk.document_id)
+
     if image.document_id is not None:
         document = await db.get(Document, image.document_id)
         if not document or not document.mime_type.startswith("image/"):
             raise FileNotFoundError("Saved image was removed.")
-
-        def read():
-            path = confined_path(settings.get_data_dir(), document.file_path)
-            with path.open("rb") as file:
-                data = file.read(ocr.MAX_IMAGE_BYTES + 1)
-            if len(data) > ocr.MAX_IMAGE_BYTES:
-                raise ValueError("Image exceeds 20 MiB.")
-            return data
-
-        return await asyncio.to_thread(read)
+        return await asyncio.to_thread(_read_image, document.file_path, document.id)
 
     encoded = await db.scalar(
         text(

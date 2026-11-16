@@ -649,6 +649,15 @@ class DocumentChunk(Base):
     """
 
     __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index(
+            "ix_document_chunks_lens_images",
+            "id",
+            postgresql_where=text(
+                "chunk_type = 'image_description' AND image_path IS NOT NULL"
+            ),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id = Column(
@@ -775,22 +784,34 @@ class Template(Base):
 
 
 class LensImage(Base):
-    """Derived index data. Original bytes belong to the document or message."""
+    """Derived index data. Original bytes belong to a document, chunk, or message."""
 
     __tablename__ = "lens_images"
     __table_args__ = (
         CheckConstraint(
-            "(document_id IS NOT NULL AND message_id IS NULL AND output_index IS NULL)"
-            " OR (document_id IS NULL AND message_id IS NOT NULL AND output_index >= 0"
-            " AND output_index IS NOT NULL)",
+            "(document_id IS NOT NULL AND document_chunk_id IS NULL AND message_id IS NULL AND output_index IS NULL)"
+            " OR (document_id IS NULL AND document_chunk_id IS NOT NULL AND message_id IS NULL AND output_index IS NULL)"
+            " OR (document_id IS NULL AND document_chunk_id IS NULL AND message_id IS NOT NULL"
+            " AND output_index IS NOT NULL AND output_index >= 0)",
             name="lens_image_one_source",
         ),
         UniqueConstraint("message_id", "output_index"),
+        UniqueConstraint("document_chunk_id", name="uq_lens_images_document_chunk"),
     )
 
-    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     document_id = Column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), unique=True
+    )
+    document_chunk_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "document_chunks.id",
+            name="fk_lens_images_document_chunk",
+            ondelete="CASCADE",
+        ),
     )
     message_id = Column(
         UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE")

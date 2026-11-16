@@ -14,10 +14,8 @@ from app.db.session import get_db
 from app.services.lens import search
 from app.services.lens.config import get_lens_config
 from app.services.lens.encoders import (
-    image_vectors,
     image_rgb,
     model_version,
-    text_vectors,
 )
 from app.services.lens.index import source_bytes
 from app.services.model_manager.lens_models import model_paths
@@ -25,14 +23,6 @@ from app.services.ocr import MAX_IMAGE_BYTES
 
 router = APIRouter(prefix="/lens", tags=["lens"])
 logger = logging.getLogger(__name__)
-
-
-def _item(row):
-    data = dict(row)
-    return {
-        **data,
-        "filename": data["filename"] or f"Generated image {data['output_index']}",
-    }
 
 
 async def _state(db, config):
@@ -78,17 +68,6 @@ async def _state(db, config):
     }
 
 
-async def _query_vector(config, ident, query):
-    try:
-        result = await text_vectors(config, ident, [query])
-        return result[0][0] if result else None
-    except Exception as exc:
-        logger.warning(
-            "Lens %s query encoder unavailable (%s)", ident, type(exc).__name__
-        )
-        return None
-
-
 @router.get("/images")
 async def list_images(
     q: str = Query(default="", max_length=500),
@@ -97,19 +76,8 @@ async def list_images(
 ):
     config = get_lens_config()
     if q.strip():
-        query = q.strip()
-        visual_vector = await _query_vector(config, "siglip2", query)
-        semantic_vector = await _query_vector(config, "e5", query)
-        exact = await search.exact_candidates(db, query)
-        visual = await search.visual_scores(db, config, visual_vector)
-        semantic, background = await search.semantic_scores(db, config, semantic_vector)
-        ids = search.rank(exact, visual, semantic, background)
-        rows = (
-            await db.execute(search.gallery_rows().where(LensImage.id.in_(ids)))
-        ).mappings()
-        items = {row["id"]: _item(row) for row in rows}
         return {
-            "items": [items[ident] for ident in ids if ident in items],
+            "items": await search.find_images(db, config, query=q.strip()),
             "state": await _state(db, config),
         }
     gallery = search.gallery_rows()
@@ -127,7 +95,7 @@ async def list_images(
         .all()
     )
     return {
-        "items": [_item(row) for row in rows[:48]],
+        "items": [search.gallery_item(row) for row in rows[:48]],
         "more": len(rows) > 48,
         "state": await _state(db, config),
     }
@@ -142,7 +110,9 @@ async def similar_images(
         raise HTTPException(422, "Upload a supported image under 20 MiB.")
     try:
         config = get_lens_config()
-        vectors = await image_vectors(config, [data])
+        items = await search.find_images(db, config, reference=data)
+    except search.LensVisualUnavailable as exc:
+        raise HTTPException(409, str(exc)) from exc
     except (ValueError, OSError) as exc:
         raise HTTPException(
             422, "Upload a supported image under 20 MiB and 20 megapixels."
@@ -152,19 +122,7 @@ async def similar_images(
         raise HTTPException(
             503, "SigLIP2 could not read the image. Check the model installation."
         ) from exc
-    if vectors is None:
-        raise HTTPException(
-            409, "Install the profile's SigLIP2 model in Brain → Models."
-        )
-    scores = await search.visual_scores(db, config, vectors[0])
-    rows = (
-        await db.execute(search.gallery_rows().where(LensImage.id.in_(scores)))
-    ).mappings()
-    items = {row["id"]: _item(row) for row in rows}
-    return {
-        "items": [items[ident] for ident in scores if ident in items],
-        "state": await _state(db, config),
-    }
+    return {"items": items, "state": await _state(db, config)}
 
 
 @router.get("/images/{ident}")
@@ -182,7 +140,7 @@ async def image_detail(ident: UUID, db: AsyncSession = Depends(get_db)):
     )
     if not row:
         raise HTTPException(404, "Image not found.")
-    return _item(row)
+    return search.gallery_item(row)
 
 
 @router.get("/images/{ident}/thumbnail")
