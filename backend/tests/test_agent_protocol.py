@@ -1665,3 +1665,97 @@ async def test_note_optional_provenance_is_normalized_before_preflight(
     assert body.source_chunk_id is None and body.source_page is None
     assert "format" not in captured[1], "Valid content should not need a repair round"
     assert not any(e["event"] == "error" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_lens_results_reach_the_model_and_can_be_inspected(agent, monkeypatch):
+    from uuid import UUID
+
+    from app.agent.tools import search_images, vision as vision_module
+
+    registry = service.get_tool_registry()
+    registry.register(search_images.SearchImagesTool())
+    vision = VisionTool()
+    registry.register(vision)
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"search_images"})
+    monkeypatch.setattr(service.config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(service.config_store, "get_tool_config", lambda _: {})
+    monkeypatch.setattr(
+        service.config_store,
+        "resolve_tool_model",
+        AsyncMock(return_value="local-vision"),
+    )
+    ident = str(UUID(int=1))
+    file = SimpleNamespace(error=None, thumbnail=b"thumbnail")
+
+    @asynccontextmanager
+    async def db():
+        yield SimpleNamespace(get=AsyncMock(return_value=file))
+
+    monkeypatch.setattr(search_images, "async_session_factory", db)
+    monkeypatch.setattr(vision_module, "async_session_factory", db)
+    monkeypatch.setattr(vision_module, "source_bytes", AsyncMock(return_value=b"png"))
+    query_vision = AsyncMock(return_value="A red error banner")
+    monkeypatch.setattr(vision, "_query_vision_model", query_vision)
+    find = AsyncMock(
+        return_value=[
+            {
+                "id": UUID(ident),
+                "filename": "error.png",
+                "ocr_text": "Connection failed",
+            }
+        ]
+    )
+    monkeypatch.setattr(search_images, "find_images", find)
+
+    captured = script(
+        monkeypatch,
+        [
+            [
+                {
+                    "tool_calls": [
+                        call({"query": "Connection failed"}, name="search_images")
+                    ],
+                    "done": True,
+                }
+            ],
+            [
+                {
+                    "tool_calls": [
+                        call(
+                            {"lens_image_id": ident, "prompt": "Read the banner"},
+                            name="use_vision",
+                            id="vision",
+                        )
+                    ],
+                    "done": True,
+                }
+            ],
+            [{"content": "I found the screenshot.", "done": True}],
+        ],
+    )
+    builder = BlockBuilder()
+    events = await run(
+        [
+            {
+                "role": "user",
+                "content": "Find the connection failed screenshot in my photo library",
+            }
+        ],
+        temporary=True,
+        on_tool_call_start=builder.on_tool_call_start,
+        on_tool_call_update=builder.on_tool_call_update,
+    )
+    assert find.await_args.kwargs["conversation_id"] is None
+    query_vision.assert_awaited_once_with("local-vision", "cG5n", "Read the banner")
+    assert not (await vision.execute(lens_image_id=ident)).success
+    assert query_vision.await_count == 1
+    assert '"image_id"' in str(captured[1]["messages"])
+    saved = builder.blocks[0]["tool_call"]
+    assert saved["imageResults"] == [
+        {"id": ident, "filename": "error.png", "excerpt": "Connection failed"}
+    ]
+    assert any(
+        event.get("tool_call", {}).get("imageResults") == saved["imageResults"]
+        for event in events
+    )

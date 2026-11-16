@@ -7,6 +7,7 @@ or deactivates tools based on which modules are enabled.
 
 from app.agent.tools.web_search import WebSearchTool
 from app.agent.tools.vision import VisionTool
+from app.agent.tools.search_images import SearchImagesTool
 from app.agent.tools.code_exec import CodeExecTool
 from app.agent.tools.web_fetch import WebFetchTool
 from app.agent.tools.image_gen import ImageGenTool
@@ -28,6 +29,7 @@ __all__ = [
     "ReadToolResultTool",
     "WebSearchTool",
     "VisionTool",
+    "SearchImagesTool",
     "CodeExecTool",
     "WebFetchTool",
     "ImageGenTool",

@@ -190,6 +190,63 @@ def requests_library_search(text: str) -> bool:
     return False
 
 
+def requests_image_library(text: str) -> bool:
+    """Require a library-search instruction from the current user turn."""
+    request = " ".join(words(text))
+    for prefix in (
+        "please ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "peux tu ",
+        "pouvez vous ",
+        "pourrais tu ",
+        "هل يمكنك ",
+    ):
+        request = request.removeprefix(prefix)
+    request = request.removeprefix("please ")
+    first = request.split(maxsplit=1)[:1]
+    if not first or first[0] not in {
+        "search",
+        "find",
+        "look",
+        "check",
+        "retrieve",
+        "show",
+        "cherche",
+        "recherche",
+        "trouve",
+        "chercher",
+        "rechercher",
+        "ابحث",
+        "البحث",
+        "أرني",
+    }:
+        return False
+    return any(
+        matches(target, text)
+        for target in (
+            "image library",
+            "photo library",
+            "saved images",
+            "saved screenshots",
+            "saved photos",
+            "all my photos",
+            "past chats",
+            "other chats",
+            "bibliothèque d’images",
+            "bibliothèque de photos",
+            "photos enregistrées",
+            "مكتبة الصور",
+            "الصور المحفوظة",
+            "المحادثات السابقة",
+        )
+    ) or (
+        matches("my library", text)
+        and any(matches(target, text) for target in ("photo", "image", "screenshot"))
+    )
+
+
 def enabled_tools(registry, configs, *, notebook=False):
     return {
         tool.name: tool

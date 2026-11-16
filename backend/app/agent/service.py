@@ -290,7 +290,12 @@ def _fenced_args_to_call(tag: str, content: str) -> Dict:
     lines = content.strip().split("\n")
     tag_lower = tag.lower()
 
-    if tag_lower in ("use_websearch", "rag_search", "search_past_conversations"):
+    if tag_lower in (
+        "use_websearch",
+        "rag_search",
+        "search_past_conversations",
+        "search_images",
+    ):
         args["query"] = lines[0]
     elif tag_lower == "use_webfetch":
         args["url"] = lines[0]
@@ -388,6 +393,8 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["query"] = tc.query
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.image_results is not None:
+        d["imageResults"] = tc.image_results
     if tc.gen_results:
         d["genResults"] = tc.gen_results
     if tc.language:
@@ -419,6 +426,10 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["completedAt"] = int(tc.completed_at * 1000)
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.image_results is not None:
+        d["imageResults"] = tc.image_results
+    if tc.query:
+        d["query"] = tc.query
     if tc.gen_results:
         d["genResults"] = tc.gen_results
     if tc.output:
@@ -691,6 +702,7 @@ async def run_agent_stream(
         conversation_id = None
     result_store = {}
     result_metadata_store = {}
+    lens_matches = set()
     research_evidence = []
     generated_reports = {}
     inspected_reports = set()
@@ -700,6 +712,7 @@ async def run_agent_stream(
 
     # ── Select relevant tools ──
     last_user = routing.user_message_content(original_user_message)
+    allow_image_library = routing.requests_image_library(last_user)
     command_parts = last_user.strip().split(maxsplit=1)
     command = command_parts[0].casefold() if command_parts else ""
     command_text = command_parts[1] if len(command_parts) == 2 else ""
@@ -2577,6 +2590,12 @@ async def run_agent_stream(
             if tool_name == "rag_search":
                 exec_args["conversation_id"] = conversation_id
                 exec_args["_attachment_ids"] = document_scope
+            elif tool_name == "search_images":
+                exec_args["_conversation_id"] = conversation_id
+                exec_args["_allow_library"] = allow_image_library
+                exec_args["_images"] = images or ()
+            elif tool_name == "use_vision":
+                exec_args["_lens_matches"] = lens_matches
 
             if tool_name == "delegate_to_coder":
                 # Original wording is application-owned, never a model rewrite.
@@ -2789,6 +2808,22 @@ async def run_agent_stream(
             )
             if result.tool_call.output is None:
                 result.tool_call.output = result.output
+            if (
+                result.success
+                and tool_name == "search_images"
+                and result.tool_call.image_results
+            ):
+                lens_matches.update(
+                    item["id"] for item in result.tool_call.image_results
+                )
+                if (
+                    "use_vision" in available_tools
+                    and "use_vision" not in selected_tools
+                ):
+                    try:
+                        await load_tools(["use_vision"])
+                    except ToolArgumentError:
+                        pass
             result_ref = call["id"]
             if result_ref in result_store:
                 result_ref += "-" + uuid.uuid4().hex

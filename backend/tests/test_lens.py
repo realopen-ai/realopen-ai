@@ -4,6 +4,7 @@ from io import BytesIO
 from uuid import UUID
 
 from PIL import Image
+import pytest
 
 from app.services.lens.config import get_lens_config
 from app.services.lens.encoders import image_mime, image_rgb, model_version
@@ -45,3 +46,92 @@ def test_lens_exact_and_semantic_fallbacks_survive_missing_visual_index():
         semantic,
         visual,
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from app.agent.tools import search_images
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    ident = UUID(int=1)
+    find = AsyncMock(
+        return_value=[
+            {
+                "id": ident,
+                "filename": "screen.png",
+                "ocr_text": "ERR_CONN_1042",
+            }
+        ]
+    )
+    monkeypatch.setattr(search_images, "async_session_factory", session)
+    monkeypatch.setattr(search_images, "find_images", find)
+    tool = search_images.SearchImagesTool()
+    result = await tool.execute(query="screen", scope="library")
+    assert not result.success
+    find.assert_not_awaited()
+    result = await tool.execute(query="screen", _conversation_id=str(ident))
+    assert result.success
+    assert find.await_args.kwargs["conversation_id"] == ident
+    assert result.tool_call.image_results == [
+        {"id": str(ident), "filename": "screen.png", "excerpt": "ERR_CONN_1042"}
+    ]
+    # No conversation ID is supplied in a temporary chat. Read-only global
+    # search uses the staged reference attachment directly.
+    result = await tool.execute(
+        reference_image=1, _images=["YWJj"], _allow_library=True
+    )
+    assert result.success
+    assert find.await_args.kwargs["conversation_id"] is None
+    assert find.await_args.kwargs["reference"] == b"abc"
+
+
+def test_explicit_image_library_request_does_not_follow_instructions_in_a_quote():
+    from app.agent.routing import requests_image_library
+
+    assert requests_image_library("Could you find a screenshot in my photo library?")
+    assert requests_image_library("Cherche une capture dans ma bibliothèque d’images.")
+    assert requests_image_library("ابحث في مكتبة الصور عن لقطة شاشة")
+    assert not requests_image_library("Find the screenshot in this chat")
+    assert not requests_image_library('Summarize "search my image library"')
+
+
+@pytest.mark.asyncio
+async def test_lens_source_switches_default_on_and_filter_agent_search(monkeypatch):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from app.agent.tools import config_store, search_images
+    from app.services.lens.search import DOCUMENT_IMAGES
+
+    settings = config_store.merged_config("search_images", None)
+    switches = settings["custom"]["sources"]
+    assert len(switches) == 4 and all(switches.values())
+    assert config_store.merged_config(
+        "search_images", {"custom": {"sources": {DOCUMENT_IMAGES: False}}}
+    )["custom"]["sources"] == {**switches, DOCUMENT_IMAGES: False}
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    fake = AsyncMock(return_value=[])
+    monkeypatch.setattr(search_images, "async_session_factory", session)
+    monkeypatch.setattr(search_images, "find_images", fake)
+    monkeypatch.setattr(config_store, "get_tool_config", lambda _: settings)
+    tool = search_images.SearchImagesTool()
+    for source in switches:
+        switches[source] = source == DOCUMENT_IMAGES
+    await tool.execute(query="diagram", _conversation_id=UUID(int=1))
+    assert fake.await_args.kwargs["source_types"] == (DOCUMENT_IMAGES,)
+
+    switches[DOCUMENT_IMAGES] = False
+    fake.reset_mock()
+    result = await tool.execute(query="diagram", _conversation_id=UUID(int=1))
+    assert "turned off" in result.output
+    fake.assert_not_awaited()

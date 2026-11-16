@@ -8,14 +8,20 @@ the configured vision model (from profiles.yml).
 The inference timeout is configurable (Brain ▸ Tools ▸ Vision).
 """
 
+import asyncio
+import base64
 import logging
 import time
 from typing import Any, Dict, Optional, List
+from uuid import UUID
 
 import httpx
 
 from app.agent.base import BaseTool, ToolResult, ToolCall, ToolType, tool_registry
 from app.config import settings
+from app.db.models import LensImage
+from app.db.session import async_session_factory
+from app.services.lens.index import source_bytes
 from app.agent.tools.config_base import (
     ConfigField,
     ToolConfigDefinition,
@@ -34,7 +40,8 @@ class VisionTool(BaseTool):
     display_name = "Vision"
     description = (
         "Analyze an image using a vision model. "
-        "Automatically invoked when the user sends an image."
+        "Automatically invoked when the user sends an image. "
+        "To inspect a Lens result from this turn, pass its image_id as lens_image_id."
     )
     tool_type = ToolType.VISION
 
@@ -44,6 +51,10 @@ class VisionTool(BaseTool):
                 "type": "string",
                 "description": "What to look for in the image",
             },
+            "lens_image_id": {
+                "type": "string",
+                "description": "An image_id returned by search_images in the current turn.",
+            },
         }
 
     def get_required_params(self) -> List[str]:
@@ -52,12 +63,32 @@ class VisionTool(BaseTool):
     async def execute(
         self,
         *,
-        image_base64: str,
+        image_base64: Optional[str] = None,
         prompt: str = "Describe this image in detail.",
         model: Optional[str] = None,
+        lens_image_id: Optional[str] = None,
+        _lens_matches=(),
         **kwargs,
     ) -> ToolResult:
         """Send an image to the vision model and return the description."""
+        if lens_image_id is not None:
+            if lens_image_id not in _lens_matches:
+                return self.invalid_arguments(
+                    "Choose an image returned by search_images in this turn."
+                )
+            try:
+                async with async_session_factory() as db:
+                    image = await db.get(LensImage, UUID(lens_image_id))
+                    if image is None or image.error or image.thumbnail is None:
+                        raise FileNotFoundError
+                    data = await source_bytes(db, image)
+                image_base64 = (await asyncio.to_thread(base64.b64encode, data)).decode(
+                    "ascii"
+                )
+            except (ValueError, OSError):
+                return ToolResult(False, "That Lens image is no longer available.")
+        if not image_base64:
+            return self.invalid_arguments("Choose a Lens result to inspect.")
         start = time.time()
         # Model priority: explicit kwarg (agent passes the Brain ▸ Tools
         # override) → tool config override → profile default role.

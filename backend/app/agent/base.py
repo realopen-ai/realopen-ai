@@ -23,6 +23,7 @@ class ToolType(str, Enum):
     TOOL_OUTPUT = "tool_output"
     WEB_SEARCH = "websearch"
     WEB_FETCH = "webfetch"
+    IMAGE_SEARCH = "image_search"
     VISION = "vision"
     CODE_EXEC = "code_exec"
     SKILL = "skill"
@@ -52,6 +53,7 @@ class ToolCall:
     # Tool-specific fields
     query: Optional[str] = None  # web search
     web_results: Optional[List[Dict]] = None  # web search results
+    image_results: Optional[List[Dict]] = None  # Lens image search results
     gen_results: Optional[List[Dict]] = None  # media generation results
     language: Optional[str] = None  # code exec
     code: Optional[str] = None  # code exec
