@@ -90,15 +90,34 @@ async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
     assert find.await_args.kwargs["conversation_id"] is None
     assert find.await_args.kwargs["reference"] == b"abc"
 
+    find.reset_mock()
+    find.side_effect = [[], find.return_value]
+    result = await tool.execute(
+        query="captura de pantalla", _allow_library=True, _library_query="screen"
+    )
+    assert result.success
+    assert [call.kwargs["query"] for call in find.await_args_list] == [
+        "captura de pantalla",
+        "screen",
+    ]
+    assert all(call.kwargs["conversation_id"] is None for call in find.await_args_list)
 
-def test_explicit_image_library_request_does_not_follow_instructions_in_a_quote():
-    from app.agent.routing import requests_image_library
 
-    assert requests_image_library("Could you find a screenshot in my photo library?")
-    assert requests_image_library("Cherche une capture dans ma bibliothèque d’images.")
-    assert requests_image_library("ابحث في مكتبة الصور عن لقطة شاشة")
-    assert not requests_image_library("Find the screenshot in this chat")
-    assert not requests_image_library('Summarize "search my image library"')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ['{"scope":"chat"}', 'library', '{}'])
+async def test_image_library_search_requires_an_affirmative_scope(monkeypatch, reply):
+    from unittest.mock import AsyncMock
+
+    from app.agent.tools import search_images
+
+    monkeypatch.setattr(
+        search_images.providers,
+        "chat_once",
+        AsyncMock(return_value={"message": {"content": reply}}),
+    )
+    assert await search_images.classify_library_search(
+        'Summarize "search my image library"', "local-model", []
+    ) is None
 
 
 @pytest.mark.asyncio

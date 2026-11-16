@@ -1,9 +1,11 @@
 """Lexical and pgvector candidate retrieval for stored images."""
 
 import logging
+import re
 from statistics import median
 
-from sqlalchemy import and_, case, func, literal, or_, select
+from sqlalchemy import Text, and_, case, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from app.db.models import Document, DocumentChunk, LensImage, LensPassage, Message
 from .encoders import image_vectors, model_version, text_vectors
@@ -98,17 +100,18 @@ async def exact_candidates(db, query: str, conversation_id=None, source_types=No
         # Tesseract can insert spaces into identifiers, e.g. ERR_CONN_ 1042.
         compact = func.regexp_replace(ocr, r"\s*([_:/.-])\s*", r"\1", "g")
         matches.append(func.strpos(compact, needle) > 0)
+    matches.append(func.strpos(func.lower(Document.original_filename), needle) > 0)
+    phrase_match = or_(*matches)
+    terms = list(dict.fromkeys(re.findall(r"[^\W_]{3,}", needle)))
+    if len(terms) > 1:
+        ocr_words = func.regexp_split_to_array(ocr, "[^[:alnum:]]+", type_=ARRAY(Text))
+        matches.append(ocr_words.contains(terms))
     return list(
         await db.scalars(
             gallery_rows(conversation_id=conversation_id, source_types=source_types)
             .with_only_columns(LensImage.id)
-            .where(
-                or_(
-                    *matches,
-                    func.strpos(func.lower(Document.original_filename), needle) > 0,
-                )
-            )
-            .order_by(LensImage.id)
+            .where(or_(*matches))
+            .order_by(phrase_match.desc().nulls_last(), LensImage.id)
             .limit(DEPTH)
         )
     )

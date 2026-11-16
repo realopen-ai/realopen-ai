@@ -1686,7 +1686,18 @@ async def test_note_optional_provenance_is_normalized_before_preflight(
 
 
 @pytest.mark.asyncio
-async def test_lens_results_reach_the_model_and_can_be_inspected(agent, monkeypatch):
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Find the connection failed screenshot in my photo library",
+        "do u remember the diagram about human heart ?",
+        "¿Recuerdas el diagrama del corazón humano que te envié?",
+        "I meant the high level mind architecture",
+    ],
+)
+async def test_lens_results_reach_the_model_and_can_be_inspected(
+    agent, monkeypatch, request_text
+):
     from uuid import UUID
 
     from app.agent.tools import search_images, vision as vision_module
@@ -1725,6 +1736,18 @@ async def test_lens_results_reach_the_model_and_can_be_inspected(agent, monkeypa
         ]
     )
     monkeypatch.setattr(search_images, "find_images", find)
+    history = [
+        {"role": "user", "content": "Find the diagram I shared before."},
+        {"role": "assistant", "content": "I found the heart diagram."},
+    ]
+    classify = AsyncMock(
+        return_value={
+            "message": {
+                "content": '{"scope":"library","query":"high level mind architecture"}'
+            }
+        }
+    )
+    monkeypatch.setattr(providers, "chat_once", classify)
 
     captured = script(
         monkeypatch,
@@ -1732,7 +1755,10 @@ async def test_lens_results_reach_the_model_and_can_be_inspected(agent, monkeypa
             [
                 {
                     "tool_calls": [
-                        call({"query": "Connection failed"}, name="search_images")
+                        call(
+                            {"query": "Connection failed", "scope": "chat"},
+                            name="search_images",
+                        )
                     ],
                     "done": True,
                 }
@@ -1755,16 +1781,24 @@ async def test_lens_results_reach_the_model_and_can_be_inspected(agent, monkeypa
     builder = BlockBuilder()
     events = await run(
         [
+            *history,
             {
                 "role": "user",
-                "content": "Find the connection failed screenshot in my photo library",
+                "content": request_text,
             }
         ],
         temporary=True,
         on_tool_call_start=builder.on_tool_call_start,
         on_tool_call_update=builder.on_tool_call_update,
     )
+    classify.assert_awaited_once()
+    classifier_messages = classify.await_args.args[1]
+    assert [message["role"] for message in classifier_messages] == ["system", "user"]
+    assert json.loads(
+        classifier_messages[1]["content"].removeprefix("Classify this request: ")
+    ) == {"history": history, "request": request_text}
     assert find.await_args.kwargs["conversation_id"] is None
+    assert find.await_args.kwargs["query"] == "high level mind architecture"
     query_vision.assert_awaited_once_with("local-vision", "cG5n", "Read the banner")
     assert not (await vision.execute(lens_image_id=ident)).success
     assert query_vision.await_count == 1

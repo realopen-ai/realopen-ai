@@ -3,7 +3,9 @@
 import asyncio
 import base64
 import json
+import logging
 import time
+from dataclasses import dataclass
 from uuid import UUID
 
 from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
@@ -13,6 +15,8 @@ from app.agent.tools.config_base import (
     register_config,
 )
 from app.db.session import async_session_factory
+from app.prompts import get_prompt
+from app.services import providers
 from app.services.lens.config import get_lens_config
 from app.services.lens.search import (
     CHAT_ATTACHMENTS,
@@ -27,6 +31,7 @@ from app.services.model_manager.lens_models import recommended_lens_models
 
 MAX_MATCHES = 5
 EXCERPT_CHARS = 600
+logger = logging.getLogger(__name__)
 SOURCES = {
     CHAT_ATTACHMENTS: ("Chat attachments", "Images uploaded directly to saved chats."),
     WORKSPACE_FILES: (
@@ -44,6 +49,50 @@ SOURCES = {
 }
 
 
+@dataclass(frozen=True)
+class LibrarySearchIntent:
+    query: str
+    english_query: str
+
+
+async def classify_library_search(
+    request: str, model: str, history: list[dict[str, str]]
+) -> LibrarySearchIntent | None:
+    """Resolve a saved-image request against recent turns."""
+    if not request.strip():
+        return None
+    try:
+        response = await providers.chat_once(
+            model,
+            [
+                {"role": "system", "content": get_prompt("image_library_intent")},
+                {
+                    "role": "user",
+                    "content": "Classify this request: "
+                    + json.dumps(
+                        {"history": history, "request": request}, ensure_ascii=False
+                    ),
+                },
+            ],
+            timeout=20,
+            format="json",
+            think=False,
+            options={"temperature": 0, "num_predict": 160},
+        )
+        decision = json.loads(response["message"]["content"])
+        if isinstance(decision, dict) and decision.get("scope") == "library":
+            query, english_query = decision.get("query", ""), decision.get(
+                "english_query", ""
+            )
+            return LibrarySearchIntent(
+                query.strip()[:500] if isinstance(query, str) else "",
+                english_query.strip()[:500] if isinstance(english_query, str) else "",
+            )
+    except Exception as exc:
+        logger.debug("Image library intent check failed (%s)", type(exc).__name__)
+    return None
+
+
 def _excerpt(text: str, query: str) -> str:
     text = " ".join(text.split())
     offset = text.lower().find(query.lower()) if query else -1
@@ -56,9 +105,12 @@ class SearchImagesTool(BaseTool):
     name = "search_images"
     display_name = "Search Images"
     description = (
-        "Find saved images and screenshots by visual description, filename, or visible text. "
-        "Default to images saved in this chat. Use library scope only if the user asks to "
-        "search their saved image library or past chats. To find similar images from an image "
+        "Find or recall previously shared images, diagrams, and screenshots by visual "
+        "description, filename, or visible text. Default to this chat. Use library scope "
+        "when the user asks to search saved images or recall an image from past chats. "
+        "Use the latest subject when the user continues or corrects an image lookup. "
+        "Report only the scope "
+        "actually searched. To find similar images from an image "
         "attached to this turn, provide its 1-based reference_image number instead of a query. "
         "When more detail is needed, pass a returned image_id to the Vision tool as lens_image_id."
     )
@@ -74,7 +126,7 @@ class SearchImagesTool(BaseTool):
             "scope": {
                 "type": "string",
                 "enum": ["chat", "library"],
-                "description": "Search this chat, or the saved library when explicitly requested.",
+                "description": "Search this chat, or the saved library for a saved-image lookup or recall request.",
             },
             "reference_image": {
                 "type": "integer",
@@ -94,6 +146,7 @@ class SearchImagesTool(BaseTool):
         reference_image=None,
         _conversation_id=None,
         _allow_library=False,
+        _library_query="",
         _images=(),
         **kwargs,
     ):
@@ -128,7 +181,8 @@ class SearchImagesTool(BaseTool):
 
         if scope == "library" and not _allow_library:
             return finish(
-                "The user must request a search of the saved image library.",
+                "Library scope is unavailable for this request. Use chat scope or ask "
+                "the user if they want to search saved images across chats.",
                 success=False,
             )
         if scope == "chat" and not _conversation_id:
@@ -167,18 +221,27 @@ class SearchImagesTool(BaseTool):
 
         try:
             async with async_session_factory() as db:
-                matches = await find_images(
-                    db,
-                    get_lens_config(),
-                    query=query,
-                    reference=reference,
-                    conversation_id=(
+                config = get_lens_config()
+                options = {
+                    "conversation_id": (
                         UUID(str(_conversation_id)) if scope == "chat" else None
                     ),
-                    source_types=source_types,
-                    limit=MAX_MATCHES,
-                    include_ocr=True,
+                    "source_types": source_types,
+                    "limit": MAX_MATCHES,
+                    "include_ocr": True,
+                }
+                matches = await find_images(
+                    db, config, query=query, reference=reference, **options
                 )
+                if (
+                    not matches
+                    and scope == "library"
+                    and query
+                    and _library_query
+                    and query.casefold() != _library_query.casefold()
+                ):
+                    query = _library_query
+                    matches = await find_images(db, config, query=query, **options)
         except LensVisualUnavailable as exc:
             return finish(str(exc), success=False)
         except (ValueError, OSError):

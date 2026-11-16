@@ -45,6 +45,7 @@ from app.agent.argument_repair import (
 )
 from app.agent.tools import config_store
 from app.agent.tools.rag_search import configured_retrieval
+from app.agent.tools.search_images import classify_library_search
 from app.agent.tools.report_gen import generation_key as report_generation_key
 from app.agent.artifact_edit_state import ArtifactEditState
 from app.agent import routing
@@ -703,6 +704,8 @@ async def run_agent_stream(
     result_store = {}
     result_metadata_store = {}
     lens_matches = set()
+    image_library_checked = False
+    image_library_intent = None
     research_evidence = []
     generated_reports = {}
     inspected_reports = set()
@@ -712,7 +715,6 @@ async def run_agent_stream(
 
     # ── Select relevant tools ──
     last_user = routing.user_message_content(original_user_message)
-    allow_image_library = routing.requests_image_library(last_user)
     command_parts = last_user.strip().split(maxsplit=1)
     command = command_parts[0].casefold() if command_parts else ""
     command_text = command_parts[1] if len(command_parts) == 2 else ""
@@ -738,6 +740,14 @@ async def run_agent_stream(
                     **(message.get("metadata") or {}),
                     "agent_context": True,
                 }
+    # Use the chat transcript before adding application context and tool results.
+    image_search_history = [
+        {"role": message["role"], "content": message["content"][:600]}
+        for message in messages[: request_index or 0]
+        if message.get("role") in {"user", "assistant"}
+        and isinstance(message.get("content"), str)
+        and not (message.get("metadata") or {}).get("agent_context")
+    ][-8:]
     selected_tools = _select_tools(last_user)
     selected_tools.intersection_update(available_tools)
     skill_role = "voice" if interaction_mode == "voice" else "general"
@@ -2608,8 +2618,21 @@ async def run_agent_stream(
                 exec_args["conversation_id"] = conversation_id
                 exec_args["_attachment_ids"] = document_scope
             elif tool_name == "search_images":
+                if not image_library_checked:
+                    image_library_intent = await classify_library_search(
+                        last_user, resolved_model, image_search_history
+                    )
+                    image_library_checked = True
+                if image_library_intent is not None:
+                    exec_args["scope"] = "library"
+                    if (
+                        exec_args.get("reference_image") is None
+                        and image_library_intent.query
+                    ):
+                        exec_args["query"] = image_library_intent.query
+                    exec_args["_library_query"] = image_library_intent.english_query
                 exec_args["_conversation_id"] = conversation_id
-                exec_args["_allow_library"] = allow_image_library
+                exec_args["_allow_library"] = image_library_intent is not None
                 exec_args["_images"] = images or ()
             elif tool_name == "use_vision":
                 exec_args["_lens_matches"] = lens_matches
