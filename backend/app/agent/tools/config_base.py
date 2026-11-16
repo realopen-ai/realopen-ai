@@ -134,6 +134,7 @@ class ToolConfigDefinition:
         # fallback). None → the general chat model.
         model_task_slot: Optional[str] = None,
         model_fallback_role: Optional[str] = None,
+        profile_models: Optional[Callable[[], List[Dict[str, str]]]] = None,
     ):
         self.tool_name = tool_name
         self.display_name = display_name
@@ -144,6 +145,8 @@ class ToolConfigDefinition:
         self.validate_custom = validate_custom
         self.model_task_slot = model_task_slot
         self.model_fallback_role = model_fallback_role
+        # Profile-managed models are displayed read-only and bypass chat overrides.
+        self.profile_models = profile_models
 
     def universal_defaults(self) -> Dict[str, Any]:
         """Universal settings defaults, preserving current behavior."""

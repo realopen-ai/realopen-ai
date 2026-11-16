@@ -726,6 +726,33 @@ class TestSemantics:
 
 class TestModelOverride:
     @pytest.mark.asyncio
+    async def test_lens_exposes_profile_models_and_ignores_old_override(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setattr("app.config.settings.HARDWARE_PROFILE", "apple_large")
+        monkeypatch.setitem(
+            config_store._cache,
+            "search_images",
+            {"model": "qwen3:8b", "custom": {"sources": {"generated_images": False}}},
+        )
+        response = client.get("/api/tools/search_images")
+        assert response.status_code == 200
+        view = response.json()
+        assert view["profile_models"] == [
+            {"title": "SigLIP2 Base Patch16 224", "precision": "FP32"},
+            {"title": "Multilingual E5 Small", "precision": "INT8"},
+        ]
+        assert view["effective_model"] is None
+        assert view["config"]["model"] is None
+        assert view["config"]["custom"]["sources"]["generated_images"] is False
+        assert await config_store.tool_model_override("search_images") is None
+        rejected = client.put(
+            "/api/tools/search_images", json={"config": {"model": "qwen3:8b"}}
+        )
+        assert rejected.status_code == 400
+        assert "hardware profile" in rejected.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_override_respected_in_resolution(self, client):
         client.put("/api/tools/use_websearch", json={"config": {"model": "qwen3:8b"}})
         assert await config_store.tool_model_override("use_websearch") == "qwen3:8b"

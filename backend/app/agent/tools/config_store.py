@@ -84,6 +84,8 @@ def merged_config(tool_name: str, stored: Optional[Dict[str, Any]]) -> Dict[str,
     if not stored:
         return defaults
     merged = _deep_merge(defaults, stored)
+    if definition.profile_models is not None:
+        merged["model"] = None
     if "keyword_gate" in stored and "tags" not in stored:
         merged["tags"] = tags_from_gate(stored.get("keyword_gate"))
     merged.pop("keyword_gate", None)
@@ -277,6 +279,8 @@ async def _validate_override_model(model_id: str) -> bool:
 
 async def tool_model_override(tool_name: str) -> Optional[str]:
     """The tool's model override, or None when unset/invalid (inherit)."""
+    if definition_for_tool(tool_name).profile_models is not None:
+        return None
     cfg = get_tool_config(tool_name)
     model = (cfg or {}).get("model")
     if not model or not isinstance(model, str):
@@ -402,6 +406,10 @@ async def update_tool_config(tool_name: str, patch: Dict[str, Any]) -> Dict[str,
     if "model" in patch:
         model = patch["model"]
         if model is not None:
+            if definition_for_tool(tool_name).profile_models is not None:
+                raise ConfigUpdateError(
+                    "This tool uses models selected by the hardware profile."
+                )
             if not isinstance(model, str):
                 raise ConfigUpdateError("'model' must be a string or null")
             model = model.strip()
@@ -514,9 +522,13 @@ async def tool_api_view(tool_name: str) -> Optional[Dict[str, Any]]:
     # Effective model (what the tool actually uses right now)
     task = getattr(definition, "model_task_slot", None)
     fallback = getattr(definition, "model_fallback_role", None)
-    view["effective_model"] = await resolve_tool_model(
-        tool_name, task=task, fallback_role=fallback
-    )
+    if definition.profile_models is None:
+        view["effective_model"] = await resolve_tool_model(
+            tool_name, task=task, fallback_role=fallback
+        )
+    else:
+        view["effective_model"] = None
+        view["profile_models"] = definition.profile_models()
 
     # Secret statuses (masked, never plaintext)
     if definition.secrets:

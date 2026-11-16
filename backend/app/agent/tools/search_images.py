@@ -23,6 +23,7 @@ from app.services.lens.search import (
     find_images,
 )
 from app.services.ocr import MAX_IMAGE_BYTES
+from app.services.model_manager.lens_models import recommended_lens_models
 
 MAX_MATCHES = 5
 EXCERPT_CHARS = 600
@@ -235,11 +236,19 @@ def _validate_sources(custom):
     return custom
 
 
+def _profile_models():
+    return [
+        {"title": model["title"], "precision": model["variant"].upper()}
+        for model in recommended_lens_models()
+    ]
+
+
 register_config(
     ToolConfigDefinition(
         tool_name=SearchImagesTool.name,
         display_name=SearchImagesTool.display_name,
         description=SearchImagesTool.description,
+        profile_models=_profile_models,
         custom_defaults={"sources": dict.fromkeys(SOURCES, True)},
         custom_schema=[
             {
