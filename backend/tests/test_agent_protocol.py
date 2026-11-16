@@ -125,12 +125,23 @@ async def run(messages=None, model="qwen3:4b", **kwargs):
             ["Visible details for image 1", TimeoutError("Vision timed out")],
             "What is the total on the second receipt?",
         ),
-        ("", [""], ["Photo of a tree"], "Describe this image in detail."),
+        (
+            "",
+            [""],
+            ["Photo of a tree"],
+            "Describe this image in detail. What do you see?",
+        ),
         (
             "What does this show?",
             [RuntimeError("Tesseract is not installed")],
             ["An application window"],
             "What does this show?",
+        ),
+        (
+            "explain this schema in details",
+            ["Diagram of human heart"],
+            ["Diagram showing the chambers of the heart"],
+            "explain this schema in details",
         ),
     ],
 )
@@ -180,6 +191,13 @@ async def test_attachment_vision_uses_the_current_request(
 
     assert query.await_count == len(images)
     context = json.dumps(captured[0]["messages"])
+    prompt_messages = captured[0]["messages"]
+    request = prompt_messages[-1]["content"]
+    assert "APPLICATION TOOL PROTOCOL" in prompt_messages[-3]["content"]
+    assert prompt_messages[-2]["content"] == "Application upload context."
+    assert "images attached to this request" in request
+    assert "'this schema' refer to what the attached images depict" in request
+    assert request.endswith(f"User request:\n{expected_request}")
     for index, (call_args, image) in enumerate(zip(query.await_args_list, images), 1):
         model, payload, prompt = call_args.args
         assert model == "local-vision"
@@ -187,7 +205,7 @@ async def test_attachment_vision_uses_the_current_request(
         assert expected_request in prompt
         assert f"image {index} of {len(images)}" in prompt
         assert "Application upload context." not in prompt
-        assert f"image {index} of {len(images)} analysis" in context
+        assert f"image {index} of {len(images)} analysis" in request
         assert str(vision_results[index - 1]) in context
         extracted = ocr_results[index - 1]
         if isinstance(extracted, str) and extracted:

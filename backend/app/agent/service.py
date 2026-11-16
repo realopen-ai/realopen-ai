@@ -1261,6 +1261,7 @@ async def run_agent_stream(
         }
     )
 
+    attachment_context: List[Dict[str, Any]] = []
     # ── Auto-vision for image attachments ──
     if (
         images
@@ -1311,7 +1312,7 @@ async def run_agent_stream(
                     evidence = untrusted_context_message(
                         f"image {i + 1} of {len(images)} OCR text", ocr_text
                     )
-                    context_messages.append(evidence)
+                    attachment_context.append(evidence)
                     prompt += "\n\n" + evidence["content"]
 
                 observe(
@@ -1352,7 +1353,7 @@ async def run_agent_stream(
                         {"tool_call": _tool_call_to_dict(result.tool_call)},
                     )
 
-                    context_messages.append(
+                    attachment_context.append(
                         untrusted_context_message(
                             f"image {i + 1} of {len(images)} analysis", result.output
                         )
@@ -1559,10 +1560,6 @@ async def run_agent_stream(
         # Inject once before the current task; later rounds extend this same
         # working transcript, including any compaction summaries.
         if round_number == 0:
-            injected = [
-                {**cm, "metadata": {**cm.get("metadata", {}), "agent_context": True}}
-                for cm in context_messages
-            ]
             appended_context = [
                 m for m in messages if (m.get("metadata") or {}).get("agent_context")
             ]
@@ -1571,7 +1568,6 @@ async def run_agent_stream(
                 for m in messages
                 if not (m.get("metadata") or {}).get("agent_context")
             ]
-            injected.extend(appended_context)
             insertion = next(
                 (
                     i
@@ -1580,6 +1576,27 @@ async def run_agent_stream(
                 ),
                 len(messages),
             )
+            injected_context = [*context_messages, *appended_context]
+            if attachment_context:
+                if insertion < len(messages):
+                    # Some models interpret preceding user messages as history.
+                    evidence = "\n\n".join(item["content"] for item in attachment_context)
+                    messages[insertion]["content"] = (
+                        "The evidence below describes the images attached to this "
+                        "request. Unless the user names a different source, "
+                        "references such as 'this diagram' or 'this schema' refer "
+                        "to what the attached images depict. Answer the request "
+                        "using the image evidence even if the user calls it "
+                        "something different.\n\n"
+                        f"{evidence}\n\n"
+                        f"User request:\n{vision_request}"
+                    )
+                else:
+                    injected_context.extend(attachment_context)
+            injected = [
+                {**cm, "metadata": {**cm.get("metadata", {}), "agent_context": True}}
+                for cm in injected_context
+            ]
             messages[insertion:insertion] = injected
             messages.insert(0, {"role": "system", "content": system_prompt})
         if pending_tool_contexts:
@@ -1725,7 +1742,7 @@ async def run_agent_stream(
                     ollama_messages,
                     inference_tools,
                     {repair_name} if repair_schema else selected_tools,
-                    context_messages,
+                    [*context_messages, *attachment_context],
                     {
                         "think": False if repair_schema else think,
                         "max_output_tokens": budget.output,
