@@ -181,6 +181,71 @@ export function ModelsTab() {
           ))}
         </div>
       </div>
+      {tab === "installed" && !!inventory?.lens_models?.length && (
+        <section
+          aria-label={t("models.lens.title")}
+          className="rounded-xl border border-border"
+        >
+          <div className="px-4 py-3">
+            <h3 className="text-sm font-medium">{t("models.lens.title")}</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("models.lens.description")}
+            </p>
+          </div>
+          {inventory.lens_models.map(({ title, size, ...request }) => {
+            const installed = inventory.models.some(
+              (model) =>
+                model.runtime === request.runtime &&
+                model.name === request.name,
+            );
+            const active = jobs.some(
+              (job) =>
+                job.request.runtime === request.runtime &&
+                job.request.name === request.name &&
+                activeModelJob(job.status),
+            );
+            return (
+              <div
+                key={request.name}
+                className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3"
+              >
+                <div>
+                  <p className="text-sm">{title}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {request.variant.toUpperCase()} · {modelBytes(size)}
+                  </p>
+                </div>
+                {installed ? (
+                  <span className="text-xs text-muted-foreground">
+                    {t("models.installed")}
+                  </span>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null || active}
+                    onClick={() =>
+                      void act(request.name, async () => {
+                        await modelManager.install(request);
+                        setJobs((await modelManager.jobs()).jobs);
+                      })
+                    }
+                  >
+                    {active ? (
+                      <Loader2
+                        aria-label={t("models.lens.install")}
+                        className="h-4 w-4 animate-spin"
+                      />
+                    ) : (
+                      t("models.lens.install")
+                    )}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      )}
       {error && (
         <div
           role="alert"

@@ -13,7 +13,8 @@ export type SideActivity =
   | { kind: "quiz"; id: string; title: string; attemptId?: string }
   | { kind: "flashcards"; id: string; title: string }
   | { kind: "citation"; source: SourceLocation }
-  | { kind: "file"; file: FilePreview };
+  | { kind: "file"; file: FilePreview }
+  | { kind: "lens-image"; id: string; title: string };
 
 export function sideTabRouteKey({
   pathname,
@@ -27,6 +28,7 @@ export function sideTabRouteKey({
 
 export function sideActivityKey(activity: SideActivity): string {
   switch (activity.kind) {
+    case "lens-image":
     case "quiz":
     case "flashcards":
       return `${activity.kind}:${activity.id}`;

@@ -34,6 +34,7 @@ import {
 } from "@/components/file-explorer/FileExplorer";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/store/chatStore";
+import { LensImagePreview } from "@/components/workspace/LensImagePreview";
 import { CreateSandboxDialog } from "@/components/workspace/SandboxDialogs";
 import {
   Panel,
@@ -239,7 +240,9 @@ export function RightPanel({
                     ? t("learn.flashcards")
                     : activity.kind === "file"
                       ? activity.file.filename
-                      : t("learn.viewSource");
+                      : activity.kind === "lens-image"
+                        ? activity.title
+                        : t("learn.viewSource");
               const title =
                 activity.kind === "quiz" || activity.kind === "flashcards"
                   ? activity.title
@@ -578,6 +581,9 @@ export function RightPanel({
                 onClose={onClose}
                 shortcutsEnabled={selected && visible}
               />
+            )}
+            {activity.kind === "lens-image" && (
+              <LensImagePreview id={activity.id} />
             )}
             {activity.kind === "file" && (
               <FileViewerModal

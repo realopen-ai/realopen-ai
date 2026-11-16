@@ -14,6 +14,7 @@ import { PageContainer, PageHeader } from "@/components/ui/primitives";
 import { TemplatesSection } from "@/components/workspace/TemplatesSection";
 import { GeneratedFilesSection } from "@/components/workspace/GeneratedFilesSection";
 import { AssetsSection } from "@/components/workspace/AssetsSection";
+import { ImagesSection } from "@/components/workspace/ImagesSection";
 import { DocumentsSection } from "@/components/workspace/DocumentsSection";
 import { SandboxesSection } from "@/components/workspace/SandboxesSection";
 import { ArtifactsSection } from "@/components/workspace/ArtifactsSection";
@@ -46,6 +47,13 @@ const folders: {
     icon: Box,
     iconClass: "text-cyan-600 dark:text-cyan-400",
     descKey: "workspace.sandboxes.shortDescription",
+  },
+  {
+    key: "images",
+    labelKey: "lens.title",
+    icon: FileImage,
+    iconClass: "text-violet-600 dark:text-violet-400",
+    descKey: "lens.description",
   },
   {
     key: "documents",
@@ -89,6 +97,7 @@ const sectionMeta: Record<
     titleKey: "workspace.sandboxes",
     descriptionKey: "workspace.sandboxes.description",
   },
+  images: { titleKey: "lens.title", descriptionKey: "lens.description" },
   documents: {
     titleKey: "workspace.documents",
     descriptionKey: "workspace.documents.description",
@@ -166,6 +175,14 @@ export function WorkspacePage() {
     return (
       <SectionShell view="sandboxes" onBack={() => navigate("/workspace")}>
         <SandboxesSection />
+      </SectionShell>
+    );
+  }
+
+  if (view === "images") {
+    return (
+      <SectionShell view="images" onBack={() => navigate("/workspace")}>
+        <ImagesSection />
       </SectionShell>
     );
   }
