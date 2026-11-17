@@ -65,6 +65,33 @@ def test_config_precedence_and_path_translation(tmp_path):
     assert cfg.env["REALOPEN_STATE_DIR"] == str(tmp_path / "data/state")
 
 
+def test_macos_cloud_python_uses_checkout_local_cache(tmp_path, monkeypatch):
+    from native import config as native_config
+
+    home = tmp_path / "home"
+    root = tmp_path / "checkout"
+    monkeypatch.setattr(native_config.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(native_config.Path, "home", lambda: home)
+    healthy = Config(root, {})
+    healthy.python.parent.mkdir(parents=True)
+    healthy.python.touch()
+    monkeypatch.setattr(native_config, "contains_cloud_placeholders", lambda path: False)
+    assert Config(root, {}).python == healthy.python
+
+    monkeypatch.setattr(native_config, "contains_cloud_placeholders", lambda path: True)
+    recovered = Config(root, {})
+    assert recovered.recovering_python
+    assert recovered.python.is_relative_to(home / "Library/Caches")
+    assert recovered.data == root / "data"
+    assert Path(recovered.env["PIP_CACHE_DIR"]).is_relative_to(home / "Library/Caches")
+    recovered.python.parent.mkdir(parents=True)
+    recovered.python.touch()
+    monkeypatch.setattr(native_config, "contains_cloud_placeholders", lambda path: False)
+    assert Config(root, {}).python == recovered.python
+    assert not Config(root, {}).recovering_python
+    assert Config(root, {"NATIVE_PYTHON": str(healthy.python)}).python == healthy.python
+
+
 @pytest.mark.parametrize(
     "module,function,suffix",
     [

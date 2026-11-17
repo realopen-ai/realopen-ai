@@ -48,6 +48,11 @@ def launch(cfg, dev=False, install=True, migrate=False):
             )
         if install:
             setup(cfg, dev)
+        elif cfg.recovering_python:
+            raise RuntimeError(
+                "Native Python contains macOS cloud placeholders. "
+                "Run make native-setup to create a local Python environment."
+            )
         processes = Processes(cfg.data)
         stop = threading.Event()
         for signum in (signal.SIGINT, signal.SIGTERM):

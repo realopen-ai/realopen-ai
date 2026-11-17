@@ -245,6 +245,11 @@ class Installer:
 
     def app(self, dev=False):
         cfg = self.cfg
+        if cfg.recovering_python:
+            log(
+                f"Native Python contains macOS cloud placeholders. Rebuilding it in {cfg.python.parent.parent}.",
+                "warning",
+            )
         if not cfg.python.exists():
             if cfg.custom_python:
                 raise RuntimeError("Configured NATIVE_PYTHON does not exist")
