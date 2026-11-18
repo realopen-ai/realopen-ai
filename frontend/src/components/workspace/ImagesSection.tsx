@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { ImagePlus, Loader2, RefreshCw, Search, X } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
-import { lensClient, type LensImage } from "@/api/lensClient";
+import { Link } from "react-router-dom";
+import { lensClient, lensViewerImage, type LensImage } from "@/api/lensClient";
 import { Button } from "@/components/ui/button";
-import { sideTabRouteKey } from "@/lib/rightPanelTabs";
 import { useT } from "@/store/settingsStore";
-import { useUIStore } from "@/store/uiStore";
+import { useImageViewerStore } from "@/store/imageViewerStore";
 
 type Results = Awaited<ReturnType<typeof lensClient.list>>;
 
 export function ImagesSection() {
   const t = useT();
-  const routeKey = sideTabRouteKey(useLocation());
-  const openSideTab = useUIStore((s) => s.openSideTab);
+  const openViewer = useImageViewerStore((s) => s.open);
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [reference, setReference] = useState<File | null>(null);
@@ -225,15 +223,16 @@ export function ImagesSection() {
           </p>
         )}
         <div className="grid grid-cols-2 gap-3 min-[1100px]:grid-cols-[repeat(auto-fill,minmax(170px,1fr))]">
-          {result?.items.map((image: LensImage) => (
+          {result?.items.map((image: LensImage, index) => (
             <button
               key={image.id}
               type="button"
               title={image.filename}
-              onClick={() =>
-                openSideTab(
-                  { kind: "lens-image", id: image.id, title: image.filename },
-                  routeKey,
+              onClick={(event) =>
+                openViewer(
+                  result.items.map(lensViewerImage),
+                  index,
+                  event.currentTarget,
                 )
               }
               className="overflow-hidden rounded-xl border border-border bg-secondary/40 text-start transition-colors hover:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

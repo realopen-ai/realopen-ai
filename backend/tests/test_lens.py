@@ -49,6 +49,74 @@ def test_lens_exact_and_semantic_fallbacks_survive_missing_visual_index():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [
+        ("Visible text", 200),
+        ("", 200),
+        (RuntimeError("missing"), 503),
+        (ValueError("invalid"), 422),
+    ],
+)
+async def test_viewer_ocr_processes_uploads_without_a_database(monkeypatch, result, status):
+    import httpx
+    from fastapi import FastAPI
+    from unittest.mock import AsyncMock
+    from app.api import lens
+
+    with Image.new("RGB", (12, 8), "white") as image, BytesIO() as buffer:
+        image.save(buffer, "PNG")
+        data = buffer.getvalue()
+    recognize = AsyncMock(
+        side_effect=result if isinstance(result, Exception) else None,
+        return_value=lens.ocr.OCRResult(result, "tesseract", "eng"),
+    )
+    monkeypatch.setattr(lens.ocr, "default_language", lambda: "eng")
+    monkeypatch.setattr(lens.ocr, "recognize", recognize)
+    app = FastAPI()
+    app.include_router(lens.router, prefix="/api")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/lens/ocr", files={"file": ("image.png", data, "image/png")}
+        )
+    assert response.status_code == status
+    recognize.assert_awaited_once_with(data, "eng")
+    if status == 200:
+        assert response.json() == {"text": result}
+
+
+@pytest.mark.asyncio
+async def test_lens_download_preserves_the_original_image_and_its_format(monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.api import lens
+
+    with Image.new("RGB", (12, 8), "red") as image, BytesIO() as buffer:
+        image.save(buffer, "PNG")
+        original = buffer.getvalue()
+    db = SimpleNamespace(get=AsyncMock(return_value=object()))
+    monkeypatch.setattr(
+        lens, "image_detail", AsyncMock(return_value={"filename": "source.pdf"})
+    )
+    monkeypatch.setattr(lens, "source_bytes", AsyncMock(return_value=original))
+    app = FastAPI()
+    app.include_router(lens.router, prefix="/api")
+    app.dependency_overrides[lens.get_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/lens/images/{UUID(int=1)}/download")
+    assert response.content == original
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"].endswith("source.png")
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
 async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock

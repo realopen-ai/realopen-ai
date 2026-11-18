@@ -1,3 +1,6 @@
+import { sourceLocationUrl } from "@/lib/sourceNavigation";
+import type { ViewerImage } from "@/store/imageViewerStore";
+
 export interface LensImage {
   id: string;
   filename: string;
@@ -31,7 +34,7 @@ interface LensState {
   e5_installed: boolean;
 }
 
-interface LensResults {
+export interface LensResults {
   items: LensImage[];
   more?: boolean;
   state: LensState;
@@ -64,8 +67,35 @@ export const lensClient = {
       signal,
     });
   },
+  extractText: (file: File, signal?: AbortSignal) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<{ text: string }>("/api/lens/ocr", {
+      method: "POST",
+      body,
+      signal,
+    });
+  },
   detail: (id: string, signal?: AbortSignal) =>
     request<LensImage>(imageUrl(id), { signal }),
   thumbnail: (id: string) => `${imageUrl(id)}/thumbnail`,
   preview: (id: string) => `${imageUrl(id)}/preview`,
+  download: (id: string) => `${imageUrl(id)}/download`,
 };
+export function lensViewerImage(image: LensImage): ViewerImage {
+  return {
+    src: lensClient.preview(image.id),
+    downloadSrc: lensClient.download(image.id),
+    lensId: image.id,
+    filename: image.filename,
+    ocrText: image.ocr_text,
+    sourceUrl:
+      image.document_chunk_id || !image.conversation_id
+        ? sourceLocationUrl({
+            documentId: image.document_id,
+            page: image.page_number,
+            chunk: image.document_chunk_id,
+          })
+        : `/${image.conversation_id}`,
+  };
+}

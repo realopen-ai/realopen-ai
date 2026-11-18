@@ -142,6 +142,8 @@ export interface Message {
   hasImage?: boolean;
   hasDocument?: boolean;
   imageCount?: number;
+  imageAttachments?: MessageDTO["imageAttachments"];
+  localImageFiles?: File[];
   documentCount?: number;
   selectedSourceIds?: string[];
   pinnedArtifact?: PinnedArtifact;
@@ -467,6 +469,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
+    imageAttachments: dto.imageAttachments,
     documentCount: dto.documentCount,
     selectedSourceIds: dto.selectedSourceIds,
     pinnedArtifact: dto.pinnedArtifact,

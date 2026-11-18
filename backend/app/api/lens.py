@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -15,14 +17,38 @@ from app.services.lens import search
 from app.services.lens.config import get_lens_config
 from app.services.lens.encoders import (
     image_rgb,
+    image_mime,
     model_version,
 )
 from app.services.lens.index import source_bytes
+from app.services import ocr
 from app.services.model_manager.lens_models import model_paths
 from app.services.ocr import MAX_IMAGE_BYTES
 
 router = APIRouter(prefix="/lens", tags=["lens"])
 logger = logging.getLogger(__name__)
+
+
+@router.post("/ocr")
+async def extract_image_text(file: UploadFile = File(...)):
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(422, "Upload a supported image under 20 MiB.")
+    if await asyncio.to_thread(image_mime, data) is None:
+        raise HTTPException(422, "Upload a supported image under 20 megapixels.")
+    try:
+        language = await asyncio.to_thread(ocr.default_language)
+        result = await ocr.recognize(data, language)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(
+            422, "The image could not be read for text extraction."
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            503,
+            "Text extraction is unavailable. Check Tesseract in Settings → Dependencies.",
+        ) from exc
+    return {"text": result.text}
 
 
 async def _state(db, config):
@@ -141,6 +167,39 @@ async def image_detail(ident: UUID, db: AsyncSession = Depends(get_db)):
     if not row:
         raise HTTPException(404, "Image not found.")
     return search.gallery_item(row)
+
+
+@router.get("/images/{ident}/download")
+async def image_download(ident: UUID, db: AsyncSession = Depends(get_db)):
+    image = await image_detail(ident, db)
+    row = await db.get(LensImage, ident)
+    if row is None:
+        raise HTTPException(404, "Image not found.")
+    try:
+        data = await source_bytes(db, row)
+        mime = await asyncio.to_thread(image_mime, data)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(404, "Image not found.") from exc
+    if mime is None:
+        raise HTTPException(404, "Image not found.")
+    extension = {
+        "image/jpeg": "jpg",
+        "image/mpo": "mpo",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/tiff": "tiff",
+        "image/bmp": "bmp",
+        "image/gif": "gif",
+    }[mime]
+    filename = Path(image["filename"]).stem + "." + extension
+    return Response(
+        data,
+        media_type=mime,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+        },
+    )
 
 
 @router.get("/images/{ident}/thumbnail")

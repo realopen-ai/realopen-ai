@@ -35,6 +35,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { useLocation } from "react-router-dom";
+import { useImageViewerStore } from "@/store/imageViewerStore";
+import { useUIStore } from "@/store/uiStore";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -361,6 +363,8 @@ export function InputArea({
   saving?: boolean;
 }) {
   const canAttach = !sourceGrounded;
+  const composerImage = useImageViewerStore((s) => s.composerImage);
+  const mobileTab = useUIStore((s) => s.mobileTab);
   const location = useLocation();
   const consumedDraft = useRef<string | null>(null);
   const artifactDraft = (
@@ -472,6 +476,30 @@ export function InputArea({
   const setSelectedModel = useChatStore((s) => s.setSelectedModel);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (
+      !composerImage ||
+      !canAttach ||
+      saving ||
+      composerImage.conversationId !== (conversationId ?? null) ||
+      !textareaRef.current?.getClientRects().length ||
+      textareaRef.current.closest("[inert]") ||
+      useImageViewerStore.getState().composerImage !== composerImage
+    )
+      return;
+    const file = composerImage.file;
+    const previewUrl = URL.createObjectURL(file);
+    setAttachments((prev) => [...prev, { file, type: "image", previewUrl }]);
+    useImageViewerStore.getState().consumeAttachment();
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [
+    composerImage,
+    canAttach,
+    saving,
+    conversationId,
+    location.pathname,
+    mobileTab,
+  ]);
   useEffect(() => {
     if (!artifactDraft) {
       if (consumedDraft.current !== null) {

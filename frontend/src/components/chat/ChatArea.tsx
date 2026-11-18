@@ -719,6 +719,7 @@ export function ChatArea({
         hasImage: !!(options?.images && options.images.length > 0),
         hasDocument: !!(options?.documents && options.documents.length > 0),
         imageCount: options?.images?.length ?? 0,
+        localImageFiles: options?.images,
         documentCount: options?.documents?.length ?? 0,
         selectedSourceIds: options?.selectedSourceIds,
         pinnedArtifact: options?.pinnedArtifact,

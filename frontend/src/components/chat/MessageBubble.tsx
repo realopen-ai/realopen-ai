@@ -62,6 +62,7 @@ import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
 import { artifactCitationLocations } from "@/lib/sourceNavigation";
 import { LensSearchDetail } from "@/components/chat/LensSearchDetail";
+import { MessageImages } from "@/components/chat/MessageImages";
 import { Link, useLocation } from "react-router-dom";
 import { sideTabRouteKey, type FilePreview } from "@/lib/rightPanelTabs";
 
@@ -2054,10 +2055,7 @@ export function MessageBubble({
               </span>
             </div>
           )}
-          {/* Image/document indicators + voice-modality badge */}
-          {(message.hasImage ||
-            message.hasDocument ||
-            message.modality === "voice") && (
+          {(message.hasDocument || message.modality === "voice") && (
             <div className="flex gap-1.5 mb-1.5 justify-end">
               {message.modality === "voice" && (
                 <span
@@ -2066,13 +2064,6 @@ export function MessageBubble({
                 >
                   <Mic className="w-2.5 h-2.5" />
                   {t("voice.message.voiceSent")}
-                </span>
-              )}
-              {message.hasImage && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] font-medium text-muted-foreground">
-                  <Image className="w-2.5 h-2.5" />
-                  {message.imageCount} image
-                  {message.imageCount !== 1 ? "s" : ""}
                 </span>
               )}
               {message.hasDocument && (
@@ -2092,39 +2083,48 @@ export function MessageBubble({
           {message.digestProgress && message.digestProgress.length > 0 && (
             <DigestProgressIndicator items={message.digestProgress} />
           )}
-          <div
-            className={cn(
-              "rounded-xl bg-secondary px-4 py-2.5",
-              command && "ring-1 ring-inset ring-primary/20",
-            )}
-          >
-            {command && (
-              <span
-                dir="ltr"
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs font-medium text-primary [&_svg]:size-3.5"
-              >
-                {command.icon}/{command.name}
-              </span>
-            )}
-            {!!message.selectedSourceIds?.length && (
-              <SelectedCommandSources
-                ids={message.selectedSourceIds}
-                titles={message.selectedSourceTitles}
-                conversationId={conversationId}
-              />
-            )}
-            {(!command || remainingContent) && (
-              <p
-                className={cn(
-                  "whitespace-pre-wrap leading-relaxed",
-                  command && "mt-1.5",
-                )}
-                style={{ fontSize: "var(--app-font-size)" }}
-              >
-                {remainingContent}
-              </p>
-            )}
-          </div>
+          {remainingContent || command || message.selectedSourceIds?.length ? (
+            <div
+              className={cn(
+                "ms-auto w-fit max-w-full rounded-xl bg-secondary px-4 py-2.5",
+                command && "ring-1 ring-inset ring-primary/20",
+              )}
+            >
+              {command && (
+                <span
+                  dir="ltr"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs font-medium text-primary [&_svg]:size-3.5"
+                >
+                  {command.icon}/{command.name}
+                </span>
+              )}
+              {!!message.selectedSourceIds?.length && (
+                <SelectedCommandSources
+                  ids={message.selectedSourceIds}
+                  titles={message.selectedSourceTitles}
+                  conversationId={conversationId}
+                />
+              )}
+              {(!command || remainingContent) && (
+                <p
+                  className={cn(
+                    "whitespace-pre-wrap leading-relaxed",
+                    command && "mt-1.5",
+                  )}
+                  style={{ fontSize: "var(--app-font-size)" }}
+                >
+                  {remainingContent}
+                </p>
+              )}
+            </div>
+          ) : null}
+          {message.hasImage && (
+            <MessageImages
+              attachments={message.imageAttachments}
+              files={message.localImageFiles}
+              conversationId={conversationId}
+            />
+          )}
           {/* Copy icon */}
           <button
             onClick={handleCopy}

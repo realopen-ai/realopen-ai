@@ -1,12 +1,19 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { lensClient, lensPageKind, type LensImage } from "@/api/lensClient";
+import {
+  lensClient,
+  lensPageKind,
+  lensViewerImage,
+  type LensImage,
+} from "@/api/lensClient";
+import { useImageViewerStore } from "@/store/imageViewerStore";
 import { sourceLocationUrl } from "@/lib/sourceNavigation";
 import { useT } from "@/store/settingsStore";
 
 export function LensImagePreview({ id }: { id: string }) {
   const t = useT();
+  const openViewer = useImageViewerStore((s) => s.open);
   const [image, setImage] = useState<LensImage | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -65,12 +72,21 @@ export function LensImagePreview({ id }: { id: string }) {
           </Link>
         )}
       </header>
-      <img
-        src={lensClient.preview(image.id)}
-        onError={() => setError(true)}
-        alt={image.filename}
-        className="max-h-[65vh] w-full rounded-lg border border-border bg-background object-contain"
-      />
+      <button
+        type="button"
+        aria-label={t("chat.image.open", { filename: image.filename })}
+        className="block w-full cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={(event) =>
+          openViewer([lensViewerImage(image)], 0, event.currentTarget)
+        }
+      >
+        <img
+          src={lensClient.preview(image.id)}
+          onError={() => setError(true)}
+          alt={image.filename}
+          className="max-h-[65vh] w-full rounded-lg border border-border bg-background object-contain"
+        />
+      </button>
       {image.ocr_text && (
         <div className="space-y-2">
           <h3 className="text-sm font-medium">{t("artifacts.ocr")}</h3>

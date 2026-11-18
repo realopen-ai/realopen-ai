@@ -1,13 +1,10 @@
-import { useLocation } from "react-router-dom";
 import { lensClient, lensPageKind } from "@/api/lensClient";
 import type { ToolCallResult } from "@/store/chatStore";
-import { useUIStore } from "@/store/uiStore";
-import { sideTabRouteKey } from "@/lib/rightPanelTabs";
+import { useImageViewerStore } from "@/store/imageViewerStore";
 import { useT } from "@/store/settingsStore";
 
 export function LensSearchDetail({ call }: { call: ToolCallResult }) {
-  const routeKey = sideTabRouteKey(useLocation());
-  const openSideTab = useUIStore((state) => state.openSideTab);
+  const openViewer = useImageViewerStore((state) => state.open);
   const t = useT();
 
   if (!call.imageResults?.length) {
@@ -21,15 +18,21 @@ export function LensSearchDetail({ call }: { call: ToolCallResult }) {
 
   return (
     <ul className="space-y-2">
-      {call.imageResults.map((image) => (
+      {call.imageResults.map((image, index) => (
         <li key={image.id}>
           <button
             type="button"
             title={image.filename}
-            onClick={() =>
-              openSideTab(
-                { kind: "lens-image", id: image.id, title: image.filename },
-                routeKey,
+            onClick={(event) =>
+              openViewer(
+                call.imageResults!.map((match) => ({
+                  src: lensClient.preview(match.id),
+                  downloadSrc: lensClient.download(match.id),
+                  lensId: match.id,
+                  filename: match.filename,
+                })),
+                index,
+                event.currentTarget,
               )
             }
             className="flex w-full items-center gap-3 rounded-lg border border-border bg-background/50 p-2 text-start transition-colors hover:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
