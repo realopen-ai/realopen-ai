@@ -468,6 +468,7 @@ export interface MessageDTO {
   hasImage: boolean;
   hasDocument: boolean;
   imageCount: number;
+  imageAttachments?: { id: string; filename: string }[];
   documentCount: number;
   selectedSourceIds?: string[];
   pinnedArtifact?: PinnedArtifact;

@@ -1572,6 +1572,29 @@ async def test_get_conversation_with_messages(client, env):
 
 
 @pytest.mark.asyncio
+async def test_conversation_returns_saved_images_for_their_user_message(client, env):
+    env.get_result = env.conv
+    user = make_msg(has_image=True, image_count=2)
+    assistant = make_msg(role="assistant")
+    second_image = uuid.uuid4()
+    env.messages_result = [user, assistant]
+    env.request_db.execute = AsyncMock(
+        return_value=[(user.id, DOC_ID, "one.png"), (user.id, second_image, "two.jpg")]
+    )
+
+    response = await client.get(f"/api/conversations/{CONV_ID}")
+
+    assert response.status_code == 200
+    user_result, assistant_result = response.json()["messages"]
+    assert user_result["imageAttachments"] == [
+        {"id": str(DOC_ID), "filename": "one.png"},
+        {"id": str(second_image), "filename": "two.jpg"},
+    ]
+    assert "imageAttachments" not in assistant_result
+    env.request_db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_conversation_unknown_404(client, env):
     r = await client.get(f"/api/conversations/{uuid.uuid4()}")
     assert r.status_code == 404
