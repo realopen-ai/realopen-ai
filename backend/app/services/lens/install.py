@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import logging
+import re
+import httpx
 from contextlib import aclosing
 
 from app.config import VALID_PROFILES
@@ -52,18 +54,31 @@ async def stream_install_lens(entries, *, index_offset, total_models):
                                 "total": total,
                                 "percent": min(100, int(completed * 100 / total)),
                             }
-                async for update in runtime.install(
-                    model, variant, request["name"], files
-                ):
+                async for update in runtime.install(model, variant, request["name"], files):
                     yield {**event, "event": "pull_status", "status": update["message"]}
         except ModelManagerError as exc:
             yield {**event, "event": "pull_error", "error": exc.message}
-        except Exception:
+        except Exception as exc:
             logger.exception("Lens setup failed for %s", request["name"])
             yield {
                 **event,
                 "event": "pull_error",
-                "error": "Lens model installation failed. Retry from Brain → Models.",
+                "error_details": re.sub(
+                    r"hf_[A-Za-z0-9]+",
+                    "[redacted]",
+                    re.sub(r"https?://\S+", "[download URL]", f"{type(exc).__name__}: {exc}"),
+                )[:2000],
+                "error": (
+                    "The download timed out. Retry to resume the saved download."
+                    if isinstance(exc, httpx.TimeoutException)
+                    else "The connection was interrupted. Retry to resume the saved download."
+                    if isinstance(exc, httpx.TransportError)
+                    else f"The download server returned HTTP {exc.response.status_code}. Please retry."
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else "There was a problem saving the model. Check free disk space and retry."
+                    if isinstance(exc, OSError)
+                    else f"Installation could not finish ({type(exc).__name__}). Retry the download."
+                ),
             }
         else:
             yield {**event, "event": "pull_done", "already_installed": installed}
@@ -89,9 +104,7 @@ async def _run_cli(profile):
     entries = lens_setup_entries(profile)
     failed = False
     last_progress = 0
-    async for event in stream_install_lens(
-        entries, index_offset=0, total_models=len(entries)
-    ):
+    async for event in stream_install_lens(entries, index_offset=0, total_models=len(entries)):
         kind = event["event"]
         if kind == "pull_start":
             print(f"Installing {event['model']}", flush=True)

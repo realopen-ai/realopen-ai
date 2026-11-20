@@ -99,7 +99,9 @@ def ensure_hf_env() -> Path:
     # into the repository/persisted model directory and never overwrite an
     # operator-provided HF_TOKEN.
     if not os.environ.get("HF_TOKEN"):
-        cli_token = Path.home() / ".cache" / "huggingface" / "token"
+        cli_token = home / "token"
+        if not cli_token.is_file():
+            cli_token = Path.home() / ".cache" / "huggingface" / "token"
         try:
             token = cli_token.read_text(encoding="utf-8").strip()
             if token:

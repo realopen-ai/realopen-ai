@@ -131,6 +131,7 @@ export interface PullModelEvent {
   completed?: number;
   percent?: number;
   error?: string;
+  error_details?: string;
   reason?: string;
   provider?: "ollama" | "qwen3-asr" | "pocket-tts" | "pip" | "lens-onnx";
   kind?: "ollama" | "voice_model" | "voice_runtime" | "lens_model";

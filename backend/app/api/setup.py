@@ -55,6 +55,52 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class HuggingFaceConnectRequest(BaseModel):
+    token: str
+
+
+@router.post("/setup/huggingface")
+async def connect_huggingface(request: HuggingFaceConnectRequest):
+    """Validate a read token before storing it in the private local cache."""
+    import os
+    from app.voice.hf_cache import ensure_hf_env
+
+    token = request.token.strip()
+    if not token.startswith("hf_") or len(token) > 1024:
+        raise HTTPException(400, "Paste a Hugging Face access token starting with hf_.")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                "https://huggingface.co/api/whoami-v2",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(
+            502, "Could not reach Hugging Face. Check your connection and try again."
+        ) from None
+    if response.status_code in {401, 403}:
+        raise HTTPException(
+            400, "This token is invalid or expired. Create a new read token and try again."
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            502, "Hugging Face is temporarily unavailable. Please try again shortly."
+        )
+    # Atomic replacement, with owner-only permissions even when overwriting a file.
+    import tempfile
+
+    home = ensure_hf_env()
+    fd, temporary = tempfile.mkstemp(prefix=".token-", dir=home)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(token)
+        os.replace(temporary, home / "token")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    os.environ["HF_TOKEN"] = token
+    return {"connected": True}
+
+
 # ─── Constants ────────────────────────────────────────────────────
 
 SETUP_COMPLETE_FILENAME = ".setup-complete"
@@ -156,9 +202,7 @@ def _apply_profile_and_modules(profile: str, enabled_modules: List[str]) -> None
 
     # Update enabled modules
     # Always include required modules
-    required_modules = {
-        name for name, mod in settings.get_modules().items() if mod.required
-    }
+    required_modules = {name for name, mod in settings.get_modules().items() if mod.required}
     target_enabled = required_modules | set(enabled_modules)
 
     # Clear cached enabled modules and set new values
@@ -196,9 +240,7 @@ def _apply_module_tools_for_setup(enabled_modules: List[str]) -> None:
             # Unregister tools for disabled modules
             removed = registry.unregister_many(module.tools)
             if removed > 0:
-                logger.info(
-                    "Setup: unregistered %d tools for module '%s'", removed, name
-                )
+                logger.info("Setup: unregistered %d tools for module '%s'", removed, name)
 
 
 def _get_models_to_pull(profile: str, enabled_modules: List[str]) -> List[dict]:
@@ -398,12 +440,8 @@ async def get_setup_modules():
         mod_info["requirements_met"] = module.meets_requirements(ram_gb, vram_gb)
 
         # Get models for the recommended profile (default view)
-        recommended = (
-            hw_info.get("recommended_profile", "cpu_small") if hw_info else "cpu_small"
-        )
-        mod_info["models"] = [
-            m.to_dict() for m in module.get_models_for_profile(recommended)
-        ]
+        recommended = hw_info.get("recommended_profile", "cpu_small") if hw_info else "cpu_small"
+        mod_info["models"] = [m.to_dict() for m in module.get_models_for_profile(recommended)]
 
         # Per-profile model data (for exact size display when user changes profile)
         mod_info["profile_models"] = profile_models
@@ -484,9 +522,7 @@ async def apply_setup(request: ApplySetupRequest):
                 },
             )
         except config_store.ConfigUpdateError as exc:
-            raise HTTPException(
-                503, "Could not save search provider preferences"
-            ) from exc
+            raise HTTPException(503, "Could not save search provider preferences") from exc
         search_services.request_reconcile()
 
     # Get models to pull for confirmation
@@ -522,18 +558,14 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
     """
     # Validate profile
     if request.profile not in VALID_PROFILES:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid profile: {request.profile}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid profile: {request.profile}")
 
     models_to_pull = _get_models_to_pull(request.profile, request.enabled_modules)
     if not models_to_pull:
         return {"status": "no_models", "message": "No models to pull"}
 
     ollama_models = [m for m in models_to_pull if m.get("kind", "ollama") == "ollama"]
-    voice_count = sum(
-        m.get("kind") in ("voice_model", "voice_runtime") for m in models_to_pull
-    )
+    voice_count = sum(m.get("kind") in ("voice_model", "voice_runtime") for m in models_to_pull)
     lens_models = [m for m in models_to_pull if m.get("kind") == "lens_model"]
 
     async def _stream_pull():
@@ -548,9 +580,7 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/version")
                     if resp.status_code != 200:
-                        ollama_error = (
-                            "Ollama is not reachable. Please start Ollama first."
-                        )
+                        ollama_error = "Ollama is not reachable. Please start Ollama first."
             except Exception as e:
                 logger.warning("Ollama connectivity check failed: %s", e)
                 ollama_error = "Cannot connect to Ollama. Please start Ollama first."
@@ -626,9 +656,7 @@ async def pull_setup_models(request: InstallSetupModelsRequest):
                                 if "pulling" in status:
                                     completed = chunk.get("completed", 0)
                                     total = chunk.get("total", 0)
-                                    pct = (
-                                        int(completed / total * 100) if total > 0 else 0
-                                    )
+                                    pct = int(completed / total * 100) if total > 0 else 0
                                     payload = {
                                         "event": "pull_progress",
                                         "model": model_id,

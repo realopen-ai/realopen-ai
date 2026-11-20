@@ -51,6 +51,7 @@ export interface PullRow {
   /** Latest streamed output text (pull_status events). */
   outputText?: string;
   error?: string;
+  errorDetails?: string;
   /** pull_done with already_installed — the artifact was present. */
   alreadyInstalled?: boolean;
 }
@@ -399,6 +400,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
               rows: upsertRow(s.pullProgress.rows, event.model ?? "", {
                 status: "error",
                 error: event.error,
+                errorDetails: event.error_details,
               }),
             },
           }));

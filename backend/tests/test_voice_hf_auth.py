@@ -22,3 +22,13 @@ def test_ensure_hf_env_preserves_explicit_token(tmp_path, monkeypatch):
     hf_cache.ensure_hf_env()
 
     assert hf_cache.os.environ["HF_TOKEN"] == "hf_operator_token"
+
+
+def test_saved_app_token_takes_precedence_over_cli_token(tmp_path, monkeypatch):
+    home = tmp_path / "project-cache"
+    home.mkdir()
+    (home / "token").write_text("hf_app_token")
+    monkeypatch.setenv("HF_HOME", str(home))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    hf_cache.ensure_hf_env()
+    assert hf_cache.os.environ["HF_TOKEN"] == "hf_app_token"

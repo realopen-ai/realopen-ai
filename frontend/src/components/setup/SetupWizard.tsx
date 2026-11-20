@@ -29,6 +29,13 @@ import type { SetupModule } from "@/api/setupClient";
 import { t } from "@/store/settingsStore";
 import { cn } from "@/lib/utils";
 import { modelBytes } from "@/lib/modelManager";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 // ─── Step indicator ──────────────────────────────────────────────
 
@@ -935,6 +942,146 @@ function pullRowProviderLabel(row: PullRow): string | null {
  *  indeterminate animated bar + streamed status/output text when only
  *  pull_status events arrive (NO fake percentages); done rows with a
  *  check mark (incl. "already installed"); error rows with retry hint. */
+function HuggingFaceConnect({ pocket }: { pocket: boolean }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [connected, setConnected] = useState(false);
+  return (
+    <Dialog>
+      <DialogTrigger className="mt-2 rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
+        Connect Hugging Face
+      </DialogTrigger>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto text-left">
+        <DialogTitle className="font-semibold">
+          Connect Hugging Face
+        </DialogTitle>
+        <DialogDescription className="mt-2 text-sm text-muted-foreground">
+          Hugging Face hosts the speech models. Connect your free account to
+          download them. Your token is saved privately on this computer.
+        </DialogDescription>
+        {pocket && (
+          <p className="mt-3 text-sm">
+            First,{" "}
+            <a
+              className="underline"
+              href="https://huggingface.co/kyutai/pocket-tts"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              open Pocket TTS
+            </a>{" "}
+            and accept its access conditions while signed in.
+          </p>
+        )}
+        <p className="mt-3 text-sm">
+          <a
+            className="underline"
+            href="https://huggingface.co/settings/tokens/new?tokenType=read"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Create a read access token
+          </a>
+          , then copy and paste it below. Allow access to the models you have
+          been approved to download.
+        </p>
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setBusy(true);
+            setError("");
+            try {
+              const response = await fetch("/api/setup/huggingface", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token }),
+              });
+              const result = await response.json();
+              if (!response.ok)
+                throw new Error(
+                  typeof result.detail === "string"
+                    ? result.detail
+                    : "Could not connect. Please try again.",
+                );
+              setToken("");
+              setConnected(true);
+            } catch (cause) {
+              setError(
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not connect. Please try again.",
+              );
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <label className="block text-sm">
+            Access token
+            <input
+              type="password"
+              autoComplete="off"
+              value={token}
+              onChange={(event) => {
+                setToken(event.target.value);
+                setConnected(false);
+              }}
+              placeholder="hf_…"
+              className="mt-1 w-full rounded-md border border-border bg-background p-2"
+            />
+          </label>
+          {error && (
+            <p role="alert" className="text-sm text-red-500">
+              {error}
+            </p>
+          )}
+          {connected && (
+            <p role="status" className="text-sm text-emerald-500">
+              Connected. Close this window and choose Retry failed downloads
+              when the current downloads finish.
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy || !token.trim()}
+            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+          >
+            {busy ? "Connecting…" : "Connect account"}
+          </button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InstallError({ row }: { row: PullRow }) {
+  const raw = row.error || "The installation could not finish.";
+  const auth = /401|403|expired|authentication|gated|access approval/i.test(
+    raw,
+  );
+  const message = auth
+    ? "Hugging Face could not authorize this download. Reconnect your account and check that you have access to the model."
+    : /timeout|timed out|connection|network/i.test(raw)
+      ? "The download was interrupted. Check your connection, then retry. Saved download progress will be reused."
+      : row.kind === "lens_model"
+        ? raw
+        : "This model could not be installed. Retry the download, or open the technical details for more information.";
+  return (
+    <div className="mt-2 text-xs space-y-2">
+      <p className="text-red-500 break-words">{message}</p>
+      {auth && <HuggingFaceConnect pocket={row.provider === "pocket-tts"} />}
+      <details className="text-muted-foreground">
+        <summary className="cursor-pointer">Technical details</summary>
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px]">
+          {row.errorDetails || raw}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
 function InstallRow({ row }: { row: PullRow }) {
   const providerLabel = pullRowProviderLabel(row);
   const isVoice = row.kind === "voice_model" || row.kind === "voice_runtime";
@@ -1012,17 +1159,7 @@ function InstallRow({ row }: { row: PullRow }) {
         </p>
       )}
 
-      {/* Error details + retry hint */}
-      {row.status === "error" && (
-        <div className="mt-1">
-          {row.error && (
-            <p className="text-[11px] text-red-500 truncate">{row.error}</p>
-          )}
-          <p className="text-[11px] text-muted-foreground/80">
-            {t("setup.installing.retryHint")}
-          </p>
-        </div>
-      )}
+      {row.status === "error" && <InstallError row={row} />}
     </div>
   );
 }
@@ -1032,7 +1169,6 @@ function InstallingStep() {
   const isPulling = useSetupStore((s) => s.isPulling);
   const pullProgress = useSetupStore((s) => s.pullProgress);
   const completeSetup = useSetupStore((s) => s.completeSetup);
-  const setStep = useSetupStore((s) => s.setStep);
 
   useEffect(() => {
     if (!isPulling && pullProgress.status !== "done") {
@@ -1044,21 +1180,30 @@ function InstallingStep() {
   // fires only after every artifact — including voice models and voice
   // runtimes — reached a terminal state (pull_done or pull_error). We
   // additionally verify on the frontend that every known row is terminal
-  // before enabling the finish transition (mirrors existing error
-  // handling: errors stay visible but do not block completion).
+  // before finishing. Failed downloads stay here until the user retries
+  // or explicitly continues with the models that are installed.
   const allRowsTerminal =
     pullProgress.rows.length === 0 ||
     pullProgress.rows.every((r) => r.status === "done" || r.status === "error");
 
   useEffect(() => {
-    if (pullProgress.status === "done" && !isPulling && allRowsTerminal) {
+    if (
+      pullProgress.status === "done" &&
+      !isPulling &&
+      allRowsTerminal &&
+      pullProgress.errors.length === 0
+    ) {
       const timer = setTimeout(() => {
         completeSetup();
-        setStep("done");
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [pullProgress.status, isPulling, allRowsTerminal]);
+  }, [
+    pullProgress.status,
+    isPulling,
+    allRowsTerminal,
+    pullProgress.errors.length,
+  ]);
 
   const totalPercent =
     pullProgress.totalModels > 0
@@ -1150,17 +1295,37 @@ function InstallingStep() {
           </div>
         )}
 
-        {/* Errors */}
         {pullProgress.errors.length > 0 && (
-          <div className="w-full max-w-sm mt-3">
-            <p className="text-[11px] text-red-500/70 uppercase tracking-wider mb-1">
-              {t("setup.installing.errors")}
+          <div className="w-full max-w-sm mt-3 space-y-3 text-left">
+            <p role="alert" className="text-sm text-red-500">
+              Some downloads need your attention.
             </p>
-            {pullProgress.errors.map((e, i) => (
-              <p key={i} className="text-[11px] text-red-500">
-                {e}
-              </p>
-            ))}
+            {!showRows && (
+              <details>
+                <summary>Technical details</summary>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all text-xs">
+                  {pullProgress.errors.join("\n")}
+                </pre>
+              </details>
+            )}
+            {!isPulling && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => pullModels()}
+                  className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground"
+                >
+                  Retry failed downloads
+                </button>
+                <button
+                  onClick={async () => {
+                    await completeSetup();
+                  }}
+                  className="rounded-md border border-border px-3 py-2 text-xs"
+                >
+                  Continue with installed models
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1237,8 +1402,8 @@ export function SetupWizard() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="w-full max-w-lg">
+    <div className="h-dvh overflow-y-auto bg-background p-4">
+      <div className="w-full max-w-lg mx-auto py-6">
         {/* Header */}
         <div className="flex items-center justify-center mb-6">
           <StepIndicator current={step} />
