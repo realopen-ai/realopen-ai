@@ -11,7 +11,7 @@ export function LensImageResults({ images }: { images: LensImage[] }) {
       <p className="p-4 text-sm text-muted-foreground">{t("lens.noMatches")}</p>
     );
   return (
-    <div className="grid grid-cols-2 gap-3 overflow-y-auto p-4">
+    <div className="grid h-full min-h-0 grid-cols-2 content-start gap-3 overflow-y-auto p-4">
       {images.map((image, index) => (
         <button
           key={image.id}
