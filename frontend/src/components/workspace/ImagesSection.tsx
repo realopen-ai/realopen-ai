@@ -57,29 +57,30 @@ export function ImagesSection() {
   }, []);
 
   const state = result?.state;
-  const stages = state
-    ? [
-        { label: "lens.ocrProgress", done: state.ocr, total: state.total },
-        ...(state.siglip2_installed
-          ? [
-              {
-                label: "lens.visualProgress",
-                done: state.visual,
-                total: state.total,
-              },
-            ]
-          : []),
-        ...(state.e5_installed
-          ? [
-              {
-                label: "lens.semanticProgress",
-                done: state.semantic,
-                total: state.with_text,
-              },
-            ]
-          : []),
-      ].filter(({ done, total }) => done < total)
-    : [];
+  const stages =
+    state && !state.indexing_error
+      ? [
+          { label: "lens.ocrProgress", done: state.ocr, total: state.total },
+          ...(state.siglip2_installed
+            ? [
+                {
+                  label: "lens.visualProgress",
+                  done: state.visual,
+                  total: state.total,
+                },
+              ]
+            : []),
+          ...(state.e5_installed
+            ? [
+                {
+                  label: "lens.semanticProgress",
+                  done: state.semantic,
+                  total: state.with_text,
+                },
+              ]
+            : []),
+        ].filter(({ done, total }) => done < total)
+      : [];
   useEffect(() => {
     if (busy || !result || submitted || reference || result.items.length > 48)
       return;
@@ -205,6 +206,11 @@ export function ImagesSection() {
               </Link>
             )}
           </div>
+        )}
+        {state?.indexing_error && (
+          <p role="alert" className="text-sm text-danger">
+            {state.indexing_error}
+          </p>
         )}
         {error && (
           <p role="alert" className="text-sm text-danger">

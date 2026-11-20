@@ -18,6 +18,8 @@ from app.services.lens.config import get_lens_config
 from app.services.lens.encoders import (
     image_rgb,
     image_mime,
+    LensEncoderUnavailable,
+    require_local_models,
     model_version,
 )
 from app.services.lens.index import source_bytes
@@ -56,6 +58,12 @@ async def _state(db, config):
         asyncio.to_thread(model_paths, "siglip2", config.siglip2),
         asyncio.to_thread(model_paths, "e5", config.e5),
     )
+    indexing_error = None
+    try:
+        await asyncio.to_thread(require_local_models, visual_ready)
+        await asyncio.to_thread(require_local_models, semantic_ready)
+    except LensEncoderUnavailable as exc:
+        indexing_error = str(exc)
     row = (
         (
             await db.execute(
@@ -91,6 +99,7 @@ async def _state(db, config):
         **row,
         "siglip2_installed": bool(visual_ready),
         "e5_installed": bool(semantic_ready),
+        "indexing_error": indexing_error,
     }
 
 
@@ -102,8 +111,12 @@ async def list_images(
 ):
     config = get_lens_config()
     if q.strip():
+        try:
+            items = await search.find_images(db, config, query=q.strip())
+        except LensEncoderUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
         return {
-            "items": await search.find_images(db, config, query=q.strip()),
+            "items": items,
             "state": await _state(db, config),
         }
     gallery = search.gallery_rows()
@@ -137,7 +150,7 @@ async def similar_images(
     try:
         config = get_lens_config()
         items = await search.find_images(db, config, reference=data)
-    except search.LensVisualUnavailable as exc:
+    except (search.LensVisualUnavailable, LensEncoderUnavailable) as exc:
         raise HTTPException(409, str(exc)) from exc
     except (ValueError, OSError) as exc:
         raise HTTPException(

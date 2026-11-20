@@ -24,6 +24,7 @@ export function lensPageKind(filename: string) {
 }
 
 interface LensState {
+  indexing_error?: string | null;
   total: number;
   ocr: number;
   visual: number;

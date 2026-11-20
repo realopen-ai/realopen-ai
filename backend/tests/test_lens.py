@@ -222,3 +222,48 @@ async def test_lens_source_switches_default_on_and_filter_agent_search(monkeypat
     result = await tool.execute(query="diagram", _conversation_id=UUID(int=1))
     assert "turned off" in result.output
     fake.assert_not_awaited()
+
+
+def test_lens_rejects_cloud_placeholders_before_opening_models():
+    from types import SimpleNamespace
+    from app.services.lens.encoders import require_local_models, LensEncoderUnavailable, SF_DATALESS
+
+    file = SimpleNamespace(stat=lambda: SimpleNamespace(st_flags=SF_DATALESS))
+    with pytest.raises(LensEncoderUnavailable, match="offloaded"):
+        require_local_models({"model.onnx": file})
+
+
+@pytest.mark.asyncio
+async def test_lens_encoder_deadline_releases_slot_and_stops_worker(monkeypatch):
+    import time
+    import multiprocessing
+    from app.services.lens import encoders
+
+    before = {child.pid for child in multiprocessing.active_children()}
+    monkeypatch.setattr(encoders, "ENCODER_TIMEOUT", 0.1)
+    with pytest.raises(encoders.LensEncoderUnavailable, match="timed out"):
+        await encoders._encode(time.sleep, 30)
+    assert not encoders.encoder_slot.locked()
+    assert {child.pid for child in multiprocessing.active_children()} == before
+    monkeypatch.setattr(encoders, "ENCODER_TIMEOUT", 60)
+    result = await encoders._encode(encoders._normalize, [[3, 4]])
+    assert result[0] == pytest.approx([0.6, 0.8])
+
+
+@pytest.mark.asyncio
+async def test_lens_ocr_match_returns_without_waiting_for_encoders(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from app.services.lens import search
+
+    ident = UUID(int=1)
+    row = {"id": ident, "filename": "screen.png"}
+    monkeypatch.setattr(search, "exact_candidates", AsyncMock(return_value=[ident]))
+    query_encoder = AsyncMock(side_effect=AssertionError("Encoder must not run"))
+    monkeypatch.setattr(search, "_query_vector", query_encoder)
+    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        mappings=lambda: [row],
+    )))
+    result = await search.find_images(db, get_lens_config(), query="ERR_CONN_1042")
+    assert result == [row]
+    query_encoder.assert_not_awaited()

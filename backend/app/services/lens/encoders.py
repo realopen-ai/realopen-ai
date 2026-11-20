@@ -1,6 +1,8 @@
 """Local model preprocessing based on RealOpen Lens's benchmarked ONNX encoders."""
 
 import asyncio
+import multiprocessing
+import time
 from io import BytesIO
 
 from PIL import Image, ImageOps
@@ -11,7 +13,22 @@ from .config import LensConfig
 
 # One ONNX session at a time, including concurrent search and indexing.
 encoder_slot = asyncio.Semaphore(1)
+ENCODER_TIMEOUT = 60
+# macOS SF_DATALESS is absent from Python's stat module on some installations.
+SF_DATALESS = 0x40000000
 IMAGE_FORMATS = {"JPEG", "MPO", "PNG", "WEBP", "TIFF", "BMP", "GIF"}
+
+
+class LensEncoderUnavailable(RuntimeError):
+    pass
+
+
+def require_local_models(files):
+    if any(getattr(path.stat(), "st_flags", 0) & SF_DATALESS for path in files.values()):
+        raise LensEncoderUnavailable(
+            "Lens model files are offloaded to cloud storage. In Finder, choose "
+            "Keep Downloaded for data/models and wait for downloads to finish."
+        )
 
 
 def _supported(image: Image.Image) -> bool:
@@ -64,6 +81,7 @@ def _session(ident, precision, graph, threads):
     files = model_paths(ident, precision)
     if not files:
         return None
+    require_local_models(files)
     import onnxruntime as ort
 
     ort.disable_telemetry_events()
@@ -110,6 +128,7 @@ def _text_vectors(config: LensConfig, ident: str, texts: list[str], passages: bo
     files = model_paths(ident, precision)
     if not files:
         return None
+    require_local_models(files)
     session = _session(ident, precision, "text", config.threads)
     if session is None:
         return None
@@ -166,14 +185,56 @@ def _text_vectors(config: LensConfig, ident: str, texts: list[str], passages: bo
     return result
 
 
+def _encoder_worker(connection, function, args):
+    try:
+        connection.send((True, function(*args)))
+    except Exception as exc:
+        connection.send((False, str(exc)))
+    finally:
+        connection.close()
+
+
 async def _encode(function, *args):
-    async with encoder_slot:
-        job = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        await asyncio.wait_for(encoder_slot.acquire(), timeout=10)
+    except TimeoutError as exc:
+        raise LensEncoderUnavailable("Lens is busy indexing. Please retry shortly.") from exc
+    # A native library or cloud-backed file read can stall indefinitely in a
+    # thread. A separate process lets cancellation and deadlines stop that work.
+    context = multiprocessing.get_context("spawn")
+    reader, writer = context.Pipe(duplex=False)
+    process = context.Process(target=_encoder_worker, args=(writer, function, args))
+    try:
+        process.start()
+        writer.close()
+        deadline = time.monotonic() + ENCODER_TIMEOUT
+        while not reader.poll():
+            if not process.is_alive():
+                raise LensEncoderUnavailable("Lens encoder exited before returning a result.")
+            if time.monotonic() >= deadline:
+                raise LensEncoderUnavailable(
+                    "Lens encoding timed out. Check that model files are downloaded locally."
+                )
+            await asyncio.sleep(0.05)
         try:
-            return await asyncio.shield(job)
-        except asyncio.CancelledError:
-            await job
-            raise
+            success, result = await asyncio.to_thread(reader.recv)
+        except (EOFError, OSError) as exc:
+            raise LensEncoderUnavailable(
+                "Lens encoder exited before returning a result."
+            ) from exc
+        if not success:
+            raise LensEncoderUnavailable(result)
+        return result
+    finally:
+        if process.pid is not None:
+            if process.is_alive():
+                process.kill()
+            await asyncio.to_thread(process.join, 5)
+            if not process.is_alive():
+                process.close()
+        reader.close()
+        writer.close()
+        encoder_slot.release()
 
 
 async def image_vectors(config: LensConfig, images: list[bytes]):

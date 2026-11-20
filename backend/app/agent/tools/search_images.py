@@ -26,6 +26,7 @@ from app.services.lens.search import (
     LensVisualUnavailable,
     find_images,
 )
+from app.services.lens.encoders import LensEncoderUnavailable
 from app.services.ocr import MAX_IMAGE_BYTES
 from app.services.model_manager.lens_models import recommended_lens_models
 
@@ -242,7 +243,7 @@ class SearchImagesTool(BaseTool):
                 ):
                     query = _library_query
                     matches = await find_images(db, config, query=query, **options)
-        except LensVisualUnavailable as exc:
+        except (LensVisualUnavailable, LensEncoderUnavailable) as exc:
             return finish(str(exc), success=False)
         except (ValueError, OSError):
             return finish("The image search input could not be read.", success=False)

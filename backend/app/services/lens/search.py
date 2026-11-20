@@ -8,7 +8,7 @@ from sqlalchemy import Text, and_, case, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY
 
 from app.db.models import Document, DocumentChunk, LensImage, LensPassage, Message
-from .encoders import image_vectors, model_version, text_vectors
+from .encoders import image_vectors, model_version, text_vectors, LensEncoderUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,8 @@ async def _query_vector(config, ident, query):
     try:
         result = await text_vectors(config, ident, [query])
         return result[0][0] if result else None
+    except LensEncoderUnavailable:
+        raise
     except Exception as exc:
         logger.warning(
             "Lens %s query encoder unavailable (%s)", ident, type(exc).__name__
@@ -228,16 +230,19 @@ async def find_images(
             await visual_scores(db, config, vectors[0], conversation_id, source_types)
         )
     else:
-        visual_vector = await _query_vector(config, "siglip2", query)
-        semantic_vector = await _query_vector(config, "e5", query)
         exact = await exact_candidates(db, query, conversation_id, source_types)
-        visual = await visual_scores(
-            db, config, visual_vector, conversation_id, source_types
-        )
-        semantic, background = await semantic_scores(
-            db, config, semantic_vector, conversation_id, source_types
-        )
-        ids = rank(exact, visual, semantic, background)
+        if exact:
+            ids = exact
+        else:
+            visual_vector = await _query_vector(config, "siglip2", query)
+            semantic_vector = await _query_vector(config, "e5", query)
+            visual = await visual_scores(
+                db, config, visual_vector, conversation_id, source_types
+            )
+            semantic, background = await semantic_scores(
+                db, config, semantic_vector, conversation_id, source_types
+            )
+            ids = rank(exact, visual, semantic, background)
     ids = ids[:limit]
     if not ids:
         return []
