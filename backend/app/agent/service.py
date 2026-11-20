@@ -172,9 +172,7 @@ def _tool_protocol(native_tools: bool, tool_schemas: List[Dict]) -> str:
         return format_prompt("agent_native_tools")
     return format_prompt(
         "agent_text_tools",
-        tool_schemas=json.dumps(
-            tool_schemas, ensure_ascii=False, separators=(",", ":")
-        ),
+        tool_schemas=json.dumps(tool_schemas, ensure_ascii=False, separators=(",", ":")),
     )
 
 
@@ -394,6 +392,8 @@ def _tool_call_to_dict(tc: ToolCall) -> dict:
         d["query"] = tc.query
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.image_scope is not None:
+        d["imageScope"] = tc.image_scope
     if tc.image_results is not None:
         d["imageResults"] = tc.image_results
     if tc.gen_results:
@@ -427,6 +427,8 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
         d["completedAt"] = int(tc.completed_at * 1000)
     if tc.web_results:
         d["webResults"] = tc.web_results
+    if tc.image_scope is not None:
+        d["imageScope"] = tc.image_scope
     if tc.image_results is not None:
         d["imageResults"] = tc.image_results
     if tc.query:
@@ -450,9 +452,7 @@ def _tool_call_to_update_dict(tc: ToolCall) -> dict:
     return d
 
 
-async def _list_search_sources(
-    conversation_id, notebook, document_scope, temporary_chat
-):
+async def _list_search_sources(conversation_id, notebook, document_scope, temporary_chat):
     documents = []
     sources = []
     if notebook is not None:
@@ -460,14 +460,10 @@ async def _list_search_sources(
         async with async_session_factory() as db:
             page = await source_catalog(db, conversation_id, limit=50)
             items = page["items"] if page else []
-            document_ids = {
-                uuid.UUID(item["document_id"]) for item in items if item["document_id"]
-            }
+            document_ids = {uuid.UUID(item["document_id"]) for item in items if item["document_id"]}
             if document_ids:
                 documents = (
-                    await db.scalars(
-                        select(Document).where(Document.id.in_(document_ids))
-                    )
+                    await db.scalars(select(Document).where(Document.id.in_(document_ids)))
                 ).all()
         sources = [
             {"id": item["id"], "name": item["title"], "kind": "artifact"}
@@ -485,18 +481,14 @@ async def _list_search_sources(
                 "size": len(item.data),
                 "pages": item.pages,
                 "chunks": len(item.chunks),
-                "createdAt": int(
-                    item.created_at.replace(tzinfo=UTC).timestamp() * 1000
-                ),
+                "createdAt": int(item.created_at.replace(tzinfo=UTC).timestamp() * 1000),
             }
             for item in temporary_chat.attachments
             if item.id in document_scope
         ]
         has_more = False
     else:
-        heading = (
-            "Chat attachments" if document_scope is not None else "Document library"
-        )
+        heading = "Chat attachments" if document_scope is not None else "Document library"
         query = select(Document).where(Document.digestion_status == "ready")
         if document_scope is not None:
             query = query.where(Document.id.in_(document_scope))
@@ -504,9 +496,7 @@ async def _list_search_sources(
             query = query.where(Document.scope == "public")
         async with async_session_factory() as db:
             documents = (
-                await db.scalars(
-                    query.order_by(Document.created_at.desc(), Document.id).limit(51)
-                )
+                await db.scalars(query.order_by(Document.created_at.desc(), Document.id).limit(51))
             ).all()
         has_more = len(documents) > 50
 
@@ -544,9 +534,7 @@ async def _find_attachment_text(
         async with async_session_factory() as db:
             attachment_ids = await selected_document_ids(db, conversation_id)
     elif attachment_ids is None and temporary_chat:
-        attachment_ids = [
-            item.id for item in temporary_chat.attachments if not item.image
-        ]
+        attachment_ids = [item.id for item in temporary_chat.attachments if not item.image]
     elif attachment_ids is None and conversation_id:
         async with async_session_factory() as db:
             attachment_ids = (
@@ -634,9 +622,7 @@ async def _find_attachment_text(
         call.update(status="completed", completedAt=int(time.time() * 1000))
         yield _sse_event("tool_call", {"tool_call": call})
         if sources:
-            yield _sse_event(
-                "rag_sources", {"sources": sources, "tool_call_id": call_id}
-            )
+            yield _sse_event("rag_sources", {"sources": sources, "tool_call_id": call_id})
             content = "Exact text found in the excerpts above."
         else:
             content = "No exact match found in the extracted text."
@@ -674,11 +660,7 @@ async def run_agent_stream(
         trace_user_message
         if trace_user_message is not None
         else next(
-            (
-                m.get("content", "")
-                for m in reversed(messages)
-                if m.get("role") == "user"
-            ),
+            (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
             "",
         )
     )
@@ -723,8 +705,7 @@ async def run_agent_stream(
         (
             i
             for i in range(len(messages) - 1, -1, -1)
-            if messages[i].get("role") == "user"
-            and messages[i].get("content") == last_user
+            if messages[i].get("role") == "user" and messages[i].get("content") == last_user
         ),
         None,
     )
@@ -768,11 +749,7 @@ async def run_agent_stream(
     notebook_instructions = ""
     # Only short metadata; never inject complete documents into the prompt.
     attachments = {"items": []}
-    if (
-        not temporary
-        and not explicit_sources
-        and not routing.is_find_command(last_user)
-    ):
+    if not temporary and not explicit_sources and not routing.is_find_command(last_user):
         try:
             async with async_session_factory() as db:
                 attachments = await catalog(
@@ -818,21 +795,13 @@ async def run_agent_stream(
                 source_requested = (
                     bool(set(routing.words(last_user)) & reference_words)
                     or any(
-                        item["id"] in last_user
-                        or routing.matches(item.get("title", ""), last_user)
+                        item["id"] in last_user or routing.matches(item.get("title", ""), last_user)
                         for item in attachments["items"]
                     )
-                    or bool(
-                        any(
-                            (m.get("metadata") or {}).get("agent_context")
-                            for m in messages
-                        )
-                    )
+                    or bool(any((m.get("metadata") or {}).get("agent_context") for m in messages))
                 )
                 if source_requested:
-                    selected_tools.update(
-                        {"rag_search", "read_artifact"} & available_tools.keys()
-                    )
+                    selected_tools.update({"rag_search", "read_artifact"} & available_tools.keys())
                 context_messages.append(
                     untrusted_context_message(
                         "accessible file metadata",
@@ -848,9 +817,7 @@ async def run_agent_stream(
             notebook = await for_conversation(db, conversation_id)
     if notebook is not None:
         skill_catalog = ""
-        available_tools = routing.enabled_tools(
-            registry, configs_snapshot, notebook=True
-        )
+        available_tools = routing.enabled_tools(registry, configs_snapshot, notebook=True)
         selected_tools.intersection_update(available_tools)
         selected_tools.update({"rag_search", "read_artifact"} & available_tools.keys())
         notebook_instructions = (
@@ -910,9 +877,7 @@ async def run_agent_stream(
             async with async_session_factory() as db:
                 if pinned_artifact:
                     try:
-                        inventory = [
-                            await pinned_source(db, conversation_id, pinned_artifact)
-                        ]
+                        inventory = [await pinned_source(db, conversation_id, pinned_artifact)]
                         await db.commit()
                     except HTTPException:
                         inventory = []
@@ -921,13 +886,13 @@ async def run_agent_stream(
         by_id = {item["id"]: item for item in inventory}
         source_artifacts = {str(ident) for ident in selected_source_ids}
         if source_artifacts - by_id.keys():
-            error = "A selected source is no longer available in this chat. Select the sources again."
+            error = (
+                "A selected source is no longer available in this chat. Select the sources again."
+            )
         elif command == "/summarize" and len(source_artifacts) != 1:
             error = "Select one file for /summarize."
         else:
-            chosen = [
-                by_id[ident] for ident in dict.fromkeys(map(str, selected_source_ids))
-            ]
+            chosen = [by_id[ident] for ident in dict.fromkeys(map(str, selected_source_ids))]
             source_documents = {
                 item["document_id"]
                 for item in chosen
@@ -959,11 +924,7 @@ async def run_agent_stream(
         yield _sse_event("done", {})
         return
     if command == "/library":
-        if (
-            notebook is not None
-            or "rag_search" not in available_tools
-            or len(command_parts) == 1
-        ):
+        if notebook is not None or "rag_search" not in available_tools or len(command_parts) == 1:
             if notebook is not None:
                 error = "Library search is unavailable in notebooks. Use the notebook's selected sources."
             elif "rag_search" not in available_tools:
@@ -990,9 +951,7 @@ async def run_agent_stream(
         if temporary or not conversation_id:
             error = "Save this chat before using /coder."
         elif notebook is not None:
-            error = (
-                "Use /coder in a regular saved chat. Coder is unavailable in notebooks."
-            )
+            error = "Use /coder in a regular saved chat. Coder is unavailable in notebooks."
         elif "delegate_to_coder" not in available_tools:
             error = "Coder is unavailable. Check Brain → Tools to use /coder."
         elif len(command_parts) == 1:
@@ -1006,9 +965,7 @@ async def run_agent_stream(
             selected_tools.add("delegate_to_coder")
     elif command == "/find":
         if "rag_search" not in available_tools:
-            error = (
-                "Document Search is disabled. Enable it in Brain → Tools to use /find."
-            )
+            error = "Document Search is disabled. Enable it in Brain → Tools to use /find."
         elif not command_text or len(command_text) > 300:
             error = "Enter between 1 and 300 characters of exact text after /find."
     elif learn_tool:
@@ -1023,11 +980,7 @@ async def run_agent_stream(
             if explicit_sources and not readers:
                 error = "Enable a source reading tool in Brain → Tools to use the selected files."
             selected_tools.update({learn_tool} | readers)
-            if (
-                pinned_artifact
-                and pinned_artifact.section_id
-                and "read_artifact" in readers
-            ):
+            if pinned_artifact and pinned_artifact.section_id and "read_artifact" in readers:
                 initial_tool = {
                     "name": "read_artifact",
                     "arguments": pinned_artifact.model_dump(mode="json"),
@@ -1076,8 +1029,7 @@ async def run_agent_stream(
                     else "Attach a document or specify an artifact after /summarize."
                 )
             selected_tools.update(
-                {"summarize_artifact", "list_artifacts", "read_artifact"}
-                & available_tools.keys()
+                {"summarize_artifact", "list_artifacts", "read_artifact"} & available_tools.keys()
             )
 
     if error:
@@ -1096,7 +1048,9 @@ async def run_agent_stream(
             (
                 [uuid.UUID(ident) for ident in source_documents]
                 if explicit_sources
-                else None if notebook is not None else attachment_ids
+                else None
+                if notebook is not None
+                else attachment_ids
             ),
             (
                 [
@@ -1119,9 +1073,7 @@ async def run_agent_stream(
         if attachment_ids is not None:
             document_scope = attachment_ids
         elif temporary_chat:
-            document_scope = [
-                item.id for item in temporary_chat.attachments if not item.image
-            ]
+            document_scope = [item.id for item in temporary_chat.attachments if not item.image]
             document_scope = document_scope or None
         else:
             document_scope = [
@@ -1129,9 +1081,7 @@ async def run_agent_stream(
                 for item in attachments["items"]
                 if item.get("kind") == "upload" and item.get("document_id")
             ] or None
-        library_requested = (
-            library_query is not None or routing.requests_library_search(last_user)
-        )
+        library_requested = library_query is not None or routing.requests_library_search(last_user)
         if library_requested:
             document_scope = None
         if document_scope is not None or library_requested:
@@ -1152,9 +1102,7 @@ async def run_agent_stream(
             content += "\n\n- " + "\n- ".join(names)
             if has_more:
                 content += "\n\nShowing the first 50 sources."
-        yield _sse_event(
-            "message", {"message": {"role": "assistant", "content": content}}
-        )
+        yield _sse_event("message", {"message": {"role": "assistant", "content": content}})
         if sources:
             now = int(time.time() * 1000)
             yield _sse_event(
@@ -1193,14 +1141,10 @@ async def run_agent_stream(
                 if relevant:
                     pinned = [m for m in relevant if m.pinned]
                     extended = [
-                        m
-                        for m in relevant
-                        if not m.pinned and relevant_context(last_user, m.text)
+                        m for m in relevant if not m.pinned and relevant_context(last_user, m.text)
                     ]
                     if pinned:
-                        pinned_text = "\n".join(
-                            f"- {m.text} [{m.category}]" for m in pinned
-                        )
+                        pinned_text = "\n".join(f"- {m.text} [{m.category}]" for m in pinned)
                         context_messages.append(
                             untrusted_context_message(
                                 "saved memory: pinned user facts",
@@ -1208,9 +1152,7 @@ async def run_agent_stream(
                             )
                         )
                     if extended:
-                        ext_text = "\n".join(
-                            f"- {m.text} [{m.category}]" for m in extended
-                        )
+                        ext_text = "\n".join(f"- {m.text} [{m.category}]" for m in extended)
                         context_messages.append(
                             untrusted_context_message(
                                 "saved memory: retrieved context",
@@ -1230,12 +1172,7 @@ async def run_agent_stream(
 
     # Cross-session context from past conversations.
     try:
-        if (
-            notebook is None
-            and not explicit_sources
-            and last_user.strip()
-            and conversation_id
-        ):
+        if notebook is None and not explicit_sources and last_user.strip() and conversation_id:
             async with async_session_factory() as db:
                 cross_ctx = await build_cross_session_context(
                     db,
@@ -1245,9 +1182,7 @@ async def run_agent_stream(
                 )
                 if cross_ctx:
                     context_messages.append(
-                        untrusted_context_message(
-                            "past conversation summaries", cross_ctx
-                        )
+                        untrusted_context_message("past conversation summaries", cross_ctx)
                     )
                     _dbg(
                         "Injected cross-session context (%d chars)",
@@ -1273,17 +1208,10 @@ async def run_agent_stream(
 
     attachment_context: List[Dict[str, Any]] = []
     # ── Auto-vision for image attachments ──
-    if (
-        images
-        and not explicit_sources
-        and notebook is None
-        and "use_vision" in available_tools
-    ):
+    if images and not explicit_sources and notebook is None and "use_vision" in available_tools:
         vision_tool = registry.get("use_vision")
         if vision_tool:
-            vision_request = (
-                last_user.strip() or format_prompt("vision_default").strip()
-            )
+            vision_request = last_user.strip() or format_prompt("vision_default").strip()
             vision_model = await config_store.resolve_tool_model(
                 "use_vision", fallback_role="default_vision"
             )
@@ -1400,9 +1328,7 @@ async def run_agent_stream(
                         )
                     )
                 except Exception:
-                    logger.debug(
-                        "Could not load resource metadata for %s", name, exc_info=True
-                    )
+                    logger.debug("Could not load resource metadata for %s", name, exc_info=True)
 
     await add_resource_context(selected_tools)
     context_messages.extend(pending_tool_contexts)
@@ -1424,7 +1350,9 @@ async def run_agent_stream(
             "Cite matching excerpts or say that the search returned no relevant documents."
         )
     elif coder_task:
-        system_prompt += "\nFor /coder, report the delegated workspace task result and its verified checks."
+        system_prompt += (
+            "\nFor /coder, report the delegated workspace task result and its verified checks."
+        )
     elif command == "/web":
         system_prompt += "\n" + format_prompt("agent_web_command")
     elif learn_tool:
@@ -1552,9 +1480,7 @@ async def run_agent_stream(
         if not retryable:
             exhausted_tool = call["tool"]
             selected_tools.discard(call["tool"])
-            ollama_tools = [
-                s for s in ollama_tools if s["function"]["name"] != call["tool"]
-            ]
+            ollama_tools = [s for s in ollama_tools if s["function"]["name"] != call["tool"]]
             _refresh_protocol()
         return format_prompt(
             "agent_argument_repair", errors=error, retryable=str(retryable).lower()
@@ -1573,11 +1499,7 @@ async def run_agent_stream(
             appended_context = [
                 m for m in messages if (m.get("metadata") or {}).get("agent_context")
             ]
-            messages = [
-                m
-                for m in messages
-                if not (m.get("metadata") or {}).get("agent_context")
-            ]
+            messages = [m for m in messages if not (m.get("metadata") or {}).get("agent_context")]
             insertion = next(
                 (
                     i
@@ -1627,22 +1549,16 @@ async def run_agent_stream(
             if failure["kind"] == "validation" and name in selected_tools
         }
         request_tools = [
-            s
-            for s in ollama_tools
-            if not repair_names or s["function"]["name"] in repair_names
+            s for s in ollama_tools if not repair_names or s["function"]["name"] in repair_names
         ]
         repair_schema = None
         repair_plan = None
         if repair_names:
             repair_name = next(
-                name
-                for name in reversed(execution_state.failures)
-                if name in repair_names
+                name for name in reversed(execution_state.failures) if name in repair_names
             )
             repair_schema = next(
-                schema
-                for schema in request_tools
-                if schema["function"]["name"] == repair_name
+                schema for schema in request_tools if schema["function"]["name"] == repair_name
             )
             request_tools = [repair_schema]
             repair_plan = repair_plans.get(repair_name)
@@ -1655,16 +1571,12 @@ async def run_agent_stream(
             _refresh_protocol()
         # Rebuild from application records, never from a generated summary.
         messages = [
-            m
-            for m in messages
-            if not (m.get("metadata") or {}).get("agent_execution_state")
+            m for m in messages if not (m.get("metadata") or {}).get("agent_execution_state")
         ]
         ledger = execution_state.message()
         if ledger:
             messages.append(ledger)
-        inference_messages = without_rejected_calls(
-            messages, execution_state.rejected_call_ids
-        )
+        inference_messages = without_rejected_calls(messages, execution_state.rejected_call_ids)
         if repair_schema:
             inference_messages = rebuild_view(
                 messages,
@@ -1673,9 +1585,7 @@ async def run_agent_stream(
                 execution_state.failures[repair_name]["error"],
                 repair=repair_plan,
             )
-        inference_tools = (
-            request_tools if use_native_tools and not repair_schema else None
-        )
+        inference_tools = request_tools if use_native_tools and not repair_schema else None
         generation_start = None
         native_parser_failures = 0
         retry_context = []
@@ -1683,9 +1593,7 @@ async def run_agent_stream(
         # At most two native attempts plus one execution-only text attempt.
         # Tool execution starts only after a complete successful generation.
         for protocol_attempt in range(3):
-            inference_tools = (
-                request_tools if use_native_tools and not repair_schema else None
-            )
+            inference_tools = request_tools if use_native_tools and not repair_schema else None
             if not repair_schema:
                 inference_messages = without_rejected_calls(
                     messages, execution_state.rejected_call_ids
@@ -1726,9 +1634,7 @@ async def run_agent_stream(
                     )
             except Exception as e:
                 observe("finish", "failed", "context budget: " + str(e))
-                yield _sse_event(
-                    "error", {"error": f"Cannot prepare a safe context budget: {e}"}
-                )
+                yield _sse_event("error", {"error": f"Cannot prepare a safe context budget: {e}"})
                 return
             ollama_messages = model_messages(
                 inference_messages,
@@ -1791,9 +1697,7 @@ async def run_agent_stream(
                 if repair_schema:
                     latency_options["think"] = False
                     if structured_outputs.should_try_schema(resolved_model):
-                        latency_options["format"] = response_schema(
-                            repair_schema, repair_plan
-                        )
+                        latency_options["format"] = response_schema(repair_schema, repair_plan)
                 if not providers.is_groq_model(resolved_model):
                     latency_options["options"]["num_ctx"] = budget.window
                 async for chunk in providers.stream_chat(
@@ -1818,9 +1722,7 @@ async def run_agent_stream(
                     if token:
                         if thinking_start is not None:
                             elapsed = round(time.monotonic() - thinking_start, 3)
-                            yield _sse_event(
-                                "thinking_done", {"thinkingDuration": elapsed}
-                            )
+                            yield _sse_event("thinking_done", {"thinkingDuration": elapsed})
                             thinking_start = None
                         full_response += token
                         # Buffer retry prose until parsing finishes. The first
@@ -1841,9 +1743,7 @@ async def run_agent_stream(
 
             except httpx.ConnectError:
                 observe("finish", "failed", "provider connection error")
-                logger.error(
-                    "Cannot connect to the model provider for %s", resolved_model
-                )
+                logger.error("Cannot connect to the model provider for %s", resolved_model)
                 _dbg("🤖 ❌ Cannot connect to the provider for %s", resolved_model)
                 yield _sse_event(
                     "error",
@@ -1870,9 +1770,7 @@ async def run_agent_stream(
                             "tool_calls": native_tool_calls,
                         }
                     },
-                    recovery=bool(
-                        protocol_attempt or repair_schema or not use_native_tools
-                    ),
+                    recovery=bool(protocol_attempt or repair_schema or not use_native_tools),
                     started_at=attempt_started_at,
                     duration_ms=(time.monotonic() - attempt_started) * 1000,
                 )
@@ -1899,11 +1797,7 @@ async def run_agent_stream(
                     if thinking_start is not None:
                         yield _sse_event(
                             "thinking_done",
-                            {
-                                "thinkingDuration": round(
-                                    time.monotonic() - thinking_start, 3
-                                )
-                            },
+                            {"thinkingDuration": round(time.monotonic() - thinking_start, 3)},
                         )
                         thinking_start = None
                     if protocol_attempt == 0:
@@ -2015,9 +1909,7 @@ async def run_agent_stream(
                 match = re.search(r'"tool"\s*:\s*"([^"\n]+)"', full_response)
                 rejected_name = match.group(1) if match else ""
                 rejected_tool = (
-                    registry.get(rejected_name)
-                    if rejected_name in selected_tools
-                    else None
+                    registry.get(rejected_name) if rejected_name in selected_tools else None
                 )
                 now = int(time.time() * 1000)
                 yield _sse_event(
@@ -2056,16 +1948,12 @@ async def run_agent_stream(
                     observe("end_tool", "failed", error=str(exc), validation_error=True)
                     messages.extend(
                         [
-                            assistant_call_message(
-                                "", [rejected_call], thinking_content
-                            ),
+                            assistant_call_message("", [rejected_call], thinking_content),
                             tool_result_message(rejected_call, feedback),
                         ]
                     )
                     if exhausted_tool:
-                        observe(
-                            "finish", "failed", "tool validation retry limit exhausted"
-                        )
+                        observe("finish", "failed", "tool validation retry limit exhausted")
                         yield _sse_event(
                             "error",
                             {
@@ -2090,9 +1978,7 @@ async def run_agent_stream(
                         {"role": "assistant", "content": full_response},
                         {
                             "role": "user",
-                            "content": format_prompt(
-                                "agent_tool_call_repair", error=str(exc)
-                            ),
+                            "content": format_prompt("agent_tool_call_repair", error=str(exc)),
                         },
                     ]
                 )
@@ -2105,13 +1991,10 @@ async def run_agent_stream(
             paragraph_break = bool(streamed_before_retry)
             if not tool_calls:
                 replays_prefix = bool(
-                    streamed_before_retry
-                    and full_response.startswith(streamed_before_retry)
+                    streamed_before_retry and full_response.startswith(streamed_before_retry)
                 )
                 continuation = (
-                    full_response[len(streamed_before_retry) :]
-                    if replays_prefix
-                    else full_response
+                    full_response[len(streamed_before_retry) :] if replays_prefix else full_response
                 )
                 paragraph_break = paragraph_break and not replays_prefix
             elif not streamed_before_retry:
@@ -2129,8 +2012,7 @@ async def run_agent_stream(
                     {
                         "message": {
                             "role": "assistant",
-                            "content": ("\n\n" if paragraph_break else "")
-                            + continuation,
+                            "content": ("\n\n" if paragraph_break else "") + continuation,
                         }
                     },
                 )
@@ -2178,9 +2060,7 @@ async def run_agent_stream(
                     {
                         "tool_call": {
                             "id": call["id"],
-                            "type": (
-                                available.tool_type.value if available else "code_exec"
-                            ),
+                            "type": (available.tool_type.value if available else "code_exec"),
                             "status": "error",
                             "title": f"Invalid arguments for {tool_name}",
                             "error": call["parse_error"],
@@ -2224,9 +2104,7 @@ async def run_agent_stream(
                 reason = "The requested action already completed in this turn."
                 execution_state.record_skipped(call, reason)
                 observe("end_tool", "skipped", error=reason)
-                messages.append(
-                    tool_result_message(call, reason, application_feedback=True)
-                )
+                messages.append(tool_result_message(call, reason, application_feedback=True))
                 continue
 
             tool = registry.get(tool_name)
@@ -2245,9 +2123,7 @@ async def run_agent_stream(
                 schema_clock = time.monotonic()
                 await load_tools([tool_name])
                 execution_state.record_deferred(call)
-                observe(
-                    "end_tool", "deferred", error="schema loaded; call was not executed"
-                )
+                observe("end_tool", "deferred", error="schema loaded; call was not executed")
                 now = int(time.time() * 1000)
                 access_events = [
                     {
@@ -2283,9 +2159,7 @@ async def run_agent_stream(
                         ),
                         "startedAt": int(schema_started * 1000),
                         "completedAt": now,
-                        "durationMs": round(
-                            (time.monotonic() - schema_clock) * 1000, 1
-                        ),
+                        "durationMs": round((time.monotonic() - schema_clock) * 1000, 1),
                     },
                 ]
                 for access_event in access_events:
@@ -2354,9 +2228,7 @@ async def run_agent_stream(
                 if str(tool_args.get("artifact_id")) not in source_artifacts:
                     reason = "Choose an artifact ID from the user-selected files."
                     observe("end_tool", "failed", error=reason, validation_error=True)
-                    messages.append(
-                        tool_result_message(call, reason, application_feedback=True)
-                    )
+                    messages.append(tool_result_message(call, reason, application_feedback=True))
                     continue
                 if pinned_artifact:
                     tool_args["version"] = pinned_artifact.version
@@ -2379,9 +2251,7 @@ async def run_agent_stream(
                 reason = "Retrieve content from the selected files before creating the Learn item."
                 execution_state.record_skipped(call, reason)
                 observe("end_tool", "skipped", error=reason)
-                messages.append(
-                    tool_result_message(call, reason, application_feedback=True)
-                )
+                messages.append(tool_result_message(call, reason, application_feedback=True))
                 continue
 
             if tool_name == "update_artifact":
@@ -2392,21 +2262,13 @@ async def run_agent_stream(
                         and "read_artifact" not in selected_tools
                         and execution_state.validation_failures.get("read_artifact", 0)
                         < agent_settings.effective().repair_attempts + 1
-                        and (config_store.get_tool_config("read_artifact") or {}).get(
-                            "enabled"
-                        )
+                        and (config_store.get_tool_config("read_artifact") or {}).get("enabled")
                         is not False
                     ):
                         await load_tools(["read_artifact"])
-                    feedback = format_prompt(
-                        "agent_artifact_read_required", reason=reason
-                    )
-                    execution_state.record_skipped(
-                        call, "artifact read prerequisite unmet"
-                    )
-                    observe(
-                        "end_tool", "skipped", error="artifact read prerequisite unmet"
-                    )
+                    feedback = format_prompt("agent_artifact_read_required", reason=reason)
+                    execution_state.record_skipped(call, "artifact read prerequisite unmet")
+                    observe("end_tool", "skipped", error="artifact read prerequisite unmet")
                     now = int(time.time() * 1000)
                     warning = {
                         "id": call["id"],
@@ -2428,9 +2290,7 @@ async def run_agent_stream(
                     if on_tool_call_update:
                         on_tool_call_update(call["id"], warning)
                     yield _sse_event("tool_call", {"tool_call": warning})
-                    messages.append(
-                        tool_result_message(call, feedback, application_feedback=True)
-                    )
+                    messages.append(tool_result_message(call, feedback, application_feedback=True))
                     continue
 
             if tool_name == "delegate_to_coder":
@@ -2458,9 +2318,7 @@ async def run_agent_stream(
                     arguments=tool_args,
                     issues=argument_issues(tool_args, schema),
                 )
-                observe(
-                    "end_tool", "failed", error="; ".join(errors), validation_error=True
-                )
+                observe("end_tool", "failed", error="; ".join(errors), validation_error=True)
                 now = int(time.time() * 1000)
                 yield _sse_event(
                     "tool_call",
@@ -2496,9 +2354,7 @@ async def run_agent_stream(
                     feedback = format_prompt(
                         "agent_report_inspection", report_reference=json.dumps(previous)
                     )
-                    execution_state.record_skipped(
-                        call, "generated output inspection required"
-                    )
+                    execution_state.record_skipped(call, "generated output inspection required")
                     observe(
                         "end_tool",
                         "skipped",
@@ -2518,9 +2374,7 @@ async def run_agent_stream(
                     if on_tool_call_update:
                         on_tool_call_update(call["id"], warning)
                     yield _sse_event("tool_call", {"tool_call": warning})
-                    messages.append(
-                        tool_result_message(call, feedback, application_feedback=True)
-                    )
+                    messages.append(tool_result_message(call, feedback, application_feedback=True))
                     continue
 
             # RAG: inject conversation_id
@@ -2551,6 +2405,21 @@ async def run_agent_stream(
             if tool_name == "use_code_exec" and conversation_id:
                 tool_args.setdefault("conversation_id", conversation_id)
 
+            if tool_name == "search_images":
+                if not image_library_checked:
+                    image_library_intent = await classify_library_search(
+                        last_user, resolved_model, image_search_history
+                    )
+                    image_library_checked = True
+                if image_library_intent is not None:
+                    tool_args["scope"] = image_library_intent.scope
+                    if tool_args.get("reference_image") is None and image_library_intent.query:
+                        tool_args["query"] = image_library_intent.query
+                else:
+                    tool_args.setdefault("scope", "library")
+                # Record the resolved scope rather than the model's guess.
+                call = {**call, "args": dict(tool_args)}
+
             # Generate a tool call ID for tracking across start/update events
             tool_started_at = time.time()
             tool_started_monotonic = time.monotonic()
@@ -2559,6 +2428,8 @@ async def run_agent_stream(
             observe("tool_identity", tc_id)
 
             ui_args = dict(tool_args)
+            if tool_name == "search_images":
+                ui_args["imageScope"] = tool_args["scope"]
             if tool_name == "load_skill":
                 ui_args.update(
                     {
@@ -2618,21 +2489,9 @@ async def run_agent_stream(
                 exec_args["conversation_id"] = conversation_id
                 exec_args["_attachment_ids"] = document_scope
             elif tool_name == "search_images":
-                if not image_library_checked:
-                    image_library_intent = await classify_library_search(
-                        last_user, resolved_model, image_search_history
-                    )
-                    image_library_checked = True
                 if image_library_intent is not None:
-                    exec_args["scope"] = "library"
-                    if (
-                        exec_args.get("reference_image") is None
-                        and image_library_intent.query
-                    ):
-                        exec_args["query"] = image_library_intent.query
                     exec_args["_library_query"] = image_library_intent.english_query
                 exec_args["_conversation_id"] = conversation_id
-                exec_args["_allow_library"] = image_library_intent is not None
                 exec_args["_images"] = images or ()
             elif tool_name == "use_vision":
                 exec_args["_lens_matches"] = lens_matches
@@ -2693,35 +2552,25 @@ async def run_agent_stream(
                                         continue
                                     if (
                                         tool_name == "delegate_to_coder"
-                                        and nested_event.get("event")
-                                        == "persistence_checkpoint"
+                                        and nested_event.get("event") == "persistence_checkpoint"
                                     ):
-                                        yield _sse_event(
-                                            "persistence_checkpoint", nested_event
-                                        )
+                                        yield _sse_event("persistence_checkpoint", nested_event)
+                                        continue
+                                    if tool_name == "delegate_to_coder" and nested_event.get(
+                                        "event"
+                                    ) in {
+                                        "thinking_start",
+                                        "thinking",
+                                        "thinking_done",
+                                    }:
+                                        yield _sse_event(nested_event["event"], nested_event)
                                         continue
                                     if (
-                                        tool_name == "delegate_to_coder"
-                                        and nested_event.get("event")
-                                        in {
-                                            "thinking_start",
-                                            "thinking",
-                                            "thinking_done",
-                                        }
-                                    ):
-                                        yield _sse_event(
-                                            nested_event["event"], nested_event
-                                        )
-                                        continue
-                                    if (
-                                        tool_name
-                                        in {"summarize_artifact", "use_report_gen"}
+                                        tool_name in {"summarize_artifact", "use_report_gen"}
                                         and on_tool_call_update
                                     ):
                                         on_tool_call_update(tc_id, nested_event)
-                                    yield _sse_event(
-                                        "tool_call", {"tool_call": nested_event}
-                                    )
+                                    yield _sse_event("tool_call", {"tool_call": nested_event})
                                 except asyncio.TimeoutError:
                                     continue
                             result = await execution
@@ -2743,9 +2592,7 @@ async def run_agent_stream(
                 )
                 logger.exception("Tool %s failed: %s", tool_name, e)
                 tool_completed_at_ms = int(time.time() * 1000)
-                tool_duration_ms = round(
-                    (time.monotonic() - tool_started_monotonic) * 1000, 1
-                )
+                tool_duration_ms = round((time.monotonic() - tool_started_monotonic) * 1000, 1)
                 yield _sse_event(
                     "tool_call",
                     {
@@ -2789,10 +2636,7 @@ async def run_agent_stream(
             if (
                 result.success
                 and result.tool_call
-                and any(
-                    item.get("report_id")
-                    for item in (result.tool_call.gen_results or [])
-                )
+                and any(item.get("report_id") for item in (result.tool_call.gen_results or []))
             ):
                 try:
                     registered = []
@@ -2814,9 +2658,7 @@ async def run_agent_stream(
                     else:
                         async with async_session_factory() as db:
                             for generated in result.tool_call.gen_results:
-                                if generated.get("report_id") and not generated.get(
-                                    "artifact_id"
-                                ):
+                                if generated.get("report_id") and not generated.get("artifact_id"):
                                     artifact_meta = await register_generated(
                                         db, generated, conversation_id
                                     )
@@ -2833,7 +2675,9 @@ async def run_agent_stream(
                     logger.exception(
                         "Could not register generated artifact; output remains available"
                     )
-                    result.output += "\nArtifact registration failed; the generated download is still available."
+                    result.output += (
+                        "\nArtifact registration failed; the generated download is still available."
+                    )
             observe(
                 "end_tool",
                 "completed" if result.success else "failed",
@@ -2848,18 +2692,9 @@ async def run_agent_stream(
             )
             if result.tool_call.output is None:
                 result.tool_call.output = result.output
-            if (
-                result.success
-                and tool_name == "search_images"
-                and result.tool_call.image_results
-            ):
-                lens_matches.update(
-                    item["id"] for item in result.tool_call.image_results
-                )
-                if (
-                    "use_vision" in available_tools
-                    and "use_vision" not in selected_tools
-                ):
+            if result.success and tool_name == "search_images" and result.tool_call.image_results:
+                lens_matches.update(item["id"] for item in result.tool_call.image_results)
+                if "use_vision" in available_tools and "use_vision" not in selected_tools:
                     try:
                         await load_tools(["use_vision"])
                     except ToolArgumentError:
@@ -2872,9 +2707,7 @@ async def run_agent_stream(
                 "source_tool": tool_name,
                 "source_title": tool.get_display_name(),
             }
-            research_evidence.extend(
-                evidence_records(result_ref, tool, tool_args, result)
-            )
+            research_evidence.extend(evidence_records(result_ref, tool, tool_args, result))
             if result.success and tool_name == "read_artifact":
                 inspected_reports.add(tool_args.get("artifact_id"))
                 artifact_edits.record_read(result.output)
@@ -2890,9 +2723,7 @@ async def run_agent_stream(
             can_page = (
                 "read_tool_result" in available_tools
                 and registry.get("read_tool_result")
-                and (config_store.get_tool_config("read_tool_result") or {}).get(
-                    "enabled"
-                )
+                and (config_store.get_tool_config("read_tool_result") or {}).get("enabled")
                 is not False
             )
             view = compact_result(
@@ -2951,9 +2782,7 @@ async def run_agent_stream(
                                     "report_id": gr.get("report_id", ""),
                                     "artifact_id": gr.get("artifact_id"),
                                     "version": gr.get("version"),
-                                    "created_at": gr.get(
-                                        "created_at", int(time.time())
-                                    ),
+                                    "created_at": gr.get("created_at", int(time.time())),
                                 }
                             )
                     if deliverables:
@@ -2996,9 +2825,7 @@ async def run_agent_stream(
                     call,
                     result.success,
                     result.output,
-                    generated=(
-                        result.tool_call.gen_results if result.tool_call else None
-                    ),
+                    generated=(result.tool_call.gen_results if result.tool_call else None),
                 )
             if tool_name == "delegate_to_coder" and not result.success and ollama_tools:
                 # A failed coding run is expensive and may have partially
@@ -3053,12 +2880,8 @@ async def run_agent_stream(
     )
     returned_tools = sorted({item["tool"] for item in execution_state.successes})
     if returned_tools:
-        limit_message += (
-            "\n\nTools that returned results: " + ", ".join(returned_tools) + "."
-        )
-    observe(
-        "finish", "max_rounds_reached", "agent round limit exhausted", limit_message
-    )
+        limit_message += "\n\nTools that returned results: " + ", ".join(returned_tools) + "."
+    observe("finish", "max_rounds_reached", "agent round limit exhausted", limit_message)
     yield _sse_event(
         "message",
         {"message": {"role": "assistant", "content": limit_message}},

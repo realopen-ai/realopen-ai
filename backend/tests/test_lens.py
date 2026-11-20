@@ -19,9 +19,7 @@ def test_lens_model_precision_and_versions_follow_hardware_profiles():
     assert large.siglip2 == "fp32"
     assert medium.e5 == large.e5 == "int8"
     assert medium.threads == large.threads == 2
-    assert model_version("siglip2", medium.siglip2) != model_version(
-        "siglip2", large.siglip2
-    )
+    assert model_version("siglip2", medium.siglip2) != model_version("siglip2", large.siglip2)
     for variant in model_spec("siglip2").variants:
         assert len(variant.files) == 3
         assert all(file.sha256 and len(file.sha256) == 64 for file in variant.files)
@@ -99,9 +97,7 @@ async def test_lens_download_preserves_the_original_image_and_its_format(monkeyp
         image.save(buffer, "PNG")
         original = buffer.getvalue()
     db = SimpleNamespace(get=AsyncMock(return_value=object()))
-    monkeypatch.setattr(
-        lens, "image_detail", AsyncMock(return_value={"filename": "source.pdf"})
-    )
+    monkeypatch.setattr(lens, "image_detail", AsyncMock(return_value={"filename": "source.pdf"}))
     monkeypatch.setattr(lens, "source_bytes", AsyncMock(return_value=original))
     app = FastAPI()
     app.include_router(lens.router, prefix="/api")
@@ -141,9 +137,10 @@ async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
     monkeypatch.setattr(search_images, "find_images", find)
     tool = search_images.SearchImagesTool()
     result = await tool.execute(query="screen", scope="library")
-    assert not result.success
-    find.assert_not_awaited()
-    result = await tool.execute(query="screen", _conversation_id=str(ident))
+    assert result.success
+    assert find.await_args.kwargs["conversation_id"] is None
+    assert result.tool_call.image_scope == "library"
+    result = await tool.execute(query="screen", scope="chat", _conversation_id=str(ident))
     assert result.success
     assert find.await_args.kwargs["conversation_id"] == ident
     assert result.tool_call.image_results == [
@@ -151,18 +148,14 @@ async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
     ]
     # No conversation ID is supplied in a temporary chat. Read-only global
     # search uses the staged reference attachment directly.
-    result = await tool.execute(
-        reference_image=1, _images=["YWJj"], _allow_library=True
-    )
+    result = await tool.execute(reference_image=1, _images=["YWJj"])
     assert result.success
     assert find.await_args.kwargs["conversation_id"] is None
     assert find.await_args.kwargs["reference"] == b"abc"
 
     find.reset_mock()
     find.side_effect = [[], find.return_value]
-    result = await tool.execute(
-        query="captura de pantalla", _allow_library=True, _library_query="screen"
-    )
+    result = await tool.execute(query="captura de pantalla", _library_query="screen")
     assert result.success
     assert [call.kwargs["query"] for call in find.await_args_list] == [
         "captura de pantalla",
@@ -172,8 +165,8 @@ async def test_agent_image_scope_and_reference_are_execution_owned(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ['{"scope":"chat"}', 'library', '{}'])
-async def test_image_library_search_requires_an_affirmative_scope(monkeypatch, reply):
+@pytest.mark.parametrize("reply", ["library", "{}"])
+async def test_image_scope_classifier_ignores_invalid_responses(monkeypatch, reply):
     from unittest.mock import AsyncMock
 
     from app.agent.tools import search_images
@@ -183,9 +176,12 @@ async def test_image_library_search_requires_an_affirmative_scope(monkeypatch, r
         "chat_once",
         AsyncMock(return_value={"message": {"content": reply}}),
     )
-    assert await search_images.classify_library_search(
-        'Summarize "search my image library"', "local-model", []
-    ) is None
+    assert (
+        await search_images.classify_library_search(
+            'Summarize "search my image library"', "local-model", []
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -261,9 +257,13 @@ async def test_lens_ocr_match_returns_without_waiting_for_encoders(monkeypatch):
     monkeypatch.setattr(search, "exact_candidates", AsyncMock(return_value=[ident]))
     query_encoder = AsyncMock(side_effect=AssertionError("Encoder must not run"))
     monkeypatch.setattr(search, "_query_vector", query_encoder)
-    db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
-        mappings=lambda: [row],
-    )))
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                mappings=lambda: [row],
+            )
+        )
+    )
     result = await search.find_images(db, get_lens_config(), query="ERR_CONN_1042")
     assert result == [row]
     query_encoder.assert_not_awaited()

@@ -1690,6 +1690,9 @@ async def test_note_optional_provenance_is_normalized_before_preflight(
     "request_text",
     [
         "Find the connection failed screenshot in my photo library",
+        "Search the diagram about perceptual subsystems",
+        "Busca el diagrama del corazón",
+        "ابحث عن مخطط القلب",
         "do u remember the diagram about human heart ?",
         "¿Recuerdas el diagrama del corazón humano que te envié?",
         "I meant the high level mind architecture",
@@ -1811,3 +1814,44 @@ async def test_lens_results_reach_the_model_and_can_be_inspected(
         event.get("tool_call", {}).get("imageResults") == saved["imageResults"]
         for event in events
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope,failed", [("chat", False), ("library", True)])
+async def test_image_scope_receipts_override_model_guess(agent, monkeypatch, scope, failed):
+    from uuid import UUID
+    from app.agent.tools import search_images
+
+    service.get_tool_registry().register(search_images.SearchImagesTool())
+    monkeypatch.setattr(service, "_select_tools", lambda _: {"search_images"})
+    monkeypatch.setattr(service.config_store, "get_all_tool_configs", lambda: {})
+    monkeypatch.setattr(service.config_store, "get_tool_config", lambda _: {})
+    monkeypatch.setattr(providers, "chat_once", AsyncMock(return_value={
+        "message": {"content": json.dumps({"scope": scope, "query": "heart diagram"})}
+    }))
+    @asynccontextmanager
+    async def db():
+        yield object()
+    monkeypatch.setattr(search_images, "async_session_factory", db)
+    find = AsyncMock(return_value=[])
+    if failed:
+        find.side_effect = search_images.LensEncoderUnavailable("Encoder unavailable")
+    monkeypatch.setattr(search_images, "find_images", find)
+    captured = script(monkeypatch, [
+        [{"tool_calls": [call({"query": "heart", "scope": "library" if scope == "chat" else "chat"}, name="search_images")], "done": True}],
+        [{"content": "Search outcome.", "done": True}],
+    ])
+    ident = str(UUID(int=1))
+    events = await run([
+        {"role": "user", "content": "Find the heart diagram in this chat only" if scope == "chat" else "Find the heart diagram"}
+    ], conversation_id=ident)
+    assert find.await_args.kwargs["conversation_id"] == (UUID(ident) if scope == "chat" else None)
+    running = [e["tool_call"] for e in events if e.get("event") == "tool_call" and e.get("tool_call", {}).get("status") == "running"]
+    assert running and all(e["imageScope"] == scope for e in running)
+    receipt = next(m["content"] for m in captured[1]["messages"] if m.get("role") == "tool")
+    receipt = json.JSONDecoder().raw_decode(receipt[receipt.index("{"):])[0]
+    assert receipt["scope"] == scope
+    assert receipt["status"] == ("failed" if failed else "completed")
+    assert receipt["match_count"] == (None if failed else 0)
+    if failed:
+        assert "Do not claim" in receipt["guidance"]

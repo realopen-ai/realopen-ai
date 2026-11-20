@@ -15,6 +15,7 @@ const DETAIL_FIELDS = [
   "sandboxId",
   "sandbox",
   "imageResults",
+  "imageScope",
 ] as const;
 
 type PersistedToolCall = {
@@ -30,6 +31,7 @@ type PersistedToolCall = {
   previewPort?: number;
   sandboxId?: string;
   sandbox?: Sandbox;
+  imageScope?: "chat" | "library";
   imageResults?: LensMatch[];
   unrelated?: string;
 };

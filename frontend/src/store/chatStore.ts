@@ -55,6 +55,7 @@ export interface ToolCallResult {
   // Web search
   query?: string;
   webResults?: { title: string; url: string; snippet: string }[];
+  imageScope?: "chat" | "library";
   imageResults?: import("@/api/lensClient").LensMatch[];
   // Code exec
   language?: string;

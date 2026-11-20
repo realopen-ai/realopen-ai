@@ -54,6 +54,7 @@ SOURCES = {
 class LibrarySearchIntent:
     query: str
     english_query: str
+    scope: str = "library"
 
 
 async def classify_library_search(
@@ -70,9 +71,7 @@ async def classify_library_search(
                 {
                     "role": "user",
                     "content": "Classify this request: "
-                    + json.dumps(
-                        {"history": history, "request": request}, ensure_ascii=False
-                    ),
+                    + json.dumps({"history": history, "request": request}, ensure_ascii=False),
                 },
             ],
             timeout=20,
@@ -81,13 +80,12 @@ async def classify_library_search(
             options={"temperature": 0, "num_predict": 160},
         )
         decision = json.loads(response["message"]["content"])
-        if isinstance(decision, dict) and decision.get("scope") == "library":
-            query, english_query = decision.get("query", ""), decision.get(
-                "english_query", ""
-            )
+        if isinstance(decision, dict) and decision.get("scope") in {"chat", "library"}:
+            query, english_query = decision.get("query", ""), decision.get("english_query", "")
             return LibrarySearchIntent(
                 query.strip()[:500] if isinstance(query, str) else "",
                 english_query.strip()[:500] if isinstance(english_query, str) else "",
+                decision["scope"],
             )
     except Exception as exc:
         logger.debug("Image library intent check failed (%s)", type(exc).__name__)
@@ -107,8 +105,9 @@ class SearchImagesTool(BaseTool):
     display_name = "Search Images"
     description = (
         "Find or recall previously shared images, diagrams, and screenshots by visual "
-        "description, filename, or visible text. Default to this chat. Use library scope "
-        "when the user asks to search saved images or recall an image from past chats. "
+        "description, filename, or visible text. General requests to find an image search "
+        "the saved library, including in a new chat. Use chat scope when the user "
+        "restricts the search to this conversation or refers to its current images. "
         "Use the latest subject when the user continues or corrects an image lookup. "
         "Report only the scope "
         "actually searched. To find similar images from an image "
@@ -146,23 +145,18 @@ class SearchImagesTool(BaseTool):
         scope=None,
         reference_image=None,
         _conversation_id=None,
-        _allow_library=False,
         _library_query="",
         _images=(),
         **kwargs,
     ):
         query = (query or "").strip()
-        scope = scope or ("library" if _allow_library else "chat")
+        scope = scope or "library"
         if scope not in {"chat", "library"}:
             return self.invalid_arguments("Use chat or library as the search scope.")
         if not query and reference_image is None:
-            return self.invalid_arguments(
-                "Provide a query or an attached reference image."
-            )
+            return self.invalid_arguments("Provide a query or an attached reference image.")
         if query and reference_image is not None:
-            return self.invalid_arguments(
-                "Provide either a query or a reference image."
-            )
+            return self.invalid_arguments("Provide either a query or a reference image.")
         if reference_image is not None and not 1 <= reference_image <= len(_images):
             return self.invalid_arguments("Choose an image attached to this turn.")
         tc = ToolCall(
@@ -173,23 +167,32 @@ class SearchImagesTool(BaseTool):
             title=self.display_name,
             started_at=time.time(),
             query=query or None,
+            image_scope=scope,
         )
 
         def finish(message, *, success=True):
             tc.completed_at = time.time()
+            tc.status = "completed" if success else "error"
+            tc.error = None if success else message
+            receipt = json.dumps(
+                {
+                    "scope": scope,
+                    "status": "completed" if success else "failed",
+                    "message": message,
+                    "match_count": 0 if success else None,
+                    "guidance": (
+                        "Only this scope was searched."
+                        if success
+                        else "This search did not complete. Do not claim that this scope was searched or had no matches."
+                    ),
+                },
+                ensure_ascii=False,
+            )
             tc.output = message
-            return ToolResult(success, message, tc)
+            return ToolResult(success, receipt, tc)
 
-        if scope == "library" and not _allow_library:
-            return finish(
-                "Library scope is unavailable for this request. Use chat scope or ask "
-                "the user if they want to search saved images across chats.",
-                success=False,
-            )
         if scope == "chat" and not _conversation_id:
-            return finish(
-                "This chat has no saved images. The saved image library is available on request."
-            )
+            return finish("This chat-only search has no saved conversation to search.", success=False)
         from app.agent.tools.config_store import get_tool_config
 
         config = get_tool_config(self.name) or {}
@@ -197,7 +200,7 @@ class SearchImagesTool(BaseTool):
         source_types = tuple(source for source in SOURCES if switches.get(source, True))
         if not source_types:
             return finish(
-                "All image sources are turned off in Brain → Tools → Search Images."
+                "All image sources are turned off in Brain → Tools → Search Images.", success=False
             )
 
         reference = None
@@ -206,34 +209,24 @@ class SearchImagesTool(BaseTool):
             if encoded.startswith("data:"):
                 encoded = encoded.partition(",")[2]
             if len(encoded) > ((MAX_IMAGE_BYTES + 2) // 3) * 4:
-                return finish(
-                    "The attached reference image exceeds 20 MiB.", success=False
-                )
+                return finish("The attached reference image exceeds 20 MiB.", success=False)
             try:
-                reference = await asyncio.to_thread(
-                    base64.b64decode, encoded, validate=True
-                )
+                reference = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
                 if not reference or len(reference) > MAX_IMAGE_BYTES:
                     raise ValueError
             except ValueError:
-                return finish(
-                    "The attached reference image could not be read.", success=False
-                )
+                return finish("The attached reference image could not be read.", success=False)
 
         try:
             async with async_session_factory() as db:
                 config = get_lens_config()
                 options = {
-                    "conversation_id": (
-                        UUID(str(_conversation_id)) if scope == "chat" else None
-                    ),
+                    "conversation_id": (UUID(str(_conversation_id)) if scope == "chat" else None),
                     "source_types": source_types,
                     "limit": MAX_MATCHES,
                     "include_ocr": True,
                 }
-                matches = await find_images(
-                    db, config, query=query, reference=reference, **options
-                )
+                matches = await find_images(db, config, query=query, reference=reference, **options)
                 if (
                     not matches
                     and scope == "library"
@@ -259,11 +252,7 @@ class SearchImagesTool(BaseTool):
                 "id": str(item["id"]),
                 "filename": item["filename"],
                 "excerpt": _excerpt(item["ocr_text"] or "", query),
-                **(
-                    {"page_number": item["page_number"]}
-                    if item.get("page_number")
-                    else {}
-                ),
+                **({"page_number": item["page_number"]} if item.get("page_number") else {}),
             }
             for item in matches
         ]
@@ -271,19 +260,20 @@ class SearchImagesTool(BaseTool):
         return ToolResult(
             True,
             json.dumps(
-                [
-                    {
-                        "image_id": row["id"],
-                        "filename": row["filename"],
-                        "ocr_excerpt": row["excerpt"],
-                        **(
-                            {"page_number": row["page_number"]}
-                            if "page_number" in row
-                            else {}
-                        ),
-                    }
-                    for row in tc.image_results
-                ],
+                {
+                    "scope": scope,
+                    "status": "completed",
+                    "match_count": len(tc.image_results),
+                    "images": [
+                        {
+                            "image_id": row["id"],
+                            "filename": row["filename"],
+                            "ocr_excerpt": row["excerpt"],
+                            **({"page_number": row["page_number"]} if "page_number" in row else {}),
+                        }
+                        for row in tc.image_results
+                    ],
+                },
                 ensure_ascii=False,
             ),
             tc,
@@ -293,8 +283,7 @@ class SearchImagesTool(BaseTool):
 def _validate_sources(custom):
     sources = custom.get("sources", {})
     if not isinstance(sources, dict) or any(
-        key not in SOURCES or not isinstance(value, bool)
-        for key, value in sources.items()
+        key not in SOURCES or not isinstance(value, bool) for key, value in sources.items()
     ):
         raise ValueError("Image sources must be recognized boolean switches.")
     return custom

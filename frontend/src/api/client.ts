@@ -347,6 +347,7 @@ export async function installModuleModels(
 
 /** Shape of a tool call as stored inside a block's `tool_call` field */
 export interface BackendToolCall {
+  imageScope?: "chat" | "library";
   imageResults?: import("./lensClient").LensMatch[];
   progress?: { stage: string; completed: number; total: number };
   id?: string;

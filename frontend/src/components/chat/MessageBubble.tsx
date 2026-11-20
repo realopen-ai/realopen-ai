@@ -561,8 +561,20 @@ function ToolCallBlockView({
       runningLabel: translate("tool.webfetch.running"),
     },
     image_search: {
-      label: translate("tool.lens.done"),
-      runningLabel: translate("tool.lens.running"),
+      label: translate(
+        tc.imageScope === "library"
+          ? "tool.lens.libraryDone"
+          : tc.imageScope === "chat"
+            ? "tool.lens.chatDone"
+            : "tool.lens.done",
+      ),
+      runningLabel: translate(
+        tc.imageScope === "library"
+          ? "tool.lens.libraryRunning"
+          : tc.imageScope === "chat"
+            ? "tool.lens.chatRunning"
+            : "tool.lens.running",
+      ),
     },
     vision: {
       label: translate("tool.vision.done"),
