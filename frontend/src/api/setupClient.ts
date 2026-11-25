@@ -24,6 +24,7 @@ export interface SetupProfile {
   description: string;
   label: string;
   engine: string;
+  lens_models?: { id: string; size: number }[];
   models: {
     id: string;
     type: string;
@@ -114,7 +115,7 @@ export interface ApplySetupResponse {
     id: string;
     role: string;
     description: string;
-    size: string;
+    size: string | number;
     module: string;
   }[];
 }
@@ -130,9 +131,10 @@ export interface PullModelEvent {
   completed?: number;
   percent?: number;
   error?: string;
+  error_details?: string;
   reason?: string;
-  provider?: "ollama" | "qwen3-asr" | "pocket-tts" | "pip";
-  kind?: "ollama" | "voice_model" | "voice_runtime";
+  provider?: "ollama" | "qwen3-asr" | "pocket-tts" | "pip" | "lens-onnx";
+  kind?: "ollama" | "voice_model" | "voice_runtime" | "lens_model";
   output?: string;
   already_installed?: boolean;
 }

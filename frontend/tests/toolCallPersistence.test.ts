@@ -44,3 +44,13 @@ test("coder file and preview details survive reload and live SSE mapping", () =>
     },
   );
 });
+
+test("image search scope survives reload", () => {
+  assert.deepEqual(
+    persistedToolCallDetails({ imageScope: "library", imageResults: [] }),
+    {
+      imageScope: "library",
+      imageResults: [],
+    },
+  );
+});

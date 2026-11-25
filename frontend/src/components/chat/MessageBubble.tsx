@@ -61,6 +61,8 @@ import { QuizArtifact } from "@/components/learn/QuizArtifact";
 import { NoteArtifact } from "@/components/learn/NoteArtifact";
 import { SourceAction } from "@/components/learn/SourceAction";
 import { artifactCitationLocations } from "@/lib/sourceNavigation";
+import { LensSearchDetail } from "@/components/chat/LensSearchDetail";
+import { MessageImages } from "@/components/chat/MessageImages";
 import { Link, useLocation } from "react-router-dom";
 import { sideTabRouteKey, type FilePreview } from "@/lib/rightPanelTabs";
 
@@ -436,7 +438,7 @@ function ToolCallBlockView({
   ) => void;
 }) {
   const translate = useT();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState<boolean | null>(null);
   const tc = block.toolCall;
   if (!tc) return null;
   const stagedOutputs = tc.genResults?.filter(
@@ -558,6 +560,22 @@ function ToolCallBlockView({
       label: translate("tool.webfetch.done"),
       runningLabel: translate("tool.webfetch.running"),
     },
+    image_search: {
+      label: translate(
+        tc.imageScope === "library"
+          ? "tool.lens.libraryDone"
+          : tc.imageScope === "chat"
+            ? "tool.lens.chatDone"
+            : "tool.lens.done",
+      ),
+      runningLabel: translate(
+        tc.imageScope === "library"
+          ? "tool.lens.libraryRunning"
+          : tc.imageScope === "chat"
+            ? "tool.lens.chatRunning"
+            : "tool.lens.running",
+      ),
+    },
     vision: {
       label: translate("tool.vision.done"),
       runningLabel: translate("tool.vision.running"),
@@ -672,11 +690,13 @@ function ToolCallBlockView({
           ? tc.filePath
           : tc.type === "websearch" ||
               tc.type === "webfetch" ||
+              tc.type === "image_search" ||
               tc.type === "deepsearch"
             ? tc.query
             : undefined;
 
-  const resultCount = tc.webResults?.length || tc.genResults?.length;
+  const resultCount =
+    tc.imageResults?.length || tc.webResults?.length || tc.genResults?.length;
   const elapsed =
     Number.isFinite(tc.durationMs) && (tc.durationMs ?? -1) >= 0
       ? tc.durationMs!
@@ -689,18 +709,19 @@ function ToolCallBlockView({
     tc.type !== "tool_access" &&
     tc.type !== "tool_output" &&
     (tc.status === "error" ||
+      (tc.type === "image_search" && tc.status === "completed") ||
       tc.status === "running" ||
       ((tc.type === "file_read" || tc.type === "file_write") &&
         tc.status === "completed") ||
       ((isReportTool || isPresentationTool || isExcelTool) &&
         tc.status === "completed"));
-  const isExpanded = expanded || autoExpand;
+  const isExpanded = expanded ?? autoExpand;
 
   return (
     <div className="my-1">
       {/* Activity row — click to toggle details */}
       <button
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setExpanded(!isExpanded)}
         className="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         aria-expanded={isExpanded}
       >
@@ -815,6 +836,7 @@ function ToolCallDetail({
     artifactVersion?: PinnedArtifact,
   ) => void;
 }) {
+  if (tc.type === "vision") return <VisionDetail tc={tc} />;
   const coderPresentation =
     tc.agent === "coder" || Boolean(tc.toolName) || tc.type === "sandbox"
       ? presentCoderToolOutput(tc.output, {
@@ -845,7 +867,7 @@ function ToolCallDetail({
   if (tc.type === "skill") return <SkillToolDetail tc={tc} />;
   if (tc.type === "websearch") return <WebSearchDetail tc={tc} />;
   if (tc.type === "webfetch") return <WebFetchDetail tc={tc} />;
-  if (tc.type === "vision") return <VisionDetail tc={tc} />;
+  if (tc.type === "image_search") return <LensSearchDetail call={tc} />;
   if (tc.type === "code_exec") return <CodeExecDetail tc={tc} />;
   if (tc.type === "file_read" || tc.type === "file_write")
     return <FileToolDetail tc={tc} />;
@@ -1221,7 +1243,27 @@ function VisionDetail({ tc }: { tc: ToolCallResult }) {
           </p>
         </div>
       )}
-      {tc.error && <p className="text-[11.5px] text-danger">{tc.error}</p>}
+      {tc.ocrText && (
+        <div>
+          <p className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground/70">
+            {translate("artifacts.ocr")}
+          </p>
+          <p
+            dir="auto"
+            className="whitespace-pre-wrap break-words rounded-md bg-background/60 px-2.5 py-2 text-[12.5px] leading-relaxed text-foreground/85"
+          >
+            {tc.ocrText}
+          </p>
+        </div>
+      )}
+      {tc.status === "error" && (
+        <p
+          role="alert"
+          className="whitespace-pre-wrap text-[11.5px] text-danger"
+        >
+          {tc.error || tc.output || tc.title}
+        </p>
+      )}
     </div>
   );
 }
@@ -2025,10 +2067,7 @@ export function MessageBubble({
               </span>
             </div>
           )}
-          {/* Image/document indicators + voice-modality badge */}
-          {(message.hasImage ||
-            message.hasDocument ||
-            message.modality === "voice") && (
+          {(message.hasDocument || message.modality === "voice") && (
             <div className="flex gap-1.5 mb-1.5 justify-end">
               {message.modality === "voice" && (
                 <span
@@ -2037,13 +2076,6 @@ export function MessageBubble({
                 >
                   <Mic className="w-2.5 h-2.5" />
                   {t("voice.message.voiceSent")}
-                </span>
-              )}
-              {message.hasImage && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary text-[11px] font-medium text-muted-foreground">
-                  <Image className="w-2.5 h-2.5" />
-                  {message.imageCount} image
-                  {message.imageCount !== 1 ? "s" : ""}
                 </span>
               )}
               {message.hasDocument && (
@@ -2063,39 +2095,48 @@ export function MessageBubble({
           {message.digestProgress && message.digestProgress.length > 0 && (
             <DigestProgressIndicator items={message.digestProgress} />
           )}
-          <div
-            className={cn(
-              "rounded-xl bg-secondary px-4 py-2.5",
-              command && "ring-1 ring-inset ring-primary/20",
-            )}
-          >
-            {command && (
-              <span
-                dir="ltr"
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs font-medium text-primary [&_svg]:size-3.5"
-              >
-                {command.icon}/{command.name}
-              </span>
-            )}
-            {!!message.selectedSourceIds?.length && (
-              <SelectedCommandSources
-                ids={message.selectedSourceIds}
-                titles={message.selectedSourceTitles}
-                conversationId={conversationId}
-              />
-            )}
-            {(!command || remainingContent) && (
-              <p
-                className={cn(
-                  "whitespace-pre-wrap leading-relaxed",
-                  command && "mt-1.5",
-                )}
-                style={{ fontSize: "var(--app-font-size)" }}
-              >
-                {remainingContent}
-              </p>
-            )}
-          </div>
+          {remainingContent || command || message.selectedSourceIds?.length ? (
+            <div
+              className={cn(
+                "ms-auto w-fit max-w-full rounded-xl bg-secondary px-4 py-2.5",
+                command && "ring-1 ring-inset ring-primary/20",
+              )}
+            >
+              {command && (
+                <span
+                  dir="ltr"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 font-mono text-xs font-medium text-primary [&_svg]:size-3.5"
+                >
+                  {command.icon}/{command.name}
+                </span>
+              )}
+              {!!message.selectedSourceIds?.length && (
+                <SelectedCommandSources
+                  ids={message.selectedSourceIds}
+                  titles={message.selectedSourceTitles}
+                  conversationId={conversationId}
+                />
+              )}
+              {(!command || remainingContent) && (
+                <p
+                  className={cn(
+                    "whitespace-pre-wrap leading-relaxed",
+                    command && "mt-1.5",
+                  )}
+                  style={{ fontSize: "var(--app-font-size)" }}
+                >
+                  {remainingContent}
+                </p>
+              )}
+            </div>
+          ) : null}
+          {message.hasImage && (
+            <MessageImages
+              attachments={message.imageAttachments}
+              files={message.localImageFiles}
+              conversationId={conversationId}
+            />
+          )}
           {/* Copy icon */}
           <button
             onClick={handleCopy}

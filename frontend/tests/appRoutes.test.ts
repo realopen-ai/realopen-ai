@@ -40,4 +40,6 @@ test("recognizes and restores Workspace section routes", () => {
   assert.equal(getWorkspaceSection("/workspace"), null);
   assert.equal(getWorkspaceSection("/workspace/sandboxes"), "sandboxes");
   assert.equal(workspaceSectionPath("documents"), "/workspace/documents");
+  assert.equal(getWorkspaceSection("/workspace/images"), "images");
+  assert.equal(workspaceSectionPath("images"), "/workspace/images");
 });

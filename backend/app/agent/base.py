@@ -23,6 +23,7 @@ class ToolType(str, Enum):
     TOOL_OUTPUT = "tool_output"
     WEB_SEARCH = "websearch"
     WEB_FETCH = "webfetch"
+    IMAGE_SEARCH = "image_search"
     VISION = "vision"
     CODE_EXEC = "code_exec"
     SKILL = "skill"
@@ -52,6 +53,8 @@ class ToolCall:
     # Tool-specific fields
     query: Optional[str] = None  # web search
     web_results: Optional[List[Dict]] = None  # web search results
+    image_scope: Optional[str] = None  # Actual Lens search scope
+    image_results: Optional[List[Dict]] = None  # Lens image search results
     gen_results: Optional[List[Dict]] = None  # media generation results
     language: Optional[str] = None  # code exec
     code: Optional[str] = None  # code exec
@@ -62,6 +65,7 @@ class ToolCall:
     skill_name: Optional[str] = None  # skill loader
     skill_resource: Optional[str] = None  # SKILL.md or bundled resource path
     image_description: Optional[str] = None  # vision
+    ocr_text: Optional[str] = None  # vision attachment
     error: Optional[str] = None  # any tool
     progress: Optional[Dict] = None  # live artifact summary stage and batch counts
 
@@ -75,9 +79,7 @@ class ToolResult:
     tool_call: Optional[ToolCall] = None  # Updated tool call for SSE events
     failure_kind: Optional[str] = None  # validation | execution (not quality judgment)
     validation_issues: Optional[List[Dict]] = None  # exact field paths, never guessed
-    model_output_limit: Optional[int] = (
-        None  # initial view only; retain full output for paging
-    )
+    model_output_limit: Optional[int] = None  # initial view only; retain full output for paging
 
     def __post_init__(self):
         # Unknown failures are operational, never automatically argument repairs.

@@ -1,5 +1,6 @@
 export type BrainTab = "memories" | "history" | "skills" | "tools" | "models";
 export type WorkspaceSection =
+  | "images"
   | "documents"
   | "templates"
   | "generated"
@@ -18,6 +19,7 @@ const brainTabs = new Set<BrainTab>([
 const workspaceSections = new Set<WorkspaceSection>([
   "artifacts",
   "documents",
+  "images",
   "templates",
   "generated",
   "assets",

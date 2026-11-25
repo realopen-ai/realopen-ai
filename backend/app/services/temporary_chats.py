@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from app.db.models import Artifact, ArtifactVersion, Document, DocumentChunk, Memory
 from app.services.artifact_sources import sections_for
+from app.services.lens.encoders import image_mime
 from app.services.memory import MemoryManager
 from app.services import rag
 
@@ -40,6 +41,7 @@ READ_TOOLS = {
     "use_websearch",
     "use_webfetch",
     "use_vision",
+    "search_images",
     "rag_search",
     "search_past_conversations",
     "load_skill",
@@ -228,14 +230,36 @@ class TemporaryChat:
 
     async def save_attachments(self, db, message_ids, written):
         for item in self.attachments:
+            mime = (
+                await asyncio.to_thread(image_mime, item.data) if item.image else None
+            ) or rag.guess_mime_type(item.filename)
             written.append(item.id)
             path = await rag.save_uploaded_file(item.data, item.filename, item.id)
+            chunks = list(item.chunks)
+            extracted = []
+            if not item.image and rag.get_file_extension(item.filename) in {
+                "pdf",
+                "doc",
+                "docx",
+                "ppt",
+                "pptx",
+            }:
+                # Reuse the saved attachment bytes at promotion time. Temporary
+                # chats only keep text chunks while they are staged.
+                extracted = (
+                    await rag.extract_content_async(item.data, item.filename)
+                ).images
+                for index, image in enumerate(extracted, start=0):
+                    chunk = await rag.save_extracted_image_chunk(
+                        image, item.id, item.filename, index, len(chunks)
+                    )
+                    chunks.append((uuid.uuid4(), chunk))
             db.add(
                 Document(
                     id=item.id,
                     filename=item.filename,
                     original_filename=item.filename,
-                    mime_type=rag.guess_mime_type(item.filename),
+                    mime_type=mime,
                     file_path=path,
                     file_size_bytes=len(item.data),
                     content_hash=hashlib.sha256(item.data).hexdigest(),
@@ -243,7 +267,8 @@ class TemporaryChat:
                     conversation_id=self.id,
                     message_id=message_ids.get(item.message_index),
                     total_pages=item.pages or None,
-                    total_chunks=len(item.chunks),
+                    total_chunks=len(chunks),
+                    total_images=len(extracted),
                     digestion_status="ready",
                     created_at=item.created_at,
                 )
@@ -260,8 +285,9 @@ class TemporaryChat:
                         line_start=chunk.line_start,
                         line_end=chunk.line_end,
                         chunk_type=chunk.chunk_type,
+                        image_path=chunk.image_path,
                     )
-                    for chunk_id, chunk in item.chunks
+                    for chunk_id, chunk in chunks
                 ]
             )
 

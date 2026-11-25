@@ -6,6 +6,7 @@ import logging
 import os
 import tempfile
 import time
+from contextlib import aclosing
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -269,14 +270,15 @@ class ModelJobs:
                         "The target model name is now installed. It will not be overwritten."
                     )
                 files = {}
-                async for event in source.download(detail, variant):
-                    if "files" in event:
-                        files = event["files"]
-                        continue
-                    record.update(event, updated_at=now())
-                    if time.monotonic() - last_save > 0.5:
-                        await self.save(record)
-                        last_save = time.monotonic()
+                async with aclosing(source.download(detail, variant)) as download:
+                    async for event in download:
+                        if "files" in event:
+                            files = event["files"]
+                            continue
+                        record.update(event, updated_at=now())
+                        if time.monotonic() - last_save > 0.5:
+                            await self.save(record)
+                            last_save = time.monotonic()
                 async for event in adapter.install(
                     detail, variant, record["request"]["name"], files
                 ):
@@ -287,7 +289,11 @@ class ModelJobs:
                 record.update(
                     status="completed",
                     stage="completed",
-                    message="Installed and registered. Select it in Settings → AI; inference has not been tested.",
+                    message=getattr(
+                        adapter,
+                        "completion_message",
+                        "Installed and registered. Select it in Settings → AI; inference has not been tested.",
+                    ),
                     updated_at=now(),
                 )
         except asyncio.CancelledError:

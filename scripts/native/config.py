@@ -1,5 +1,6 @@
 """Resolve native settings without rewriting the user's Docker .env."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -55,6 +56,16 @@ def atomic_json(path, value):
             temporary.unlink(missing_ok=True)
 
 
+def contains_cloud_placeholders(directory):
+    # BSD find reads the file flags without opening or downloading the content.
+    result = subprocess.run(
+        ["/usr/bin/find", str(directory), "-flags", "+dataless", "-print", "-quit"],
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout)
+
+
 class Config:
     def __init__(self, root=ROOT, environ=None):
         self.root = Path(root).resolve()
@@ -74,6 +85,10 @@ class Config:
             / "backend"
             / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         )
+        self.local_python_cache = None
+        self.recovering_python = False
+        if not self.custom_python and platform.system() == "Darwin":
+            self._select_local_python(tag)
         secret_path = self.runtime / "credentials.json"
         self.runtime.mkdir(parents=True, exist_ok=True)
         with RuntimeLock(self.runtime / "credentials.lock"):
@@ -113,7 +128,7 @@ class Config:
             REALOPEN_DATA_DIR=str(self.data),
             REALOPEN_STATE_DIR=str(self.data / "state"),
             HF_HOME=self.env.get("HF_HOME", str(self.data / "huggingface")),
-            PIP_CACHE_DIR=str(self.data / "pip-cache"),
+            PIP_CACHE_DIR=str((self.local_python_cache or self.data) / "pip-cache"),
             VITE_PROXY_TARGET=f"http://127.0.0.1:{self.env.get('NATIVE_API_PORT', '8000')}",
         )
         for key, value in list(self.env.items()):
@@ -155,6 +170,18 @@ class Config:
                 f"Missing executable: {name}. Run start-native setup, or install it and add it to PATH."
             )
         return binary
+
+    def _select_local_python(self, tag):
+        checkout = hashlib.sha256(os.fsencode(self.root)).hexdigest()[:16]
+        cache = Path.home() / "Library/Caches/realopen-ai/native" / checkout / tag
+        cached_python = cache / "backend/bin/python"
+        if not cached_python.exists():
+            environment = self.python.parent.parent
+            if not environment.is_dir() or not contains_cloud_placeholders(environment):
+                return
+            self.recovering_python = True
+        self.python = cached_python
+        self.local_python_cache = cache
 
     def postgres_bin(self, name):
         configured = self.env.get("NATIVE_PG_BIN")

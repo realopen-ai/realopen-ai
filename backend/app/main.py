@@ -25,6 +25,8 @@ from app.api.frontend import install_frontend  # noqa: E402
 from app.api.coder_tasks import router as coder_tasks_router  # noqa: E402
 from app.services.coder_tasks import recover_interrupted_tasks  # noqa: E402
 from app.api.chat import router as chat_router  # noqa: E402
+from app.api.lens import router as lens_router  # noqa: E402
+from app.services.lens import index as lens_index  # noqa: E402
 from app.api.model_manager import router as model_manager_router  # noqa: E402
 from app.api.models import router as models_router  # noqa: E402
 from app.api.modules import router as modules_router  # noqa: E402
@@ -386,12 +388,16 @@ async def lifespan(app: FastAPI):
 
     sandbox_monitor = asyncio.create_task(idle_sandbox_monitor())
     search_monitor = asyncio.create_task(search_services.monitor())
+    lens_monitor = asyncio.create_task(lens_index.monitor())
     try:
         yield
     finally:
         # Shutdown: flush the optional local trace writer after active requests stop.
         sandbox_monitor.cancel()
         search_monitor.cancel()
+        lens_monitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await lens_monitor
         with suppress(asyncio.CancelledError):
             await search_monitor
         with suppress(asyncio.CancelledError):
@@ -441,6 +447,7 @@ app.include_router(chat_router, prefix="/api", tags=["chat"])
 app.include_router(coder_tasks_router, prefix="/api")
 app.include_router(models_router, prefix="/api", tags=["models"])
 app.include_router(model_manager_router, prefix="/api", tags=["model-manager"])
+app.include_router(lens_router, prefix="/api")
 app.include_router(modules_router, prefix="/api", tags=["modules"])
 app.include_router(setup_router, prefix="/api", tags=["setup"])
 app.include_router(memory_router, prefix="/api", tags=["memory"])

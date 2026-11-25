@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Brain,
   ChevronLeft,
@@ -71,6 +72,7 @@ function ToolIcon({
     case "use_webfetch":
       return <Zap className={className} />;
     case "use_image_gen":
+    case "search_images":
       return <ImageIcon className={className} />;
     case "rag_search":
       return <FileSearch className={className} />;
@@ -394,28 +396,56 @@ function ToolDetail({ tool, onBack }: { tool: ToolInfo; onBack: () => void }) {
                 disabled={cfg.always_load || !cfg.enabled}
               />
             </div>
-            <SettingRow
-              label={t("brain.tools.model")}
-              help={
-                cfg.model
-                  ? undefined
-                  : `${t("brain.tools.modelHelp")}${
-                      tool.effective_model ? ` (${tool.effective_model})` : ""
-                    }`
-              }
-            >
-              <ModelSelect
-                task={tool.tool}
-                models={models}
-                currentModel={cfg.model}
-                groqConnected={groqConnected}
-                localOnly={
-                  tool.tool === "use_image_gen" || tool.tool === "use_vision"
+            {tool.profile_models ? (
+              <SettingRow
+                label={t("brain.tools.profileModels")}
+                help={t("brain.tools.profileModelsHelp")}
+              >
+                <div className="space-y-1 text-end">
+                  <ul className="space-y-1 text-xs text-foreground">
+                    {tool.profile_models.map((model) => (
+                      <li key={model.title}>
+                        {model.title}{" "}
+                        <span className="text-muted-foreground">
+                          · {model.precision}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <Link
+                    to="/brain/models"
+                    className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                  >
+                    {t("brain.tools.manageModels")}
+                  </Link>
+                </div>
+              </SettingRow>
+            ) : (
+              <SettingRow
+                label={t("brain.tools.model")}
+                help={
+                  cfg.model
+                    ? undefined
+                    : `${t("brain.tools.modelHelp")}${
+                        tool.effective_model ? ` (${tool.effective_model})` : ""
+                      }`
                 }
-                inheritOption={t("brain.tools.modelInherit")}
-                onSelect={(_task, model) => updateConfig(tool.tool, { model })}
-              />
-            </SettingRow>
+              >
+                <ModelSelect
+                  task={tool.tool}
+                  models={models}
+                  currentModel={cfg.model}
+                  groqConnected={groqConnected}
+                  localOnly={
+                    tool.tool === "use_image_gen" || tool.tool === "use_vision"
+                  }
+                  inheritOption={t("brain.tools.modelInherit")}
+                  onSelect={(_task, model) =>
+                    updateConfig(tool.tool, { model })
+                  }
+                />
+              </SettingRow>
+            )}
           </div>
         </section>
 

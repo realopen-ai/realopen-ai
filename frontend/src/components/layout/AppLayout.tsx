@@ -25,6 +25,15 @@ import { NotebookWorkspace } from "@/components/learn/NotebookWorkspace";
 import { useNotebookStore } from "@/store/notebookStore";
 import { isBrainRoute, isWorkspaceRoute, isLearnRoute } from "@/lib/appRoutes";
 import { rightPanelVisibilityAfterResize } from "@/lib/panelLayout";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { LensImagePreview } from "@/components/workspace/LensImagePreview";
+import { LensImageResults } from "@/components/workspace/LensImageResults";
+import { ImageViewer } from "@/components/chat/ImageViewer";
 import { CitationPreviewDialog } from "@/components/learn/CitationPreview";
 
 const TerminalPane = lazy(() =>
@@ -58,7 +67,7 @@ export function AppLayout() {
   const activeSideTab = useUIStore((s) => s.activeSideTab);
   const clearSideTabs = useUIStore((s) => s.clearSideTabs);
   const closeSideTab = useUIStore((s) => s.closeSideTab);
-  const mobileCitation = sideTabs.find(
+  const mobileActivity = sideTabs.find(
     (tab) => tab.routeKey === routeKey && tab.key === activeSideTab,
   );
   useEffect(() => clearSideTabs(routeKey), [clearSideTabs, routeKey]);
@@ -370,13 +379,36 @@ export function AppLayout() {
             <MobileTabBar />
           )}
         </div>
+        <ImageViewer />
+        {!desktop &&
+          (mobileActivity?.activity.kind === "lens-image" ||
+            mobileActivity?.activity.kind === "lens-results") && (
+            <Dialog
+              open
+              onOpenChange={(open) => !open && closeSideTab(mobileActivity.key)}
+            >
+              <DialogContent className="max-h-[90dvh] overflow-y-auto p-0">
+                <DialogTitle className="sr-only">
+                  {mobileActivity.activity.title}
+                </DialogTitle>
+                <DialogDescription className="sr-only">
+                  {t("lens.preview")}
+                </DialogDescription>
+                {mobileActivity.activity.kind === "lens-results" ? (
+                  <LensImageResults images={mobileActivity.activity.images} />
+                ) : (
+                  <LensImagePreview id={mobileActivity.activity.id} />
+                )}
+              </DialogContent>
+            </Dialog>
+          )}
         {!desktop &&
           !showNotebook &&
-          mobileCitation?.activity.kind === "citation" && (
+          mobileActivity?.activity.kind === "citation" && (
             <CitationPreviewDialog
-              key={mobileCitation.key}
-              source={mobileCitation.activity.source}
-              onClose={() => closeSideTab(mobileCitation.key)}
+              key={mobileActivity.key}
+              source={mobileActivity.activity.source}
+              onClose={() => closeSideTab(mobileActivity.key)}
             />
           )}
       </div>

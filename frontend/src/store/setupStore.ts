@@ -27,11 +27,11 @@ export type SetupStep =
   | "done";
 
 /** Provider of a setup artifact (models + voice models + runtimes). */
-export type PullProvider = "ollama" | "qwen3-asr" | "pocket-tts" | "pip";
+export type PullProvider = NonNullable<PullModelEvent["provider"]>;
 
 /** Kind of a setup artifact — ollama LLM models, voice models (ASR/TTS)
  *  or voice runtime packages (ffmpeg & co). */
-export type PullKind = "ollama" | "voice_model" | "voice_runtime";
+export type PullKind = NonNullable<PullModelEvent["kind"]>;
 
 /** Per-row install state — unified list covering ollama models AND voice
  *  models/runtimes (ASR, TTS, runtime packages). */
@@ -51,6 +51,7 @@ export interface PullRow {
   /** Latest streamed output text (pull_status events). */
   outputText?: string;
   error?: string;
+  errorDetails?: string;
   /** pull_done with already_installed — the artifact was present. */
   alreadyInstalled?: boolean;
 }
@@ -399,6 +400,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
               rows: upsertRow(s.pullProgress.rows, event.model ?? "", {
                 status: "error",
                 error: event.error,
+                errorDetails: event.error_details,
               }),
             },
           }));

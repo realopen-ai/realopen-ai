@@ -1114,13 +1114,16 @@ async def test_stream_persist_failure_is_survived(client, env):
 
 
 @pytest.mark.asyncio
-async def test_multipart_images_encoded_to_base64(client, env):
+@pytest.mark.parametrize("saved", [False, True])
+async def test_multipart_images_encoded_to_base64(client, env, saved, monkeypatch):
+    save = AsyncMock()
+    monkeypatch.setattr(chat_module, "save_images", save)
     image_bytes = b"PNGDATA-fake-image-bytes"
     r = await client.post(
         "/api/chat/stream/multipart",
         data={
             "messages": json.dumps([{"role": "user", "content": "see this"}]),
-            "conversation_id": str(CONV_ID),
+            **({"conversation_id": str(CONV_ID)} if saved else {}),
         },
         files={"images": ("photo.png", image_bytes, "image/png")},
     )
@@ -1128,6 +1131,12 @@ async def test_multipart_images_encoded_to_base64(client, env):
     expected_b64 = base64.b64encode(image_bytes).decode("utf-8")
     assert env.agent_calls[0]["images"] == [expected_b64]
 
+    if not saved:
+        save.assert_not_awaited()
+        assert not env.persists
+        return
+
+    save.assert_awaited_once_with(CONV_ID, MSG_ID, [("photo.png", image_bytes)])
     # eager user persist records image metadata
     user_calls = [c for c in env.persists if c["role"] == "user"]
     assert user_calls[0]["has_image"] is True
@@ -1560,6 +1569,29 @@ async def test_get_conversation_with_messages(client, env):
     body = r.json()
     assert body["conversation"]["id"] == str(CONV_ID)
     assert body["messages"][0]["content"] == "prev answer"
+
+
+@pytest.mark.asyncio
+async def test_conversation_returns_saved_images_for_their_user_message(client, env):
+    env.get_result = env.conv
+    user = make_msg(has_image=True, image_count=2)
+    assistant = make_msg(role="assistant")
+    second_image = uuid.uuid4()
+    env.messages_result = [user, assistant]
+    env.request_db.execute = AsyncMock(
+        return_value=[(user.id, DOC_ID, "one.png"), (user.id, second_image, "two.jpg")]
+    )
+
+    response = await client.get(f"/api/conversations/{CONV_ID}")
+
+    assert response.status_code == 200
+    user_result, assistant_result = response.json()["messages"]
+    assert user_result["imageAttachments"] == [
+        {"id": str(DOC_ID), "filename": "one.png"},
+        {"id": str(second_image), "filename": "two.jpg"},
+    ]
+    assert "imageAttachments" not in assistant_result
+    env.request_db.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -25,10 +25,11 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, Json
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
-from app.db.models import Conversation
+from app.db.models import Conversation, Document
 
 from app.agent.service import run_agent_stream
 from app.agent.routing import is_find_command, is_sources_command
@@ -49,6 +50,7 @@ from app.services.chat_command_sources import (
 from app.services.safe_paths import confined_path
 from app.services.integrations.libreoffice import render_document_thumbnail
 from app.services import model_prefs
+from app.services.lens.attachments import save_images
 from app.services import providers
 from app.services import rag as rag_service
 from app.services.blocks import BlockBuilder as _BlockBuilder
@@ -900,10 +902,12 @@ async def chat_stream_multipart(
 
     # Encode images to base64
     image_b64_list = []
+    image_buffers = []
     for img_file in images:
         content = await img_file.read()
         b64 = base64.b64encode(content).decode("utf-8")
         image_b64_list.append(b64)
+        image_buffers.append((img_file.filename, content))
         _log(
             "   encoded image: %s (%d bytes, %d b64 chars)",
             img_file.filename,
@@ -936,7 +940,7 @@ async def chat_stream_multipart(
 
     # Persist the user message EAGERLY using an independent session
     if conv_id and parsed_messages:
-        await _persist_message(
+        message_id = await _persist_message(
             conv_id,
             "user",
             parsed_messages[-1]["content"],
@@ -957,6 +961,10 @@ async def chat_stream_multipart(
                 else {}
             ),
         )
+
+        if message_id and image_buffers:
+            await save_images(conv_id, message_id, image_buffers)
+    del image_buffers
 
     # Capture for closure
     _conv_id = conv_id
@@ -1629,14 +1637,12 @@ async def save_temporary_chat(
                                 for item in row.deliverables
                             ]
             conversation = await conv_service.get_conversation(db, body.id)
+            saved_messages = await conv_service.get_messages(
+                db, body.id, limit=len(body.messages)
+            )
             result = {
                 "conversation": await conv_service.conversation_to_dict(conversation),
-                "messages": [
-                    await conv_service.message_to_dict(row)
-                    for row in await conv_service.get_messages(
-                        db, body.id, limit=len(body.messages)
-                    )
-                ],
+                "messages": await _messages_with_images(db, body.id, saved_messages),
             }
             await db.commit()
         except BaseException:
@@ -1657,6 +1663,36 @@ async def save_temporary_chat(
     return await save()
 
 
+async def _messages_with_images(db, conversation_id, messages):
+    image_message_ids = [
+        message.id
+        for message in messages
+        if message.role == "user" and message.has_image
+    ]
+    attachments = {}
+    if image_message_ids:
+        rows = await db.execute(
+            select(Document.message_id, Document.id, Document.original_filename)
+            .where(
+                Document.conversation_id == conversation_id,
+                Document.message_id.in_(image_message_ids),
+                Document.mime_type.startswith("image/"),
+            )
+            .order_by(Document.created_at, Document.id)
+        )
+        for message_id, document_id, filename in rows:
+            attachments.setdefault(message_id, []).append(
+                {"id": str(document_id), "filename": filename}
+            )
+    result = []
+    for message in messages:
+        item = await conv_service.message_to_dict(message)
+        if message.id in attachments:
+            item["imageAttachments"] = attachments[message.id]
+        result.append(item)
+    return result
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
@@ -1674,7 +1710,7 @@ async def get_conversation(
     dbg("   returning conversation with %d messages", len(msgs))
     return {
         "conversation": await conv_service.conversation_to_dict(conv),
-        "messages": [await conv_service.message_to_dict(m) for m in msgs],
+        "messages": await _messages_with_images(db, conv_id, msgs),
     }
 
 

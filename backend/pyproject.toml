@@ -36,6 +36,10 @@ pymupdf = ">=1.28.2,<3.0.0"
 arxiv = "^4.0.1"
 trafilatura = ">=2.3,<3"
 markdownify = ">=1.2,<2"
+numpy = ">=2.2,<3"
+onnxruntime = ">=1.22,<2"
+tokenizers = ">=0.21,<0.23"
+filelock = ">=3.19,<5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.3,<10.0"

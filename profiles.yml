@@ -389,6 +389,8 @@ profiles:
     description: "32 GB unified memory — Apple Silicon (M1/M2/M3/M4 Pro or Max)"
     label: "Apple Silicon · Large"
     engine: ollama
+    lens:
+      siglip2: fp32
     models:
       - id: qwen3:32b
         type: chat
@@ -430,6 +432,8 @@ profiles:
     description: "48-64+ GB unified memory — Apple Silicon (M1/M2/M3/M4 Max or Ultra)"
     label: "Apple Silicon · XL"
     engine: ollama
+    lens:
+      siglip2: fp32
     models:
       - id: qwen3.5:35b-mlx
         type: chat
@@ -494,3 +498,10 @@ voice:
     role: default_tts
     description: "Pocket TTS — streaming neural speech synthesis"
     size: "~600 MB"
+
+# Local image search encoders (CPU ONNX Runtime). Override under profiles.<name>.lens.
+# Keep INT8 while sharing memory with chat on 8–16 GB hosts.
+lens:
+  siglip2: int8
+  e5: int8
+  threads: 2

@@ -4,15 +4,16 @@ from .huggingface_catalog import HuggingFaceCatalog
 from .ollama_catalog import OllamaCatalog
 from .local_catalog import LocalCatalog
 from .ollama_runtime import OllamaRuntime
+from .lens_models import LensCatalog, LensRuntime
 from .types import Catalog, ModelManagerError, Runtime
 
 CATALOGS: dict[str, Catalog] = {
-    item.id: item for item in (OllamaCatalog(), HuggingFaceCatalog(), LocalCatalog())
+    item.id: item for item in (OllamaCatalog(), HuggingFaceCatalog(), LocalCatalog(), LensCatalog())
 }
 
 
 def runtime_adapters() -> dict[str, Runtime]:
-    return {"ollama": OllamaRuntime()}
+    return {"ollama": OllamaRuntime(), LensRuntime.id: LensRuntime()}
 
 
 def catalog_adapter(ident: str) -> Catalog:

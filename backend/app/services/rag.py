@@ -570,16 +570,25 @@ def _extract_pdf(buf: bytes) -> ExtractionResult:
 
 
 def _extract_pptx(buf: bytes) -> ExtractionResult:
-    """PPTX — slide + notes text via python-pptx, one page per slide.
+    """PPTX — slide text, notes and embedded pictures, one page per slide.
 
     Walks every shape on every slide (text frames + tables) plus the
     speaker-notes pane, so presentations become searchable with per-slide
     page numbers for citations.
     """
     from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    def pictures(shapes):
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                yield from pictures(shape.shapes)
+            elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                yield shape
 
     prs = Presentation(io.BytesIO(buf))
     pages: List[ExtractedPage] = []
+    images: List[ExtractedImage] = []
     for i, slide in enumerate(prs.slides, start=1):
         lines: List[str] = []
         try:
@@ -595,6 +604,17 @@ def _extract_pptx(buf: bytes) -> ExtractionResult:
                         lines.append(" | ".join(cells))
         except Exception as inner:
             _log("pptx shape walk failed on slide %d: %s", i, inner)
+        for picture in pictures(slide.shapes):
+            try:
+                image = picture.image
+                if image.ext in {"png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"}:
+                    images.append(
+                        ExtractedImage(
+                            page_number=i, image_bytes=image.blob, format_hint=image.ext
+                        )
+                    )
+            except Exception as inner:
+                _log("pptx image extract failed on slide %d: %s", i, inner)
         try:
             if slide.has_notes_slide:
                 notes = slide.notes_slide.notes_text_frame.text
@@ -606,6 +626,7 @@ def _extract_pptx(buf: bytes) -> ExtractionResult:
         pages.append(ExtractedPage(page_number=i, text=page_text))
     return ExtractionResult(
         pages=pages,
+        images=images,
         mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
 
@@ -926,8 +947,7 @@ async def describe_image_with_vision(
     """Send an image to the vision LLM and return its description.
 
     Returns an empty string on any failure (network, model not pulled,
-    malformed response). The caller treats an empty description as
-    "skip this image" — no chunk is created.
+    malformed response). The caller can still preserve the extracted image.
 
     The PIL image normalization runs in a thread pool (CPU-bound); the
     HTTP call to Ollama is async.
@@ -1051,6 +1071,28 @@ async def save_image_file_async(
 ) -> str:
     """Async wrapper around save_image_file — runs in thread pool."""
     return await asyncio.to_thread(save_image_file, image_bytes, doc_id, image_index, format_hint)
+
+
+async def save_extracted_image_chunk(
+    image: ExtractedImage,
+    doc_id: uuid.UUID,
+    filename: str,
+    image_index: int,
+    chunk_index: int,
+    description: str = "",
+) -> Chunk:
+    path = await save_image_file_async(
+        image.image_bytes, doc_id, image_index, image.format_hint
+    )
+    return Chunk(
+        text=f"[Image on page {image.page_number} of {filename}]\n{description}",
+        chunk_index=chunk_index,
+        page_number=image.page_number,
+        line_start=None,
+        line_end=None,
+        chunk_type="image_description",
+        image_path=path,
+    )
 
 
 def resolve_document_path(relative_path: str) -> Path:
@@ -1346,28 +1388,15 @@ async def digest_document(
                 )
                 if not description:
                     _log(
-                        "digest: image %d of %s yielded no description, skipping",
+                        "digest: image %d of %s has no vision description; preserving the image",
                         i,
                         filename,
                     )
-                    continue
                 # Persist the image bytes to disk so the user can download
                 # it later from the Brain page.
-                image_rel = await save_image_file_async(
-                    img.image_bytes,
-                    doc_id,
-                    i,
-                    img.format_hint,
-                )
                 image_chunks.append(
-                    Chunk(
-                        text=(f"[Image on page {img.page_number} of {filename}]\n{description}"),
-                        chunk_index=next_chunk_idx,
-                        page_number=img.page_number,
-                        line_start=None,
-                        line_end=None,
-                        chunk_type="image_description",
-                        image_path=image_rel,
+                    await save_extracted_image_chunk(
+                        img, doc_id, filename, i, next_chunk_idx, description
                     )
                 )
                 next_chunk_idx += 1

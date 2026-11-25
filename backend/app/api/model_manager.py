@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services import providers
 from app.services.model_manager.host_api import RemoveRequest
+from app.services.model_manager.lens_models import recommended_lens_models
 from app.services.model_manager.local_catalog import (
     CHUNK_BYTES,
     LocalPathRequest,
@@ -54,6 +55,7 @@ async def host_call(method, path, **kwargs):
 async def inventory():
     result = await host_call("GET", "")
     await providers._fetch_ollama_tags(force=True)
+    result["lens_models"] = recommended_lens_models()
     return result
 
 

@@ -28,6 +28,7 @@ export interface ToolCallResult {
   type:
     | "websearch"
     | "webfetch"
+    | "image_search"
     | "vision"
     | "code_exec"
     | "skill"
@@ -54,6 +55,8 @@ export interface ToolCallResult {
   // Web search
   query?: string;
   webResults?: { title: string; url: string; snippet: string }[];
+  imageScope?: "chat" | "library";
+  imageResults?: import("@/api/lensClient").LensMatch[];
   // Code exec
   language?: string;
   code?: string;
@@ -61,6 +64,7 @@ export interface ToolCallResult {
   exitCode?: number;
   // Vision
   imageDescription?: string;
+  ocrText?: string;
   // Deep search
   steps?: { label: string; status: "pending" | "running" | "done" }[];
   progress?: { stage: string; completed: number; total: number };
@@ -139,6 +143,8 @@ export interface Message {
   hasImage?: boolean;
   hasDocument?: boolean;
   imageCount?: number;
+  imageAttachments?: MessageDTO["imageAttachments"];
+  localImageFiles?: File[];
   documentCount?: number;
   selectedSourceIds?: string[];
   pinnedArtifact?: PinnedArtifact;
@@ -429,6 +435,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
               exitCode: b.tool_call.exitCode,
               ...persistedToolCallDetails(b.tool_call),
               imageDescription: b.tool_call.imageDescription,
+              ocrText: b.tool_call.ocrText,
               error: b.tool_call.error,
               sources: b.tool_call.sources,
             },
@@ -463,6 +470,7 @@ export function dtoToMessage(dto: MessageDTO): Message {
     hasImage: dto.hasImage,
     hasDocument: dto.hasDocument,
     imageCount: dto.imageCount,
+    imageAttachments: dto.imageAttachments,
     documentCount: dto.documentCount,
     selectedSourceIds: dto.selectedSourceIds,
     pinnedArtifact: dto.pinnedArtifact,

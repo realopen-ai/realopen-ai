@@ -111,6 +111,7 @@ from urllib.parse import quote
 import yaml
 
 from app.config import settings
+
 try:  # httpx is a hard backend dependency, but keep the module importable
     import httpx
 except ImportError:  # pragma: no cover - only hit in exotic environments
@@ -975,9 +976,7 @@ async def _pip_install_package(
         output=f"Installing {pkg.display} (persistent wheelhouse)",
     )
     try:
-        async for line in pip_persistence.pip_install_persistent(
-            pkg.pip_name, pkg.pip_extra_args
-        ):
+        async for line in pip_persistence.pip_install_persistent(pkg.pip_name, pkg.pip_extra_args):
             yield _evt(
                 "pull_status",
                 pkg.id,
@@ -1025,9 +1024,7 @@ def _record_runtime_manifest(cfg: VoiceConfig) -> None:
     an installation wish list.
     """
     try:
-        required = [
-            RUNTIME_PACKAGES[pkg_id] for pkg_id in required_runtime_package_ids(cfg)
-        ]
+        required = [RUNTIME_PACKAGES[pkg_id] for pkg_id in required_runtime_package_ids(cfg)]
     except RuntimeError:
         return
     packages = [pkg.to_manifest_dict() for pkg in required]
@@ -1067,7 +1064,13 @@ async def _list_hf_files(
         import huggingface_hub  # noqa: PLC0415 — lazy by design
 
         api = huggingface_hub.HfApi()
-        info = api.model_info(repo_id, revision=revision, files_metadata=True)
+        try:
+            info = api.model_info(repo_id, revision=revision, files_metadata=True)
+        except huggingface_hub.errors.HfHubHTTPError as exc:
+            if exc.response is None or exc.response.status_code != 401:
+                raise
+            # An expired saved login must not block public model downloads.
+            info = api.model_info(repo_id, revision=revision, files_metadata=True, token=False)
         out = []
         for s in getattr(info, "siblings", None) or []:
             path = getattr(s, "rfilename", None)
@@ -1128,9 +1131,7 @@ def _seed_legacy_asr_into_cache(spec: VoiceModelSpec) -> int:
         import huggingface_hub  # noqa: PLC0415
 
         api = huggingface_hub.HfApi()
-        info = api.model_info(
-            spec.model, revision=spec.revision or "main", files_metadata=True
-        )
+        info = api.model_info(spec.model, revision=spec.revision or "main", files_metadata=True)
     except ImportError:
         return 0
     except Exception as e:  # noqa: BLE001 — metadata unreachable → normal download
@@ -1178,9 +1179,7 @@ def _seed_legacy_asr_into_cache(spec: VoiceModelSpec) -> int:
             refs.write_text(commit, encoding="utf-8")
         except OSError:
             return 0
-        logger.info(
-            "seeded %d legacy ASR files into the HF cache (%s)", seeded, repo_dir
-        )
+        logger.info("seeded %d legacy ASR files into the HF cache (%s)", seeded, repo_dir)
     return seeded
 
 
@@ -1291,9 +1290,7 @@ async def _stream_warmup_subprocess(
             if remaining <= 0:
                 raise asyncio.TimeoutError
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(communicate), timeout=min(0.4, remaining)
-                )
+                await asyncio.wait_for(asyncio.shield(communicate), timeout=min(0.4, remaining))
             except asyncio.TimeoutError:
                 if loop.time() >= deadline:
                     raise
@@ -1443,7 +1440,13 @@ async def _install_asr_model(
 
     warm_script = (
         "from huggingface_hub import snapshot_download\n"
-        f"print(snapshot_download(repo_id={spec.model!r}, revision={revision!r}))\n"
+        "from huggingface_hub.errors import HfHubHTTPError\n"
+        "try:\n"
+        f"    path = snapshot_download(repo_id={spec.model!r}, revision={revision!r})\n"
+        "except HfHubHTTPError as exc:\n"
+        "    if exc.response is None or exc.response.status_code != 401: raise\n"
+        f"    path = snapshot_download(repo_id={spec.model!r}, revision={revision!r}, token=False)\n"
+        "print(path)\n"
     )
     last_emit = 0.0
     snap_path: Optional[str] = None
@@ -1517,9 +1520,7 @@ async def _install_asr_model(
     for p in root.rglob("*"):
         try:
             if p.is_file():
-                files_record[f"{spec.model}::{p.relative_to(root).as_posix()}"] = (
-                    p.stat().st_size
-                )
+                files_record[f"{spec.model}::{p.relative_to(root).as_posix()}"] = p.stat().st_size
         except OSError:
             continue
     if not files_record:
@@ -1639,8 +1640,7 @@ def _warm_pocket_tts_sync(spec: VoiceModelSpec) -> Any:
                     continue
         if model is None:
             raise RuntimeError(
-                "pocket_tts load_model failed: "
-                + ("; ".join(errors) or "unrecognized signature")
+                "pocket_tts load_model failed: " + ("; ".join(errors) or "unrecognized signature")
             )
     else:
         for args in ((), (spec.language or "english_2026-04",)):
@@ -1858,8 +1858,7 @@ async def _install_tts(
         output=(
             "verified: model + voice state load from persisted "
             + (
-                f"HF cache ({len(files_record)} files, "
-                f"{human_mb(sum(files_record.values()))})"
+                f"HF cache ({len(files_record)} files, {human_mb(sum(files_record.values()))})"
                 if files_record
                 else "Pocket TTS package assets"
             )
@@ -2028,16 +2027,12 @@ async def _stream_install_unlocked(
     if only is None or "tts" in only:
         items.append(cfg.tts)
 
-    effective_total = (
-        total_models if total_models is not None else (index_offset + len(items))
-    )
+    effective_total = total_models if total_models is not None else (index_offset + len(items))
 
     for local_index, item in enumerate(items):
         index = index_offset + local_index
         if isinstance(item, RuntimePackage):
-            yield _evt(
-                "pull_start", item.id, "pip", "voice_runtime", index, effective_total
-            )
+            yield _evt("pull_start", item.id, "pip", "voice_runtime", index, effective_total)
             async for event in _pip_install_package(item, index, effective_total):
                 yield event
             continue
@@ -2081,9 +2076,7 @@ async def _stream_install_unlocked(
         stale = manifest.get(spec.kind)
         wiped = ""
         if isinstance(stale, dict) and stale.get("store") != "hf":
-            target = (
-                asr_target_dir(spec) if spec.kind == "asr" else tts_target_dir(spec)
-            )
+            target = asr_target_dir(spec) if spec.kind == "asr" else tts_target_dir(spec)
             if reason not in _KEEP_DIR_REASONS and target.exists():
                 shutil.rmtree(target, ignore_errors=True)
                 wiped = " (stale legacy assets removed)"

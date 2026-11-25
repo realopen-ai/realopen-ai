@@ -72,6 +72,7 @@ export default function App() {
         <Route path="/brain/tools/:toolId" element={<AppLayout />} />
         <Route path="/workspace" element={<AppLayout />} />
         <Route path="/workspace/documents" element={<AppLayout />} />
+        <Route path="/workspace/images" element={<AppLayout />} />
         <Route path="/workspace/artifacts" element={<AppLayout />} />
         <Route
           path="/workspace/artifacts/:artifactId"

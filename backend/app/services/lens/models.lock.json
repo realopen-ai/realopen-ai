@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "models": {
+    "siglip2": {
+      "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
+      "revision": "ba1f3b0843f24bc5417d38e19c37b287d719b2f4",
+      "files": {
+        "tokenizer": {
+          "path": "tokenizer.json",
+          "sha256": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+          "size": 34363039
+        },
+        "vision_int8": {
+          "path": "onnx/vision_model_int8.onnx",
+          "sha256": "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
+          "size": 94553333
+        },
+        "text_int8": {
+          "path": "onnx/text_model_int8.onnx",
+          "sha256": "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
+          "size": 283438275
+        },
+        "vision_fp32": {
+          "path": "onnx/vision_model.onnx",
+          "sha256": "c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad",
+          "size": 371807752
+        },
+        "text_fp32": {
+          "path": "onnx/text_model.onnx",
+          "sha256": "baf12d941beabafafb14f7b4adb38dc15be18681b964a84410ec53d9d65e6293",
+          "size": 1129469657
+        }
+      }
+    },
+    "e5": {
+      "repo": "Xenova/multilingual-e5-small",
+      "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+      "files": {
+        "tokenizer": {
+          "path": "tokenizer.json",
+          "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+          "size": 17082730
+        },
+        "text_int8": {
+          "path": "onnx/model_quantized.onnx",
+          "sha256": "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+          "size": 118308185
+        },
+        "text_fp32": {
+          "path": "onnx/model.onnx",
+          "sha256": "4aa845c27760e06e9a686b9d8b5d440eae4b6612cd09e5b522b716d3941f77ff",
+          "size": 470268533
+        }
+      }
+    }
+  }
+}

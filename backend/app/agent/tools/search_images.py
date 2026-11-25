@@ -1,0 +1,321 @@
+"""Search saved images through the same Lens retrieval pipeline as Workspace."""
+
+import asyncio
+import base64
+import json
+import logging
+import time
+from dataclasses import dataclass
+from uuid import UUID
+
+from app.agent.base import BaseTool, ToolCall, ToolResult, ToolType, tool_registry
+from app.agent.tools.config_base import (
+    ConfigField,
+    ToolConfigDefinition,
+    register_config,
+)
+from app.db.session import async_session_factory
+from app.prompts import get_prompt
+from app.services import providers
+from app.services.lens.config import get_lens_config
+from app.services.lens.search import (
+    CHAT_ATTACHMENTS,
+    DOCUMENT_IMAGES,
+    GENERATED_IMAGES,
+    WORKSPACE_FILES,
+    LensVisualUnavailable,
+    find_images,
+)
+from app.services.lens.encoders import LensEncoderUnavailable
+from app.services.ocr import MAX_IMAGE_BYTES
+from app.services.model_manager.lens_models import recommended_lens_models
+
+MAX_MATCHES = 5
+EXCERPT_CHARS = 600
+logger = logging.getLogger(__name__)
+SOURCES = {
+    CHAT_ATTACHMENTS: ("Chat attachments", "Images uploaded directly to saved chats."),
+    WORKSPACE_FILES: (
+        "Workspace image files",
+        "Standalone image files saved in Workspace.",
+    ),
+    GENERATED_IMAGES: (
+        "Generated images",
+        "Images created by the agent in saved chats.",
+    ),
+    DOCUMENT_IMAGES: (
+        "Images from documents",
+        "Images extracted from ingested documents.",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class LibrarySearchIntent:
+    query: str
+    english_query: str
+    scope: str = "library"
+
+
+async def classify_library_search(
+    request: str, model: str, history: list[dict[str, str]]
+) -> LibrarySearchIntent | None:
+    """Resolve a saved-image request against recent turns."""
+    if not request.strip():
+        return None
+    try:
+        response = await providers.chat_once(
+            model,
+            [
+                {"role": "system", "content": get_prompt("image_library_intent")},
+                {
+                    "role": "user",
+                    "content": "Classify this request: "
+                    + json.dumps({"history": history, "request": request}, ensure_ascii=False),
+                },
+            ],
+            timeout=20,
+            format="json",
+            think=False,
+            options={"temperature": 0, "num_predict": 160},
+        )
+        decision = json.loads(response["message"]["content"])
+        if isinstance(decision, dict) and decision.get("scope") in {"chat", "library"}:
+            query, english_query = decision.get("query", ""), decision.get("english_query", "")
+            return LibrarySearchIntent(
+                query.strip()[:500] if isinstance(query, str) else "",
+                english_query.strip()[:500] if isinstance(english_query, str) else "",
+                decision["scope"],
+            )
+    except Exception as exc:
+        logger.debug("Image library intent check failed (%s)", type(exc).__name__)
+    return None
+
+
+def _excerpt(text: str, query: str) -> str:
+    text = " ".join(text.split())
+    offset = text.lower().find(query.lower()) if query else -1
+    start = max(0, offset - 100)
+    end = start + EXCERPT_CHARS
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+class SearchImagesTool(BaseTool):
+    name = "search_images"
+    display_name = "Search Images"
+    description = (
+        "Find or recall previously shared images, diagrams, and screenshots by visual "
+        "description, filename, or visible text. General requests to find an image search "
+        "the saved library, including in a new chat. Use chat scope when the user "
+        "restricts the search to this conversation or refers to its current images. "
+        "Use the latest subject when the user continues or corrects an image lookup. "
+        "Report only the scope "
+        "actually searched. To find similar images from an image "
+        "attached to this turn, provide its 1-based reference_image number instead of a query. "
+        "When more detail is needed, pass a returned image_id to the Vision tool as lens_image_id."
+    )
+    tool_type = ToolType.IMAGE_SEARCH
+
+    def get_parameters(self):
+        return {
+            "query": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "What the image depicts, its filename, or text visible in it.",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["chat", "library"],
+                "description": "Search this chat, or the saved library for a saved-image lookup or recall request.",
+            },
+            "reference_image": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based number of an image attached to the current message.",
+            },
+        }
+
+    def get_required_params(self):
+        return []
+
+    async def execute(
+        self,
+        *,
+        query="",
+        scope=None,
+        reference_image=None,
+        _conversation_id=None,
+        _library_query="",
+        _images=(),
+        **kwargs,
+    ):
+        query = (query or "").strip()
+        scope = scope or "library"
+        if scope not in {"chat", "library"}:
+            return self.invalid_arguments("Use chat or library as the search scope.")
+        if not query and reference_image is None:
+            return self.invalid_arguments("Provide a query or an attached reference image.")
+        if query and reference_image is not None:
+            return self.invalid_arguments("Provide either a query or a reference image.")
+        if reference_image is not None and not 1 <= reference_image <= len(_images):
+            return self.invalid_arguments("Choose an image attached to this turn.")
+        tc = ToolCall(
+            id="",
+            type=self.tool_type,
+            name=self.name,
+            status="completed",
+            title=self.display_name,
+            started_at=time.time(),
+            query=query or None,
+            image_scope=scope,
+        )
+
+        def finish(message, *, success=True):
+            tc.completed_at = time.time()
+            tc.status = "completed" if success else "error"
+            tc.error = None if success else message
+            receipt = json.dumps(
+                {
+                    "scope": scope,
+                    "status": "completed" if success else "failed",
+                    "message": message,
+                    "match_count": 0 if success else None,
+                    "guidance": (
+                        "Only this scope was searched."
+                        if success
+                        else "This search did not complete. Do not claim that this scope was searched or had no matches."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            tc.output = message
+            return ToolResult(success, receipt, tc)
+
+        if scope == "chat" and not _conversation_id:
+            return finish("This chat-only search has no saved conversation to search.", success=False)
+        from app.agent.tools.config_store import get_tool_config
+
+        config = get_tool_config(self.name) or {}
+        switches = config.get("custom", {}).get("sources", {})
+        source_types = tuple(source for source in SOURCES if switches.get(source, True))
+        if not source_types:
+            return finish(
+                "All image sources are turned off in Brain → Tools → Search Images.", success=False
+            )
+
+        reference = None
+        if reference_image is not None:
+            encoded = _images[reference_image - 1]
+            if encoded.startswith("data:"):
+                encoded = encoded.partition(",")[2]
+            if len(encoded) > ((MAX_IMAGE_BYTES + 2) // 3) * 4:
+                return finish("The attached reference image exceeds 20 MiB.", success=False)
+            try:
+                reference = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
+                if not reference or len(reference) > MAX_IMAGE_BYTES:
+                    raise ValueError
+            except ValueError:
+                return finish("The attached reference image could not be read.", success=False)
+
+        try:
+            async with async_session_factory() as db:
+                config = get_lens_config()
+                options = {
+                    "conversation_id": (UUID(str(_conversation_id)) if scope == "chat" else None),
+                    "source_types": source_types,
+                    "limit": MAX_MATCHES,
+                    "include_ocr": True,
+                }
+                matches = await find_images(db, config, query=query, reference=reference, **options)
+                if (
+                    not matches
+                    and scope == "library"
+                    and query
+                    and _library_query
+                    and query.casefold() != _library_query.casefold()
+                ):
+                    query = _library_query
+                    matches = await find_images(db, config, query=query, **options)
+        except (LensVisualUnavailable, LensEncoderUnavailable) as exc:
+            return finish(str(exc), success=False)
+        except (ValueError, OSError):
+            return finish("The image search input could not be read.", success=False)
+
+        if not matches:
+            return finish(
+                "No indexed images matched in this chat."
+                if scope == "chat"
+                else "No indexed images matched in the saved image library."
+            )
+        tc.image_results = [
+            {
+                "id": str(item["id"]),
+                "filename": item["filename"],
+                "excerpt": _excerpt(item["ocr_text"] or "", query),
+                **({"page_number": item["page_number"]} if item.get("page_number") else {}),
+            }
+            for item in matches
+        ]
+        tc.completed_at = time.time()
+        return ToolResult(
+            True,
+            json.dumps(
+                {
+                    "scope": scope,
+                    "status": "completed",
+                    "match_count": len(tc.image_results),
+                    "images": [
+                        {
+                            "image_id": row["id"],
+                            "filename": row["filename"],
+                            "ocr_excerpt": row["excerpt"],
+                            **({"page_number": row["page_number"]} if "page_number" in row else {}),
+                        }
+                        for row in tc.image_results
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            tc,
+        )
+
+
+def _validate_sources(custom):
+    sources = custom.get("sources", {})
+    if not isinstance(sources, dict) or any(
+        key not in SOURCES or not isinstance(value, bool) for key, value in sources.items()
+    ):
+        raise ValueError("Image sources must be recognized boolean switches.")
+    return custom
+
+
+def _profile_models():
+    return [
+        {"title": model["title"], "precision": model["variant"].upper()}
+        for model in recommended_lens_models()
+    ]
+
+
+register_config(
+    ToolConfigDefinition(
+        tool_name=SearchImagesTool.name,
+        display_name=SearchImagesTool.display_name,
+        description=SearchImagesTool.description,
+        profile_models=_profile_models,
+        custom_defaults={"sources": dict.fromkeys(SOURCES, True)},
+        custom_schema=[
+            {
+                "key": "sources",
+                "label": "Image sources",
+                "fields": [
+                    ConfigField(
+                        f"sources.{source}", label, "bool", default=True, help=help_text
+                    ).to_dict()
+                    for source, (label, help_text) in SOURCES.items()
+                ],
+            }
+        ],
+        validate_custom=_validate_sources,
+    )
+)
+tool_registry.register(SearchImagesTool())

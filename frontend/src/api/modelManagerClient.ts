@@ -44,6 +44,7 @@ export interface LocalImportOptions {
 }
 export interface ModelInventory {
   local_import?: LocalImportOptions | null;
+  lens_models?: (ModelInstallRequest & { title: string; size: number })[];
   models: InstalledModel[];
   runtimes: {
     id: string;

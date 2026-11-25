@@ -100,7 +100,7 @@ class TestVisionSchema:
     def test_parameters_and_required_params(self):
         tool = VisionTool()
         params = tool.get_parameters()
-        assert set(params) == {"prompt"}
+        assert set(params) == {"prompt", "lens_image_id"}
         assert params["prompt"]["type"] == "string"
         assert tool.get_required_params() == []
 
@@ -204,9 +204,9 @@ class TestVisionExecute:
         assert recorded["posts"][0]["json"]["model"] == "resolved-vision-model"
 
     @pytest.mark.asyncio
-    async def test_missing_image_argument_raises_type_error(self):
-        with pytest.raises(TypeError):
-            await VisionTool().execute(prompt="no image")
+    async def test_missing_image_argument_returns_validation_error(self):
+        result = await VisionTool().execute(prompt="no image")
+        assert result.failure_kind == "validation"
 
     @pytest.mark.asyncio
     async def test_non_200_response_returns_failure(self):

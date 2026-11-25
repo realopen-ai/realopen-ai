@@ -1,4 +1,5 @@
 import type { Sandbox } from "@/store/sandboxStore";
+import type { LensMatch } from "@/api/lensClient";
 
 const DETAIL_FIELDS = [
   "agent",
@@ -13,6 +14,8 @@ const DETAIL_FIELDS = [
   "previewPort",
   "sandboxId",
   "sandbox",
+  "imageResults",
+  "imageScope",
 ] as const;
 
 type PersistedToolCall = {
@@ -28,6 +31,8 @@ type PersistedToolCall = {
   previewPort?: number;
   sandboxId?: string;
   sandbox?: Sandbox;
+  imageScope?: "chat" | "library";
+  imageResults?: LensMatch[];
   unrelated?: string;
 };
 

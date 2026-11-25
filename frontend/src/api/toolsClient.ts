@@ -67,6 +67,7 @@ export interface ToolInfo {
   custom_schema: ToolConfigSection[] | null;
   has_custom: boolean;
   effective_model: string | null;
+  profile_models?: { title: string; precision: string }[];
   secrets: Record<string, SecretStatus>;
 }
 

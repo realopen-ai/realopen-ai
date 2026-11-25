@@ -30,6 +30,7 @@ modules:
       - use_webfetch
       - use_code_exec
       - use_vision
+      - search_images
       - use_report_gen
       - use_pptx_gen
       - use_excel_gen

@@ -555,6 +555,19 @@ main() {
     pull_models
     install_voice_models
 
+    local profile
+    profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" | cut -d'=' -f2 || true)
+    profile=${profile:-cpu_small}
+    info "Installing Lens image search models for $profile..."
+    if ! (
+        cd "$PROJECT_ROOT" &&
+        docker compose run --rm --no-deps --build \
+            --user "$(id -u):$(id -g)" --entrypoint python backend \
+            -m app.services.lens.install --profile "$profile"
+    ); then
+        warn "Lens model installation failed. Retry from Brain → Models after startup."
+    fi
+
     echo ""
     echo "╔═══════════════════════════════════════════╗"
     echo "║           Setup Complete!                 ║"
@@ -567,8 +580,6 @@ main() {
 
     # Create setup-complete marker in data/ folder
     # Read profile from .env (written by detect_and_configure)
-    local profile
-    profile=$(grep "^HARDWARE_PROFILE=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2 || echo "cpu_small")
     local marker="$DATA_DIR/.setup-complete"
     echo "{\"profile\": \"${profile}\", \"enabled_modules\": [\"assistant\"], \"source\": \"cli\", \"voice\": true}" > "$marker"
     ok "Created data/.setup-complete marker"
